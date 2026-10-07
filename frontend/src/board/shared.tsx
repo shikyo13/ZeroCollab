@@ -1,6 +1,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { errorMessage } from '../lib/api';
 import type { AgentState, ReviewStatus, TaskStatus } from '../lib/types';
+import { USER } from '../lib/constants';
 
 export type Agents = Record<string, AgentState>;
 
@@ -42,15 +43,15 @@ export function useAction() {
 
 export function displayName(name: string, agents: Agents): string {
   if (!name) return 'Unclaimed';
-  if (name === 'user') return 'You';
+  if (name === USER) return 'You';
   return agents[name]?.label || name;
 }
 
 export function AgentChip({ name, agents, empty = 'Unclaimed' }: { name: string; agents: Agents; empty?: string }) {
   if (!name) return <span className="bd-chip bd-chip-empty">{empty}</span>;
-  const color = name === 'user' ? 'var(--accent, #7aa2ff)' : agents[name]?.color || 'var(--text-muted, #9aa4b2)';
+  const color = name === USER ? 'var(--accent, #7aa2ff)' : agents[name]?.color || 'var(--text-muted, #9aa4b2)';
   return (
-    <span className="bd-chip" title={name === 'user' ? 'You' : '@' + name}>
+    <span className="bd-chip" title={name === USER ? 'You' : '@' + name}>
       <span className="bd-dot" style={{ background: color }} aria-hidden="true" />
       {displayName(name, agents)}
     </span>
@@ -102,11 +103,11 @@ export function ParticipantOptions({
     .filter(([name, info]) => !info.archived || name === current)
     .map(([name]) => name)
     .filter(name => !exclude.includes(name));
-  if (current && current !== 'user' && !names.includes(current) && !exclude.includes(current)) names.push(current);
+  if (current && current !== USER && !names.includes(current) && !exclude.includes(current)) names.push(current);
   return (
     <>
       {emptyLabel !== undefined && <option value="">{emptyLabel}</option>}
-      {includeUser && !exclude.includes('user') && <option value="user">You (user)</option>}
+      {includeUser && !exclude.includes(USER) && <option value={USER}>You (user)</option>}
       {names.map(name => (
         <option key={name} value={name}>
           {displayName(name, agents)} (@{name})

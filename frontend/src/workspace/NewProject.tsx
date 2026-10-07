@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { runtime } from '../lib/api';
 import { useRuntimeState } from '../lib/room';
 import { ErrorText, useAction } from '../board/shared';
+import { LIMITS } from '../lib/constants';
 
 /** A project exists before it needs a repository. Team choices copy profiles, not history. */
 export function NewProject({ onCreated, onCancel }: {
@@ -23,7 +24,7 @@ export function NewProject({ onCreated, onCancel }: {
   }}>
     <h2>New project</h2>
     <p className="bd-muted">Start a conversation with its own team, board and goal. You can add a repository later.</p>
-    <label>Project name<input ref={input} value={name} onChange={e => setName(e.target.value)} maxLength={60} required placeholder="What are you working on?" /></label>
+    <label>Project name<input ref={input} value={name} onChange={e => setName(e.target.value)} maxLength={LIMITS.name} required placeholder="What are you working on?" /></label>
     <fieldset disabled={busy}>
       <legend>Starting team</legend>
       <label className="pj-team-choice"><input type="radio" name="starting-team" checked={team === 'current'} onChange={() => setTeam('current')} />Copy current team</label>

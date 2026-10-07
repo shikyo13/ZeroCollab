@@ -4,6 +4,7 @@
  * when they cannot view images. Marks use 0..1 coordinates so the on-screen
  * preview and the exported image share one drawing routine. */
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { LIMITS } from '../lib/constants';
 import './annotate.css';
 
 export type MarkKind = 'box' | 'arrow' | 'pin';
@@ -78,7 +79,7 @@ function drawMarks(ctx: CanvasRenderingContext2D, width: number, height: number,
 /** Compose the text agents read alongside the annotated image. */
 export function annotationNote(summary: string, marks: Mark[]): string {
   const lines = marks.map((m, i) => `#${i + 1} ${m.kind}: ${m.note.trim() || '(no note)'}`);
-  return [summary.trim(), ...lines].filter(Boolean).join('\n').slice(0, 1000);
+  return [summary.trim(), ...lines].filter(Boolean).join('\n').slice(0, LIMITS.attachmentNote);
 }
 
 export function AnnotationEditor({

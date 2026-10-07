@@ -25,6 +25,7 @@ import {
 } from '../lib/teamBuilder';
 import { ErrorText, Field, useAction } from '../board/shared';
 import type { Profile, ProviderInfo } from './ProfileEditor';
+import { HANDLE_PATTERN, LIMITS } from '../lib/constants';
 import './teamBuilder.css';
 
 const POLL_MS = 2500;
@@ -305,12 +306,12 @@ function MemberEdit({
     <form className="bd-form tb-edit" onSubmit={submit}>
       <div className="bd-form-row">
         <Field label="Name">
-          <input value={draft.name} required maxLength={60} onChange={e => update({ name: e.target.value })} />
+          <input value={draft.name} required maxLength={LIMITS.name} onChange={e => update({ name: e.target.value })} />
         </Field>
         <Field label="Mention handle" hint="Lowercase letters, digits and hyphens.">
           <div className="tm-handle">
             <span aria-hidden="true">@</span>
-            <input value={draft.id} required pattern="[a-z][a-z0-9-]{0,39}" maxLength={40} onChange={e => update({ id: e.target.value })} />
+            <input value={draft.id} required pattern={HANDLE_PATTERN} maxLength={LIMITS.handle} onChange={e => update({ id: e.target.value })} />
           </div>
         </Field>
       </div>
@@ -352,7 +353,7 @@ function MemberEdit({
       </div>
       {catalog?.error && <p className="bd-error">{catalog.error}</p>}
       <Field label="Working background" hint={`${draft.background.length.toLocaleString()} / 16,000 characters`}>
-        <textarea value={draft.background} rows={6} maxLength={16000} onChange={e => update({ background: e.target.value })} />
+        <textarea value={draft.background} rows={6} maxLength={LIMITS.profileText} onChange={e => update({ background: e.target.value })} />
       </Field>
       <div className="bd-actions">
         <span className="tm-spacer" />

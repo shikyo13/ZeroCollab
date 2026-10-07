@@ -1,9 +1,8 @@
-import { sessionTitle } from '../lib/room';
 /* Task detail panel: status, ownership, reservations, dependencies, check-ins,
  * reviews and follow-ups. All writes go through POST /api/runtime/tasks. */
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { runtime } from '../lib/api';
-import { since } from '../lib/room';
+import { sessionTitle, since } from '../lib/room';
 import { EVIDENCE_KINDS, TASK_STATUSES, type ProjectState, type Task, type TaskStatus } from '../lib/types';
 import { TaskAttachments } from './Attachments';
 import { FollowupForm, FollowupItem, RequestReviewForm, ReviewItem, isOpenFollowup, isOpenReview } from './Coordination';
@@ -23,6 +22,7 @@ import {
   type Agents,
 } from './shared';
 import { executionLine, isStale, waitInfo } from './TaskCard';
+import { LIMITS } from '../lib/constants';
 
 function DependencyPicker({
   task,
@@ -83,10 +83,10 @@ function EditTask({ task, tasks, onDone }: { task: Task; tasks: Task[]; onDone: 
   return (
     <form className="bd-form" onSubmit={submit}>
       <Field label="Title">
-        <input value={title} onChange={e => setTitle(e.target.value)} maxLength={120} required />
+        <input value={title} onChange={e => setTitle(e.target.value)} maxLength={LIMITS.taskTitle} required />
       </Field>
       <Field label="Details and done criteria">
-        <textarea value={details} onChange={e => setDetails(e.target.value)} rows={4} maxLength={3000} />
+        <textarea value={details} onChange={e => setDetails(e.target.value)} rows={4} maxLength={LIMITS.taskDetails} />
       </Field>
       <LabelField value={labels} onChange={setLabels} known={knownLabels} />
       <Field label="Reserved paths" hint="One per line or comma-separated. Overlapping reservations with other owned tasks are refused.">
@@ -392,7 +392,7 @@ export function TaskDetail({
         <h3 id="bd-checkin-heading">Progress</h3>
         <form className="bd-form" onSubmit={submitNote}>
           <Field label="Post a check-in" hint="Progress, blocker or review note. Visible to the team and the owner.">
-            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={1600} />
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={LIMITS.checkIn} />
           </Field>
           <div className="bd-actions">
             <button type="submit" className="bd-btn" disabled={busy || !note.trim()}>

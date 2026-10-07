@@ -1,6 +1,7 @@
 /* Sidebar project picker: always shows which project is attached and jumps to any other. */
 import { useEffect, useRef, useState } from 'react';
 import { projectLabel, type ProjectSummary } from './projectData';
+import { EVENTS } from '../lib/constants';
 
 export function ProjectSwitcher({ projects, active, onOpen }: {
   projects: ProjectSummary[]; active: ProjectSummary | undefined; onOpen: (id: string) => void;
@@ -28,7 +29,7 @@ export function ProjectSwitcher({ projects, active, onOpen }: {
         <span className="pj-switcher-name">{p.active ? '● ' : ''}{p.name}</span>
         <small>{p.conversation ? 'No repository' : p.available ? `${busy(p)} active · ${p.tasks.done} done` : 'Repository missing'}</small>
       </button>)}
-      <button className="pj-switcher-all" onClick={() => { pick(''); window.dispatchEvent(new Event('workspace-new-project')); }}>+ New project</button>
+      <button className="pj-switcher-all" onClick={() => { pick(''); window.dispatchEvent(new Event(EVENTS.newProject)); }}>+ New project</button>
       <button className="pj-switcher-all" onClick={() => pick('')}>All projects</button>
     </div>}
   </div>;

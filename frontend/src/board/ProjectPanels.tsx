@@ -1,11 +1,11 @@
-import { sessionTitle } from '../lib/room';
 /* Optional spec, project memory, execution limits and conversation budgets.
  * Same endpoints and limit ranges as the legacy static/project.js panel. */
 import { useEffect, useState, type FormEvent } from 'react';
 import { runtime } from '../lib/api';
-import { sendChatMessage, since } from '../lib/room';
+import { sendChatMessage, sessionTitle, since } from '../lib/room';
 import type { Chain, Limits, ProjectState } from '../lib/types';
 import { ErrorText, Field, useAction, type Agents, displayName } from './shared';
+import { LIMITS } from '../lib/constants';
 
 export function SpecPanel({ project, channel, refresh }: { project: ProjectState; channel: string; refresh: () => Promise<void> }) {
   const { run, busy, error } = useAction();
@@ -64,7 +64,7 @@ export function SpecPanel({ project, channel, refresh }: { project: ProjectState
           aria-label="Shared project spec"
           className="bd-spec"
           rows={12}
-          maxLength={64000}
+          maxLength={LIMITS.spec}
           value={text}
           placeholder="Paste or write the spec for this project..."
           onChange={e => {

@@ -1,9 +1,8 @@
-import { sessionTitle } from '../lib/room';
 /* Project board: kanban of owned tasks plus reviews/follow-ups, spec, memory
  * and execution controls. Replaces the legacy static/project.js panel and uses
  * the same /api/runtime endpoints and project_state/runtime_state events. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useActiveChannel, useNow, useProjectState, useRuntimeState } from '../lib/room';
+import { sessionTitle, useActiveChannel, useNow, useProjectState, useRuntimeState } from '../lib/room';
 import { readStored, writeStored } from '../lib/storage';
 import { TASK_STATUSES, type Task, type TaskStatus } from '../lib/types';
 import { installAnnotateHook } from '../annotate';
@@ -14,29 +13,27 @@ import { LimitsPanel, MemoryPanel, SpecPanel } from './ProjectPanels';
 import { ErrorText, STATUS_LABELS, displayName, type Agents } from './shared';
 import { TaskCard, isStale, waitInfo, type TaskFacts } from './TaskCard';
 import { TaskDetail } from './TaskDetail';
+import { STORAGE_KEYS, USER } from '../lib/constants';
 import './board.css';
 
-type Tab = 'tasks' | 'coordination' | 'spec' | 'memory' | 'controls';
-type GroupBy = 'status' | 'area' | 'owner';
-type SortBy = 'recent' | 'oldest' | 'title';
-const TAB_KEY = 'zerocollab-board-tab';
-const GROUP_KEY = 'zerocollab-board-group';
-const SORT_KEY = 'zerocollab-board-sort';
-const FEED_KEY = 'zerocollab-board-feed';
+// The first entry of each list is the default when nothing valid is saved.
+const TABS = ['tasks', 'coordination', 'spec', 'memory', 'controls'] as const;
+const GROUPINGS = ['status', 'area', 'owner'] as const;
+const SORTS = ['recent', 'oldest', 'title'] as const;
+type Tab = typeof TABS[number];
+type GroupBy = typeof GROUPINGS[number];
+type SortBy = typeof SORTS[number];
 const DONE_PREVIEW = 8;
+// Wider than the board.css @media (max-width: 1100px) breakpoint, where the feed docks beside the columns.
+const FEED_DOCKED_QUERY = '(min-width: 1101px)';
 
 // The legacy chat lightbox can open the same annotation tool through window.ZeroAnnotate.
 installAnnotateHook();
 const CHANGE_HIGHLIGHT_MS = 2500;
 
-function readTab(): Tab {
-  const saved = readStored(TAB_KEY);
-  return saved === 'coordination' || saved === 'spec' || saved === 'memory' || saved === 'controls' ? saved : 'tasks';
-}
-
-function readChoice<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+function readChoice<T extends string>(key: string, allowed: readonly T[]): T {
   const saved = readStored(key) as T | null;
-  return saved && allowed.includes(saved) ? saved : fallback;
+  return saved && allowed.includes(saved) ? saved : allowed[0];
 }
 
 const SORTERS: Record<SortBy, (a: Task, b: Task) => number> = {
@@ -57,18 +54,18 @@ export default function Board() {
   const { data: runtimeState, error: runtimeError } = useRuntimeState();
   const channel = useActiveChannel();
   const now = useNow();
-  const [tab, setTabState] = useState<Tab>(readTab);
+  const [tab, setTabState] = useState<Tab>(() => readChoice(STORAGE_KEYS.boardTab, TABS));
   const [selected, setSelected] = useState<string | null>(() => new URLSearchParams(location.search).get('task'));
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
   const [labelFilter, setLabelFilter] = useState('');
-  const [groupBy, setGroupByState] = useState<GroupBy>(() => readChoice(GROUP_KEY, ['status', 'area', 'owner'], 'status'));
-  const [sortBy, setSortByState] = useState<SortBy>(() => readChoice(SORT_KEY, ['recent', 'oldest', 'title'], 'recent'));
+  const [groupBy, setGroupByState] = useState<GroupBy>(() => readChoice(STORAGE_KEYS.boardGroup, GROUPINGS));
+  const [sortBy, setSortByState] = useState<SortBy>(() => readChoice(STORAGE_KEYS.boardSort, SORTS));
   // The activity rail sits beside the columns on wide screens; on narrow ones it is an overlay, so it starts closed.
   const [feedOpen, setFeedOpenState] = useState(() => {
-    const saved = readStored(FEED_KEY);
-    return saved ? saved === '1' : window.matchMedia('(min-width: 1101px)').matches;
+    const saved = readStored(STORAGE_KEYS.boardFeed);
+    return saved ? saved === '1' : window.matchMedia(FEED_DOCKED_QUERY).matches;
   });
   const [showAllDone, setShowAllDone] = useState(false);
   const [changed, setChanged] = useState<ReadonlySet<string>>(new Set());
@@ -78,19 +75,19 @@ export default function Board() {
 
   const setTab = (next: Tab) => {
     setTabState(next);
-    writeStored(TAB_KEY, next);
+    writeStored(STORAGE_KEYS.boardTab, next);
   };
   const setGroupBy = (next: GroupBy) => {
     setGroupByState(next);
-    writeStored(GROUP_KEY, next);
+    writeStored(STORAGE_KEYS.boardGroup, next);
   };
   const setSortBy = (next: SortBy) => {
     setSortByState(next);
-    writeStored(SORT_KEY, next);
+    writeStored(STORAGE_KEYS.boardSort, next);
   };
   const setFeedOpen = (next: boolean) => {
     setFeedOpenState(next);
-    writeStored(FEED_KEY, next ? '1' : '0');
+    writeStored(STORAGE_KEYS.boardFeed, next ? '1' : '0');
   };
 
   // Highlight cards that changed while the board is open. The first load only records a baseline.
@@ -190,8 +187,8 @@ export default function Board() {
   const openCoordination =
     (project.reviews ?? []).filter(isOpenReview).length + (project.followups ?? []).filter(isOpenFollowup).length;
   const waitingOnUser =
-    (project.reviews ?? []).filter(r => r.reviewer === 'user' && r.status === 'pending').length +
-    (project.followups ?? []).filter(f => f.assigned_to === 'user' && f.status === 'open').length;
+    (project.reviews ?? []).filter(r => r.reviewer === USER && r.status === 'pending').length +
+    (project.followups ?? []).filter(f => f.assigned_to === USER && f.status === 'open').length;
   const owners = [...new Set(project.tasks.map(t => t.owner).filter(Boolean))];
   const knownLabels = [...new Set(project.tasks.flatMap(t => t.labels ?? []))].sort();
   const projectPath = runtimeState?.project ?? '';

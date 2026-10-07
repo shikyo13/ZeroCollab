@@ -1,9 +1,8 @@
-import { sessionTitle } from '../lib/room';
 /* Live team activity: who is running right now, then the newest board events
  * (check-ins, ownership/status moves, notes, unlinked reviews and follow-ups).
  * Task-linked reviews and follow-ups already log into task history, so only
  * unlinked records are read directly to avoid listing the same action twice. */
-import { since } from '../lib/room';
+import { sessionTitle, since } from '../lib/room';
 import type { ProjectState, RunInfo } from '../lib/types';
 import { AgentChip, REVIEW_LABELS, displayName, type Agents } from './shared';
 

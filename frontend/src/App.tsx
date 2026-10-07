@@ -12,8 +12,8 @@ import { ProjectSwitcher } from './workspace/ProjectSwitcher';
 import { useProjects } from './workspace/projectData';
 import { Deployments, DeploymentNotice, useDeploymentState } from './components/Deployments';
 import { readStored, writeStored } from './lib/storage';
+import { EVENTS, STORAGE_KEYS } from './lib/constants';
 
-const WELCOME_KEY = 'workspace-welcome-dismissed';
 
 type View = 'projects' | 'chat' | 'board' | 'team' | 'activity';
 const VIEWS: View[] = ['projects', 'chat', 'board', 'team', 'activity'];
@@ -33,7 +33,7 @@ export default function App() {
   }
   const openProject = (id: string) => { setFocus(id); navigate('projects'); };
   const [welcome, setWelcome] = useState(() => {
-    return readStored(WELCOME_KEY) !== '1';
+    return readStored(STORAGE_KEYS.welcomeDismissed) !== '1';
   });
   function navigate(next: View) {
     setView(next);
@@ -43,31 +43,27 @@ export default function App() {
   }
   useEffect(() => {
     const back = () => setView(validView(new URL(location.href).searchParams.get('view')));
-    const showHelp = () => setHelp(true);
     const showTeam = () => navigate('team');
     const toolbar = (event: Event) => {
       const target = (event.target as HTMLElement).closest('button');
       if (target?.id === 'settings-toggle') navigate('chat');
     };
     window.addEventListener('popstate', back);
-    window.addEventListener('workspace-help', showHelp);
-    window.addEventListener('workspace-team', showTeam);
+    window.addEventListener(EVENTS.team, showTeam);
     legacy.header.addEventListener('click', toolbar, true);
     return () => {
       window.removeEventListener('popstate', back);
-      window.removeEventListener('workspace-help', showHelp);
-      window.removeEventListener('workspace-team', showTeam);
+      window.removeEventListener(EVENTS.team, showTeam);
       legacy.header.removeEventListener('click', toolbar, true);
     };
   }, []);
   useEffect(() => {
     document.body.dataset.workspaceView = view;
-    window.dispatchEvent(new CustomEvent('workspace-view-change', { detail: { view } }));
     if (view === 'chat') window.dispatchEvent(new Event('resize'));
   }, [view]);
   const dismissWelcome = () => {
     setWelcome(false);
-    writeStored(WELCOME_KEY, '1');
+    writeStored(STORAGE_KEYS.welcomeDismissed, '1');
   };
   return <div className="workspace-shell">
     <a className="workspace-skip" href="#workspace-content">Skip to workspace</a>
