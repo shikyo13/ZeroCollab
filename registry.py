@@ -9,14 +9,14 @@ Thread-safe: a single threading.Lock guards all mutations.
 import colorsys
 import json
 import logging
-import os
-from durable import atomic_write
 import secrets
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from durable import atomic_write
 
 
 @dataclass

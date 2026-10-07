@@ -9,10 +9,10 @@ import platform
 import re
 import subprocess
 import time
-from durable import atomic_write
 import uuid
-from collections import deque
 from pathlib import Path
+
+from durable import atomic_write
 
 import httpx
 from fastapi import Request
@@ -27,7 +27,7 @@ import project_registry
 from agent_profiles import AgentProfiles
 from team_builder import TeamBuilder
 from local_protocol import visible_text, validate_calls
-from coordination_queue import WakeQueue, current_request, receipt_key
+from coordination_queue import WakeQueue, current_request
 from steering_delivery import SteeringDelivery
 
 LOGGER = logging.getLogger(__name__)

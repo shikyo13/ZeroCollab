@@ -954,8 +954,8 @@ async def upload_image(file: UploadFile = File(...)):
     if ext.lower() not in ALLOWED_UPLOAD_EXTS:
         return JSONResponse({"error": f"unsupported file type: {ext}"}, status_code=400)
 
-    content = await file.read()
-    max_bytes = config.get("images", {}).get("max_size_mb", 10) * 1024 * 1024
+    max_bytes = int(config.get("images", {}).get("max_size_mb", MAX_UPLOAD_BYTES // (1024 * 1024)) * 1024 * 1024)
+    content = await file.read(max(0, max_bytes) + 1)
     if len(content) > max_bytes:
         return JSONResponse({"error": f"file too large (max {max_bytes // 1024 // 1024} MB)"}, status_code=400)
 
@@ -997,7 +997,7 @@ async def import_history(file: UploadFile = File(...)):
     import archive as _archive
     if not file.filename or not file.filename.lower().endswith(".zip"):
         return JSONResponse({"error": "unsupported file type: expected .zip"}, status_code=400)
-    content = await file.read()
+    content = await file.read(_archive.MAX_IMPORT_SIZE + 1)
     if len(content) > _archive.MAX_IMPORT_SIZE:
         return JSONResponse(
             {"error": f"file too large (max {_archive.MAX_IMPORT_SIZE // 1024 // 1024}MB)"},
