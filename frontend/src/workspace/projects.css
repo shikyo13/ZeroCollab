@@ -87,5 +87,9 @@
 .pj-repo-form .pj-choice label { flex-direction: row; align-items: flex-start; gap: 8px; font-size: 13px; }
 .pj-repo-form .pj-choice input { width: auto; margin-top: 3px; }
 .pj-choice span { display: flex; flex-direction: column; gap: 2px; }
+.pj-repos { display: flex; flex-direction: column; gap: 8px; align-self: stretch; min-width: 0; }
+.pj-repo { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--bd-border); border-radius: var(--bd-radius); background: var(--bd-surface-2); }
+.pj-repo-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pj-repo-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pj-history ul { display: flex; flex-direction: column; gap: 8px; margin: 6px 0; font-size: 12.5px; }
 .pj-history li { display: flex; flex-direction: column; gap: 2px; }

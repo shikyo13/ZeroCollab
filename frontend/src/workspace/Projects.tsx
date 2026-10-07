@@ -174,13 +174,14 @@ function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void
         <small className="bd-muted">{detail.active ? 'Conversations in this project.' : 'Switch to this project to open its conversations.'}</small>
       </div>
       <div className="bd-panel">
-        <h3>Repository</h3>
-        {detail.active && <Repository project={detail} onChanged={() => { void load(); onRenamed(); }} />}
-        {detail.conversation ? <p className="bd-muted">No repository. Agents work in private scratch folders; the board still works.</p> : <>
-          <code className="pj-path pj-path-full">{detail.path || 'Unknown'}</code>
-          {detail.active && <ul className="pj-branches">{team.filter(m => m.branch).map(m => <li key={m.id}><strong>{m.name}</strong> <code>{m.branch}</code></li>)}</ul>}
-          {!detail.active && <small className="bd-muted">Each agent gets its own branch and worktree when this project is attached.</small>}
-        </>}
+        <h3>{(detail.repositories?.length ?? 0) > 1 ? 'Repositories' : 'Repository'}</h3>
+        {detail.conversation && <p className="bd-muted">No repository. Agents work in private scratch folders; the board still works.</p>}
+        {detail.active
+          ? <Repository project={detail} team={team} onChanged={() => { void load(); onRenamed(); }} />
+          : !detail.conversation && <>
+            <code className="pj-path pj-path-full">{detail.path || 'Unknown'}</code>
+            <small className="bd-muted">Each agent gets its own branch and worktree when this project is attached.</small>
+          </>}
       </div>
     </div>
   </section>;

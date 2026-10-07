@@ -33,27 +33,43 @@ export interface ProjectSummary {
   sessions: { id: string; title: string; readonly: boolean }[];
   last_session?: string;
   repo_request?: RepositoryRequest | null;
+  /** Every repository attached to the project; absent from servers without multi-repository support. */
+  repositories?: AttachedRepository[];
   repository_history?: RepositoryHistoryEntry[];
   team: ProjectMember[];
   spec: boolean;
   updated: number;
 }
 
-/** An agent's room_repository proposal; replace is true when the project already has one. */
+/** POST /projects/{id}/repository actions. replace swaps the primary repository, add attaches
+ * another one, primary promotes an attached one (the old primary stays attached), remove
+ * detaches an additional one. Every action drains or interrupts running turns first. */
+export type RepositoryAction = 'replace' | 'add' | 'primary' | 'remove';
+
+/** key is the server's stable repository key; compare repositories by key, never by path text. */
+export interface AttachedRepository {
+  key: string;
+  path: string;
+  primary: boolean;
+}
+
+/** An agent's room_repository proposal. Older servers send replace instead of action. */
 export interface RepositoryRequest {
   by: string;
   path: string;
   create: boolean;
   reason: string;
   time: number;
+  action?: 'add' | 'replace';
   replace?: boolean;
   current?: string;
 }
 
 /** One repository this project has used. attached is null for a repository recorded from
- * before history was kept; detached is null while it is the current one. Worktrees are kept
- * on disk and reused when the project switches back. */
+ * before history was kept; detached is null while it is attached. Worktrees are kept on disk
+ * and reused when the project switches back. key is absent on entries from before keys. */
 export interface RepositoryHistoryEntry {
+  key?: string;
   path: string;
   attached: number | null;
   detached: number | null;
