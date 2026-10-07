@@ -3,6 +3,8 @@ import json
 import time
 import uuid
 
+from durable import atomic_write
+
 
 class RoomGoals:
     def __init__(self, runtime):
@@ -23,10 +25,8 @@ class RoomGoals:
             chain = self.runtime.project_room.chains.get(self.goal['chain'])
             if chain:
                 self.goal['usage'] = {k: chain.get(k, 0) for k in ('turns', 'handoffs', 'reported_tokens', 'input_chars', 'paused')}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix('.tmp')
-        temporary.write_text(json.dumps(self.goal, ensure_ascii=False), 'utf-8')
-        temporary.replace(self.path)
+        content = json.dumps(self.goal, ensure_ascii=False)
+        atomic_write(self.path, lambda stream: stream.write(content))
 
     def pause(self, reason):
         if self.goal and self.goal['status'] == 'active':

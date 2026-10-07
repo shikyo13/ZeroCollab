@@ -9,6 +9,7 @@ from coordination_records import TASK_HISTORY
 from pathlib import Path, PurePosixPath
 from coordination_records import CoordinationRecords
 from coordination_queue import receipt_key
+from durable import atomic_write
 from coordination_state import update_execution, execution_state, pending_human_wait
 
 # chat_handoffs guards against agents @mentioning each other back and forth; 0 = no limit.
@@ -39,10 +40,8 @@ def stale(task, now):
 
 
 def write_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), 'utf-8')
-    temporary.replace(path)
+    content = json.dumps(value, ensure_ascii=False, indent=2)
+    atomic_write(path, lambda stream: stream.write(content))
 
 
 def clipped(text, limit):
