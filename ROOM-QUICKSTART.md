@@ -36,7 +36,9 @@ Each agent row shows live status, queued requests and the active turn's model an
 
 ## Activity
 
-Activity shows recent tool activity and the repository attachment. The workspace starts without a selected repository. When a coding task needs one, **Attach repository (optional)** accepts the exact root of an existing Git repository with at least one commit. Agents then receive their own branches and worktrees from committed HEAD; existing files and uncommitted edits remain in the original repository. Stop the workspace before changing repositories.
+Activity shows recent tool activity. A project starts without a repository. When a coding task needs one, open **Projects** and use **Add repository** on the active project: attach the exact root of an existing Git repository with at least one commit, or create a new one. Agents then receive their own branches and worktrees from committed HEAD; existing files and uncommitted edits remain in the original repository. Agents can also ask for a repository with room_repository; the request appears on the same panel for you to approve or dismiss.
+
+**Change repository** switches the project to another repository without stopping the room. Running turns finish first (or stop at once if you choose to interrupt them), new turns wait, and queued work, board, chats, team and goal are kept. Each agent then starts a fresh session in a separate worktree for the new repository. The previous repository's worktrees stay on disk, are listed under **Previous repositories**, and are reused if you switch back.
 
 Click **Changes** in the top control bar to inspect each agent's patch. Agents receive peer patches in their context so they can review concrete results. Integration into your main branch is a deliberate task: request it explicitly when you want that change.
 
