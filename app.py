@@ -18,6 +18,7 @@ from store import MessageStore
 from router import Router
 from agents import AgentTrigger
 from registry import RuntimeRegistry
+from durable import atomic_write
 
 log = logging.getLogger(__name__)
 
@@ -103,9 +104,8 @@ def _load_settings():
 
 
 def _save_settings():
-    p = _settings_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(room_settings, indent=2), "utf-8")
+    content = json.dumps(room_settings, indent=2)
+    atomic_write(_settings_path(), lambda stream: stream.write(content))
 
 
 def _runtime():
