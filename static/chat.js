@@ -210,7 +210,8 @@ function handleServerEvent(event) {
     }
     // Emit through Hub for modules to subscribe (PR 1 seam)
     Hub.emit(event.type, event);
-    SERVER_EVENTS[event.type]?.(event);
+    // Own properties only: inherited names such as __proto__ are not handlers.
+    if (Object.hasOwn(SERVER_EVENTS, event.type)) SERVER_EVENTS[event.type](event);
 }
 
 // Send a client event if the socket is open; returns whether it was sent.
