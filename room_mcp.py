@@ -132,7 +132,7 @@ def room_followup(action: str, followup_id: str = '', task_id: str = '', assigne
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
 def room_repository(path: str, reason: str, create: bool = False) -> dict:
-    """Ask the user to add a Git repository to this project when the work needs one: attach an existing repository root (create false) or create a new one at an absolute folder path (create true). Only the user approves; attaching stops the room, so keep working meanwhile."""
+    """Ask the user to attach or replace this project's Git repository: use an existing repository root (create false) or create a new one at an absolute folder path (create true). Only the user approves. Running turns can finish and queued work is kept, so continue working meanwhile."""
     return call('room_repository', dict(path=path, create=create, reason=reason))
 
 

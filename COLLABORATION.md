@@ -10,7 +10,7 @@ A shared goal is started explicitly by the user. Its named lead coordinates work
 
 Show visual work, do not only describe it. For any user-visible change, post a mockup before building: an annotated screenshot of the current UI marked with room_markup, or a small HTML mock rendered to PNG with a headless browser. Post screenshots of the actual result with the review request, and attach them to the task. Reviewers fetch them with room_image and answer with marked-up findings.
 
-If the work needs a repository and the project has none, ask with room_repository (attach an existing repository root, or create a new one at a folder path) and explain why. Only the user approves it, and attaching stops the room, so continue other work meanwhile.
+If the work needs a repository attached or replaced, ask with room_repository (attach an existing repository root, or create a new one at a folder path) and explain why. Only the user approves it. Running turns can finish and queued work is kept, so continue other work meanwhile.
 
 Take explicit, bounded ownership with room_task and announce it with room_update. Before editing, claim the relative file or directory paths your task needs. Respect other agents' reservations. If scopes overlap, discuss a narrower split or ask the owner to transfer the task before editing. Keep task status current. Mark completed work done or release or transfer ownership when you stop owning it. File reservations coordinate the team; they do not replace native filesystem permissions or isolated worktrees.
 
