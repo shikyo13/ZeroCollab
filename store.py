@@ -1,5 +1,6 @@
 """JSONL message persistence for the chat room with observer callbacks."""
 
+from contextlib import contextmanager
 import json
 import os
 import time
@@ -16,7 +17,7 @@ class MessageStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._messages: list[dict] = []
         self._next_id: int = 0  # monotonically increasing, survives deletions
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._callbacks: list = []  # called on each new message
         self._delete_callbacks: list = []  # called on message deletion
         self.upload_dir = self._path.parent.parent / "uploads"  # Default fallback
@@ -92,6 +93,33 @@ class MessageStore:
                     pass
 
         return msg
+
+    @contextmanager
+    def import_batch(self):
+        """Stage bulk additions under the store lock; publish only after persistence.
+
+        Published message dicts must not be mutated. The reentrant lock allows
+        add(_bulk=True) to reuse normal record construction inside this scope.
+        """
+        with self._lock:
+            previous = self._messages
+            self._messages = list(previous)
+            try:
+                yield
+                if self._messages != previous:
+                    self._rewrite()
+            except BaseException:
+                self._messages = previous
+                # Allocated IDs may be skipped, never reused after a failed write.
+                raise
+
+    def resolve_import_replies(self, pending):
+        """Resolve staged reply UIDs without mutating previously published dicts."""
+        with self._lock:
+            uid_to_id = {m['uid']: m['id'] for m in self._messages if m.get('uid')}
+            targets = {local_id: uid_to_id[uid] for local_id, uid in pending if uid in uid_to_id}
+            self._messages = [{**m, 'reply_to': targets[m['id']]} if m['id'] in targets else m
+                              for m in self._messages]
 
     def flush_bulk(self):
         """Write all in-memory messages to disk. Call after bulk add operations."""
