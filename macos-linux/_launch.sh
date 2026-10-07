@@ -64,7 +64,7 @@ if [ "$ZC_FOREGROUND" = "1" ]; then
     exit "$code"
 fi
 
-# The port the server will listen on, after config.local.toml and environment overrides
+# The port the server will listen on, from config.toml or the ZEROCOLLAB_PORT override (config.local.toml only adds agents)
 ZC_PORT=$(.venv/bin/python -c "from config_loader import load_config; print(load_config()['server']['port'])" 2>/dev/null | tail -n 1)
 case "$ZC_PORT" in
     ''|*[!0-9]*) ZC_PORT=$ZC_DEFAULT_PORT ;;

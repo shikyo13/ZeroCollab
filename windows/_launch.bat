@@ -45,7 +45,7 @@ call .venv\Scripts\activate.bat
 
 if "%ZC_FOREGROUND%"=="1" goto :run
 
-REM The port the server will listen on, after config.local.toml and environment overrides
+REM The port the server will listen on, from config.toml or the ZEROCOLLAB_PORT override (config.local.toml only adds agents)
 set "ZC_PORT=8300"
 for /f "delims=" %%p in ('python -c "from config_loader import load_config; print(load_config()['server']['port'])" 2^>nul') do set "ZC_PORT=%%p"
 
