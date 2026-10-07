@@ -1861,7 +1861,7 @@ function renderReplyPreview() {
     }
     const truncated = replyingTo.text.length > CONFIG.replyPreviewChars ? replyingTo.text.slice(0, CONFIG.replyPreviewChars) + '...' : replyingTo.text;
     const color = getColor(replyingTo.sender);
-    container.innerHTML = `<span class="reply-preview-label">replying to</span> <span style="color: ${escapeHtml(color)}; font-weight: 600">${escapeHtml(replyingTo.sender)}</span>: ${escapeHtml(truncated)} <button class="dismiss-btn reply-cancel" onclick="cancelReply()">&times;</button>`;
+    container.innerHTML = `<span class="reply-preview-label">replying to</span> <span class="reply-preview-sender" style="--sender-color: ${escapeHtml(color)}">${escapeHtml(replyingTo.sender)}</span>: ${escapeHtml(truncated)} <button class="dismiss-btn reply-cancel" onclick="cancelReply()">&times;</button>`;
 }
 
 // Replies only reach an agent through an @mention, so Reply addresses the
