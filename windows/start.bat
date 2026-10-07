@@ -1,15 +1,8 @@
 @echo off
 REM ZeroCollab - starts the server only
-cd /d "%~dp0.."
+REM Shared steps (venv, server start and wait, exit handling) live in _launch.bat.
+setlocal
 
-REM Auto-create venv and install deps on first run
-if not exist ".venv" (
-    python -m venv .venv
-    .venv\Scripts\pip install -q -r requirements.txt >nul 2>nul
-)
-call .venv\Scripts\activate.bat
-
-python run.py
-echo.
-echo === Server exited with code %ERRORLEVEL% ===
-pause
+set "ZC_FOREGROUND=1"
+set "ZC_EXIT=code"
+call "%~dp0_launch.bat" run.py

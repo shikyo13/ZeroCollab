@@ -1,5 +1,10 @@
 # Force LF line endings for shell scripts (they break with CRLF on Mac/Linux)
 *.sh text eol=lf
 
+# Force CRLF for Windows batch files: cmd's label lookup (goto/call :label) can misread
+# LF-only files, and checkouts without core.autocrlf would otherwise get LF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # Force LF for Unix-specific Python wrapper
 wrapper_unix.py text eol=lf
