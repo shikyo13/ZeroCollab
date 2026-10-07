@@ -1,29 +1,52 @@
 /* Room controls, approvals, tool activity and live bubbles (static/runtime.js).
  * The React workspace restyles the panel through .modern-workspace rules in
  * frontend/src/styles.css; these rules are the plain chat page layout. */
-#runtime-panel { padding: 10px 20px; border-bottom: 1px solid #353b49; background: #171b24; flex-shrink: 0; font-size: 12px; max-height: 40vh; overflow: auto; }
+
+/* Plain-page palette (navy), separate from the purple tokens in style.css. */
+:root {
+    --runtime-surface: #171b24;
+    --runtime-input: #10141c;
+    --runtime-control: #272e3b;
+    --runtime-border: #353b49;
+    --runtime-control-border: #4a5262;
+    --runtime-dialog-border: #61718d;
+    --runtime-text: #e6edfa;
+    --runtime-control-text: #eef2fa;
+    --runtime-summary-text: #b5c4db;
+    --runtime-stop-border: #ef7676;
+    --runtime-stop-text: #ffb6b6;
+    --runtime-resume-border: #75cfa5;
+    --runtime-approval-border: #d4a962;
+    --runtime-approval-surface: #352d21;
+    --runtime-live-border: #607eb5;
+    --runtime-live-text: #9cc2ff;
+    --runtime-backdrop: #0009;
+}
+
+#runtime-panel { padding: 10px 20px; border-bottom: 1px solid var(--runtime-border); background: var(--runtime-surface); flex-shrink: 0; font-size: 12px; max-height: 40vh; overflow: auto; }
 .runtime-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-#runtime-panel :where(button) { border: 1px solid #4a5262; border-radius: 6px; background: #272e3b; color: #eef2fa; padding: 6px 10px; cursor: pointer; }
+#runtime-panel :where(button) { border: 1px solid var(--runtime-control-border); border-radius: var(--radius-md); background: var(--runtime-control); color: var(--runtime-control-text); padding: 6px 10px; cursor: pointer; }
 #runtime-panel :where(button):disabled { opacity: .4; cursor: default; }
 /* Generic panel buttons use :where() so the Stop and Resume colors below, and the
- * workspace overrides in styles.css, apply without !important. */
-#room-stop { border-color: #ef7676; color: #ffb6b6; }
-#room-resume { border-color: #75cfa5; }
+ * workspace overrides in styles.css, apply without raising specificity. */
+#room-stop { border-color: var(--runtime-stop-border); color: var(--runtime-stop-text); }
+#room-resume { border-color: var(--runtime-resume-border); }
 #runtime-panel details { margin: 6px 0; }
-#runtime-panel summary { cursor: pointer; color: #b5c4db; }
-#runtime-panel input { background: #10141c; color: #e6edfa; border: 1px solid #4a5262; border-radius: 4px; padding: 6px; }
-.runtime-approval { border: 1px solid #d4a962; background: #352d21; padding: 12px; margin: 8px 0; border-radius: 7px; }
+#runtime-panel summary { cursor: pointer; color: var(--runtime-summary-text); }
+#runtime-panel input { background: var(--runtime-input); color: var(--runtime-text); border: 1px solid var(--runtime-control-border); border-radius: var(--radius-sm); padding: 6px; }
+.runtime-approval { border: 1px solid var(--runtime-approval-border); background: var(--runtime-approval-surface); padding: 12px; margin: 8px 0; border-radius: 7px; }
 .runtime-approval p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .runtime-approval pre, #room-tools { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .runtime-approval button { margin-right: 8px; }
-.runtime-live .chat-bubble { border: 1px solid #607eb5; max-width: 90%; }
-.runtime-live .bubble-header { color: #9cc2ff; }
+.runtime-live .chat-bubble { border: 1px solid var(--runtime-live-border); max-width: 90%; }
+.runtime-live .bubble-header { color: var(--runtime-live-text); }
 .runtime-live .msg-text { white-space: pre-wrap; }
 #steering-delivery { font-size: 12px; color: var(--text-muted); padding: 4px 0; }
-dialog { background: #171b24; color: #e6edfa; border: 1px solid #61718d; border-radius: 10px; max-width: 90vw; max-height: 80vh; }
-dialog pre { white-space: pre-wrap; overflow: auto; }
-dialog::backdrop { background: #0009; }
+/* The Changes dialog (runtime.js). Scoped by class: workspace dialogs carry their own styles. */
+.runtime-dialog { background: var(--runtime-surface); color: var(--runtime-text); border: 1px solid var(--runtime-dialog-border); border-radius: 10px; max-width: 90vw; max-height: 80vh; }
+.runtime-dialog pre { white-space: pre-wrap; overflow: auto; }
+.runtime-dialog::backdrop { background: var(--runtime-backdrop); }
 @media (max-width: 700px) {
-  #runtime-panel { padding: 8px; }
-  .runtime-controls { gap: 5px; }
+    #runtime-panel { padding: 8px; }
+    .runtime-controls { gap: 5px; }
 }

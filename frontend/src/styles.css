@@ -103,7 +103,7 @@ body.modern-workspace {
 .modern-workspace #runtime-panel details p { margin: 12px 0; color: var(--text-dim); }
 .modern-workspace #room-tools { max-height: 45vh; font: 13px/1.65 Consolas, monospace; padding-top: 16px; }
 .modern-workspace dialog { margin: auto; padding: 24px; }
-.workspace-help { width: min(760px, 92vw); max-height: 88dvh; overflow: auto; background: var(--bg-msg); border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 18px; padding: 28px !important; }
+.workspace-help { width: min(760px, 92vw); max-width: 90vw; max-height: 88dvh; overflow: auto; background: var(--bg-msg); border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 18px; padding: 28px !important; }
 .workspace-help::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
 .workspace-help .workspace-page-heading { margin-bottom: 16px; }
 .workspace-help-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 26px 0; }
@@ -171,7 +171,7 @@ body.modern-workspace {
 .workspace-goalbar > span { flex:1; min-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .workspace-goalbar small { color:var(--text-dim); }
 .workspace-goalbar button { padding:4px 8px; border:1px solid var(--border); border-radius:5px; background:var(--bg-input); color:var(--text); }
-.workspace-work-dialog { width:min(560px,calc(100vw - 32px)); max-height:85dvh; overflow:auto; padding:24px; border:1px solid var(--border); border-radius:10px; background:var(--bg-header); color:var(--text); }
+.workspace-work-dialog { width:min(560px,calc(100vw - 32px)); max-width:90vw; max-height:85dvh; overflow:auto; padding:24px; border:1px solid var(--border); border-radius:10px; background:var(--bg-header); color:var(--text); }
 .workspace-work-dialog form, .workspace-work-dialog label { display:flex; flex-direction:column; gap:8px; margin:12px 0; }
 .workspace-work-dialog input, .workspace-work-dialog textarea, .workspace-work-dialog select { padding:10px; border:1px solid var(--border); border-radius:5px; color:var(--text); background:var(--bg-input); font:inherit; }
 .workspace-work-dialog p { font-size:13px; line-height:1.5; margin:8px 0; }

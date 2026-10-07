@@ -104,7 +104,7 @@
     document.getElementById('room-resume').onclick = () => api('/resume', {}).catch(showError);
     document.getElementById('room-changes').onclick = async () => {
         try {
-            const diffs = await api('/diffs'); const dialog = document.createElement('dialog');
+            const diffs = await api('/diffs'); const dialog = document.createElement('dialog'); dialog.className = 'runtime-dialog';
             const close = document.createElement('button'); close.textContent = 'Close'; close.onclick = () => {dialog.close(); dialog.remove();};
             const pre = document.createElement('pre'); pre.textContent = Object.entries(diffs).map(([n,d]) => n + '\n' + (d || 'No changes')).join('\n\n');
             dialog.append(close, pre); document.body.append(dialog); dialog.showModal();
