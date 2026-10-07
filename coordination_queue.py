@@ -1,6 +1,9 @@
 """Coalesce pending wake-ups; resolve record references immediately before delivery."""
 import asyncio
 
+# Admission budget per channel batch; prevents one busy chat bypassing slot limits.
+MAX_BATCH_REQUESTS = 128
+
 
 def receipt_key(request):
     ref = request.get('ref')
@@ -15,6 +18,14 @@ class WakeQueue(asyncio.Queue):
     """One pending batch per channel. Human instructions remain in arrival order."""
     @staticmethod
     def merge(batch, incoming):
+        staged = {**batch, 'requests': list(batch['requests'])}
+        WakeQueue._merge(staged, incoming)
+        if len(staged['requests']) > MAX_BATCH_REQUESTS:
+            raise asyncio.QueueFull
+        batch.update(staged)
+
+    @staticmethod
+    def _merge(batch, incoming):
         for request in incoming['requests']:
             ref = request.get('ref')
             if ref:
@@ -31,13 +42,18 @@ class WakeQueue(asyncio.Queue):
             if pending['channel'] == item['channel']:
                 self.merge(pending, item)
                 return
+        if len(item['requests']) > MAX_BATCH_REQUESTS:
+            raise asyncio.QueueFull
         super().put_nowait(item)
 
     def merge_waiting(self, batch):
         for pending in list(self._queue):
             if pending['channel'] == batch['channel']:
+                try:
+                    self.merge(batch, pending)
+                except asyncio.QueueFull:
+                    continue  # Preserve the queued batch for the next turn.
                 self._queue.remove(pending)
-                self.merge(batch, pending)
                 self._wakeup_next(self._putters)
 
 
