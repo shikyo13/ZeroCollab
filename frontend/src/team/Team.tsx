@@ -1,11 +1,10 @@
-import { sessionTitle } from '../lib/room';
 /* Team page: named agent profiles (static/profiles.js) and their live runtime
  * controls (static/runtime.js provider cards) in one place. Same endpoints:
  * /api/runtime/profiles[/{id}[/archive]], /api/runtime/agent/{id}/stop|resume,
  * /api/runtime/refresh, plus runtime_state/agents events. */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { errorMessage, runtime } from '../lib/api';
-import { useRoomEvent, useRuntimeState } from '../lib/room';
+import { sessionTitle, useRoomEvent, useRuntimeState } from '../lib/room';
 import type { AgentState, RunInfo } from '../lib/types';
 import { ErrorText, useAction } from '../board/shared';
 import '../board/board.css';

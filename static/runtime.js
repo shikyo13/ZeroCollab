@@ -23,7 +23,6 @@
     const steeringNotice = document.createElement('div');
     steeringNotice.id = 'steering-delivery';
     steeringNotice.setAttribute('role', 'status');
-    steeringNotice.style.cssText = 'font-size:12px;color:var(--text-muted);padding:4px 0';
     document.querySelector('#app footer')?.prepend(steeringNotice);
     const deliveryLabels = {queued: 'Update queued', sending: 'Sending update', sent: 'Update sent; awaiting provider',
         accepted: 'Provider accepted update', queued_for_next_turn: 'Update queued for next turn',
@@ -78,7 +77,7 @@
         const el = document.createElement('div'); el.className = 'message runtime-live'; el.dataset.channel = channel;
         const bubble = document.createElement('div'); bubble.className = 'chat-bubble';
         const header = document.createElement('div'); header.className = 'bubble-header'; header.textContent = name + ' · streaming in ' + (window.chatSessionTitle?.(channel) || channel);
-        const text = document.createElement('div'); text.className = 'msg-text'; text.style.whiteSpace = 'pre-wrap';
+        const text = document.createElement('div'); text.className = 'msg-text';
         bubble.append(header, text); el.append(bubble);
         document.getElementById('messages').append(el); active.set(id, {el, text, channel, message});
         if (window.activeChannel && window.activeChannel !== channel) el.hidden = true;

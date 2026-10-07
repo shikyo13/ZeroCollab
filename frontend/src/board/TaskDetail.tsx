@@ -1,110 +1,22 @@
-import { sessionTitle } from '../lib/room';
 /* Task detail panel: status, ownership, reservations, dependencies, check-ins,
- * reviews and follow-ups. All writes go through POST /api/runtime/tasks. */
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+ * reviews and follow-ups. All writes go through POST /api/runtime/tasks.
+ * The sections live in ./detail; this component owns status and ownership. */
+import { useEffect, useRef, useState } from 'react';
 import { runtime } from '../lib/api';
-import { since } from '../lib/room';
-import { EVIDENCE_KINDS, TASK_STATUSES, type ProjectState, type Task, type TaskStatus } from '../lib/types';
+import { sessionTitle, since } from '../lib/room';
+import { TASK_STATUSES, type ProjectState, type Task, type TaskStatus } from '../lib/types';
 import { TaskAttachments } from './Attachments';
-import { FollowupForm, FollowupItem, RequestReviewForm, ReviewItem, isOpenFollowup, isOpenReview } from './Coordination';
-import {
-  AgentChip,
-  ErrorText,
-  Field,
-  LabelChips,
-  LabelField,
-  ParticipantOptions,
-  STATUS_LABELS,
-  StatusPill,
-  displayName,
-  splitLabels,
-  splitPaths,
-  useAction,
-  type Agents,
-} from './shared';
+import { isOpenReview } from './Coordination';
+import { EditTask } from './detail/EditTask';
+import { ExecutionFacts } from './detail/ExecutionFacts';
+import { TaskOverview } from './detail/TaskOverview';
+import { TaskProgress } from './detail/TaskProgress';
+import { TaskEvidence, TaskFollowups, TaskReviews } from './detail/TaskRecords';
+import { useResizablePanel } from './detail/useResizablePanel';
+import { ErrorText, Field, ParticipantOptions, STATUS_LABELS, StatusPill, displayName, useAction, type Agents } from './shared';
 import { executionLine, isStale, waitInfo } from './TaskCard';
 
-function DependencyPicker({
-  task,
-  tasks,
-  value,
-  onChange,
-}: {
-  task: Task;
-  tasks: Task[];
-  value: string[];
-  onChange: (next: string[]) => void;
-}) {
-  const candidates = tasks.filter(t => t.id !== task.id);
-  if (!candidates.length) return <p className="bd-muted">No other tasks to depend on.</p>;
-  return (
-    <fieldset className="bd-dep-picker">
-      <legend>Depends on</legend>
-      {candidates.map(t => (
-        <label key={t.id} className="bd-check">
-          <input
-            type="checkbox"
-            checked={value.includes(t.id)}
-            onChange={e => onChange(e.target.checked ? [...value, t.id] : value.filter(id => id !== t.id))}
-          />
-          <span>
-            {t.title} <code className="bd-id">{t.id}</code> <StatusPill status={t.status} />
-          </span>
-        </label>
-      ))}
-    </fieldset>
-  );
-}
-
-function EditTask({ task, tasks, onDone }: { task: Task; tasks: Task[]; onDone: () => void }) {
-  const { run, busy, error } = useAction();
-  const [title, setTitle] = useState(task.title);
-  const [details, setDetails] = useState(task.details);
-  const [paths, setPaths] = useState(task.paths.join('\n'));
-  const [deps, setDeps] = useState<string[]>(task.depends_on ?? []);
-  const [labels, setLabels] = useState((task.labels ?? []).join(', '));
-  const knownLabels = [...new Set(tasks.flatMap(t => t.labels ?? []))].sort();
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    const ok = await run(() =>
-      runtime('/tasks', {
-        action: 'update',
-        task_id: task.id,
-        title: title.trim(),
-        details: details.trim(),
-        paths: splitPaths(paths),
-        depends_on: deps,
-        // Only sent when edited, so saving other fields never depends on label support.
-        ...(splitLabels(labels).join() !== (task.labels ?? []).join() ? { labels: splitLabels(labels) } : {}),
-      }),
-    );
-    if (ok) onDone();
-  };
-  return (
-    <form className="bd-form" onSubmit={submit}>
-      <Field label="Title">
-        <input value={title} onChange={e => setTitle(e.target.value)} maxLength={120} required />
-      </Field>
-      <Field label="Details and done criteria">
-        <textarea value={details} onChange={e => setDetails(e.target.value)} rows={4} maxLength={3000} />
-      </Field>
-      <LabelField value={labels} onChange={setLabels} known={knownLabels} />
-      <Field label="Reserved paths" hint="One per line or comma-separated. Overlapping reservations with other owned tasks are refused.">
-        <textarea value={paths} onChange={e => setPaths(e.target.value)} rows={3} className="bd-mono" />
-      </Field>
-      <DependencyPicker task={task} tasks={tasks} value={deps} onChange={setDeps} />
-      <div className="bd-actions">
-        <button type="submit" className="bd-btn bd-btn-primary" disabled={busy || !title.trim()}>
-          Save changes
-        </button>
-        <button type="button" className="bd-btn" onClick={onDone}>
-          Cancel
-        </button>
-      </div>
-      <ErrorText message={error} />
-    </form>
-  );
-}
+const newestFirst = <T extends { updated: number }>(a: T, b: T) => b.updated - a.updated;
 
 export function TaskDetail({
   task,
@@ -126,24 +38,15 @@ export function TaskDetail({
   const { run, busy, error } = useAction();
   const [editing, setEditing] = useState(false);
   const [owner, setOwner] = useState(task.owner);
-  const [note, setNote] = useState('');
   const [pendingDone, setPendingDone] = useState(false);
   const [started, setStarted] = useState('');
   const headingRef = useRef<HTMLHeadingElement>(null);
   const panelRef = useRef<HTMLElement>(null);
-  const drag = useRef<{ x: number; width: number } | null>(null);
-  const [panelWidth, setPanelWidth] = useState(460);
-  const resizePanel = (width: number) => setPanelWidth(Math.max(320, Math.min(width, Math.min(900, window.innerWidth - 32))));
-  useEffect(() => {
-    const parent = panelRef.current?.closest<HTMLElement>('.bd-tasks');
-    parent?.style.setProperty('--detail-width', `${panelWidth}px`);
-    return () => { parent?.style.removeProperty('--detail-width'); };
-  }, [panelWidth]);
+  const resizeHandle = useResizablePanel(panelRef);
 
   // Reset per-task drafts when switching tasks; keep them across live updates of the same task.
   useEffect(() => {
     setEditing(false);
-    setNote('');
     setPendingDone(false);
     setStarted('');
     headingRef.current?.focus();
@@ -151,11 +54,9 @@ export function TaskDetail({
   useEffect(() => setOwner(task.owner), [task.owner]);
 
   const byId = new Map(project.tasks.map(t => [t.id, t]));
-  const deps = (task.depends_on ?? []).map(id => byId.get(id)).filter((t): t is Task => !!t);
-  const unfinished = deps.filter(t => t.status !== 'done');
-  const dependents = project.tasks.filter(t => t.depends_on?.includes(task.id));
-  const reviews = (project.reviews ?? []).filter(r => r.task_id === task.id).sort((a, b) => b.updated - a.updated);
-  const followups = (project.followups ?? []).filter(f => f.task_id === task.id).sort((a, b) => b.updated - a.updated);
+  const unfinished = (task.depends_on ?? []).map(id => byId.get(id)).filter((t): t is Task => !!t && t.status !== 'done');
+  const reviews = (project.reviews ?? []).filter(r => r.task_id === task.id).sort(newestFirst);
+  const followups = (project.followups ?? []).filter(f => f.task_id === task.id).sort(newestFirst);
   const openReviews = reviews.filter(isOpenReview);
   const stale = isStale(task, now, project.stale_seconds);
   const execution = executionLine(task, waitInfo(task, project));
@@ -172,21 +73,12 @@ export function TaskDetail({
     void change({ action: 'update', status });
   };
 
-  const submitNote = async (e: FormEvent) => {
-    e.preventDefault();
-    if (note.trim() && (await change({ action: 'update', update: note.trim() }))) setNote('');
-  };
-
   const assigned = owner !== task.owner;
 
   return (
     <aside ref={panelRef} className="bd-detail" aria-labelledby="bd-detail-title">
-      <div className="bd-detail-resize" role="separator" aria-orientation="vertical" aria-label="Resize task details" aria-valuenow={panelWidth} tabIndex={0}
-        onPointerDown={e => { drag.current = { x: e.clientX, width: panelWidth }; e.currentTarget.setPointerCapture(e.pointerId); }}
-        onPointerMove={e => { if (drag.current) resizePanel(drag.current.width + drag.current.x - e.clientX); }}
-        onPointerUp={e => { drag.current = null; e.currentTarget.releasePointerCapture(e.pointerId); }}
-        onPointerCancel={() => { drag.current = null; }}
-        onKeyDown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); resizePanel(panelWidth + (e.key === 'ArrowLeft' ? 40 : -40)); } }} title="Drag to resize; use left/right arrows when focused">↔ Resize</div>
+      <div className="bd-detail-resize" role="separator" aria-orientation="vertical" aria-label="Resize task details" {...resizeHandle} tabIndex={0}
+        title="Drag to resize; use left/right arrows when focused">↔ Resize</div>
       <header className="bd-detail-head">
         <div>
           <h2 id="bd-detail-title" tabIndex={-1} ref={headingRef}>
@@ -208,46 +100,7 @@ export function TaskDetail({
         </p>
       )}
 
-      {task.status !== 'done' && (execution || task.next_action || task.priority || task.transfer) && (
-        <section className="bd-detail-section" aria-label="Execution">
-          <dl className="bd-facts">
-            {execution && (
-              <>
-                <dt>Now</dt>
-                <dd className={`bd-exec bd-exec-${execution.tone}`}>
-                  <span className="bd-exec-dot" aria-hidden="true" />
-                  {execution.text}
-                </dd>
-              </>
-            )}
-            {task.next_action && (
-              <>
-                <dt>{task.execution_state === 'waiting_on_human' ? 'Then' : 'Next action'}</dt>
-                <dd>{task.next_action}</dd>
-              </>
-            )}
-            {task.priority && (
-              <>
-                <dt>Priority</dt>
-                <dd>{task.priority}{task.priority === 1 ? ' (highest)' : ''}</dd>
-              </>
-            )}
-            {task.transfer && (
-              <>
-                <dt>Ownership</dt>
-                <dd>
-                  {displayName(task.transfer.from, agents)} proposed handing it to {displayName(task.transfer.to, agents)}{' '}
-                  {since(task.transfer.requested_at, now)}. {displayName(task.owner, agents) || 'Nobody'} owns it until{' '}
-                  {displayName(task.transfer.to, agents)} accepts.{' '}
-                  <button type="button" className="bd-btn" disabled={busy} onClick={() => void change({ action: 'accept' })}>
-                    Accept for {displayName(task.transfer.to, agents)}
-                  </button>
-                </dd>
-              </>
-            )}
-          </dl>
-        </section>
-      )}
+      <ExecutionFacts task={task} execution={execution} agents={agents} now={now} busy={busy} onAccept={() => void change({ action: 'accept' })} />
 
       <section className="bd-detail-section" aria-label="Status and owner">
         <div className="bd-form-row">
@@ -335,52 +188,7 @@ export function TaskDetail({
           <EditTask task={task} tasks={project.tasks} onDone={() => setEditing(false)} />
         </section>
       ) : (
-        <section className="bd-detail-section">
-          {task.details ? <p className="bd-prose">{task.details}</p> : <p className="bd-muted">No details yet.</p>}
-          {task.labels?.length ? (
-            <>
-              <h3>Areas</h3>
-              <LabelChips labels={task.labels} />
-            </>
-          ) : null}
-          <h3>Reserved paths</h3>
-          {task.paths.length ? (
-            <ul className="bd-paths bd-paths-full">
-              {task.paths.map(p => (
-                <li key={p}>
-                  <code>{p}</code>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="bd-muted">None - discussion or research. Agents must reserve paths before editing.</p>
-          )}
-          {(deps.length > 0 || dependents.length > 0) && (
-            <>
-              <h3>Dependencies</h3>
-              <ul className="bd-dep-list">
-                {deps.map(t => (
-                  <li key={t.id}>
-                    <span className="bd-muted">Needs</span>{' '}
-                    <button type="button" className="bd-link" onClick={() => onOpenTask(t.id)}>
-                      {t.title}
-                    </button>{' '}
-                    <StatusPill status={t.status} />
-                  </li>
-                ))}
-                {dependents.map(t => (
-                  <li key={t.id}>
-                    <span className="bd-muted">Unblocks</span>{' '}
-                    <button type="button" className="bd-link" onClick={() => onOpenTask(t.id)}>
-                      {t.title}
-                    </button>{' '}
-                    <StatusPill status={t.status} />
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </section>
+        <TaskOverview task={task} tasks={project.tasks} onOpenTask={onOpenTask} />
       )}
 
       <section className="bd-detail-section" aria-labelledby="bd-images-heading">
@@ -388,81 +196,10 @@ export function TaskDetail({
         <TaskAttachments key={task.id} task={task} channel={channel} />
       </section>
 
-      <section className="bd-detail-section" aria-labelledby="bd-checkin-heading">
-        <h3 id="bd-checkin-heading">Progress</h3>
-        <form className="bd-form" onSubmit={submitNote}>
-          <Field label="Post a check-in" hint="Progress, blocker or review note. Visible to the team and the owner.">
-            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={1600} />
-          </Field>
-          <div className="bd-actions">
-            <button type="submit" className="bd-btn" disabled={busy || !note.trim()}>
-              Post check-in
-            </button>
-          </div>
-        </form>
-        {task.updates.length > 0 ? (
-          <ol className="bd-history">
-            {[...task.updates].reverse().map((u, i) => (
-              <li key={`${u.time}-${i}`} className={u.auto ? 'bd-history-event' : undefined}>
-                <div className="bd-history-head">
-                  <AgentChip name={u.by} agents={agents} />
-                  {u.event && !u.auto && <span className="bd-feed-tag">{u.event}</span>}
-                  <span className="bd-muted" title={new Date(u.time * 1000).toLocaleString()}>
-                    {since(u.time, now)}
-                  </span>
-                </div>
-                <p>{u.auto ? u.event ?? u.text : u.text}</p>
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p className="bd-muted">No history yet.</p>
-        )}
-      </section>
-
-      {(Object.keys(task.evidence ?? {}).length > 0 || task.status === 'review' || task.status === 'done') && (
-        <section className="bd-detail-section" aria-labelledby="bd-task-evidence">
-          <h3 id="bd-task-evidence">Evidence</h3>
-          <dl className="bd-facts">
-            {EVIDENCE_KINDS.map(([kind, label]) => (
-              <div key={kind} className="bd-facts-row">
-                <dt>{label}</dt>
-                <dd className={task.evidence?.[kind] ? '' : 'bd-muted'}>{task.evidence?.[kind] || 'Not recorded'}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-      )}
-
-      <section className="bd-detail-section" aria-labelledby="bd-task-reviews">
-        <h3 id="bd-task-reviews">Reviews ({openReviews.length} open)</h3>
-        {reviews.length > 0 && (
-          <ul className="bd-records">
-            {reviews.map(r => (
-              <ReviewItem key={r.id} review={r} agents={agents} channel={channel} />
-            ))}
-          </ul>
-        )}
-        <details className="bd-disclosure">
-          <summary>Request a review</summary>
-          <RequestReviewForm task={task} agents={agents} channel={channel} />
-        </details>
-      </section>
-
-      <section className="bd-detail-section" aria-labelledby="bd-task-followups">
-        <h3 id="bd-task-followups">Follow-ups ({followups.filter(isOpenFollowup).length} open)</h3>
-        {followups.length > 0 && (
-          <ul className="bd-records">
-            {followups.map(f => (
-              <FollowupItem key={f.id} followup={f} agents={agents} channel={channel} />
-            ))}
-          </ul>
-        )}
-        <details className="bd-disclosure">
-          <summary>Add a follow-up</summary>
-          <FollowupForm agents={agents} channel={channel} taskId={task.id} />
-        </details>
-      </section>
+      <TaskProgress task={task} agents={agents} now={now} busy={busy} onPost={text => change({ action: 'update', update: text })} />
+      <TaskEvidence task={task} />
+      <TaskReviews task={task} reviews={reviews} agents={agents} channel={channel} />
+      <TaskFollowups task={task} followups={followups} agents={agents} channel={channel} />
     </aside>
   );
 }

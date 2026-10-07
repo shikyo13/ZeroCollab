@@ -1,9 +1,10 @@
-import { sessionTitle } from '../lib/room';
 import { useState, type FormEvent } from 'react';
 import { runtime } from '../lib/api';
 import type { Task, TaskAttachment } from '../lib/types';
 import { ImageDropZone, MAX_ATTACHMENTS, uploadAll } from './Attachments';
 import { ErrorText, Field, LabelField, ParticipantOptions, StatusPill, splitLabels, splitPaths, useAction, type Agents } from './shared';
+import { sessionTitle } from '../lib/room';
+import { LIMITS } from '../lib/constants';
 
 export function NewTaskForm({
   agents,
@@ -54,7 +55,7 @@ export function NewTaskForm({
   return (
     <form className="bd-form bd-new-task" onSubmit={submit}>
       <Field label="Task">
-        <input value={title} onChange={e => setTitle(e.target.value)} maxLength={120} required autoFocus placeholder="Concrete outcome, e.g. Add retry to upload" />
+        <input value={title} onChange={e => setTitle(e.target.value)} maxLength={LIMITS.taskTitle} required autoFocus placeholder="Concrete outcome, e.g. Add retry to upload" />
       </Field>
       <div className="bd-form-row">
         <Field label="Owner">
@@ -67,7 +68,7 @@ export function NewTaskForm({
         </Field>
       </div>
       <Field label="Details and done criteria">
-        <textarea value={details} onChange={e => setDetails(e.target.value)} rows={3} maxLength={3000} />
+        <textarea value={details} onChange={e => setDetails(e.target.value)} rows={3} maxLength={LIMITS.taskDetails} />
       </Field>
       <LabelField value={labels} onChange={setLabels} known={knownLabels} />
       <div className="bd-field">

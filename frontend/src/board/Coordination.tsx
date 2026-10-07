@@ -6,6 +6,7 @@ import { runtime } from '../lib/api';
 import { since } from '../lib/room';
 import type { Followup, ProjectState, Review, Task } from '../lib/types';
 import { AgentChip, ErrorText, Field, ParticipantOptions, ReviewPill, displayName, useAction, type Agents } from './shared';
+import { LIMITS, USER } from '../lib/constants';
 
 const OPEN_REVIEW = new Set(['pending', 'changes_requested']);
 
@@ -47,7 +48,7 @@ function InlineReason({
       }}
     >
       <Field label={label}>
-        <input value={text} onChange={e => setText(e.target.value)} placeholder={placeholder} maxLength={2400} required autoFocus />
+        <input value={text} onChange={e => setText(e.target.value)} placeholder={placeholder} maxLength={LIMITS.request} required autoFocus />
       </Field>
       <div className="bd-actions">
         <button type="submit" className="bd-btn bd-btn-primary" disabled={busy || !text.trim()}>
@@ -104,7 +105,7 @@ export function ReviewItem({
     run(() => runtime('/reviews', { ...body, review_id: review.id, channel: review.channel || channel })).then(ok => {
       if (ok) setMode('');
     });
-  const canRespond = review.reviewer === 'user' && review.status === 'pending';
+  const canRespond = review.reviewer === USER && review.status === 'pending';
   return (
     <li className="bd-record">
       <div className="bd-record-head">
@@ -164,7 +165,7 @@ export function ReviewItem({
             </label>
           </fieldset>
           <Field label="Findings and evidence">
-            <textarea value={findings} onChange={e => setFindings(e.target.value)} rows={3} maxLength={3000} required />
+            <textarea value={findings} onChange={e => setFindings(e.target.value)} rows={3} maxLength={LIMITS.reviewFindings} required />
           </Field>
           <div className="bd-actions">
             <button type="submit" className="bd-btn bd-btn-primary" disabled={busy || !findings.trim()}>
@@ -292,11 +293,11 @@ export function RequestReviewForm({ task, agents, channel }: { task: Task; agent
           </select>
         </Field>
         <Field label="Revision" hint="Commit, patch digest or message ID">
-          <input value={revision} onChange={e => setRevision(e.target.value)} maxLength={240} required />
+          <input value={revision} onChange={e => setRevision(e.target.value)} maxLength={LIMITS.reviewRevision} required />
         </Field>
       </div>
       <Field label="What should they check?">
-        <textarea value={text} onChange={e => setText(e.target.value)} rows={2} maxLength={2400} required />
+        <textarea value={text} onChange={e => setText(e.target.value)} rows={2} maxLength={LIMITS.request} required />
       </Field>
       <WakeToggle checked={notify} onChange={setNotify} />
       <div className="bd-actions">
@@ -356,7 +357,7 @@ export function FollowupForm({
         )}
       </div>
       <Field label="Next action or question">
-        <textarea value={text} onChange={e => setText(e.target.value)} rows={2} maxLength={2400} required />
+        <textarea value={text} onChange={e => setText(e.target.value)} rows={2} maxLength={LIMITS.request} required />
       </Field>
       <WakeToggle checked={notify} onChange={setNotify} />
       <div className="bd-actions">
@@ -385,8 +386,8 @@ export function CoordinationView({
   const tasks = new Map(project.tasks.map(t => [t.id, t]));
   const reviews = [...(project.reviews ?? [])].sort((a, b) => b.updated - a.updated);
   const followups = [...(project.followups ?? [])].sort((a, b) => b.updated - a.updated);
-  const mineReviews = reviews.filter(r => r.reviewer === 'user' && r.status === 'pending');
-  const mineFollowups = followups.filter(f => f.assigned_to === 'user' && f.status === 'open');
+  const mineReviews = reviews.filter(r => r.reviewer === USER && r.status === 'pending');
+  const mineFollowups = followups.filter(f => f.assigned_to === USER && f.status === 'open');
   const shownReviews = reviews.filter(r => (showClosed ? true : isOpenReview(r)) && !mineReviews.includes(r));
   const shownFollowups = followups.filter(f => (showClosed ? true : isOpenFollowup(f)) && !mineFollowups.includes(f));
   const [adding, setAdding] = useState(false);

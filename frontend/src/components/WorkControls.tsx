@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { runtime } from '../lib/api';
 import { useRuntimeState, useActiveChannel } from '../lib/room';
+import { EVENTS, LIMITS } from '../lib/constants';
 
 type Goal = { id: string; text: string; owner: string; status: string; evidence: string; rounds: number; max_rounds: number };
 export function WorkControls({ navigate }: { navigate: (view: 'board' | 'team') => void }) {
@@ -28,10 +29,10 @@ export function WorkControls({ navigate }: { navigate: (view: 'board' | 'team') 
         }).then(() => refresh()).catch(e => setError(e instanceof Error ? e.message : String(e))).finally(() => setBusy(false));
       }
     };
-    const openTask = (e: Event) => { const d = (e as CustomEvent<{ text: string; id: string }>).detail; setText(`From chat #${d.id}:\n${d.text}`.slice(0, 3000)); setTitle(d.text.split('\n')[0].slice(0, 120)); setError(''); setDialog('task'); };
-    window.addEventListener('workspace-goal', openGoal);
-    window.addEventListener('workspace-create-task', openTask);
-    return () => { window.removeEventListener('workspace-goal', openGoal); window.removeEventListener('workspace-create-task', openTask); };
+    const openTask = (e: Event) => { const d = (e as CustomEvent<{ text: string; id: string }>).detail; setText(`From chat #${d.id}:\n${d.text}`.slice(0, LIMITS.taskDetails)); setTitle(d.text.split('\n')[0].slice(0, LIMITS.taskTitle)); setError(''); setDialog('task'); };
+    window.addEventListener(EVENTS.goal, openGoal);
+    window.addEventListener(EVENTS.createTask, openTask);
+    return () => { window.removeEventListener(EVENTS.goal, openGoal); window.removeEventListener(EVENTS.createTask, openTask); };
   }, []);
   async function change(action: string) {
     if (busy) return;
@@ -63,8 +64,8 @@ export function WorkControls({ navigate }: { navigate: (view: 'board' | 'team') 
             await refresh(); setDialog(''); if (dialog === 'task') navigate('board');
           } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
         }}>
-          {dialog === 'task' && <label>Title<input value={title} onChange={e => setTitle(e.target.value)} maxLength={120} required /></label>}
-          <label>{dialog === 'goal' ? 'Outcome and done criteria' : 'Details'}<textarea autoFocus required value={text} onChange={e => setText(e.target.value)} rows={5} maxLength={dialog === 'goal' ? 2000 : 3000} /></label>
+          {dialog === 'task' && <label>Title<input value={title} onChange={e => setTitle(e.target.value)} maxLength={LIMITS.taskTitle} required /></label>}
+          <label>{dialog === 'goal' ? 'Outcome and done criteria' : 'Details'}<textarea autoFocus required value={text} onChange={e => setText(e.target.value)} rows={5} maxLength={dialog === 'goal' ? LIMITS.goal : LIMITS.taskDetails} /></label>
           <label>{dialog === 'goal' ? 'Goal lead' : 'Owner'}<select value={owner} onChange={e => setOwner(e.target.value)} required={dialog === 'goal'}><option value="">{dialog === 'goal' ? 'Choose an agent' : 'Unassigned'}</option>{agents.map(([id, a]) => <option value={id} key={id}>{a.label || id}</option>)}</select></label>
           {dialog === 'goal' && <><label>Maximum continuation rounds<input type="number" min={1} max={100} value={rounds} onChange={e => setRounds(Number(e.target.value))} /></label><p>Existing conversation limits also apply. Stops, failures and restarts pause the goal. The lead records completion evidence.</p></>}
           <button className="workspace-primary" disabled={busy}>{busy ? 'Saving…' : dialog === 'goal' ? 'Start goal' : 'Create task'}</button>

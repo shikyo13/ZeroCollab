@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { runtime } from '../lib/api';
 import type { AgentState } from '../lib/types';
 import { ErrorText, Field, useAction } from '../board/shared';
+import { HANDLE_PATTERN, LIMITS, RESERVED_HANDLES } from '../lib/constants';
 
 export interface Profile {
   id: string;
@@ -45,11 +46,10 @@ export interface ProfilesData {
 }
 
 const SWATCHES = ['#8b5cf6', '#3b82f6', '#14b8a6', '#22c55e', '#f59e0b', '#f97316', '#ec4899'];
-const RESERVED = ['all', 'both', 'user', 'system', 'everyone'];
 
 function availableHandle(name: string, profiles: Profile[]): string {
   let stem = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'expert';
-  if (!/^[a-z]/.test(stem) || RESERVED.includes(stem)) stem = 'agent-' + stem;
+  if (!/^[a-z]/.test(stem) || RESERVED_HANDLES.includes(stem)) stem = 'agent-' + stem;
   let handle = stem;
   for (let i = 2; profiles.some(p => p.id === handle); i++) handle = `${stem}-${i}`;
   return handle;
@@ -192,7 +192,7 @@ export function ProfileEditor({
           <input
             value={draft.name}
             required
-            maxLength={60}
+            maxLength={LIMITS.name}
             autoComplete="off"
             placeholder="e.g. Maya - UX researcher"
             onChange={e => {
@@ -208,8 +208,8 @@ export function ProfileEditor({
               value={draft.id}
               required
               readOnly={editing}
-              pattern="[a-z][a-z0-9-]{0,39}"
-              maxLength={40}
+              pattern={HANDLE_PATTERN}
+              maxLength={LIMITS.handle}
               autoComplete="off"
               placeholder="maya-ux"
               onChange={e => {
@@ -292,7 +292,7 @@ export function ProfileEditor({
         <textarea
           value={draft.background}
           rows={9}
-          maxLength={16000}
+          maxLength={LIMITS.profileText}
           onChange={e => update({ background: e.target.value })}
           placeholder="Describe this agent's expertise, perspective and approach. For example: You are a senior UX researcher. Focus on user goals, accessibility and the evidence behind design decisions. Challenge assumptions constructively."
         />

@@ -8,8 +8,8 @@
 
     <meta name="author" content="ZeroTheAbsolute">
     <meta name="theme-color" content="#0c0e10">
-    <link rel="stylesheet" href="/static/style.css?v=zerocollab-repo-1">
-    <link rel="stylesheet" href="/static/runtime.css?v=1">
+    <link rel="stylesheet" href="/static/style.css?v=zerocollab-fixes-5">
+    <link rel="stylesheet" href="/static/runtime.css?v=zerocollab-fixes-3">
     <link rel="icon" type="image/svg+xml" href="/static/brand/zerocollab-mark.svg">
 </head>
 <body>
@@ -82,7 +82,7 @@
                 <div class="settings-history-btns">
                     <button class="settings-btn" onclick="exportHistory()">Export History</button>
                     <button class="settings-btn" id="import-history-btn" onclick="document.getElementById('import-file').click()">Import History</button>
-                    <input type="file" id="import-file" accept=".zip" style="display:none" onchange="importHistory(this)">
+                    <input type="file" id="import-file" accept=".zip" hidden onchange="importHistory(this)">
                 </div>
             </div>
         </div>
@@ -159,19 +159,30 @@
     <script src="/static/core.js?v=zerocollab-repo-1"></script>
     <script src="/static/store.js?v=zerocollab-repo-1"></script>
     <script src="/static/prefs.js?v=zerocollab-fixes-2"></script>
-    <script src="/static/channels.js?v=zerocollab-fixes-2"></script>
-    <script src="/static/chat.js?v=zerocollab-fixes-2"></script>
-    <script src="/static/runtime.js?v=zerocollab-fixes-1"></script>
+    <script src="/static/channels.js?v=zerocollab-fixes-4"></script>
+    <script src="/static/chat.js?v=zerocollab-fixes-5"></script>
+    <!-- chat/* share chat.js globals; they only run from DOMContentLoaded or user events. -->
+    <script src="/static/chat/avatars.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/sounds.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/format.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/dates.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/transfer.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/menus.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/reply.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/delete.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/voice.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/modal.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/runtime.js?v=zerocollab-fixes-3"></script>
     <script>
         (function () {
             var style = document.createElement('link');
-            style.rel = 'stylesheet'; style.href = '/static/modern/workspace.css?v=zerocollab-fixes-2';
+            style.rel = 'stylesheet'; style.href = '/static/modern/workspace.css?v=zerocollab-fixes-3';
             document.head.append(style);
-            import('/static/modern/workspace.js?v=zerocollab-fixes-2').catch(function (error) {
+            import('/static/modern/workspace.js?v=zerocollab-fixes-3').catch(function (error) {
                 console.error(error);
                 var notice = document.createElement('p');
                 notice.setAttribute('role', 'alert');
-                notice.style.cssText = 'margin:0;padding:12px 20px;background:#452531;color:#ffc1c9;font:14px system-ui,sans-serif';
+                notice.className = 'workspace-load-error';
                 notice.textContent = 'The workspace failed to load. Reload the page; if this persists, rebuild the frontend (npm run build in frontend/).';
                 document.body.prepend(notice);
             });

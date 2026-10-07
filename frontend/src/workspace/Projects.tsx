@@ -11,6 +11,7 @@ import './projects.css';
 import { NewProject } from './NewProject';
 import { Repository } from './Repository';
 import { openChannel, PROJECT_REFRESH_MS, projectLabel, roomIsBusy, switchProject, teamSignature, type ProjectDetail, type ProjectMember, type ProjectSummary } from './projectData';
+import { EVENTS, LIMITS } from '../lib/constants';
 
 export type ProjectNav = (view: 'chat' | 'board' | 'team') => void;
 
@@ -66,7 +67,7 @@ function Rename({ project, onDone }: { project: ProjectSummary; onDone: () => vo
     e.preventDefault();
     if (await run(() => runtime(`/projects/${project.id}`, { name }))) { setEditing(false); onDone(); }
   }}>
-    <input value={name} onChange={e => setName(e.target.value)} maxLength={60} aria-label="Project name" autoFocus placeholder="Leave empty to use the folder name" />
+    <input value={name} onChange={e => setName(e.target.value)} maxLength={LIMITS.name} aria-label="Project name" autoFocus placeholder="Leave empty to use the folder name" />
     <button className="bd-btn" disabled={busy}>Save</button>
     <button type="button" className="bd-btn bd-btn-quiet" onClick={() => setEditing(false)}>Cancel</button>
     <ErrorText message={error} />
@@ -191,7 +192,7 @@ export default function Projects({ projects, error, refresh, focus, setFocus, na
 }) {
   const now = useNow();
   const [creating, setCreating] = useState(false);
-  useEffect(() => { const open = () => setCreating(true); window.addEventListener("workspace-new-project", open); return () => window.removeEventListener("workspace-new-project", open); }, []);
+  useEffect(() => { const open = () => setCreating(true); window.addEventListener(EVENTS.newProject, open); return () => window.removeEventListener(EVENTS.newProject, open); }, []);
   const selected = projects.find(p => p.id === focus) ?? projects.find(p => p.active) ?? projects[0];
   return <div className="bd-root pj-root">
     <header className="workspace-page-heading">

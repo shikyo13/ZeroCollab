@@ -68,9 +68,9 @@ export function useDeploymentState(panelOpen: boolean) {
   useRoomEvent('settings', () => void refresh());
   return { data, error, reload, refresh };
 }
-type Feed = ReturnType<typeof useDeploymentState>;
+export type DeploymentFeed = ReturnType<typeof useDeploymentState>;
 
-export function DeploymentNotice({ feed, onOpen }: { feed: Feed; onOpen: () => void }) {
+export function DeploymentNotice({ feed, onOpen }: { feed: DeploymentFeed; onOpen: () => void }) {
   const gate = feed.data?.maintenance;
   if (!feed.reload && gate?.admission !== 'closed' && gate?.writes !== 'blocked') return null;
   return <div className="deploy-notice" role="status">
@@ -79,7 +79,7 @@ export function DeploymentNotice({ feed, onOpen }: { feed: Feed; onOpen: () => v
   </div>;
 }
 
-export function Deployments({ feed }: { feed: Feed }) {
+export function Deployments({ feed }: { feed: DeploymentFeed }) {
   const { data, error, refresh } = feed;
   const [selected, setSelected] = useState('');
   const [busy, setBusy] = useState(false);

@@ -38,6 +38,8 @@
     --danger-soft: rgba(239, 68, 68, 0.1);
     --error-color: #f87171;
     --error-soft: rgba(248, 113, 113, 0.15);
+    --danger-surface: #452531;
+    --danger-text: #ffc1c9;
 
     --warning: #fbbf24;
     --pending: #da7756;
@@ -318,7 +320,6 @@ header h1 {
 
 /* --- Shared close / dismiss button --- */
 
-/* Inline dismiss buttons (reply cancel, todo remove) */
 .dismiss-btn {
     background: none;
     border: none;
@@ -455,7 +456,16 @@ header h1 {
 }
 .toast--visible { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast--success { border-color: #10a37f; }
-.toast--error { border-color: #ef4444; }
+.toast--error { border-color: var(--danger); }
+
+/* Shown by index.html when the React workspace bundle fails to load. */
+.workspace-load-error {
+    margin: 0;
+    padding: 12px 20px;
+    background: var(--danger-surface);
+    color: var(--danger-text);
+    font: 14px system-ui, sans-serif;
+}
 
 #sound-settings {
     display: flex;
@@ -495,28 +505,7 @@ header h1 {
     outline: none;
 }
 
-.settings-spacer {
-    flex: 1;
-}
-
-.settings-danger {
-    background: transparent;
-    color: var(--error-color);
-    border: 1px solid var(--error-color);
-    border-radius: var(--radius-sm);
-    padding: 4px 14px;
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-
-.settings-danger:hover {
-    background: var(--error-soft);
-}
-
-/* --- Content area (timeline + rules sidebar) --- */
+/* --- Content area --- */
 
 #content-area {
     display: flex;
@@ -568,6 +557,11 @@ main#timeline {
     display: flex;
     flex-direction: column;
     gap: 6px;
+}
+
+/* Messages and date dividers of chats other than the active one (channels.js filterMessagesByChannel). */
+#messages > .off-channel {
+    display: none;
 }
 
 .message {
@@ -665,20 +659,6 @@ main#timeline {
 .bubble-copy:hover { opacity: 1 !important; color: var(--text); background: var(--white-08); }
 .bubble-copy.copied { opacity: 1 !important; color: var(--online); }
 
-/* --- Message actions (reply + pin) --- */
-
-.msg-actions {
-    display: flex;
-    flex-direction: column;
-    align-self: center;
-    opacity: 0;
-    flex-shrink: 0;
-}
-
-.message:hover .msg-actions {
-    opacity: 1;
-}
-
 /* --- Delete button (hover action) --- */
 
 .delete-btn {
@@ -706,16 +686,8 @@ main#timeline {
     transition: transform 0.2s ease;
 }
 
-#messages.delete-mode .message:not(.join-msg):not(.system-msg):not(.summary-msg) > :not(.delete-radio),
-#messages.delete-mode .message.session-banner > :not(.delete-radio),
-#messages.delete-mode .message.session-draft-card > :not(.delete-radio),
-#messages.delete-mode .message.job-breadcrumb > :not(.delete-radio),
-#messages.delete-mode .job-group > :not(.delete-radio) {
+#messages.delete-mode .message:not(.join-msg):not(.system-msg):not(.summary-msg) > :not(.delete-radio) {
     transform: translateX(30px);
-}
-
-#messages.delete-mode .msg-actions .delete-btn {
-    display: none;
 }
 
 @keyframes radio-in {
@@ -746,6 +718,11 @@ main#timeline {
     border-color: var(--error-color);
     background: var(--error-color);
     box-shadow: inset 0 0 0 3px var(--bg);
+}
+
+.delete-radio.leaving {
+    opacity: 0;
+    transition: opacity 0.2s;
 }
 
 /* --- Delete confirmation bar --- */
@@ -877,6 +854,11 @@ main#timeline {
     font-size: 11px;
     text-transform: uppercase;
     flex-shrink: 0;
+}
+
+.reply-preview-sender {
+    color: var(--sender-color);
+    font-weight: 600;
 }
 
 .reply-cancel { margin-left: auto; }
@@ -1044,29 +1026,6 @@ main#timeline {
     margin-left: 4px;
 }
 
-.channel-tab.confirm-delete .channel-tab-label {
-    color: var(--error-color);
-}
-
-.channel-delete-confirm {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    margin-left: 4px;
-}
-
-.channel-delete-confirm button {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 2px;
-    border-radius: var(--radius-sm);
-    display: flex;
-    align-items: center;
-    transition: background 0.15s;
-}
-
-.channel-delete-confirm button:hover { background: var(--white-08); }
 .ch-confirm-yes { color: var(--error-color); }
 .ch-confirm-no { color: var(--text-dim); }
 
@@ -1114,13 +1073,6 @@ main#timeline {
     animation: fadeIn 0.1s ease;
 }
 
-.channel-inline-create .channel-input-prefix {
-    color: var(--text-dim);
-    font-size: 13px;
-    font-weight: 500;
-    user-select: none;
-}
-
 .channel-inline-create input {
     background: var(--bg-input);
     border: 1px solid var(--border);
@@ -1145,11 +1097,6 @@ main#timeline {
     border-radius: var(--radius-sm);
 }
 
-.channel-inline-create .confirm-btn { color: var(--accent); }
-.channel-inline-create .confirm-btn:hover { background: var(--accent-soft); }
-.channel-inline-create .cancel-btn { color: var(--text-dim); }
-.channel-inline-create .cancel-btn:hover { background: var(--white-06); }
-
 /* Compact the inline create input when it sits inside the channel sidebar */
 #channel-sidebar-list .channel-inline-create {
     padding: 4px 8px;
@@ -1162,7 +1109,7 @@ main#timeline {
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-/* Hashtag styling in messages */
+/* Hashtag styling in messages (.muted: #clear, #off, #none, #end) */
 .msg-hashtag {
     color: var(--accent);
     font-weight: 500;
@@ -1171,37 +1118,7 @@ main#timeline {
     border-radius: 3px;
     cursor: default;
 }
-
-/* --- Channel context menu (right-click for rename) --- */
-
-.channel-ctx-menu {
-    position: fixed;
-    background: var(--bg-header);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 4px;
-    z-index: 100;
-    min-width: 120px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
-
-.channel-ctx-menu button {
-    display: block;
-    width: 100%;
-    background: none;
-    border: none;
-    color: var(--text);
-    font-family: inherit;
-    font-size: 13px;
-    padding: 6px 12px;
-    text-align: left;
-    cursor: pointer;
-    border-radius: var(--radius-sm);
-}
-
-.channel-ctx-menu button:hover { background: var(--white-06); }
-.channel-ctx-menu button.danger { color: var(--error-color); }
-.channel-ctx-menu button.danger:hover { background: var(--error-soft); }
+.msg-hashtag.muted { opacity: 0.5; }
 
 /* --- Channel sidebar --- */
 
@@ -1303,51 +1220,6 @@ main#timeline {
     white-space: nowrap;
 }
 
-.channel-sidebar-row-unread {
-    background: var(--pending);
-    color: var(--text-on-accent);
-    font-size: 10px;
-    font-weight: 700;
-    min-width: 16px;
-    height: 16px;
-    border-radius: var(--radius-lg);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 4px;
-    flex-shrink: 0;
-}
-
-.channel-sidebar-row-actions {
-    display: flex;
-    gap: 2px;
-    flex-shrink: 0;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.12s;
-}
-
-.channel-sidebar-row:hover .channel-sidebar-row-actions {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.channel-sidebar-row-actions button {
-    background: transparent;
-    border: none;
-    color: var(--text-dim);
-    cursor: pointer;
-    padding: 2px 4px;
-    border-radius: var(--radius-sm);
-    opacity: 0.7;
-    transition: opacity 0.12s, background 0.12s;
-}
-
-.channel-sidebar-row-actions button:hover {
-    opacity: 1;
-    background: var(--white-10);
-}
-
 .channel-sidebar-grip {
     position: absolute;
     right: 0;
@@ -1365,116 +1237,14 @@ main#timeline {
     background: var(--accent);
 }
 
+body.channel-sidebar-resizing {
+    cursor: col-resize;
+    user-select: none;
+}
+
 /* When the sidebar is on, hide the top channel bar entirely. */
 body.channels-in-sidebar #channel-bar {
     display: none;
-}
-
-/* Full-height drag grip on left edge */
-.rules-grip,
-.jobs-grip {
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 6px;
-    cursor: col-resize;
-    z-index: 10;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--border);
-    transition: background 0.15s;
-}
-
-.rules-grip:hover,
-.rules-grip.dragging,
-.jobs-grip:hover,
-.jobs-grip.dragging {
-    background: var(--accent);
-}
-
-.rules-grip::after,
-.jobs-grip::after {
-    content: '';
-    width: 2px;
-    height: 32px;
-    border-left: 1px solid var(--white-15);
-    border-right: 1px solid var(--white-15);
-}
-
-.rules-header,
-.jobs-header {
-    display: flex;
-    align-items: center;
-    padding: var(--sb-padding);
-    font-size: var(--sb-title-fs);
-    font-weight: var(--sb-title-fw);
-    line-height: var(--sb-title-lh);
-    color: var(--text-dim);
-    border-bottom: var(--sb-card-border-width) solid var(--border);
-    flex-shrink: 0;
-    gap: var(--sb-gap);
-}
-
-.rules-counter {
-    font-size: var(--sb-label-fs);
-    font-weight: 400;
-    color: var(--text-dim);
-    opacity: 0.7;
-}
-
-.rules-remind-btn {
-    margin-left: auto;
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 3px 10px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    border: 1px solid var(--accent);
-    background: rgba(124, 58, 237, 0.1);
-    color: var(--accent);
-    transition: background 0.15s, color 0.15s;
-}
-
-.rules-remind-btn:hover {
-    background: var(--accent-hover);
-}
-
-.rules-remind-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-}
-
-.rules-soft-warning {
-    padding: 4px var(--sb-padding);
-    font-size: var(--sb-meta-fs);
-    color: var(--text-dim);
-    opacity: 0.6;
-    font-style: italic;
-    text-align: center;
-}
-
-#rules-list {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
-    display: flex;
-    flex-direction: column;
-}
-
-.rules-empty,
-.jobs-empty {
-    padding: 24px 16px;
-    color: var(--text-dim);
-    font-size: var(--sb-meta-fs);
-    line-height: var(--sb-meta-lh);
-    text-align: center;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex: 1;
 }
 
 /* --- Message header --- */
@@ -1533,6 +1303,7 @@ body.channels-in-sidebar #channel-bar {
 }
 
 .msg-text pre {
+    position: relative;  /* anchors .code-copy-btn */
     background: rgba(0, 0, 0, 0.3);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -1689,8 +1460,9 @@ body.channels-in-sidebar #channel-bar {
     transform: translateX(-50%);
     background: var(--accent);
     color: var(--text-on-accent);
-    width: 40px;
     height: 40px;
+    padding: 0 16px;
+    gap: 8px;
     border-radius: var(--radius-full);
     display: flex;
     align-items: center;
@@ -1706,6 +1478,9 @@ body.channels-in-sidebar #channel-bar {
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 }
 #scroll-anchor.hidden { display: none; }
+
+/* Horizontally drag-scrolled strips (chat.js enableDragScroll) while the mouse is held. */
+.drag-scrolling { cursor: grabbing; }
 
 .unread-badge {
     position: absolute;
@@ -1843,8 +1618,31 @@ pre:hover .code-copy-btn { opacity: 1; }
 }
 
 .modal-nav:hover { background: rgba(255, 255, 255, 0.2); }
+.modal-nav[hidden] { display: none; }
 .modal-prev { left: 16px; }
 .modal-next { right: 16px; }
+
+.image-modal-tools {
+    position: absolute;
+    top: 16px;
+    right: 20px;
+    display: flex;
+    gap: 12px;
+}
+
+.image-modal-notes {
+    position: absolute;
+    bottom: 16px;
+    left: 5%;
+    width: 90%;
+    max-height: 30vh;
+    overflow: auto;
+    background: var(--bg-input);
+    color: var(--text);
+    padding: 12px;
+    border-radius: 8px;
+}
+.image-modal-notes p { white-space: pre-wrap; }
 
 .modal-counter {
     position: absolute;

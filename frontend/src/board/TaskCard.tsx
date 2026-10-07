@@ -2,6 +2,7 @@ import { since } from '../lib/room';
 import type { Followup, ProjectState, Review, Task } from '../lib/types';
 import { CardThumbnails } from './Attachments';
 import { AgentChip, LabelChips, displayName, type Agents } from './shared';
+import { USER } from '../lib/constants';
 
 export interface TaskFacts {
   stale: boolean;
@@ -22,6 +23,9 @@ export interface WaitInfo {
   outcome: 'pending' | 'answered' | 'cancelled' | 'missing';
 }
 
+// First line of the awaited request shown on the card.
+const SUMMARY_CHARS = 140;
+
 export function waitInfo(task: Task, project: ProjectState): WaitInfo | undefined {
   if (!task.wait) return undefined;
   const id = task.wait.record_id;
@@ -41,7 +45,7 @@ export function waitInfo(task: Task, project: ProjectState): WaitInfo | undefine
     }
   }
   const line = text?.split('\n')[0].trim();
-  return { outcome, text: line && line.length > 140 ? line.slice(0, 139) + '…' : line };
+  return { outcome, text: line && line.length > SUMMARY_CHARS ? line.slice(0, SUMMARY_CHARS - 1) + '…' : line };
 }
 
 const WAIT_ENDED: Record<WaitInfo['outcome'], string> = {
@@ -180,7 +184,7 @@ export function TaskCard({
       )}
       {latest && (
         <p className="bd-card-update">
-          <strong>{latest.by === 'user' ? 'You' : latest.by}:</strong> {latest.text}
+          <strong>{latest.by === USER ? 'You' : latest.by}:</strong> {latest.text}
         </p>
       )}
       <p className="bd-card-age" title={new Date(task.updated * 1000).toLocaleString()}>

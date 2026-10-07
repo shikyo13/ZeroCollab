@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { errorMessage, runtime } from './api';
 import type { ProjectState, RoomEvent, RuntimeState } from './types';
+import { USER } from './constants';
 
 type Listener = (event: RoomEvent) => void;
 
@@ -97,7 +98,7 @@ export function sendChatMessage(text: string, channel = readChannel()): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     throw new Error('Reconnect to the room before sending a message.');
   }
-  ws.send(JSON.stringify({ type: 'message', sender: window.username || 'user', channel, project_id: window.activeProjectId, text }));
+  ws.send(JSON.stringify({ type: 'message', sender: window.username || USER, channel, project_id: window.activeProjectId, text }));
 }
 
 /** Re-render periodically so relative times ("5m ago") stay current. */
