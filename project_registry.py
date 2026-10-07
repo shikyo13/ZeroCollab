@@ -448,6 +448,9 @@ def commit_repository(runtime, path, workspaces, selected=None):
     now = time.time()
     history = value.setdefault('repository_history', [])
     selected = selected or [{'key': repository_key(path), 'path': str(path), 'primary': True}]
+    # Bind reservations made before first attachment at the same durable commit
+    # as the repository selection, without a second coordination.json write.
+    value.setdefault('initial_repository_key', repository_key(runtime.project or path))
     for old in repositories(runtime):
         item = next((item for item in history if _same_path(item.get('path'), old['path']) and item.get('detached') is None), None)
         if item is None:

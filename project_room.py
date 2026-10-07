@@ -172,7 +172,7 @@ class ProjectRoom:
         state = execution_state(task, self.state,
             running=task['id'] in activity.get('running_task_ids', []),
             queued=task['id'] in activity.get('queued_task_ids', []))
-        return {**task, 'execution_state': state, 'owner_activity': activity,
+        return {**task, 'repository_key': self.task_repository_key(task), 'execution_state': state, 'owner_activity': activity,
                 'observed_at': time.time(),
                 'stale': stale(task, time.time()) and not pending_human_wait(task, self.state)}
 
@@ -497,6 +497,10 @@ class ProjectRoom:
         project = getattr(self.runtime, 'project', None)
         return repository_key(project) if project else ''
 
+    def task_repository_key(self, task):
+        return (task.get('repository_key') or self.state.get('scope_repository') or
+                self.project_record().get('initial_repository_key') or self.primary_repository_key())
+
     def task_scope(self, raw):
         raw = str(raw).strip()
         if ':' not in raw:
@@ -513,7 +517,7 @@ class ProjectRoom:
         if ':' in raw:
             key, relative = raw.split(':', 1)
         else:
-            key = task.get('repository_key', self.state.get('scope_repository', self.primary_repository_key()))
+            key = self.task_repository_key(task)
             relative = raw
         return key, os.path.normcase(scope(relative)).replace('\\', '/')
 

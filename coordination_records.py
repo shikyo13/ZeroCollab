@@ -74,7 +74,7 @@ class CoordinationRecords:
         if ':' in relative:
             key, relative = relative.split(':', 1)
         else:
-            key = task.get('repository_key', self.room.state.get('scope_repository', primary_key))
+            key = self.room.task_repository_key(task)
         sources = runtime.states.get(task.get('owner'), {}).get('repositories', {})
         if key in sources:
             return Path(sources[key]['worktree']).resolve(), relative

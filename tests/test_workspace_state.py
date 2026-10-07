@@ -226,6 +226,39 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         room.task('a', 'release', task_id=original['id'])
         await self.r.start_repository_change(self.r.identity, None, action='remove', key=old_key)
 
+    async def test_pre_attach_reservations_bind_once_and_survive_primary_change_and_reload(self):
+        r, room = self.r, self.r.project_room
+        r.project = None
+        room.state['scope_repository'] = ''
+        original = room.task('a', 'create', title='Before repository', paths=['src'])
+        self.assertEqual(original['repository_key'], '')
+        first_key = project_registry.repository_key(self.target)
+        with patch('project_registry._save_record', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                await r.start_repository_change(r.identity, self.target)
+        self.assertEqual(room.task_repository_key(original), '')
+        await r.start_repository_change(r.identity, self.target)
+        self.assertEqual(room.task_view(original)['repository_key'], first_key)
+        for path in ('src/file.py', first_key + ':src/file.py'):
+            with self.assertRaisesRegex(ValueError, 'Scope already reserved'):
+                room.task('b', 'create', title='Conflicting', paths=[path])
+        root = Path(r.states['a']['worktree'])
+        (root / 'src').mkdir(parents=True)
+        (root / 'src/file.py').write_text('first repository')
+        second = self.root / 'second'
+        await r.start_repository_change(r.identity, second, action='add')
+        await r.start_repository_change(r.identity, None, action='primary', key=project_registry.repository_key(second))
+        room.use_project(r.identity)
+        reloaded = room.task('a', 'get', task_id=original['id'])
+        self.assertEqual(reloaded['repository_key'], first_key)
+        room.task('b', 'create', title='Second repository', paths=['src'])
+        with self.assertRaisesRegex(ValueError, 'Scope already reserved'):
+            room.task('b', 'create', title='Still reserved', paths=[first_key + ':src/file.py'])
+        snapshot, _ = room.records.capture(original, ['src/file.py'])
+        self.assertEqual(snapshot['files'][0]['root'], str(root.resolve()))
+        with self.assertRaises(project_registry.RepositoryInUse):
+            await r.start_repository_change(r.identity, None, action='remove', key=first_key)
+
     async def test_review_files_pin_each_root_after_primary_change_and_reject_escape(self):
         await self.r.start_repository_change(self.r.identity, self.target, action='add')
         old_key = project_registry.repository_key(self.r.project)
