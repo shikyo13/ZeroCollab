@@ -30,6 +30,78 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         return {'channel': channel, 'chain': 'c',
                 'requests': [{'human': True, 'chain': 'c', 'prompt': channel}]}
 
+    def provider(self, r):
+        run = Mock(id='run', channel='general', settings={}, stop_reason='', stderr='')
+        run.finish_message = AsyncMock()
+        run.steering.close = AsyncMock()
+        self.enterContext(patch('room_runtime.Run', return_value=run))
+        self.enterContext(patch('room_runtime.native.terminate', new=AsyncMock()))
+        self.enterContext(patch('room_runtime.native.restore_room_server'))
+        r.local_turn = AsyncMock(side_effect=RuntimeError('provider unavailable'))
+
+    async def wait_until(self, predicate):
+        async with asyncio.timeout(1):
+            while not predicate():
+                await asyncio.sleep(.01)
+
+    async def test_blocked_after_empty_get_retains_held_entry(self):
+        r = self.runtime()
+        self.provider(r)
+        worker = asyncio.create_task(r.worker('a'))
+        try:
+            await asyncio.sleep(0)  # worker is suspended in empty queue.get()
+            r.states['a']['state'] = 'login_required'
+            pending = self.entry('general')
+            r.queues['a'].put_nowait(pending)
+            await self.wait_until(lambda: r.states['a'].get('waiting'))
+            await asyncio.sleep(.25)
+            self.assertIs(r.deploy_held['a'], pending)
+            r.local_turn.assert_not_awaited()
+            r.states['a']['state'] = 'ready'
+            await self.wait_until(lambda: r.local_turn.await_count == 1)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_blocked_during_capacity_wait_survives_until_recovery(self):
+        r = self.runtime()
+        self.provider(r)
+        r.parallel_capacity = lambda: 1
+        r.running['other'] = Mock()
+        pending = self.entry('general')
+        r.queues['a'].put_nowait(pending)
+        worker = asyncio.create_task(r.worker('a'))
+        try:
+            await self.wait_until(lambda: r.states['a'].get('waiting'))
+            r.states['a']['state'] = 'blocked'
+            r.running.clear()
+            await asyncio.sleep(.25)
+            self.assertIs(r.deploy_held['a'], pending)
+            r.local_turn.assert_not_awaited()
+            r.states['a']['state'] = 'ready'
+            await self.wait_until(lambda: r.local_turn.await_count == 1)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_stop_cancels_held_admission_without_replaying_on_resume(self):
+        r = self.runtime()
+        self.provider(r)
+        r.turn_admission_open = lambda: False
+        r.queues['a'].put_nowait(self.entry('general'))
+        worker = asyncio.create_task(r.worker('a'))
+        try:
+            await self.wait_until(lambda: r.states['a'].get('waiting'))
+            await r.stop_agent('a')
+            r.states['a']['paused'] = False
+            r.turn_admission_open = lambda: True
+            await asyncio.sleep(.25)
+            self.assertNotIn('a', r.deploy_held)
+            r.local_turn.assert_not_awaited()
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
     async def test_provider_failure_keeps_other_channel_pending(self):
         r = self.runtime()
         pending = self.entry('other')
