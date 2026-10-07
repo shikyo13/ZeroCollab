@@ -1315,10 +1315,17 @@ class RoomRuntime:
         for queue in self.queues.values():
             while not queue.empty():
                 queue.get_nowait()
-        for path in self.data.glob("*_queue.jsonl"):
-            file_queue.clear(path)
         await asyncio.gather(*(self.cancel_turn(name) for name in self.states))
-        self.host.store.add("system", "Room stopped. Active turns cancelled and queues cleared. Click Resume when ready.", channel=self.default_channel())
+        failed_clears = []
+        for path in self.data.glob("*_queue.jsonl"):
+            try:
+                await asyncio.to_thread(file_queue.clear, path)
+            except OSError:
+                LOGGER.exception('Could not clear wrapper queue %s', path.name)
+                failed_clears.append(path.name)
+        detail = (' Some wrapper queues could not be cleared: ' + ', '.join(failed_clears)
+                  if failed_clears else ' Queues cleared.')
+        self.host.store.add("system", "Room stopped. Active turns cancelled." + detail + " Click Resume when ready.", channel=self.default_channel())
         await self.publish_status()
 
     def save_deploy_queue(self):

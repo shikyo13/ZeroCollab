@@ -1,8 +1,10 @@
 """Agent trigger — writes to queue files picked up by visible worker terminals."""
 
-import queue_file as file_queue
+import asyncio
 import logging
 from pathlib import Path
+
+import queue_file as file_queue
 
 log = logging.getLogger(__name__)
 
@@ -35,15 +37,17 @@ class AgentTrigger:
         if self.runtime and self.runtime.handles(agent_name):
             self.runtime.enqueue(agent_name, channel, message, kwargs.get("prompt", ""), kwargs.get('chain'), kwargs.get('routing'))
             return
-        return self.trigger_sync(agent_name, message, channel, **kwargs)
+        return await asyncio.to_thread(self._queue_trigger, agent_name, message, channel, **kwargs)
 
     def trigger_sync(self, agent_name: str, message: str = "", channel: str = "general", **kwargs):
         """Synchronous version of trigger - writes to queue file without async."""
         if self.runtime and self.runtime.handles(agent_name):
             self.runtime.enqueue_sync(agent_name, channel, message, kwargs.get("prompt", ""), kwargs.get('chain'), kwargs.get('routing'))
             return
+        return self._queue_trigger(agent_name, message, channel, **kwargs)
+
+    def _queue_trigger(self, agent_name, message, channel, **kwargs):
         queue_file = self._data_dir / f"{agent_name}_queue.jsonl"
-        self._data_dir.mkdir(parents=True, exist_ok=True)
 
         import time
         entry = {
@@ -56,6 +60,11 @@ class AgentTrigger:
         if isinstance(custom_prompt, str) and custom_prompt.strip():
             entry["prompt"] = custom_prompt.strip()
 
-        file_queue.append(queue_file, entry)
+        try:
+            file_queue.append(queue_file, entry)
+        except OSError:
+            log.exception("Failed to queue @%s trigger (ch=%s)", agent_name, channel)
+            return False
 
         log.info("Queued @%s trigger (ch=%s): %s", agent_name, channel, message[:80])
+        return True
