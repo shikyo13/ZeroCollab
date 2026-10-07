@@ -829,7 +829,13 @@ class RoomRuntime:
         result = {}
         # Serial within a request: do not fan out one worker per agent.
         for name, worktree, provider in targets:
-            result[name] = await asyncio.to_thread(_worktree_diff, worktree, provider)
+            try:
+                result[name] = await asyncio.to_thread(_worktree_diff, worktree, provider)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                LOGGER.warning("Cannot inspect worktree for %s: %s", name, type(exc).__name__)
+                # Distinguish an unavailable checkout from a clean checkout. Do not
+                # include raw Git output, which may contain arbitrary file contents.
+                result[name] = f"[Worktree diff unavailable: {type(exc).__name__}. Retry after checking the checkout.]"
         return result
 
     def context(self, run, changes):
