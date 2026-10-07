@@ -68,3 +68,31 @@ class WakeQueueBoundsTests(unittest.TestCase):
             self.assertEqual(held, batch(1))
             self.assertEqual(q.get_nowait(), batch(2, 3))
             self.assertEqual(q.get_nowait(), batch(4))
+
+    def test_prompt_byte_limit_is_atomic_and_counts_utf8(self):
+        with patch('coordination_queue.MAX_BATCH_PROMPT_BYTES', 4):
+            q = WakeQueue(maxsize=4)
+            first = batch(1)
+            first['requests'][0]['prompt'] = '\u00e9\u00e9'
+            q.put_nowait(first)
+            incoming = batch(2)
+            incoming['requests'][0]['prompt'] = 'x'
+            with self.assertRaises(asyncio.QueueFull):
+                q.put_nowait(incoming)
+            self.assertEqual(q.get_nowait(), first)
+            incoming['requests'][0]['prompt'] = '\u00e9\u00e9\u00e9'
+            with self.assertRaises(asyncio.QueueFull):
+                q.put_nowait(incoming)
+            q.restore(incoming)
+            self.assertEqual(q.get_nowait(), incoming)
+
+    def test_replacement_reclaims_prompt_budget(self):
+        with patch('coordination_queue.MAX_BATCH_PROMPT_BYTES', 4):
+            q = WakeQueue(maxsize=4)
+            first = batch(1)
+            first['requests'][0].update(prompt='abcd', ref={'collection': 'tasks', 'id': 't', 'updated': 1})
+            q.put_nowait(first)
+            replacement = batch(2)
+            replacement['requests'][0].update(prompt='xy', ref={'collection': 'tasks', 'id': 't', 'updated': 2})
+            q.put_nowait(replacement)
+            self.assertEqual(q.get_nowait()['requests'], replacement['requests'])
