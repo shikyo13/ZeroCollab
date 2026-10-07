@@ -980,20 +980,20 @@ async def import_history(file: UploadFile = File(...)):
             {"error": f"file too large (max {_archive.MAX_IMPORT_SIZE // 1024 // 1024}MB)"},
             status_code=400,
         )
-    channel_list = list(room_settings.get("channels", ["general"]))
-    max_ch = room_settings.get("max_channels", 8)
-    report = _archive.import_archive(
-        content, store,
-        channel_list, max_channels=max_ch,
-    )
-    if not report.get("ok"):
-        error = report.get("error", "import failed")
-        status = 409 if "already running" in error else 400
-        return JSONResponse({"error": error}, status_code=status)
-    # Update channel list if new channels were created
+    async with _archive.prepared_import(content) as prepared:
+        # Read live settings only after preparation; no await until store and
+        # channel changes have both been applied.
+        channel_list = list(room_settings.get("channels", ["general"]))
+        max_ch = room_settings.get("max_channels", 8)
+        report = _archive.apply_import(prepared, store, channel_list, max_channels=max_ch)
+        if not report.get("ok"):
+            error = report.get("error", "import failed")
+            status = 409 if "already running" in error else 400
+            return JSONResponse({"error": error}, status_code=status)
+        if report["channels"]["created"]:
+            room_settings["channels"] = channel_list
+            _save_settings()
     if report["channels"]["created"]:
-        room_settings["channels"] = channel_list
-        _save_settings()
         await broadcast_settings()
     # Tell all connected clients to reload (picks up imported messages)
     data = json.dumps({"type": "reload"})

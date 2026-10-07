@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 import zipfile
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
 from fastapi import UploadFile
@@ -173,6 +173,64 @@ class ArchiveRoundTripTests(unittest.TestCase):
 
         self.assertFalse(report["ok"])
         self.assertIn("unsupported archive schema_version", report["error"])
+
+
+class ImportThreadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_preparation_keeps_admission_and_never_applies(self):
+        started, release = threading.Event(), threading.Event()
+        def prepare(data):
+            started.set()
+            release.wait(3)
+            return {"ok": False}
+        async def consume():
+            async with archive.prepared_import(b'zip'):
+                self.fail('cancelled request must not apply')
+        with patch('archive._prepare_import', side_effect=prepare):
+            task = asyncio.create_task(consume())
+            try:
+                async with asyncio.timeout(2):
+                    while not started.is_set():
+                        await asyncio.sleep(.01)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                async with archive.prepared_import(b'other') as report:
+                    self.assertEqual(report['error'], 'import already running')
+            finally:
+                release.set()
+                async with asyncio.timeout(2):
+                    while archive._import_lock.locked():
+                        await asyncio.sleep(.01)
+
+    async def test_import_applies_to_channels_changed_during_preparation(self):
+        started, release = threading.Event(), threading.Event()
+        original = archive._prepare_import
+        loop_thread = threading.get_ident()
+        def prepare(data):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            started.set()
+            if not release.wait(3):
+                raise RuntimeError('worker not released')
+            return original(data)
+        with tempfile.TemporaryDirectory() as root:
+            source = make_store(Path(root) / 'source')
+            target = make_store(Path(root) / 'target')
+            seed_history(source)
+            upload = UploadFile(file=io.BytesIO(archive.build_export(source)), filename='history.zip')
+            settings = {'channels': ['general'], 'max_channels': 8}
+            with patch('archive._prepare_import', side_effect=prepare), patch.object(app, 'store', target), patch.object(app, 'room_settings', settings), patch.object(app, '_save_settings'), patch.object(app, 'broadcast_settings', new_callable=AsyncMock), patch.object(app, '_broadcast', new_callable=AsyncMock):
+                task = asyncio.create_task(app.import_history(upload))
+                try:
+                    async with asyncio.timeout(2):
+                        while not started.is_set():
+                            await asyncio.sleep(.01)
+                    settings['channels'].append('concurrent')
+                finally:
+                    release.set()
+                response = await task
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(settings['channels'], ['general', 'concurrent', 'planning'])
+                self.assertEqual(len(target.get_recent()), 2)
 
 
 class ExportThreadTests(unittest.IsolatedAsyncioTestCase):

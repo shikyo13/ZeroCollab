@@ -1,5 +1,7 @@
 """Export/import archive for project history (chat messages)."""
 
+import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import io
 import json
@@ -110,6 +112,36 @@ def import_archive(zip_bytes: bytes, store, channel_list: list[str],
         _import_lock.release()
 
 
+@asynccontextmanager
+async def prepared_import(zip_bytes):
+    """Hold admission through worker preparation and the caller's synchronous apply."""
+    if not _import_lock.acquire(blocking=False):
+        yield {"ok": False, "error": "import already running"}
+        return
+    worker = None
+    deferred_release = False
+    try:
+        worker = asyncio.create_task(asyncio.to_thread(_prepare_import, zip_bytes))
+        try:
+            prepared = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # The pure worker cannot be cancelled by cancelling the request.
+            # Keep admission until it exits; never apply its abandoned result.
+            def finished(task):
+                try:
+                    if not task.cancelled():
+                        task.exception()
+                finally:
+                    _import_lock.release()
+            worker.add_done_callback(finished)
+            deferred_release = True
+            raise
+        yield prepared
+    finally:
+        if not deferred_release:
+            _import_lock.release()
+
+
 def _message_lines(zf):
     # Preserve read-before-mutation checksum validation without retaining the
     # entire uncompressed entry. The second pass retains one line at a time.
@@ -197,7 +229,11 @@ def _parse_import(zf):
 
 
 def _do_import(zip_bytes, store, channel_list, max_channels):
-    prepared = _prepare_import(zip_bytes)
+    return apply_import(_prepare_import(zip_bytes), store, channel_list, max_channels)
+
+
+def apply_import(prepared, store, channel_list, max_channels=8):
+    """Apply prepared data without yielding; caller holds import admission."""
     if isinstance(prepared, dict):
         return prepared
     report, records, skipped = prepared
