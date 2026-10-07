@@ -12,6 +12,22 @@ ZeroCollab is a local workspace where you and your AI coding agents share one ch
 
 For the managed project-room workflow (Start-Room, Team, Board, worktrees), start with **[ROOM-QUICKSTART.md](ROOM-QUICKSTART.md)**. The rest of this README covers the launcher scripts and reference material.
 
+## Release packaging
+
+Build a managed release from committed source with:
+
+```sh
+python release_pack.py build --repo . --commit HEAD --spool ./release-staging
+```
+
+The output is a manifest and payload under `release-staging/releases/<id>/`.
+It excludes live configuration, runtime data and supervisor-owned files; it is
+an update package for an existing managed installation, not a standalone ZIP.
+Uncommitted changes are not included. Building does not deploy the release;
+live deployment still requires approval through the Deployments panel.
+The old `build_release.py` ZIP command is retired because its file list omitted
+required runtime modules. Use a source checkout for a fresh installation.
+
 ## Quickstart (Windows)
 
 **1. Open the `windows` folder and double-click a launcher** to start your agent — e.g. `start_claude.bat`, `start_codex.bat`, `start_gemini.bat`, etc.
