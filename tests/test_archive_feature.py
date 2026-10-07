@@ -3,6 +3,7 @@ import io
 import json
 import sys
 import tempfile
+import threading
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -150,6 +151,17 @@ class ArchiveRoundTripTests(unittest.TestCase):
 
         self.assertFalse(report["ok"])
         self.assertIn("unsupported archive schema_version", report["error"])
+
+
+class ExportThreadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_export_builder_runs_off_loop(self):
+        loop_thread = threading.get_ident()
+        def build(*args, **kwargs):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            return b'archive'
+        with patch('archive.build_export', side_effect=build):
+            response = await app.export_history()
+        self.assertEqual(response.body, b'archive')
 
 
 class ImportExportApiTests(unittest.TestCase):
