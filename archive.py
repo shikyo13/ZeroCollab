@@ -45,19 +45,18 @@ def build_export(store, app_version: str = "") -> bytes:
 
     # Collect data
     messages = store.get_recent(count=999_999_999)
+    uid_by_id = {msg['id']: _ensure_uid(msg) for msg in messages}
 
     # Build messages JSONL
     messages_lines = []
     for msg in messages:
         exported = dict(msg)
-        exported["uid"] = _ensure_uid(msg)
+        exported["uid"] = uid_by_id[msg["id"]]
         # Convert reply_to int to reply_to_uid if possible
         if "reply_to" in exported:
             reply_id = exported["reply_to"]
-            for m in messages:
-                if m["id"] == reply_id:
-                    exported["reply_to_uid"] = _ensure_uid(m)
-                    break
+            if reply_id in uid_by_id:
+                exported["reply_to_uid"] = uid_by_id[reply_id]
         messages_lines.append(json.dumps(exported, ensure_ascii=False))
 
     # Build manifest
@@ -165,7 +164,6 @@ def _do_import(zip_bytes, store, channel_list, max_channels):
     # --- Import messages (preserve archive uid, timestamp, time, reply links) ---
     msg_report = {"created": 0, "duplicates": 0, "conflicts": 0, "skipped": 0}
     # Two-pass: first import all messages, then rebuild reply_to links
-    imported_uid_to_local_id = {}  # archive uid → new local id
     pending_replies = []  # (new_local_id, reply_to_uid)
     if "messages.jsonl" in zf.namelist():
         raw = zf.read("messages.jsonl").decode("utf-8", errors="replace")
@@ -195,7 +193,6 @@ def _do_import(zip_bytes, store, channel_list, max_channels):
                 time_str=msg.get("time"),
                 _bulk=True,
             )
-            imported_uid_to_local_id[msg_uid] = new_msg["id"]
             # Track reply links for second pass
             reply_to_uid = msg.get("reply_to_uid")
             if reply_to_uid:
@@ -205,19 +202,14 @@ def _do_import(zip_bytes, store, channel_list, max_channels):
         # Flush bulk-added messages and rebuild reply links (single rewrite)
         if msg_report["created"] > 0:
             if pending_replies:
-                uid_to_id = dict(imported_uid_to_local_id)
-                for m in store.get_recent(count=999_999_999):
-                    uid = m.get("uid")
-                    if uid:
-                        uid_to_id[uid] = m["id"]
                 with store._lock:
+                    uid_to_id = {m['uid']: m['id'] for m in store._messages if m.get('uid')}
+                    messages_by_id = {m['id']: m for m in store._messages}
                     for local_id, reply_uid in pending_replies:
                         target_id = uid_to_id.get(reply_uid)
-                        if target_id is not None:
-                            for m in store._messages:
-                                if m["id"] == local_id:
-                                    m["reply_to"] = target_id
-                                    break
+                        message = messages_by_id.get(local_id)
+                        if target_id is not None and message is not None:
+                            message["reply_to"] = target_id
             # Single rewrite covers both bulk messages and reply patches
             store.flush_bulk()
     report["sections"]["messages"] = msg_report
