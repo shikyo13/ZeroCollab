@@ -16,7 +16,8 @@ body.modern-workspace {
   --shadow-sm: none; --shadow-md: 0 2px 8px #0002; --shadow-lg: 0 4px 16px #0003;
   --fs-xs: 12px; --fs-sm: 13px; --fs-base: 15px; --fs-md: 14px;
   --lh-normal: 1.5; --lh-relaxed: 1.65;
-  color-scheme: dark; font-family: 'Segoe UI', system-ui, sans-serif;
+  --font-ui: 'Segoe UI', system-ui, sans-serif;
+  color-scheme: dark; font-family: var(--font-ui);
   font-size: 15px; line-height: 1.5;
 }
 .modern-workspace [hidden] { display: none !important; }

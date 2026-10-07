@@ -1,4 +1,4 @@
-/* Annotation dialog. Uses the shared palette tokens with graphite/cyan fallbacks. */
+/* Annotation dialog. Uses the shared palette tokens; --font-ui keeps a fallback for pages without the shell. */
 .an-dialog {
   width: min(1280px, calc(100vw - 32px));
   height: min(860px, calc(100dvh - 32px));
@@ -23,7 +23,7 @@
 .an-btn { min-height: 32px; padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elevated); color: var(--text); font: inherit; font-weight: 600; font-size: 13px; cursor: pointer; }
 .an-btn:hover:not(:disabled) { border-color: var(--accent); }
 .an-btn:disabled { opacity: 0.5; cursor: default; }
-.an-btn[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-soft, rgba(34, 211, 238, 0.12)); }
+.an-btn[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-soft); }
 .an-primary { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
 .an-close { font-size: 20px; line-height: 1; padding: 0 10px; }
 .an-swatch { width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; }

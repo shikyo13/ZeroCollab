@@ -1,6 +1,6 @@
 /* Board styles. Scoped to .bd-* and built on the shared palette tokens
- * (static/style.css :root, overridden by the workspace shell). Fallbacks keep
- * the board readable if it renders before/without the shell palette. */
+ * (static/style.css :root, overridden by the workspace shell). Every token
+ * used here is defined at :root; only --font-ui keeps a fallback for pages without the shell. */
 .bd-root {
   --bd-surface: var(--bg-msg);
   --bd-surface-2: var(--bg-elevated);
@@ -8,7 +8,7 @@
   --bd-text: var(--text);
   --bd-muted: var(--text-dim);
   --bd-accent: var(--accent);
-  --bd-accent-soft: var(--accent-soft, rgba(34, 211, 238, 0.1));
+  --bd-accent-soft: var(--accent-soft);
   /* Text placed on the accent fill; cyan needs dark text for contrast. */
   --bd-on-accent: var(--text-on-accent);
   --bd-warn: var(--warning);
