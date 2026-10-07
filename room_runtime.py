@@ -463,6 +463,8 @@ class RoomRuntime:
         self.profile_lock = asyncio.Lock()
         self.deploy_held = {}
         self.deployment = None
+        self.repository_transition = None
+        self.repository_job = None
 
     def handles(self, name):
         return name in self.states
@@ -473,6 +475,7 @@ class RoomRuntime:
     def snapshot(self):
         return {"agents": {n: {**{k: v for k, v in s.items() if k != "task"}, "queued": self.queues[n].qsize() + int(s.get('waiting', False)),
                               "controls": self.controls.describe(n)} for n, s in self.states.items()}, "project": str(self.project or ""), "paused": self.paused,
+                "repository_transition": self.repository_progress(),
                 "automatic_tool_approvals": self.cfg.get('runtime', {}).get('automatic_tool_approvals', False),
                 "limits": {**self.project_room.limits, "parallel_agents_effective": self.parallel_capacity(), "queue_per_agent": 4},
                 "budgets": list(self.project_room.chains.values())[-12:], "goal": self.goals.goal,
@@ -564,12 +567,106 @@ class RoomRuntime:
             path = base / name
             path.mkdir(parents=True, exist_ok=True)
             return dict(worktree=str(path), branch='', workspace_kind='conversation')
-        identity = self.profiles.path.parent.name
-        path = self.data / 'worktrees' / identity / name
+        return self.repository_workspace(self.project, name)
+
+    def repository_workspace(self, project, name):
+        """Retain old worktrees and reuse one only after checking its Git repository."""
+        project = Path(project).resolve()
+        identity = self.identity
+        def common(path):
+            return (path / git(path, 'rev-parse', '--git-common-dir')).resolve()
+        source = common(project)
+        legacy = self.data / 'worktrees' / identity / name
+        key = project_registry.repository_key(project)
+        path = self.data / 'worktrees' / identity / key / name
+        if (legacy / '.git').exists() and project_registry._same_path(common(legacy), source):
+            path = legacy
+        if (path / '.git').exists() and not project_registry._same_path(common(path), source):
+            raise ValueError(f'Worktree belongs to a different repository: {path}')
         if not (path / '.git').exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            git(self.project, 'worktree', 'add', '-b', f'chatroom/{identity}/{name}-{uuid.uuid4().hex[:6]}', str(path), 'HEAD')
+            git(project, 'worktree', 'add', '-b', f'chatroom/{identity}/{key}/{name}-{uuid.uuid4().hex[:6]}', str(path), 'HEAD')
         return dict(worktree=str(path), branch=git(path, 'branch', '--show-current'), workspace_kind='repository')
+
+    def repository_progress(self):
+        transition = getattr(self, 'repository_transition', None)
+        if not transition:
+            return None
+        return {k: transition[k] for k in ('path', 'phase')} | {
+            'waiting_on': list(self.running),
+            'queued': sum(q.qsize() for q in self.queues.values()) +
+                      sum(name not in self.running for name in self.deploy_held),
+            'cancel_requested': transition.get('cancel', False)}
+
+    def repository_control(self, identity, action):
+        if identity != self.identity or not self.repository_transition:
+            raise ValueError('No repository change is pending for this project')
+        if action not in ('cancel', 'interrupt'):
+            raise ValueError('Choose cancel or interrupt')
+        self.repository_transition[action] = True
+        self.publish_soon()
+        return self.repository_progress()
+
+    def start_repository_change(self, identity, path, create=False, interrupt=False):
+        if identity != self.identity:
+            raise ValueError('Switch to this project before changing its repository')
+        if self.repository_transition:
+            raise ValueError('A repository change is already in progress')
+        if not isinstance(create, bool) or not isinstance(interrupt, bool):
+            raise ValueError('create and interrupt must be true or false')
+        self.repository_transition = {'path': str(path or ''), 'phase': 'preparing', 'interrupt': interrupt}
+        # This job outlives a disconnected HTTP caller, so it owns a separate deploy count.
+        if self.deployment:
+            self.deployment.track_continuation()
+        self.repository_job = asyncio.create_task(self._change_repository(path, create))
+        self.repository_job.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+        return self.repository_job
+
+    async def _change_repository(self, raw_path, create):
+        transition = self.repository_transition
+        try:
+            validate = project_registry.new_repository_target if create else project_registry.repository_root
+            path = await asyncio.to_thread(validate, raw_path)
+            project_registry.check_unowned(self, path, self.identity)
+            transition.update(path=str(path), phase='draining')
+            await self.publish_status()
+            while self.running:
+                if transition.get('cancel'):
+                    raise ValueError('Repository change cancelled; current repository kept')
+                if transition.get('interrupt'):
+                    await asyncio.gather(*(self.cancel_turn(name) for name in list(self.running)))
+                else:
+                    await asyncio.sleep(.1)
+            async with self.profile_lock:
+                if transition.get('cancel'):
+                    raise ValueError('Repository change cancelled; current repository kept')
+                transition['phase'] = 'preparing'
+                await self.publish_status()
+                if create:
+                    path = await asyncio.to_thread(project_registry.create_repository, path)
+                names = list(self.states)
+                def prepare():
+                    return {name: self.repository_workspace(path, name) for name in names}
+                workspaces = await asyncio.to_thread(prepare)
+                if transition.get('cancel'):
+                    raise ValueError('Repository change cancelled; current repository kept')
+                project_registry.check_unowned(self, path, self.identity)
+                # One durable project record is the commit point. No await between it
+                # and publication, and startup uses this record if workspace.json lags.
+                project_registry.commit_repository(self, path, workspaces)
+                self.project = path
+                for name, workspace in workspaces.items():
+                    self.states[name].update(workspace)
+                try:
+                    self.save_project()
+                except OSError:
+                    LOGGER.exception('Repository committed; workspace summary will recover from project record')
+            return project_registry.summarize(self, project_registry.active_folder(self))
+        finally:
+            self.repository_transition = None
+            if self.deployment:
+                self.deployment.leave_mutation()
+            await self.publish_status()
 
     def activate_profile(self, profile, workspace):
         name = profile['id']
@@ -593,6 +690,8 @@ class RoomRuntime:
 
     async def change_profile(self, body, name='', creation_key='', expected_project=None):
         async with self.profile_lock:
+            if getattr(self, 'repository_transition', None):
+                raise ValueError('Wait for the repository change before editing the team')
             if expected_project is not None and self.identity != expected_project:
                 raise ValueError('Project changed; reload the team builder')
             if creation_key:
@@ -666,6 +765,13 @@ class RoomRuntime:
         saved = load_workspace(self.data / "workspace.json")
         self.paused = saved.get("paused", False)
         project = saved.get('project')
+        identity = saved.get('project_id')
+        if not (identity and project_registry.IDENTITY.match(identity) and (self.data / 'projects' / identity).is_dir()):
+            identity = None
+        if identity:
+            value = project_registry.record(self.data / 'projects' / identity)
+            if 'path' in value:
+                project = value['path'] or None
         if project:
             path = Path(project).resolve()
             old_sandboxes = {self.data / 'project', self.data / 'project-native'}
@@ -673,9 +779,6 @@ class RoomRuntime:
                 # Retire the automatic demo selection, preserving its files and worktrees.
                 project = None
         project_registry.migrate_sessions(self)
-        identity = saved.get('project_id')
-        if not (identity and project_registry.IDENTITY.match(identity) and (self.data / 'projects' / identity).is_dir()):
-            identity = None
         self.setup_project(project, identity)
         for name in saved.get('paused_agents', []):
             if name in self.states:
@@ -757,7 +860,9 @@ class RoomRuntime:
                 self.deployment.leave_mutation()
 
     def turn_admission_open(self):
-        return (not self.deployment or self.deployment.admission_open()) and not getattr(self, 'deploy_refresh_pending', False)
+        return (not getattr(self, 'repository_transition', None)
+                and (not self.deployment or self.deployment.admission_open())
+                and not getattr(self, 'deploy_refresh_pending', False))
 
     async def beat(self):
         import mcp_bridge
@@ -1041,7 +1146,7 @@ class RoomRuntime:
             self.host.store.add(run.name, f"Repository request: {action} {result['path']}. {result['reason']}\nThe user can approve it in Projects.",
                                 channel=run.channel, metadata={'no_route': True, 'chain': run.entry['chain']})
             await self.emit('project_state', self.project_room.snapshot())
-            return {**result, 'status': 'Waiting for the user; attaching stops the room, so keep working without it.'}
+            return {**result, 'status': 'Waiting for the user to approve the repository change; keep working meanwhile.'}
         if tool == 'room_task':
             before = next((t['status'] for t in self.project_room.state['tasks'] if t['id'] == arguments.get('task_id')), None)
             result = self.project_room.task(run.name, **arguments)
@@ -1496,11 +1601,15 @@ def install(host):
 
     @host.app.post("/api/runtime/project")
     async def project(request: Request):
+        if runtime.repository_transition:
+            return JSONResponse({'error': 'Wait for the repository change before switching projects'}, 409)
         if not runtime.paused or runtime.running or any(s.get('task') for s in runtime.states.values()) or any(not q.empty() for q in runtime.queues.values()):
             return JSONResponse({"error": "Stop the room before changing projects"}, 409)
         try:
             body = await request.json()
             async with runtime.profile_lock:
+                if runtime.repository_transition:
+                    return JSONResponse({'error': 'Wait for the repository change before switching projects'}, 409)
                 if body.get('id'):
                     runtime.setup_project(project_registry.switch_target(runtime, body['id']) or None, body['id'])
                 else:

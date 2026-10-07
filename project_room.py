@@ -816,7 +816,7 @@ def coordination_tools():
         definition('room_followup', 'Create a durable action/question for a teammate, optionally linked to a task; resolve with its result or cancel with a reason. Open items stay in the assignee inbox. notify attempts one bounded wake-up; there is no polling or automatic repeated reminder.',
                    {'action': {'type': 'string', 'enum': ['create', 'resolve', 'cancel']}, 'followup_id': string, 'task_id': string,
                     'assigned_to': string, 'text': string, 'result': string, 'notify': {'type': 'boolean'}}, ['action']),
-        definition('room_repository', 'Ask the user to add a Git repository to this project when the work needs one: attach an existing repository root (create false) or create a new one at an absolute folder path (create true). Only the user approves; attaching stops the room, so keep working meanwhile.',
+        definition('room_repository', 'Ask the user to attach or replace this project\'s Git repository: use an existing repository root (create false) or create a new one at an absolute folder path (create true). Only the user approves. Running turns can finish and queued work is kept, so continue working meanwhile.',
                    {'path': string, 'create': {'type': 'boolean'}, 'reason': string}, ['path', 'reason']),
         definition('room_goal', 'Read the shared room goal, or as its named lead finish it: complete or block with goal_id and evidence. The user starts, pauses and cancels goals.',
                    {'action': {'type': 'string', 'enum': ['status', 'complete', 'block']}, 'goal_id': string, 'evidence': string}),

@@ -9,6 +9,7 @@ an optional display name, the project's chat sessions and a pending repository r
 A chat session's id is the store's channel key and never changes; its title is local to
 the project. Room channels that no project owns are legacy history: readable, never
 writable, never routed to agents."""
+import asyncio
 import hashlib
 import json
 import os
@@ -399,6 +400,32 @@ def open_session(runtime, identifier):
 
 # --- repositories ---
 
+def repository_key(path):
+    resolved = os.path.normcase(str(Path(path).resolve()))
+    slug = re.sub(r'[^a-z0-9]+', '-', Path(path).name.lower()).strip('-')[:24] or 'repo'
+    return slug + '-' + hashlib.sha256(resolved.encode()).hexdigest()[:12]
+
+
+def commit_repository(runtime, path, workspaces):
+    """Publish selection/history together, keeping the rest of the project record."""
+    folder = active_folder(runtime)
+    value = record(folder)
+    now = time.time()
+    history = value.setdefault('repository_history', [])
+    previous = str(runtime.project or '')
+    if previous and not any(_same_path(item.get('path'), previous) and item.get('detached') is None for item in history):
+        history.append({'path': previous, 'attached': None, 'detached': None,
+                        'worktrees': {n: s['worktree'] for n, s in runtime.states.items()}})
+    if not _same_path(previous, path):
+        for item in history:
+            if item.get('detached') is None:
+                item['detached'] = now
+        history.append({'path': str(path), 'attached': now, 'detached': None, 'by': 'user',
+                        'worktrees': {n: s['worktree'] for n, s in workspaces.items()}})
+    value.update(path=str(path), repository_history=history)
+    value.pop('repo_request', None)
+    _save_record(folder, value)
+
 def repository_root(raw):
     """Resolve an existing repository root; agents get worktrees from its committed HEAD."""
     from room_runtime import git
@@ -454,9 +481,7 @@ def check_unowned(runtime, path, exclude=''):
 
 
 def request_repository(runtime, actor, path='', create=False, reason=''):
-    """An agent proposes a repository; only the user attaches it (attaching stops the room)."""
-    if runtime.project:
-        raise ValueError('This project already has a repository')
+    """An agent proposes an attachment or replacement; only the user applies it."""
     if not isinstance(create, bool):
         raise ValueError('create must be true or false')
     if create:
@@ -469,7 +494,8 @@ def request_repository(runtime, actor, path='', create=False, reason=''):
         raise ValueError('Explain why this project needs a repository')
     folder = active_folder(runtime)
     value = record(folder)
-    value['repo_request'] = {'by': actor, 'path': str(target), 'create': create, 'reason': reason[:600], 'time': time.time()}
+    value['repo_request'] = {'by': actor, 'path': str(target), 'create': create, 'reason': reason[:600], 'time': time.time(),
+                             'replace': bool(runtime.project), 'current': str(runtime.project or '')}
     _save_record(folder, value)
     return value['repo_request']
 
@@ -546,6 +572,7 @@ def summarize(runtime, folder):
             'channels': sorted(_used_channels(state, goal)), 'sessions': chats,
             'last_session': value.get('last_session') if value.get('last_session') in ids else (ids[0] if ids else ''),
             'repo_request': value.get('repo_request'),
+            'repository_history': value.get('repository_history', []),
             'team': team, 'spec': bool(state.get('spec')), 'updated': updated}
 
 
@@ -565,10 +592,6 @@ def detail(runtime, identity):
 
 
 def install(host, runtime):
-    def stopped():
-        return runtime.paused and not runtime.running and not any(s.get('task') for s in runtime.states.values()) \
-            and all(q.empty() for q in runtime.queues.values())
-
     def failure(exc):
         if isinstance(exc, Conflict):
             return JSONResponse({'error': str(exc), 'project_id': exc.project_id}, 409)
@@ -628,30 +651,23 @@ def install(host, runtime):
             folder = _folder(runtime, identity)
             if not _is_active(runtime, folder):
                 return JSONResponse({'error': 'Switch to this project before adding its repository'}, 409)
-            if not stopped():
-                return JSONResponse({'error': 'Stop the room before adding a repository'}, 409)
-            if runtime.project:
-                raise ValueError('This project already has a repository')
             body = await request.json()
-            create = body.get('create', False)
-            if not isinstance(create, bool):
-                raise ValueError('create must be true or false')
-            async with runtime.profile_lock:
-                if create:
-                    path = create_repository(body.get('path'))
-                else:
-                    path = repository_root(body.get('path'))
-                    check_unowned(runtime, path, identity)
-                value = record(folder)
-                value.pop('repo_request', None)
-                _save_record(folder, value)
-                runtime.setup_project(path, identity)
-                await runtime.refresh()
-            await runtime.publish_status()
+            if runtime.repository_transition:
+                return JSONResponse({'error': 'A repository change is already in progress'}, 409)
+            job = runtime.start_repository_change(identity, body.get('path'), body.get('create', False), body.get('interrupt', False))
+            result = await asyncio.shield(job)
             await announce()
-            return summarize(runtime, folder)
-        except (ValueError, RuntimeError, TypeError, AttributeError) as exc:
+            return result
+        except (ValueError, RuntimeError, TypeError, AttributeError, OSError) as exc:
             return failure(exc)
+
+    @host.app.post('/api/runtime/projects/{identity}/repository/transition')
+    async def repository_transition(identity: str, request: Request):
+        try:
+            body = await request.json()
+            return runtime.repository_control(identity, body.get('action'))
+        except (ValueError, AttributeError) as exc:
+            return JSONResponse({'error': str(exc)}, 409)
 
     @host.app.post('/api/runtime/projects/{identity}/repository/dismiss')
     async def dismiss(identity: str):
