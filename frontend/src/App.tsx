@@ -20,7 +20,7 @@ export default function App() {
   const [view, setView] = useState<View>(() => validView(new URL(location.href).searchParams.get('view')));
   const [help, setHelp] = useState(false);
   const projects = useProjects();
-  const deployments = useDeploymentState();
+  const deployments = useDeploymentState(view === 'activity');
   const [focus, setFocusState] = useState(() => new URL(location.href).searchParams.get('project') || '');
   function setFocus(id: string) {
     setFocusState(id);

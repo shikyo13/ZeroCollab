@@ -150,25 +150,103 @@ export function useProjectState(): Resource<ProjectState> {
   return { data, error, refresh };
 }
 
-/** Live /api/runtime snapshot (agents, approvals, runs, limits). */
-export function useRuntimeState(): Resource<RuntimeState> {
-  const [data, setData] = useState<RuntimeState | null>(null);
-  const [error, setError] = useState('');
-  const refresh = useCallback(async () => {
-    try {
-      setData(await runtime<RuntimeState>(''));
-      setError('');
-    } catch (e) {
-      setError(errorMessage(e));
+interface Snapshot<T> {
+  data: T | null;
+  error: string;
+}
+
+/** One fetch and one set of Hub listeners shared by every component reading a resource.
+ * `replace` events carry the full resource; `refresh` events trigger a re-fetch. */
+function sharedResource<T>(load: () => Promise<T>, events: { replace?: string; refresh: string[] }) {
+  let snapshot: Snapshot<T> = { data: null, error: '' };
+  const listeners = new Set<() => void>();
+  let inFlight: Promise<void> | null = null;
+  let again = false;
+  let pushes = 0;  // bumps on each pushed snapshot so a slower fetch cannot overwrite it
+  let detach: (() => void) | null = null;
+
+  const publish = (next: Partial<Snapshot<T>>) => {
+    snapshot = { ...snapshot, ...next };
+    listeners.forEach(listener => listener());
+  };
+  const refresh = (): Promise<void> => {
+    if (inFlight) {
+      again = true;  // something changed mid-fetch; fetch once more afterwards
+      return inFlight;
     }
-  }, []);
-  useEffect(() => {
+    const startedAt = pushes;
+    inFlight = load()
+      .then(data => publish(startedAt === pushes ? { data, error: '' } : { error: '' }),
+        e => publish({ error: errorMessage(e) }))
+      .finally(() => {
+        inFlight = null;
+        if (again) {
+          again = false;
+          void refresh();
+        }
+      });
+    return inFlight;
+  };
+  const attach = () => {
+    const onReplace: Listener = event => {
+      pushes += 1;
+      publish({ data: event.data as T, error: '' });
+    };
+    const onRefresh: Listener = () => void refresh();
+    const cancel = whenLegacyReady(() => {
+      if (events.replace) window.Hub?.on(events.replace, onReplace);
+      events.refresh.forEach(type => window.Hub?.on(type, onRefresh));
+    });
     void refresh();
-  }, [refresh]);
-  useRoomEvent<RuntimeState>('runtime_state', event => setData(event.data));
-  useRoomEvent('runtime_usage', () => void refresh());
-  useRoomEvent('settings', () => void refresh());
-  return { data, error, refresh };
+    return () => {
+      cancel();
+      if (events.replace) window.Hub?.off(events.replace, onReplace);
+      events.refresh.forEach(type => window.Hub?.off(type, onRefresh));
+    };
+  };
+  return {
+    refresh,
+    read: () => snapshot,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      if (listeners.size === 1) detach = attach();
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          detach?.();
+          detach = null;
+        }
+      };
+    },
+  };
+}
+
+const runtimeResource = sharedResource<RuntimeState>(() => runtime<RuntimeState>(''), {
+  replace: 'runtime_state',
+  refresh: ['runtime_usage', 'settings'],
+});
+
+/** Live /api/runtime snapshot (agents, approvals, runs, limits), shared by all callers. */
+export function useRuntimeState(): Resource<RuntimeState> {
+  const { data, error } = useSyncExternalStore(runtimeResource.subscribe, runtimeResource.read);
+  return { data, error, refresh: runtimeResource.refresh };
+}
+
+/** Collapse a burst of calls into one trailing call per window. */
+export function useCoalesced(fn: () => void, windowMs: number): () => void {
+  const fnRef = useRef(fn);
+  fnRef.current = fn;
+  const timer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+  }, []);
+  return useCallback(() => {
+    if (timer.current !== null) return;
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      fnRef.current();
+    }, windowMs);
+  }, [windowMs]);
 }
 
 export function sessionTitle(id: string): string { return window.chatSessionTitle?.(id) || id; }

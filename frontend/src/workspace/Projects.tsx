@@ -1,16 +1,16 @@
 /* Projects page: every repository or conversation the room has worked in, side by side.
  * Any project's board, team, goal and channels can be inspected without attaching it;
  * attaching (switching) is explicit because it stops the room and moves agent worktrees. */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { errorMessage, runtime } from '../lib/api';
-import { since, useNow, useRoomEvent, useRuntimeState } from '../lib/room';
-import { TASK_STATUSES, type TaskStatus } from '../lib/types';
+import { since, useCoalesced, useNow, useRoomEvent, useRuntimeState } from '../lib/room';
+import { TASK_STATUSES, type RuntimeState, type TaskStatus } from '../lib/types';
 import { ErrorText, STATUS_LABELS, useAction } from '../board/shared';
 import '../board/board.css';
 import './projects.css';
 import { NewProject } from './NewProject';
 import { Repository } from './Repository';
-import { openChannel, projectLabel, roomIsBusy, switchProject, type ProjectDetail, type ProjectMember, type ProjectSummary } from './projectData';
+import { openChannel, PROJECT_REFRESH_MS, projectLabel, roomIsBusy, switchProject, teamSignature, type ProjectDetail, type ProjectMember, type ProjectSummary } from './projectData';
 
 export type ProjectNav = (view: 'chat' | 'board' | 'team') => void;
 
@@ -101,9 +101,18 @@ function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void
     catch (e) { setError(errorMessage(e)); }
   }, [id]);
   useEffect(() => { setDetail(null); void load(); }, [load]);
-  useRoomEvent('project_state', () => { if (detail?.active) void load(); });
-  useRoomEvent('settings', () => { if (detail?.active) void load(); });
-  useRoomEvent('runtime_state', () => { if (detail?.active) void load(); });
+  const loadSoon = useCoalesced(() => void load(), PROJECT_REFRESH_MS);
+  const lastTeam = useRef('');
+  useRoomEvent('project_state', () => { if (detail?.active) loadSoon(); });
+  useRoomEvent('settings', () => { if (detail?.active) loadSoon(); });
+  // runtime_state streams constantly; the detail only shows each member's state and branch.
+  useRoomEvent<RuntimeState>('runtime_state', event => {
+    if (!detail?.active) return;
+    const team = teamSignature(event.data);
+    if (team === lastTeam.current) return;
+    lastTeam.current = team;
+    loadSoon();
+  });
   if (error) return <section className="bd-panel pj-detail"><ErrorText message={error} /></section>;
   if (!detail) return <section className="bd-panel pj-detail"><p className="bd-muted">Loading project…</p></section>;
   const board = detail.board;
