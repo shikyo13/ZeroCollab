@@ -956,6 +956,8 @@ async def export_history():
             _archive.build_export, store,
             app_version=config.get("server", {}).get("version", ""),
         )
+    except _archive.ExportBusyError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
     except Exception as exc:
         return JSONResponse({"error": f"export failed: {exc}"}, status_code=500)
     filename = f"zerocollab-export-{_time.strftime('%Y%m%d-%H%M%S')}.zip"
