@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 from pathlib import Path
 
 from fastapi import UploadFile
@@ -50,6 +51,26 @@ class ArchiveRoundTripTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.source_store = make_store(self.root / "source")
         self.target_store = make_store(self.root / "target")
+
+    def test_failed_import_commit_does_not_publish_staged_messages(self):
+        seed_history(self.source_store)
+        self.target_store.add('user', 'existing', uid='existing')
+        before = self.target_store.get_recent()
+        disk = self.target_store._path.read_bytes()
+        blob = archive.build_export(self.source_store)
+        with patch('store.atomic_write', side_effect=OSError('disk failure')):
+            with self.assertRaises(OSError):
+                archive.import_archive(blob, self.target_store, ['general'])
+        self.assertEqual(self.target_store.get_recent(), before)
+        self.assertEqual(self.target_store._path.read_bytes(), disk)
+
+    def test_reply_resolution_keeps_published_dictionary_unchanged(self):
+        parent = self.target_store.add('user', 'parent', uid='parent')
+        reply = self.target_store.add('user', 'reply', uid='reply')
+        with self.target_store.import_batch():
+            self.target_store.resolve_import_replies([(reply['id'], 'parent')])
+        self.assertNotIn('reply_to', reply)
+        self.assertEqual(self.target_store.get_by_id(reply['id'])['reply_to'], parent['id'])
 
     def test_corrupt_messages_crc_fails_before_any_additions(self):
         data = io.BytesIO()

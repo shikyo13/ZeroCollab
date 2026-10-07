@@ -176,51 +176,41 @@ def _do_import(zip_bytes, store, channel_list, max_channels):
     # Two-pass: first import all messages, then rebuild reply_to links
     pending_replies = []  # (new_local_id, reply_to_uid)
     if "messages.jsonl" in zf.namelist():
-        for line in _message_lines(zf):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                msg_report["skipped"] += 1
-                continue
-            msg_uid = msg.get("uid") or "fp-" + _fingerprint(msg)
-            if msg_uid in existing_msg_uids:
-                msg_report["duplicates"] += 1
-                continue
-            channel = resolve_channel(msg.get("channel", "general"))
-            new_msg = store.add(
-                sender=msg.get("sender", "unknown"),
-                text=msg.get("text", ""),
-                msg_type=msg.get("type", "chat"),
-                attachments=msg.get("attachments"),
-                channel=channel,
-                metadata=msg.get("metadata"),
-                uid=msg_uid,
-                timestamp=msg.get("timestamp"),
-                time_str=msg.get("time"),
-                _bulk=True,
-            )
-            # Track reply links for second pass
-            reply_to_uid = msg.get("reply_to_uid")
-            if reply_to_uid:
-                pending_replies.append((new_msg["id"], reply_to_uid))
-            existing_msg_uids.add(msg_uid)
-            msg_report["created"] += 1
-        # Flush bulk-added messages and rebuild reply links (single rewrite)
-        if msg_report["created"] > 0:
+        with store.import_batch():
+            for line in _message_lines(zf):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    msg_report["skipped"] += 1
+                    continue
+                msg_uid = msg.get("uid") or "fp-" + _fingerprint(msg)
+                if msg_uid in existing_msg_uids:
+                    msg_report["duplicates"] += 1
+                    continue
+                channel = resolve_channel(msg.get("channel", "general"))
+                new_msg = store.add(
+                    sender=msg.get("sender", "unknown"),
+                    text=msg.get("text", ""),
+                    msg_type=msg.get("type", "chat"),
+                    attachments=msg.get("attachments"),
+                    channel=channel,
+                    metadata=msg.get("metadata"),
+                    uid=msg_uid,
+                    timestamp=msg.get("timestamp"),
+                    time_str=msg.get("time"),
+                    _bulk=True,
+                )
+                # Track reply links for second pass
+                reply_to_uid = msg.get("reply_to_uid")
+                if reply_to_uid:
+                    pending_replies.append((new_msg["id"], reply_to_uid))
+                existing_msg_uids.add(msg_uid)
+                msg_report["created"] += 1
             if pending_replies:
-                with store._lock:
-                    uid_to_id = {m['uid']: m['id'] for m in store._messages if m.get('uid')}
-                    messages_by_id = {m['id']: m for m in store._messages}
-                    for local_id, reply_uid in pending_replies:
-                        target_id = uid_to_id.get(reply_uid)
-                        message = messages_by_id.get(local_id)
-                        if target_id is not None and message is not None:
-                            message["reply_to"] = target_id
-            # Single rewrite covers both bulk messages and reply patches
-            store.flush_bulk()
+                store.resolve_import_replies(pending_replies)
     report["sections"]["messages"] = msg_report
 
     # Archives from older versions may carry sections for features that no
