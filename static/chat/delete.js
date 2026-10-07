@@ -89,8 +89,8 @@ function updateDeleteBar() {
 }
 
 function confirmDelete() {
-    if (!ws || deleteSelected.size === 0) return;
-    ws.send(JSON.stringify({ type: 'delete', project_id: window.activeProjectId, ids: [...deleteSelected] }));
+    if (deleteSelected.size === 0) return;
+    if (!sendServerEvent({ type: 'delete', project_id: window.activeProjectId, ids: [...deleteSelected] })) return;
     exitDeleteMode();
 }
 
