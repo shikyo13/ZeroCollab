@@ -19,19 +19,10 @@ let lastMessageDate = null;  // track date for dividers (general channel)
 let lastMessageDates = {};  // { channel: dateString } for per-channel dividers
 let soundEnabled = false;  // suppress sounds during initial history load
 const linkedChannel = new URLSearchParams(location.search).get('channel');
-let activeChannel = (linkedChannel && /^[a-z0-9][a-z0-9-]{0,19}$/.test(linkedChannel) ? linkedChannel : null) || localStorage.getItem('zerocollab-channel') || 'general';
+let activeChannel = (linkedChannel && /^[a-z0-9][a-z0-9-]{0,19}$/.test(linkedChannel) ? linkedChannel : null) || prefGet('zerocollab-channel') || 'general';
 let channelList = [];
 let channelUnread = {};  // { channelName: count }
-// Saved preferences may be corrupt or storage may be disabled; fall back instead of halting chat.js.
-function storedJson(key, fallback) {
-    try {
-        const raw = localStorage.getItem(key);
-        return raw ? JSON.parse(raw) : fallback;
-    } catch {
-        return fallback;
-    }
-}
-let colorOverrides = storedJson('zerocollab-color-overrides', {});
+let colorOverrides = prefObject('zerocollab-color-overrides');
 
 // Expose globals that channels.js and the React shell read via window.*
 // Using defineProperty so live values are always returned.
@@ -81,7 +72,7 @@ const SOUND_OPTIONS = [
 const DEFAULT_SOUND = 'soft-chime';
 const DICTATION_POLL_MS = 300;
 const CROSS_CHANNEL_SOUND = 'pluck';
-let soundPrefs = storedJson('zerocollab-sounds', {});
+let soundPrefs = prefObject('zerocollab-sounds');
 const soundCache = {};
 
 function playNotificationSound(sender) {
@@ -147,7 +138,7 @@ function buildSoundSettings() {
         select.addEventListener('change', () => {
             const val = select.value;
             soundPrefs[name] = val;
-            localStorage.setItem('zerocollab-sounds', JSON.stringify(soundPrefs));
+            prefSet('zerocollab-sounds', JSON.stringify(soundPrefs));
             if (val && val !== 'none') {
                 if (!soundCache[val]) soundCache[val] = new Audio(`/static/sounds/${val}.mp3`);
                 soundCache[val].currentTime = 0;
@@ -515,7 +506,7 @@ function handleServerEvent(event) {
         // Update active channel if we were on the renamed one
         if (activeChannel === event.old_name) {
             activeChannel = event.new_name;
-            localStorage.setItem('zerocollab-channel', event.new_name);
+            prefSet('zerocollab-channel', event.new_name);
             Store.set('activeChannel', event.new_name);
         }
         filterMessagesByChannel();

@@ -16,6 +16,22 @@ export const legacy = {
   approvals: required('#room-approvals'),
 };
 
+/** Put every moved node back where index.html and runtime.js created it
+ * (#app > header, then #runtime-panel holding controls and approvals), so the
+ * plain chat page keeps working if the React shell is unmounted. */
+export function restoreLegacyLayout() {
+  const { chat, header, runtime, controls, approvals } = legacy;
+  if (!runtime.contains(approvals)) runtime.prepend(approvals);
+  if (!runtime.contains(controls)) runtime.prepend(controls);
+  if (!chat.contains(header)) chat.prepend(header);
+  if (!chat.contains(runtime)) header.after(runtime);
+  if (chat.isConnected) return;
+  // Below the React root, so its error notice stays visible above the chat.
+  const root = document.getElementById('workspace-root');
+  if (root) root.after(chat);
+  else document.body.prepend(chat);
+}
+
 export function prepareLegacy() {
   const settings = document.getElementById('settings-toggle');
   if (settings) {

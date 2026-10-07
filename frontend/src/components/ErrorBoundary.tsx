@@ -1,13 +1,14 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { legacy } from '../legacy';
+import { restoreLegacyLayout } from '../legacy';
 
 interface State {
   error: Error | null;
 }
 
-/** Keeps a render error in one view from blanking the whole workspace. The chat and
- * runtime panels are live legacy DOM moved into React slots; if the shell unmounts
- * they are put back on the page so chat keeps working while the error is shown. */
+/** Keeps a render error in one view from blanking the whole workspace. The chat,
+ * header, room controls and approvals are live legacy DOM moved into React slots;
+ * if the shell unmounts they are put back in their original layout so chat, Stop,
+ * Resume and approvals keep working while the error is shown. */
 export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   state: State = { error: null };
 
@@ -17,9 +18,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('Workspace render failed', error, info.componentStack);
-    for (const node of [legacy.chat, legacy.runtime]) {
-      if (!node.isConnected) document.body.append(node);
-    }
+    restoreLegacyLayout();
   }
 
   render() {

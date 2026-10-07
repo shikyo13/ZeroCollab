@@ -22,7 +22,7 @@ async function sessionRequest(path, body) {
     return data;
 }
 function _rememberSession(id) {
-    try { localStorage.setItem('zerocollab-session:' + _sessionProject, id); } catch (_) {}
+    prefSet('zerocollab-session:' + _sessionProject, id);
 }
 function _getTopVisibleMsgId() {
     const scroll = document.getElementById('timeline');
@@ -59,8 +59,7 @@ function applyProjectSessions(data) {
     const viewed = _history.find(h => h.id === _viewing);
     if (viewed) _sessions.push({ id: viewed.id, title: viewed.title, readonly: true });
     window.channelList = _sessions.map(s => s.id);
-    let saved = '';
-    try { saved = localStorage.getItem('zerocollab-session:' + _sessionProject) || ''; } catch (_) {}
+    const saved = prefGet('zerocollab-session:' + _sessionProject, '');
     const valid = id => _sessions.some(s => s.id === id);
     const linked = new URLSearchParams(location.search).get('channel');
     let next = !changed && valid(window.activeChannel) ? window.activeChannel :
@@ -289,7 +288,7 @@ function setChannelSidebarMode(mode, persist = true) {
     document.body.classList.toggle('channels-in-sidebar', on);
     sidebar.classList.toggle('hidden', !on);
 
-    if (persist) localStorage.setItem(SIDEBAR_MODE_KEY, mode);
+    if (persist) prefSet(SIDEBAR_MODE_KEY, mode);
     const setting = document.getElementById('setting-channel-sidebar');
     if (setting && setting.value !== mode) setting.value = mode;
 
@@ -332,12 +331,12 @@ function setupChannelSidebarGrip() {
         panel.style.transition = '';
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
-        localStorage.setItem(SIDEBAR_WIDTH_KEY, panel.offsetWidth);
+        prefSet(SIDEBAR_WIDTH_KEY, panel.offsetWidth);
     });
 }
 
 function _restoreSidebarState() {
-    const savedWidth = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) || '', 10);
+    const savedWidth = parseInt(prefGet(SIDEBAR_WIDTH_KEY, ''), 10);
     if (savedWidth && savedWidth >= 140 && savedWidth <= 400) {
         const panel = document.getElementById('channel-sidebar');
         if (panel) {
@@ -345,7 +344,7 @@ function _restoreSidebarState() {
             panel.style.width = savedWidth + 'px';
         }
     }
-    const savedMode = localStorage.getItem(SIDEBAR_MODE_KEY) || 'top';
+    const savedMode = prefGet(SIDEBAR_MODE_KEY, 'top');
     setChannelSidebarMode(savedMode, false);
 }
 
