@@ -84,7 +84,7 @@ def local_tool_definitions():
     def tool(name, description, properties, required):
         return {"type": "function", "function": {"name": name, "description": description,
                 "parameters": {"type": "object", "properties": properties, "required": required}}}
-    path = {"type": "string", "description": "Path inside your isolated worktree"}
+    path = {"type": "string", "description": "Path inside your isolated worktree; key:relative/path selects an attached repository"}
     string = {"type": "string"}
     return [
         tool("read_file", "Read a UTF-8 project file, at most 200 lines and 256 KiB.",
@@ -242,6 +242,20 @@ def execute_file_tool(root, name, params):
     return "\n".join(output)[:16000] or "No matches"
 
 
+def file_tool_target(worktree, repositories, params):
+    """Resolve an explicit repository key before applying the usual confinement."""
+    raw = params.get('path', '.')
+    root = Path(worktree)
+    if isinstance(raw, str) and ':' in raw and not Path(raw).is_absolute():
+        key, relative = raw.split(':', 1)
+        if key not in repositories:
+            raise ValueError('Choose an attached repository key')
+        root = Path(repositories[key]['worktree'])
+        params = {**params, 'path': relative}
+    scoped_path(root, params.get('path', '.'))
+    return root, params
+
+
 def request_task_ids(entry):
     ids = set()
     for request in (entry or {}).get('requests', []):
@@ -313,6 +327,12 @@ class Run:
         if profile.get('background'):
             self.instructions += '\nPersonal background and expert perspective supplied by the user:\n' + profile['background']
         self.instructions += '\nApply this perspective while collaborating with the team and following the current user request and room rules.'
+        extra = manager.states[name].get('repositories', {})
+        extra = {key: value['worktree'] for key, value in extra.items() if not value.get('primary')}
+        if extra:
+            self.instructions += '\nAdditional repositories (key -> your isolated worktree):\n' + '\n'.join(
+                f'{key} -> {path}' for key, path in sorted(extra.items()))
+            self.instructions += '\nUse key:relative/path for task reservations, review files and local file tools in additional repositories. Bare task paths are pinned to the primary when claimed.'
         self.instruction_hash = hashlib.sha256(self.instructions.encode('utf-8')).hexdigest()
         self.previous_session = manager.project_room.previous_session(self)
 
@@ -567,7 +587,12 @@ class RoomRuntime:
             path = base / name
             path.mkdir(parents=True, exist_ok=True)
             return dict(worktree=str(path), branch='', workspace_kind='conversation')
-        return self.repository_workspace(self.project, name)
+        return self.repository_workspaces(project_registry.repositories(self), name)
+
+    def repository_workspaces(self, selected, name):
+        workspaces = {r['key']: {**self.repository_workspace(Path(r['path']), name), **r} for r in selected}
+        primary = next(value for value in workspaces.values() if value['primary'])
+        return {**{k: primary[k] for k in ('worktree', 'branch', 'workspace_kind')}, 'repositories': workspaces}
 
     def repository_workspace(self, project, name):
         """Retain old worktrees and reuse one only after checking its Git repository."""
@@ -593,6 +618,7 @@ class RoomRuntime:
         if not transition:
             return None
         return {k: transition[k] for k in ('path', 'phase')} | {
+            'action': transition.get('action', 'replace'),
             'waiting_on': list(self.running),
             'queued': sum(q.qsize() for q in self.queues.values()) +
                       sum(name not in self.running for name in self.deploy_held),
@@ -607,14 +633,21 @@ class RoomRuntime:
         self.publish_soon()
         return self.repository_progress()
 
-    def start_repository_change(self, identity, path, create=False, interrupt=False):
+    def start_repository_change(self, identity, path, create=False, interrupt=False, *, action='replace', key=''):
         if identity != self.identity:
             raise ValueError('Switch to this project before changing its repository')
         if self.repository_transition:
             raise ValueError('A repository change is already in progress')
         if not isinstance(create, bool) or not isinstance(interrupt, bool):
             raise ValueError('create and interrupt must be true or false')
-        self.repository_transition = {'path': str(path or ''), 'phase': 'preparing', 'interrupt': interrupt}
+        if action not in ('replace', 'add', 'primary', 'remove'):
+            raise ValueError('Choose replace, add, primary or remove')
+        if action in ('primary', 'remove'):
+            selected = next((r for r in project_registry.repositories(self) if r['key'] == key), None)
+            if not selected or create:
+                raise ValueError('Choose an attached repository key')
+            path = selected['path']
+        self.repository_transition = {'path': str(path or ''), 'phase': 'preparing', 'interrupt': interrupt, 'action': action}
         # This job outlives a disconnected HTTP caller, so it owns a separate deploy count.
         if self.deployment:
             self.deployment.track_continuation()
@@ -625,8 +658,10 @@ class RoomRuntime:
     async def _change_repository(self, raw_path, create):
         transition = self.repository_transition
         try:
+            action = transition.get('action', 'replace')
             validate = project_registry.new_repository_target if create else project_registry.repository_root
-            path = await asyncio.to_thread(validate, raw_path)
+            # Detaching a missing additional repository must remain possible.
+            path = Path(raw_path) if action == 'remove' else await asyncio.to_thread(validate, raw_path)
             project_registry.check_unowned(self, path, self.identity)
             transition.update(path=str(path), phase='draining')
             await self.publish_status()
@@ -644,17 +679,23 @@ class RoomRuntime:
                 await self.publish_status()
                 if create:
                     path = await asyncio.to_thread(project_registry.create_repository, path)
+                selected = project_registry.repository_plan(self, path, action)
+                if action == 'remove':
+                    self.project_room.check_repository_removal(project_registry.repository_key(path))
                 names = list(self.states)
                 def prepare():
-                    return {name: self.repository_workspace(path, name) for name in names}
+                    return {name: self.repository_workspaces(selected, name) for name in names}
                 workspaces = await asyncio.to_thread(prepare)
                 if transition.get('cancel'):
                     raise ValueError('Repository change cancelled; current repository kept')
                 project_registry.check_unowned(self, path, self.identity)
+                if action == 'remove':
+                    self.project_room.check_repository_removal(project_registry.repository_key(path))
                 # One durable project record is the commit point. No await between it
                 # and publication, and startup uses this record if workspace.json lags.
-                project_registry.commit_repository(self, path, workspaces)
-                self.project = path
+                primary = Path(next(r['path'] for r in selected if r['primary']))
+                project_registry.commit_repository(self, primary, workspaces, selected)
+                self.project = primary
                 for name, workspace in workspaces.items():
                     self.states[name].update(workspace)
                 try:
@@ -942,18 +983,29 @@ class RoomRuntime:
     async def collect_diffs(self):
         if not self.project:
             return {}
-        targets = [(name, state['worktree'], state['provider'])
-                   for name, state in self.states.items() if state.get('worktree')]
+        targets = []
+        for name, state in self.states.items():
+            if not state.get('worktree'):
+                continue
+            repos = state.get('repositories', {})
+            if len(repos) > 1:
+                targets.extend((name, r['worktree'], state['provider'], key) for key, r in repos.items())
+            else:
+                targets.append((name, state['worktree'], state['provider'], ''))
         result = {}
         # Serial within a request: do not fan out one worker per agent.
-        for name, worktree, provider in targets:
+        for name, worktree, provider, key in targets:
+            if len(result.get(name, '')) >= DIFF_CHAR_LIMIT:
+                continue
             try:
-                result[name] = await asyncio.to_thread(_worktree_diff, worktree, provider)
+                diff = await asyncio.to_thread(_worktree_diff, worktree, provider)
             except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
                 LOGGER.warning("Cannot inspect worktree for %s: %s", name, type(exc).__name__)
                 # Distinguish an unavailable checkout from a clean checkout. Do not
                 # include raw Git output, which may contain arbitrary file contents.
-                result[name] = f"[Worktree diff unavailable: {type(exc).__name__}. Retry after checking the checkout.]"
+                diff = f"[Worktree diff unavailable: {type(exc).__name__}. Retry after checking the checkout.]"
+            section = (f'\n[Repository {key}]\n' + diff) if key and diff else diff
+            result[name] = (result.get(name, '') + section)[:DIFF_CHAR_LIMIT]
         return result
 
     def context(self, run, changes):
@@ -1327,7 +1379,7 @@ class RoomRuntime:
                 response.raise_for_status()
                 tools = [t["definition"] for t in response.json() if t.get("tool") in FILE_TOOLS]
             tools = tools + coordination_tools() if cfg.get('tools', True) else []
-            messages = [{"role": "system", "content": run.instructions + "\nLocal file tools run only in your working directory. Shell execution is unavailable. Tool arguments must match their advertised schemas."},
+            messages = [{"role": "system", "content": run.instructions + "\nLocal file tools use your primary worktree by default; key:relative/path selects one of your attached repository worktrees. Shell execution is unavailable. Tool arguments must match their advertised schemas."},
                         {"role": "user", "content": prompt}]
             rounds = run.limits['local_tool_rounds']
             for turn in range(rounds + 1):
@@ -1404,10 +1456,9 @@ class RoomRuntime:
                             continue
                         if name not in FILE_TOOLS:
                             raise ValueError("Tool is disabled")
-                        if name != "get_info":
-                            scoped_path(run.worktree, params.get("path", "."))
-                        if await run.approval(name, params, "Bonsai file action · applies only to the displayed worktree"):
-                            result = execute_file_tool(run.worktree, name, params)
+                        root, file_params = file_tool_target(run.worktree, self.states[run.name].get('repositories', {}), params)
+                        if await run.approval(name, params, f"Bonsai file action · applies only to {root}"):
+                            result = execute_file_tool(root, name, file_params)
                             await run.tool_event(name, {"result": result[:4000]}, "completed")
                     except (ValueError, OSError) as exc:
                         result = "Tool refused: " + str(exc)

@@ -6,8 +6,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
-from room_runtime import RoomRuntime, git, load_workspace, save_workspace
+from room_runtime import RoomRuntime, Run, execute_file_tool, file_tool_target, git, load_workspace, save_workspace
 from coordination_queue import WakeQueue
+from project_room import ProjectRoom
 import project_registry
 
 class WorkspacePersistenceTests(unittest.TestCase):
@@ -65,9 +66,10 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         r.data, r.identity, r.project = self.root / 'data', 'aaaaaaaa', self.root / 'old'
         folder = r.data / 'projects' / r.identity
         folder.mkdir(parents=True)
-        (folder / 'coordination.json').write_text('{}')
+        (folder / 'coordination.json').write_text('{"tasks": [], "notes": []}')
         project_registry._save_record(folder, {'path': str(r.project), 'sessions': [{'id': 'chat1', 'title': 'Keep'}], 'name': 'Keep'})
-        r.project_room = SimpleNamespace(path=folder / 'coordination.json', state={'tasks': []})
+        r.project_room = ProjectRoom(r)
+        r.project_room.use_project(r.identity)
         r.goals = SimpleNamespace(goal=None)
         r.states = {n: {'worktree': str(self.root / 'old' / n), 'branch': 'old', 'workspace_kind': 'repository'} for n in ('a', 'b')}
         r.queues = {n: WakeQueue(maxsize=4) for n in r.states}
@@ -108,7 +110,7 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preparation_failure_does_not_publish_any_workspaces(self):
         old = {n: dict(s) for n, s in self.r.states.items()}
-        self.r.repository_workspace.side_effect = [dict(worktree='first prepared'), OSError('second failed')]
+        self.r.repository_workspace.side_effect = [dict(worktree='first prepared', branch='new', workspace_kind='repository'), OSError('second failed')]
         with self.assertRaisesRegex(OSError, 'second failed'):
             await self.r.start_repository_change(self.r.identity, self.target)
         self.assertEqual(self.r.states, old)
@@ -192,6 +194,94 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, 'already in progress'):
             self.r.start_repository_change(self.r.identity, self.target)
         await job
+
+    async def test_add_select_primary_remove_preserves_other_roots_and_queue(self):
+        old = self.r.project
+        old_key, new_key = map(project_registry.repository_key, (old, self.target))
+        result = await self.r.start_repository_change(self.r.identity, self.target, action='add')
+        self.assertEqual(self.r.project, old)
+        self.assertEqual(len(result['repositories']), 2)
+        self.assertEqual(set(self.r.states['a']['repositories']), {old_key, new_key})
+        await self.r.start_repository_change(self.r.identity, None, action='primary', key=new_key)
+        self.assertEqual(self.r.project, self.target)
+        self.assertEqual(len(project_registry.repositories(self.r)), 2)
+        result = await self.r.start_repository_change(self.r.identity, None, action='remove', key=old_key)
+        self.assertEqual([r['key'] for r in result['repositories']], [new_key])
+        self.assertIs(self.r.queues['a']._queue[0], self.queued)
+        self.assertIsNotNone(next(h for h in result['repository_history'] if h['key'] == old_key)['detached'])
+
+    async def test_reservations_pin_roots_and_block_alias_bypass_and_removal(self):
+        room = self.r.project_room
+        old_key = project_registry.repository_key(self.r.project)
+        original = room.task('a', 'create', title='Original', paths=['src'])
+        await self.r.start_repository_change(self.r.identity, self.target, action='add')
+        with self.assertRaisesRegex(ValueError, 'Scope already reserved'):
+            room.task('b', 'create', title='Alias', paths=[old_key + ':src/file.py'])
+        new_key = project_registry.repository_key(self.target)
+        room.task('b', 'create', title='Other repository', paths=[new_key + ':src'])
+        await self.r.start_repository_change(self.r.identity, None, action='primary', key=new_key)
+        self.assertEqual(original['repository_key'], old_key)
+        with self.assertRaises(project_registry.RepositoryInUse):
+            await self.r.start_repository_change(self.r.identity, None, action='remove', key=old_key)
+        room.task('a', 'release', task_id=original['id'])
+        await self.r.start_repository_change(self.r.identity, None, action='remove', key=old_key)
+
+    async def test_review_files_pin_each_root_after_primary_change_and_reject_escape(self):
+        await self.r.start_repository_change(self.r.identity, self.target, action='add')
+        old_key = project_registry.repository_key(self.r.project)
+        new_key = project_registry.repository_key(self.target)
+        for key, repo in self.r.states['a']['repositories'].items():
+            root = Path(repo['worktree'])
+            root.mkdir(parents=True)
+            (root / 'file.py').write_text(key)
+        task = {'owner': 'a', 'paths': ['file.py', new_key + ':file.py'], 'repository_key': old_key}
+        snapshot, blobs = self.r.project_room.records.capture(task)
+        self.assertEqual(len(blobs), 2)
+        review = {'snapshot': snapshot}
+        await self.r.start_repository_change(self.r.identity, None, action='primary', key=new_key)
+        self.assertEqual(self.r.project_room.records.changed_files(review), [])
+        Path(snapshot['files'][0]['root'], 'file.py').write_text('changed')
+        self.assertEqual(self.r.project_room.records.changed_files(review), ['file.py'])
+        with self.assertRaisesRegex(ValueError, 'inside the owner workspace'):
+            self.r.project_room.records.capture(task, [new_key + ':../escape.py'])
+        await self.r.start_repository_change(self.r.identity, None, action='remove', key=old_key)
+        old_snapshot, _ = self.r.project_room.records.capture(task, ['file.py'])
+        self.assertEqual(old_snapshot['files'][0]['root'], snapshot['files'][0]['root'])
+
+    async def test_add_request_and_labeled_diff_payload(self):
+        request = project_registry.request_repository(self.r, 'a', str(self.target), reason='Extra source', action='add')
+        self.assertEqual(request['action'], 'add')
+        self.assertFalse(request['replace'])
+        await self.r.start_repository_change(self.r.identity, self.target, action='add')
+        for state in self.r.states.values():
+            state['provider'] = 'api'
+        with patch('room_runtime._worktree_diff', return_value='diff'):
+            diffs = await self.r.collect_diffs()
+        self.assertIsInstance(diffs['a'], str)
+        for key in self.r.states['a']['repositories']:
+            self.assertIn('[Repository ' + key + ']', diffs['a'])
+        with patch('room_runtime._worktree_diff', return_value=''):
+            self.assertEqual(await self.r.collect_diffs(), {'a': '', 'b': ''})
+
+    async def test_extra_instructions_change_session_hash_and_local_file_target_is_confined(self):
+        r = self.r
+        r.controls = SimpleNamespace(values={'a': {}})
+        r.cfg, r.profiles = {}, SimpleNamespace(items={})
+        before = Run(r, 'a', self.queued)
+        await r.start_repository_change(r.identity, self.target, action='add')
+        after = Run(r, 'a', self.queued)
+        key = project_registry.repository_key(self.target)
+        root = Path(r.states['a']['repositories'][key]['worktree'])
+        self.assertIn(f'{key} -> {root}', after.instructions)
+        self.assertNotEqual(before.instruction_hash, after.instruction_hash)
+        selected, params = file_tool_target(after.worktree, r.states['a']['repositories'],
+                                          {'path': key + ':src/file.py', 'content': 'extra'})
+        execute_file_tool(selected, 'write_file', params)
+        self.assertEqual((root / 'src/file.py').read_text(), 'extra')
+        self.assertFalse((after.worktree / 'src/file.py').exists())
+        for path in (key + ':../escape.py', key + ':.git/config', 'unknown:file.py'):
+            with self.assertRaises(ValueError):
+                file_tool_target(after.worktree, r.states['a']['repositories'], {'path': path})
 
 
 class RepositoryWorktreeTests(unittest.TestCase):

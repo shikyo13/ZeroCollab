@@ -48,10 +48,11 @@ class CoordinationRecords:
             raise ValueError('Review files must be a list of at most 32 relative files')
         entries, blobs, unavailable, total = [], {}, [], 0
         for relative in dict.fromkeys(selected):
-            path = (root / relative).resolve()
-            if Path(relative).is_absolute() or not path.is_relative_to(root):
+            file_root, file_relative = self.review_source(task, relative, root)
+            path = (file_root / file_relative).resolve()
+            if Path(file_relative).is_absolute() or not path.is_relative_to(file_root):
                 raise ValueError('Review files must stay inside the owner workspace')
-            if any(p.lower() in ('.git', '.venv', 'node_modules') for p in path.relative_to(root).parts) or path.name.lower().startswith(('.env', 'credentials', 'secrets')) or path.suffix.lower() in ('.pem', '.key', '.pfx'):
+            if any(p.lower() in ('.git', '.venv', 'node_modules') for p in path.relative_to(file_root).parts) or path.name.lower().startswith(('.env', 'credentials', 'secrets')) or path.suffix.lower() in ('.pem', '.key', '.pfx'):
                 raise ValueError('Review snapshots exclude environment, credential and generated files')
             if not path.is_file():
                 if files is not None:
@@ -63,9 +64,31 @@ class CoordinationRecords:
                 raise ValueError('Review snapshot exceeds 2 MB; select a smaller explicit file list')
             data = path.read_bytes()
             sha = hashlib.sha256(data).hexdigest()
-            entries.append({'path': relative, 'sha256': sha, 'bytes': len(data)})
+            entries.append({'path': relative, 'root': str(file_root), 'relative': file_relative, 'sha256': sha, 'bytes': len(data)})
             blobs[sha] = data
         return {'root': str(root), 'files': entries, 'unavailable': unavailable}, blobs
+
+    def review_source(self, task, relative, primary_root):
+        runtime = self.room.runtime
+        primary_key = self.room.primary_repository_key()
+        if ':' in relative:
+            key, relative = relative.split(':', 1)
+        else:
+            key = task.get('repository_key', self.room.state.get('scope_repository', primary_key))
+        sources = runtime.states.get(task.get('owner'), {}).get('repositories', {})
+        if key in sources:
+            return Path(sources[key]['worktree']).resolve(), relative
+        if key == primary_key:
+            return primary_root, relative
+        # Replacement/detach never deletes old roots. Reviews of a pinned task can
+        # still capture its original files without interpreting them in the new primary.
+        for entry in reversed(self.room.project_record().get('repository_history', [])):
+            from project_registry import repository_key
+            if entry.get('key', repository_key(entry['path'])) == key:
+                root = entry.get('worktrees', {}).get(task.get('owner'))
+                if root:
+                    return Path(root).resolve(), relative
+        raise ValueError('Review repository workspace is unavailable; attach it or re-scope the task')
 
     def changed_files(self, item, hashes=None):
         # Optional cache belongs to one response only. Approval calls omit it,
@@ -74,10 +97,10 @@ class CoordinationRecords:
         snapshot = item.get('snapshot', {})
         if not snapshot.get('root'):
             return []
-        root = Path(snapshot['root']).resolve()
         changed = []
         for entry in snapshot.get('files', []):
-            path = (root / entry['path']).resolve()
+            root = Path(entry.get('root', snapshot['root'])).resolve()
+            path = (root / entry.get('relative', entry['path'])).resolve()
             try:
                 if not path.is_relative_to(root):
                     matches = False
