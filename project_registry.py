@@ -46,6 +46,10 @@ class Stale(ValueError):
     """A request was made for a project that is no longer active."""
 
 
+class RepositoryInUse(ValueError):
+    """A repository still has reserved work."""
+
+
 def _read(path, fallback):
     try:
         return json.loads(path.read_text('utf-8'))
@@ -178,7 +182,7 @@ def owner_of(runtime, path, exclude=''):
         if folder.name == exclude:
             continue
         own = path_of(runtime, folder)
-        if _same_path(own, path) or (folder.name == hashed and not own and 'path' not in record(folder)):
+        if any(_same_path(item['path'], path) for item in repositories(runtime, folder)) or (folder.name == hashed and not own and 'path' not in record(folder)):
             return folder.name
     return ''
 
@@ -406,23 +410,66 @@ def repository_key(path):
     return slug + '-' + hashlib.sha256(resolved.encode()).hexdigest()[:12]
 
 
-def commit_repository(runtime, path, workspaces):
+def repositories(runtime, folder=None):
+    folder = folder or active_folder(runtime)
+    if folder is None:
+        return []
+    value = record(folder)
+    primary = path_of(runtime, folder)
+    paths = [primary] if primary else []
+    paths += [item['path'] for item in value.get('repositories', []) if item.get('path')]
+    result = {}
+    for path in paths:
+        key = repository_key(path)
+        result.setdefault(key, {'key': key, 'path': path, 'primary': _same_path(path, primary)})
+    return list(result.values())
+
+
+def repository_plan(runtime, path, action):
+    current = repositories(runtime)
+    key = repository_key(path)
+    if action == 'remove':
+        target = next((r for r in current if r['key'] == key), None)
+        if not target or target['primary']:
+            raise ValueError('Only an additional repository can be removed; choose another primary first')
+        return [r for r in current if r['key'] != key]
+    if action == 'replace':
+        current = [r for r in current if not r['primary'] or r['key'] == key]
+    if not any(r['key'] == key for r in current):
+        current.append({'key': key, 'path': str(path), 'primary': False})
+    primary = key if action in ('replace', 'primary') or not runtime.project else repository_key(runtime.project)
+    return [{**r, 'primary': r['key'] == primary} for r in current]
+
+
+def commit_repository(runtime, path, workspaces, selected=None):
     """Publish selection/history together, keeping the rest of the project record."""
     folder = active_folder(runtime)
     value = record(folder)
     now = time.time()
     history = value.setdefault('repository_history', [])
-    previous = str(runtime.project or '')
-    if previous and not any(_same_path(item.get('path'), previous) and item.get('detached') is None for item in history):
-        history.append({'path': previous, 'attached': None, 'detached': None,
-                        'worktrees': {n: s['worktree'] for n, s in runtime.states.items()}})
-    if not _same_path(previous, path):
-        for item in history:
-            if item.get('detached') is None:
-                item['detached'] = now
-        history.append({'path': str(path), 'attached': now, 'detached': None, 'by': 'user',
-                        'worktrees': {n: s['worktree'] for n, s in workspaces.items()}})
-    value.update(path=str(path), repository_history=history)
+    selected = selected or [{'key': repository_key(path), 'path': str(path), 'primary': True}]
+    # Bind reservations made before first attachment at the same durable commit
+    # as the repository selection, without a second coordination.json write.
+    value.setdefault('initial_repository_key', repository_key(runtime.project or path))
+    for old in repositories(runtime):
+        item = next((item for item in history if _same_path(item.get('path'), old['path']) and item.get('detached') is None), None)
+        if item is None:
+            item = {'path': old['path'], 'attached': None, 'detached': None}
+            history.append(item)
+        roots = {n: (s.get('repositories', {}).get(old['key']) or (s if old['primary'] else {})).get('worktree')
+                 for n, s in runtime.states.items()}
+        item['worktrees'] = {n: root for n, root in roots.items() if root}
+    keys = {r['key'] for r in selected}
+    for item in history:
+        item['key'] = repository_key(item['path'])
+        if item.get('detached') is None and item['key'] not in keys:
+            item['detached'] = now
+    for repo in selected:
+        if not any(item['key'] == repo['key'] and item.get('detached') is None for item in history):
+            roots = {n: (s.get('repositories', {}).get(repo['key']) or s)['worktree'] for n, s in workspaces.items()}
+            history.append({'key': repo['key'], 'path': repo['path'], 'attached': now,
+                            'detached': None, 'by': 'user', 'worktrees': roots})
+    value.update(path=str(path), repository_history=history, repositories=selected)
     value.pop('repo_request', None)
     _save_record(folder, value)
 
@@ -480,10 +527,12 @@ def check_unowned(runtime, path, exclude=''):
         raise Conflict('That repository already belongs to another project. Switch to that project instead.', owner)
 
 
-def request_repository(runtime, actor, path='', create=False, reason=''):
+def request_repository(runtime, actor, path='', create=False, reason='', action='replace'):
     """An agent proposes an attachment or replacement; only the user applies it."""
     if not isinstance(create, bool):
         raise ValueError('create must be true or false')
+    if action not in ('add', 'replace'):
+        raise ValueError('Choose add or replace')
     if create:
         target = new_repository_target(path)
     else:
@@ -495,7 +544,8 @@ def request_repository(runtime, actor, path='', create=False, reason=''):
     folder = active_folder(runtime)
     value = record(folder)
     value['repo_request'] = {'by': actor, 'path': str(target), 'create': create, 'reason': reason[:600], 'time': time.time(),
-                             'replace': bool(runtime.project), 'current': str(runtime.project or '')}
+                             'replace': action == 'replace' and bool(runtime.project), 'action': action,
+                             'current': str(runtime.project or '')}
     _save_record(folder, value)
     return value['repo_request']
 
@@ -572,7 +622,8 @@ def summarize(runtime, folder):
             'channels': sorted(_used_channels(state, goal)), 'sessions': chats,
             'last_session': value.get('last_session') if value.get('last_session') in ids else (ids[0] if ids else ''),
             'repo_request': value.get('repo_request'),
-            'repository_history': value.get('repository_history', []),
+            'repositories': repositories(runtime, folder),
+            'repository_history': [{**item, 'key': repository_key(item['path'])} for item in value.get('repository_history', [])],
             'team': team, 'spec': bool(state.get('spec')), 'updated': updated}
 
 
@@ -595,7 +646,7 @@ def install(host, runtime):
     def failure(exc):
         if isinstance(exc, Conflict):
             return JSONResponse({'error': str(exc), 'project_id': exc.project_id}, 409)
-        return JSONResponse({'error': str(exc)}, 400)
+        return JSONResponse({'error': str(exc)}, 409 if isinstance(exc, RepositoryInUse) else 400)
 
     async def announce():
         await host.broadcast_settings()
@@ -654,7 +705,8 @@ def install(host, runtime):
             body = await request.json()
             if runtime.repository_transition:
                 return JSONResponse({'error': 'A repository change is already in progress'}, 409)
-            job = runtime.start_repository_change(identity, body.get('path'), body.get('create', False), body.get('interrupt', False))
+            job = runtime.start_repository_change(identity, body.get('path'), body.get('create', False), body.get('interrupt', False),
+                                                  action=body.get('action', 'replace'), key=body.get('key', ''))
             result = await asyncio.shield(job)
             await announce()
             return result

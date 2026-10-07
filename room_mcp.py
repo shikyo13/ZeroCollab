@@ -131,9 +131,9 @@ def room_followup(action: str, followup_id: str = '', task_id: str = '', assigne
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
-def room_repository(path: str, reason: str, create: bool = False) -> dict:
-    """Ask the user to attach or replace this project's Git repository: use an existing repository root (create false) or create a new one at an absolute folder path (create true). Only the user approves. Running turns can finish and queued work is kept, so continue working meanwhile."""
-    return call('room_repository', dict(path=path, create=create, reason=reason))
+def room_repository(path: str, reason: str, create: bool = False, action: str = 'replace') -> dict:
+    """Ask the user to add a repository (action add) or replace the primary (action replace). Use an existing absolute repository root, or create true for a new folder. Only the user approves. Running turns can finish and queued work is kept. Task/review paths may use key:relative/path; bare task paths are pinned to the primary when claimed."""
+    return call('room_repository', dict(path=path, create=create, reason=reason, action=action))
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})

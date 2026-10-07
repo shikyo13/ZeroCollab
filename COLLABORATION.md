@@ -12,6 +12,8 @@ Show visual work, do not only describe it. For any user-visible change, post a m
 
 If the work needs a repository attached or replaced, ask with room_repository (attach an existing repository root, or create a new one at a folder path) and explain why. Only the user approves it. Running turns can finish and queued work is kept, so continue other work meanwhile.
 
+Projects can contain several repositories. The primary repository is your working directory; additional repository keys and your worktree paths are listed in your instructions. Use room_repository(action="add") to propose another repository, or action="replace" to replace the primary. Use key:relative/path for task reservations and review files in another repository. Bare task paths are pinned to the primary repository when claimed; inspect task.repository_key after a primary change. Previous review snapshots stay tied to their original files.
+
 Take explicit, bounded ownership with room_task and announce it with room_update. Before editing, claim the relative file or directory paths your task needs. Respect other agents' reservations. If scopes overlap, discuss a narrower split or ask the owner to transfer the task before editing. Keep task status current. Mark completed work done or release or transfer ownership when you stop owning it. File reservations coordinate the team; they do not replace native filesystem permissions or isolated worktrees.
 
 Delegate useful pieces of work through room_task with a clear goal, scope, dependencies, and relevant findings. Leave concise progress, decision, blocker, and handoff notes with room_update; routine progress should not wake the whole team. Check back with the group at meaningful milestones and respond to new user steering.

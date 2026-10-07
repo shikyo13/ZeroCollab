@@ -2,6 +2,7 @@
 import json
 import hashlib
 import math
+import os
 import re
 import time
 import uuid
@@ -148,6 +149,8 @@ class ProjectRoom:
     def use_project(self, identity):
         self.path = self.runtime.data / 'projects' / identity / 'coordination.json'
         self.state = json.loads(self.path.read_text('utf-8')) if self.path.exists() else {'spec': '', 'tasks': [], 'notes': []}
+        # Legacy bare reservations keep their original repository after a primary change.
+        self.state.setdefault('scope_repository', self.primary_repository_key())
         for note in self.state.get('notes', []):
             if note.get('kind') == 'decision':
                 note.setdefault('id', uuid.uuid4().hex[:8])
@@ -169,7 +172,7 @@ class ProjectRoom:
         state = execution_state(task, self.state,
             running=task['id'] in activity.get('running_task_ids', []),
             queued=task['id'] in activity.get('queued_task_ids', []))
-        return {**task, 'execution_state': state, 'owner_activity': activity,
+        return {**task, 'repository_key': self.task_repository_key(task), 'execution_state': state, 'owner_activity': activity,
                 'observed_at': time.time(),
                 'stale': stale(task, time.time()) and not pending_human_wait(task, self.state)}
 
@@ -292,7 +295,8 @@ class ProjectRoom:
             if not str(title).strip() or len(tasks) >= 200:
                 raise ValueError('Provide a task title; the project supports up to 200 tasks')
             task = {'id': uuid.uuid4().hex[:8], 'title': str(title).strip()[:120],
-                    'details': str(details).strip()[:3000], 'paths': [scope(p) for p in (paths or [])[:20]],
+                    'details': str(details).strip()[:3000], 'paths': [self.task_scope(p) for p in (paths or [])[:20]],
+                    'repository_key': self.primary_repository_key(),
                     'owner': owner or ('' if human else actor), 'status': 'open', 'updates': [], 'updated': time.time()}
         elif not task:
             raise ValueError('Task was not found')
@@ -302,7 +306,8 @@ class ProjectRoom:
             if not human and task['owner'] and task['owner'] != actor and not accepting:
                 raise ValueError(f"Task is owned by {task['owner']}; ask its owner to delegate it")
             if paths is not None:
-                task['paths'] = [scope(p) for p in paths[:20]]
+                task['paths'] = [self.task_scope(p) for p in paths[:20]]
+                task['repository_key'] = self.primary_repository_key()
             if action == 'claim':
                 task.update(owner=actor if not human else owner, status='working')
                 task.pop('transfer', None)
@@ -388,7 +393,7 @@ class ProjectRoom:
             for other in tasks:
                 if other['id'] == task['id'] or not other['owner'] or other['status'] == 'done':
                     continue
-                if any(overlaps(a, b) for a in task['paths'] for b in other['paths']):
+                if any(self.scopes_overlap(task, a, other, b) for a in task['paths'] for b in other['paths']):
                     raise ValueError('Scope already reserved; existing task: ' + json.dumps({k: other[k] for k in ('id', 'title', 'owner', 'status')}) + '. Coordinate or delegate it first.')
         # Ownership and status moves are recorded automatically so the board history
         # shows who did what even when no check-in text accompanies the change.
@@ -487,6 +492,47 @@ class ProjectRoom:
         self.save()
         return note
 
+    def primary_repository_key(self):
+        from project_registry import repository_key
+        project = getattr(self.runtime, 'project', None)
+        return repository_key(project) if project else ''
+
+    def task_repository_key(self, task):
+        return (task.get('repository_key') or self.state.get('scope_repository') or
+                self.project_record().get('initial_repository_key') or self.primary_repository_key())
+
+    def task_scope(self, raw):
+        raw = str(raw).strip()
+        if ':' not in raw:
+            return scope(raw)
+        key, relative = raw.split(':', 1)
+        keys = {self.primary_repository_key()}
+        for state in self.runtime.states.values():
+            keys.update(state.get('repositories', {}))
+        if not key or key not in keys:
+            raise ValueError('Use an attached repository key before the colon')
+        return key + ':' + scope(relative)
+
+    def scoped_parts(self, task, raw):
+        if ':' in raw:
+            key, relative = raw.split(':', 1)
+        else:
+            key = self.task_repository_key(task)
+            relative = raw
+        return key, os.path.normcase(scope(relative)).replace('\\', '/')
+
+    def scopes_overlap(self, task, first, other, second):
+        key_a, path_a = self.scoped_parts(task, first)
+        key_b, path_b = self.scoped_parts(other, second)
+        return key_a == key_b and overlaps(path_a, path_b)
+
+    def check_repository_removal(self, key):
+        from project_registry import RepositoryInUse
+        for task in self.state.get('tasks', []):
+            if task.get('owner') and task.get('status') != 'done' and any(
+                    self.scoped_parts(task, path)[0] == key for path in task.get('paths', [])):
+                raise RepositoryInUse(f"Repository has reserved paths on task {task['id']}; release or re-scope them before removing it")
+
     def read(self, run, section='overview', offset=0, limit=4000, query='', after_id=0, task_id='', owner='', status='', *, changes=None):
         limit = max(100, min(6000, int(limit)))
         offset = max(0, int(offset))
@@ -531,6 +577,7 @@ class ProjectRoom:
                 # 'project' used to be the repository path, so a conversation project read as "no project".
                 'project': self.project_label(),
                 'repository': str(self.runtime.project) if self.runtime.project else 'none attached',
+                'repositories': self.project_record().get('repositories', []),
                 'spec_length': len(self.state['spec']), 'tasks': [
                 {**{k: t[k] for k in ('id', 'title', 'owner', 'status', 'paths')}, 'labels': t.get('labels', []),
                  'images': len(t.get('attachments', []))}
@@ -716,6 +763,9 @@ class ProjectRoom:
         if state.get('workspace_kind') == 'repository':
             lines.append(f"- Your working directory: {run.worktree}, your own git worktree of the repository on branch "
                          f"{state.get('branch') or '(unknown)'}. Other agents have their own worktrees.")
+            for key, repo in state.get('repositories', {}).items():
+                if not repo.get('primary'):
+                    lines.append(f"- Additional repository {key}: {repo['path']}; your worktree: {repo['worktree']}.")
         else:
             lines.append(f'- Your working directory: {run.worktree}, a private scratch folder. It starts empty; that does not '
                          'mean the project has no source. Source paths named by the user or the spec can be read directly, '
@@ -816,8 +866,8 @@ def coordination_tools():
         definition('room_followup', 'Create a durable action/question for a teammate, optionally linked to a task; resolve with its result or cancel with a reason. Open items stay in the assignee inbox. notify attempts one bounded wake-up; there is no polling or automatic repeated reminder.',
                    {'action': {'type': 'string', 'enum': ['create', 'resolve', 'cancel']}, 'followup_id': string, 'task_id': string,
                     'assigned_to': string, 'text': string, 'result': string, 'notify': {'type': 'boolean'}}, ['action']),
-        definition('room_repository', 'Ask the user to attach or replace this project\'s Git repository: use an existing repository root (create false) or create a new one at an absolute folder path (create true). Only the user approves. Running turns can finish and queued work is kept, so continue working meanwhile.',
-                   {'path': string, 'create': {'type': 'boolean'}, 'reason': string}, ['path', 'reason']),
+        definition('room_repository', 'Ask the user to add a repository (action add) or replace the primary (action replace). Use an existing absolute repository root, or create true for a new folder. Only the user approves. Running turns can finish and queued work is kept. Task/review paths may use key:relative/path; bare task paths are pinned to the primary when claimed.',
+                   {'path': string, 'create': {'type': 'boolean'}, 'reason': string, 'action': {'type': 'string', 'enum': ['add', 'replace']}}, ['path', 'reason']),
         definition('room_goal', 'Read the shared room goal, or as its named lead finish it: complete or block with goal_id and evidence. The user starts, pauses and cancels goals.',
                    {'action': {'type': 'string', 'enum': ['status', 'complete', 'block']}, 'goal_id': string, 'evidence': string}),
     ]
