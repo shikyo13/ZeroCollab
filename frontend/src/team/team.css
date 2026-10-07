@@ -27,7 +27,7 @@
 .tm-editor-head h2 { font-size: 19px; }
 .tm-handle { display: flex; align-items: center; border: 1px solid var(--bd-border); border-radius: 8px; background: var(--bg-input); }
 .tm-handle span { padding: 0 4px 0 10px; color: var(--bd-muted); }
-.bd-root .tm-handle input { border: 0 !important; background: transparent !important; box-shadow: none !important; padding-left: 2px !important; }
+.bd-root .tm-handle input { border: 0; background: transparent; box-shadow: none; padding-left: 2px; }
 .tm-handle:focus-within { border-color: var(--bd-accent); box-shadow: 0 0 0 2px var(--bd-accent-soft); }
 .tm-colors { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 34px; }
 .tm-colors input[type='color'] { width: 40px; height: 32px; padding: 0; border: 1px solid var(--bd-border); border-radius: 8px; background: none; }

@@ -656,8 +656,8 @@ main#timeline {
 }
 
 .message:hover .bubble-copy { opacity: 0.5; }
-.bubble-copy:hover { opacity: 1 !important; color: var(--text); background: var(--white-08); }
-.bubble-copy.copied { opacity: 1 !important; color: var(--online); }
+.message .bubble-copy:hover { opacity: 1; color: var(--text); background: var(--white-08); }
+.message .bubble-copy.copied { opacity: 1; color: var(--online); }
 
 /* --- Delete button (hover action) --- */
 
@@ -1060,11 +1060,6 @@ main#timeline {
 #channel-bar:hover .channel-add, .channel-add:focus-visible { opacity: 1; }
 .channel-add:hover { color: var(--accent); }
 
-.channel-add.disabled {
-    opacity: 0 !important;
-    pointer-events: none;
-}
-
 /* Inline channel input (replaces the + button when creating) */
 .channel-inline-create {
     display: flex;
@@ -1169,12 +1164,6 @@ main#timeline {
     background: var(--white-06);
     color: var(--text);
 }
-.channel-sidebar-header-add.disabled {
-    opacity: 0.3;
-    cursor: not-allowed;
-    pointer-events: none;
-}
-
 #channel-sidebar-list {
     flex: 1;
     overflow-y: auto;
@@ -1887,8 +1876,8 @@ footer {
 }
 
 .message:hover .create-task-pill { opacity: 0.8; }
-.create-task-pill:hover {
-    opacity: 1 !important;
+.message .create-task-pill:hover {
+    opacity: 1;
     color: var(--bubble-color, var(--text));
     border-color: var(--bubble-color, rgba(255, 255, 255, 0.3));
     background: color-mix(in srgb, var(--bubble-color, #888) 15%, transparent);
