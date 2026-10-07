@@ -67,7 +67,10 @@ class CoordinationRecords:
             blobs[sha] = data
         return {'root': str(root), 'files': entries, 'unavailable': unavailable}, blobs
 
-    def changed_files(self, item):
+    def changed_files(self, item, hashes=None):
+        # Optional cache belongs to one response only. Approval calls omit it,
+        # so subsequent changes are always checked against fresh file bytes.
+        hashes = {} if hashes is None else hashes
         snapshot = item.get('snapshot', {})
         if not snapshot.get('root'):
             return []
@@ -76,15 +79,21 @@ class CoordinationRecords:
         for entry in snapshot.get('files', []):
             path = (root / entry['path']).resolve()
             try:
-                matches = path.is_relative_to(root) and hashlib.sha256(path.read_bytes()).hexdigest() == entry['sha256']
+                if not path.is_relative_to(root):
+                    matches = False
+                else:
+                    if path not in hashes:
+                        with path.open('rb') as stream:
+                            hashes[path] = hashlib.file_digest(stream, 'sha256').hexdigest()
+                    matches = hashes[path] == entry['sha256']
             except OSError:
                 matches = False
             if not matches:
                 changed.append(entry['path'])
         return changed
 
-    def review_view(self, item):
-        return {**item, 'changed_files': self.changed_files(item),
+    def review_view(self, item, hashes=None):
+        return {**item, 'changed_files': self.changed_files(item, hashes),
                 'fingerprinted': bool(item.get('snapshot', {}).get('files'))}
 
     def review(self, actor, action, task_id='', review_id='', reviewer='', revision='', text='', verdict='', files=None):

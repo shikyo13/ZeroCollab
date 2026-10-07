@@ -157,9 +157,10 @@ class ProjectRoom:
         self.current_chain.clear()
 
     def snapshot(self):
+        review_hashes = {}
         return {**{k: v for k, v in self.state.items() if k not in ('sessions', 'cursors', 'receipts')},
                 'tasks': [self.task_view(t) for t in self.state['tasks']],
-                'reviews': [self.records.review_view(r) for r in self.state.get('reviews', [])],
+                'reviews': [self.records.review_view(r, review_hashes) for r in self.state.get('reviews', [])],
                 'limits': dict(self.limits), 'chains': list(self.chains.values())[-12:],
                 'stale_seconds': STALE_SECONDS}
 
