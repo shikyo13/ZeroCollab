@@ -559,6 +559,31 @@ main#timeline {
     gap: 6px;
 }
 
+/* Earlier messages not built into the page yet (chat.js loadOlderMessages). */
+.older-messages {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 6px auto 10px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--bg-msg);
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.older-messages:hover {
+    background: var(--bg-msg-hover);
+    color: var(--text);
+}
+
+.older-messages.hidden { display: none; }
+
+.older-messages .older-count { opacity: 0.6; }
+
 /* Messages and date dividers of chats other than the active one (channels.js filterMessagesByChannel). */
 #messages > .off-channel {
     display: none;

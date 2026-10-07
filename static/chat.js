@@ -46,6 +46,9 @@ const CONFIG = {
     sessionRejectedCode: 4003,  // websocket close code for a stale session token: reload the page
     reconnectDelayMs: 2000,     // wait before reconnecting a dropped websocket
     historyBatch: 100,          // history messages rendered per task, keeps the page responsive
+    historyWindow: 200,         // newest saved messages per chat built into the page on load
+    olderBatch: 200,            // earlier messages added per "Show earlier messages" step
+    loadOlderPx: 300,           // scrolling this close to the top adds the next earlier batch
     defaultHistory: 50,         // history setting when the field is not a number
     nearBottomPx: 60,           // this close to the bottom counts as "at the bottom" (auto-scroll)
     anchorGapPx: 12,            // jump-to-latest button gap above the composer
@@ -119,6 +122,12 @@ let pendingHistory = [];
 let pendingLiveEvents = [];
 let historyScheduled = false;
 let historyGeneration = 0;
+// Saved history can hold thousands of messages across chats, so only the newest
+// CONFIG.historyWindow of each chat are built into the page. Every received message stays in
+// messageIndex (reply quotes, jumps), and the older ones wait in olderHistory, per chat and
+// oldest first, until the reader scrolls up.
+const messageIndex = new Map();
+let olderHistory = {};
 // A task queue yields between batches and also runs in background tabs,
 // where animation frames can be suspended.
 const historyTasks = new MessageChannel();
@@ -159,11 +168,73 @@ function renderHistoryBatch() {
         historyLoading = false;
         soundEnabled = true;
         setHistoryIndicator(false);
+        updateOlderBar();
         const events = pendingLiveEvents;
         pendingLiveEvents = [];
         for (const event of events) handleServerEvent(event);
         if (autoScroll) scrollToBottom(true);
     }
+}
+
+// Split received history per chat: the newest CONFIG.historyWindow messages are rendered and
+// the rest go to olderHistory. After a reconnect, a chat that already has messages on the page
+// keeps them; only what is newer than its oldest shown message is rendered.
+function windowHistory() {
+    const byChannel = {};
+    for (const msg of pendingHistory) (byChannel[msg.channel || 'general'] ??= []).push(msg);
+    const render = new Set();
+    olderHistory = {};
+    for (const [channel, list] of Object.entries(byChannel)) {
+        const shown = list.findIndex(msg => document.getElementById(`message-${msg.id}`));
+        const cut = shown === -1 ? Math.max(0, list.length - CONFIG.historyWindow) : shown;
+        olderHistory[channel] = list.slice(0, cut);
+        for (const msg of list.slice(cut)) render.add(msg);
+    }
+    pendingHistory = pendingHistory.filter(msg => render.has(msg));
+}
+
+// Build the next batch of earlier messages of the active chat above the shown ones, keeping
+// the reader's place. Returns whether anything was added.
+function loadOlderMessages() {
+    const older = olderHistory[activeChannel];
+    if (historyLoading || !older?.length) return false;
+    const batch = older.splice(-CONFIG.olderBatch);
+    const timeline = document.getElementById('timeline');
+    const container = document.getElementById('messages');
+    const fragment = document.createDocumentFragment();
+    // The batch gets its own date dividers; restore the tracker for live appends afterwards.
+    const liveDate = lastMessageDates[activeChannel];
+    delete lastMessageDates[activeChannel];
+    for (const msg of batch) appendMessage(msg, { history: true, container: fragment });
+    const batchEnd = lastMessageDates[activeChannel];
+    lastMessageDates[activeChannel] = liveDate;
+    const before = timeline.scrollHeight;
+    // A day that continues into the shown messages keeps one divider, the batch's.
+    const firstShown = [...container.children].find(el => (el.dataset.channel || 'general') === activeChannel);
+    if (firstShown?.classList.contains('date-divider') && firstShown.dataset.date === batchEnd) firstShown.remove();
+    container.prepend(fragment);
+    timeline.scrollTo({ top: timeline.scrollTop + timeline.scrollHeight - before, behavior: 'instant' });
+    updateOlderBar();
+    dayFloatRefresh();
+    return true;
+}
+
+function updateOlderBar() {
+    const bar = document.getElementById('older-messages');
+    if (!bar) return;
+    const count = olderHistory[activeChannel]?.length || 0;
+    bar.classList.toggle('hidden', !count);
+    bar.querySelector('.older-count').textContent = `${count.toLocaleString()} more in this chat`;
+}
+window.updateOlderBar = updateOlderBar;
+
+// Drop deleted or cleared messages from the index and from the not-yet-shown history.
+function forgetMessages(matches) {
+    for (const [id, msg] of messageIndex) if (matches(msg)) messageIndex.delete(id);
+    for (const channel of Object.keys(olderHistory)) {
+        olderHistory[channel] = olderHistory[channel].filter(msg => !matches(msg));
+    }
+    updateOlderBar();
 }
 
 // --- WebSocket ---
@@ -174,6 +245,7 @@ const HISTORY_BUFFERED_EVENTS = new Set(['message', 'delete', 'clear', 'channel_
 const SERVER_EVENTS = {
     message: event => {
         if (document.getElementById(`message-${event.data.id}`)) return;
+        messageIndex.set(event.data.id, event.data);
         // Play notification sound for new messages from others (not joins, not when focused)
         if (soundEnabled && !document.hasFocus() && event.data.type !== 'join' && event.data.type !== 'leave' && event.data.sender && event.data.sender.toLowerCase() !== username.toLowerCase()) {
             playNotificationSound(event.data.sender);
@@ -199,12 +271,14 @@ function handleServerEvent(event) {
         return;
     }
     if (event.type === 'history') {
+        // Rendering waits for history_complete: the window per chat needs the whole history.
         pendingHistory.push(...event.messages);
-        scheduleHistoryRender();
+        for (const msg of event.messages) messageIndex.set(msg.id, msg);
         return;
     }
     if (event.type === 'history_complete') {
         historyReceived = true;
+        windowHistory();
         scheduleHistoryRender();
         return;
     }
@@ -233,6 +307,8 @@ function onAgentRenamed(event) {
         const idx = arr.indexOf(event.old_name);
         if (idx !== -1) arr[idx] = event.new_name;
     }
+    // Messages not shown yet take the new name when they are built.
+    for (const msg of messageIndex.values()) if (msg.sender === event.old_name) msg.sender = event.new_name;
     // Move existing messages (chat and join/leave) to the new name. Matched on the raw
     // sender id: the visible label can differ from the handle.
     const newAvatar = getAvatarSvg(event.new_name);
@@ -265,6 +341,10 @@ function onChannelRenamed(event) {
     renameKey(channelUnread, event.old_name, event.new_name);
     renameKey(_channelMentions, event.old_name, event.new_name);
     renameKey(lastMessageDates, event.old_name, event.new_name);
+    renameKey(olderHistory, event.old_name, event.new_name);
+    for (const msg of messageIndex.values()) {
+        if ((msg.channel || 'general') === event.old_name) msg.channel = event.new_name;
+    }
     if (pendingChannelSwitch === event.old_name) {
         pendingChannelSwitch = event.new_name;
     }
@@ -293,12 +373,16 @@ function onClear(event) {
             (el.dataset.id || el.classList.contains('date-divider')) && (el.dataset.channel || 'general') === clearChannel);
         toRemove.forEach(el => el.remove());
         delete lastMessageDates[clearChannel];
+        forgetMessages(msg => (msg.channel || 'general') === clearChannel);
         filterMessagesByChannel();
     } else {
         // Full clear (all channels)
         container.innerHTML = '';
         lastMessageDate = null;
         lastMessageDates = {};
+        messageIndex.clear();
+        olderHistory = {};
+        updateOlderBar();
     }
     dayFloatRefresh();
 }
@@ -395,12 +479,15 @@ function appendMessage(msg, options = {}) {
         // Reply quote (if this message is a reply)
         let replyHtml = '';
         if (msg.reply_to !== undefined && msg.reply_to !== null) {
-            const parentEl = document.querySelector(`.message[data-id="${msg.reply_to}"]`);
-            if (parentEl) {
-                const parentSender = parentEl.querySelector('.msg-sender')?.textContent || '?';
-                const parentText = parentEl.dataset.rawText || parentEl.querySelector('.msg-text')?.textContent || '';
+            // From the index: the parent may be older than the shown window.
+            const parent = messageIndex.get(msg.reply_to);
+            if (parent) {
+                const isJoin = parent.type === 'join' || parent.type === 'leave';
+                const hasSender = !isJoin && parent.type !== 'system' && parent.sender !== 'system';
+                const parentSender = hasSender ? getAgentDisplayName(parent.sender) : '?';
+                const parentText = isJoin ? '' : parent.text || '';
                 const truncated = parentText.length > CONFIG.quotePreviewChars ? parentText.slice(0, CONFIG.quotePreviewChars) + '...' : parentText;
-                const parentColor = parentEl.querySelector('.msg-sender') ? getColor(parentEl.dataset.sender) : 'var(--text-dim)';
+                const parentColor = hasSender ? getColor(parent.sender) : 'var(--text-dim)';
                 replyHtml = `<div class="reply-quote" onclick="scrollToMessage(${msg.reply_to})"><span class="reply-sender" style="--sender-color: ${escapeHtml(parentColor)}">${escapeHtml(parentSender)}</span> ${escapeHtml(truncated)}</div>`;
             }
         }
@@ -694,6 +781,19 @@ function setupScroll() {
         }
     });
 
+    // Earlier messages of the active chat that are not built into the page yet (loadOlderMessages).
+    const olderBar = document.createElement('button');
+    olderBar.type = 'button';
+    olderBar.id = 'older-messages';
+    olderBar.className = 'older-messages hidden';
+    const olderLabel = document.createElement('span');
+    olderLabel.textContent = 'Show earlier messages';
+    const olderCount = document.createElement('span');
+    olderCount.className = 'older-count';
+    olderBar.append(olderLabel, olderCount);
+    olderBar.addEventListener('click', loadOlderMessages);
+    messages.before(olderBar);
+
     timeline.addEventListener('wheel', (event) => {
         if (event.deltaY < 0) autoScroll = false;
     }, { passive: true });
@@ -704,6 +804,8 @@ function setupScroll() {
 
         if (autoScroll) {
             unreadCount = 0;
+        } else if (timeline.scrollTop < CONFIG.loadOlderPx) {
+            loadOlderMessages();
         }
         updateScrollAnchor();
         dayFloatOnScroll();

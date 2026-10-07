@@ -105,7 +105,12 @@ function cancelReply() {
 }
 
 function scrollToMessage(msgId) {
-    const el = document.querySelector(`.message[data-id="${msgId}"]`);
+    let el = document.querySelector(`.message[data-id="${msgId}"]`);
+    // An earlier message of this chat that is not shown yet: add batches until it is.
+    const msg = messageIndex.get(msgId);
+    while (!el && msg && (msg.channel || 'general') === activeChannel && loadOlderMessages()) {
+        el = document.querySelector(`.message[data-id="${msgId}"]`);
+    }
     if (!el) return;
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     el.classList.add('highlight');

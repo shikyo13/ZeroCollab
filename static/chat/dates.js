@@ -37,6 +37,7 @@ function maybeInsertDateDivider(container, msg) {
         const divider = document.createElement('div');
         divider.className = 'date-divider';
         divider.dataset.channel = channel;
+        divider.dataset.date = msgDate;  // loadOlderMessages merges a day split across batches
         divider.innerHTML = `<span>${formatDateDivider(msgDate)}</span>`;
         if (channel !== activeChannel) {
             divider.classList.add('off-channel');

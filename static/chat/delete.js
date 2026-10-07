@@ -158,4 +158,6 @@ function handleDeleteBroadcast(ids) {
         const el = document.querySelector(`.message[data-id="${id}"]`);
         if (el) el.remove();
     }
+    const deleted = new Set(ids.map(String));
+    forgetMessages(msg => deleted.has(String(msg.id)));
 }

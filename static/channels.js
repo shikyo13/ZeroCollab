@@ -146,6 +146,7 @@ function filterMessagesByChannel() {
     const container = document.getElementById('messages');
     if (!container) return;
     for (const el of container.children) el.classList.toggle('off-channel', (el.dataset.channel || 'general') !== window.activeChannel);
+    window.updateOlderBar?.();
 }
 function switchChannel(name, fromSettings = false) {
     if (!_sessions.some(s => s.id === name) && name !== '') return;
