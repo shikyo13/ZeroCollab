@@ -830,14 +830,14 @@ class RoomRuntime:
 
     async def worker(self, name):
         while True:
+            # Keep pending work in the queue after provider failure. Refresh can
+            # recover the provider; explicit Stop still drains the queue.
+            while self.states[name]['state'] in ('blocked', 'login_required'):
+                await asyncio.sleep(.1)
             entry = await self.queues[name].get()
             self.deploy_held[name] = entry
-            while not self.turn_admission_open():
-                await asyncio.sleep(.1)
-            self.deploy_held.pop(name, None)
-            if self.paused or self.states[name].get("paused") or self.states[name]["state"] in ("blocked", "login_required"):
-                continue
-            self.deploy_held[name] = entry
+            # All held-entry admission waits belong to the cancellable task, so
+            # Stop can discard held work even while deployment/recovery waits.
             task = asyncio.create_task(self.run_turn(name, entry))
             self.states[name]["task"] = task  # removed from public state below
             try:
@@ -868,10 +868,14 @@ class RoomRuntime:
         admitted = False
         try:
             await self.publish_status()
-            while len(self.running) >= self.parallel_capacity() or not self.turn_admission_open():
+            while True:
+                if self.paused or self.states[name].get('paused'):
+                    return
+                if (self.states[name]['state'] not in ('blocked', 'login_required')
+                        and len(self.running) < self.parallel_capacity()
+                        and self.turn_admission_open()):
+                    break
                 await asyncio.sleep(.2)
-            if self.paused or self.states[name].get('paused') or self.states[name]['state'] in ('blocked', 'login_required'):
-                return
             self.queues[name].merge_waiting(entry)
             receipts = self.project_room.state.get('receipts', {}).get(name + ':' + entry['channel'], [])
             requests = [r for r in entry['requests'] if not r.get('_steer_delivered') and current_request(r, name, self.project_room.state, receipts)
@@ -957,8 +961,6 @@ class RoomRuntime:
                 diagnostic = re.sub(r'\b(?:sk-|hf_)[A-Za-z0-9_-]+', '[redacted]', diagnostic)
                 detail += ": " + diagnostic[-1200:]
             self.states[name].update(state="blocked", detail=detail[:600])
-            while not self.queues[name].empty():
-                self.queues[name].get_nowait()
             self.host.store.add("system", f"{name} failed: {detail[:600]}", channel=run.channel)
             await run.finish_message(partial=True)
         finally:
