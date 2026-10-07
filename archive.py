@@ -13,6 +13,11 @@ SCHEMA_VERSION = 1
 MAX_IMPORT_SIZE = 50 * 1024 * 1024  # 50MB uncompressed
 
 _import_lock = threading.Lock()
+_export_lock = threading.Lock()
+
+
+class ExportBusyError(RuntimeError):
+    pass
 
 
 def _fingerprint(record: dict) -> str:
@@ -40,6 +45,16 @@ def _ensure_uid(record: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def build_export(store, app_version: str = "") -> bytes:
+    """Allow one memory-intensive export builder, including cancelled requests."""
+    if not _export_lock.acquire(blocking=False):
+        raise ExportBusyError("export already running")
+    try:
+        return _build_export(store, app_version)
+    finally:
+        _export_lock.release()
+
+
+def _build_export(store, app_version):
     """Build a zip archive of the message store. Returns zip bytes."""
     buf = io.BytesIO()
 

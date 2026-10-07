@@ -154,6 +154,35 @@ class ArchiveRoundTripTests(unittest.TestCase):
 
 
 class ExportThreadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_export_keeps_worker_slot_until_complete(self):
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+        def build(*args, **kwargs):
+            started.set()
+            try:
+                if not release.wait(3):
+                    raise RuntimeError('test worker not released')
+                return b'archive'
+            finally:
+                finished.set()
+        with patch('archive._build_export', side_effect=build):
+            task = asyncio.create_task(app.export_history())
+            try:
+                async with asyncio.timeout(2):
+                    while not started.is_set():
+                        await asyncio.sleep(.01)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                response = await app.export_history()
+                self.assertEqual(response.status_code, 409)
+            finally:
+                release.set()
+                await asyncio.to_thread(finished.wait, 3)
+        # Wait for the worker's finally to release the admission lock.
+        async with asyncio.timeout(2):
+            while archive._export_lock.locked():
+                await asyncio.sleep(.01)
+
     async def test_export_builder_runs_off_loop(self):
         loop_thread = threading.get_ident()
         def build(*args, **kwargs):
