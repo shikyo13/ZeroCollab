@@ -43,9 +43,6 @@
 .pj-channels { display: flex; flex-wrap: wrap; gap: 6px; }
 .pj-branches { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
 .pj-branches code { color: var(--bd-muted); overflow-wrap: anywhere; }
-.pj-attach h3 { font-size: 14px; }
-.pj-attach-row { display: flex; gap: 8px; }
-.pj-attach-row input { flex: 1; min-width: 0; }
 
 /* Sidebar switcher. The nav button styles in styles.css only
  * target the nav items; .pj-switcher scoping outranks .modern-workspace button. */
@@ -74,7 +71,6 @@
   /* The top nav row has no room; the Projects tab is the switcher on phones. */
   .pj-switcher { display: none; }
   .pj-columns { grid-template-columns: 1fr 1fr; }
-  .pj-attach-row { flex-direction: column; }
 }
 
 .pj-new { margin: 0 0 18px; max-width: 720px; }
