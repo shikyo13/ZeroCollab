@@ -47,18 +47,6 @@ def build_export(store, app_version: str = "") -> bytes:
     messages = store.get_recent(count=999_999_999)
     uid_by_id = {msg['id']: _ensure_uid(msg) for msg in messages}
 
-    # Build messages JSONL
-    messages_lines = []
-    for msg in messages:
-        exported = dict(msg)
-        exported["uid"] = uid_by_id[msg["id"]]
-        # Convert reply_to int to reply_to_uid if possible
-        if "reply_to" in exported:
-            reply_id = exported["reply_to"]
-            if reply_id in uid_by_id:
-                exported["reply_to_uid"] = uid_by_id[reply_id]
-        messages_lines.append(json.dumps(exported, ensure_ascii=False))
-
     # Build manifest
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -67,14 +55,22 @@ def build_export(store, app_version: str = "") -> bytes:
         "product": "zerocollab",
         "app_version": app_version,
         "counts": {
-            "messages": len(messages_lines),
+            "messages": len(messages),
         },
         "attachments_included": False,
     }
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
-        zf.writestr("messages.jsonl", "\n".join(messages_lines) + "\n" if messages_lines else "")
+        # Serialize one record at a time instead of retaining all JSONL lines
+        # and a second joined copy alongside the compressed archive.
+        with zf.open("messages.jsonl", "w", force_zip64=True) as stream:
+            for msg in messages:
+                exported = dict(msg)
+                exported["uid"] = uid_by_id[msg["id"]]
+                if "reply_to" in exported and exported["reply_to"] in uid_by_id:
+                    exported["reply_to_uid"] = uid_by_id[exported["reply_to"]]
+                stream.write((json.dumps(exported, ensure_ascii=False) + "\n").encode("utf-8"))
 
     return buf.getvalue()
 
