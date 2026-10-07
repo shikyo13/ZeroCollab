@@ -51,6 +51,17 @@ class ArchiveRoundTripTests(unittest.TestCase):
         self.source_store = make_store(self.root / "source")
         self.target_store = make_store(self.root / "target")
 
+    def test_corrupt_messages_crc_fails_before_any_additions(self):
+        data = io.BytesIO()
+        payload = json.dumps({'sender': 'user', 'text': 'unique-corruption-marker', 'uid': 'x'}).encode() + b'\n'
+        with zipfile.ZipFile(data, 'w', zipfile.ZIP_STORED) as zf:
+            zf.writestr('manifest.json', json.dumps({'schema_version': 1}))
+            zf.writestr('messages.jsonl', payload)
+        corrupt = data.getvalue().replace(b'unique-corruption-marker', b'UNIQUE-corruption-marker', 1)
+        with self.assertRaises(zipfile.BadZipFile):
+            archive.import_archive(corrupt, self.target_store, ['general'])
+        self.assertEqual(self.target_store.get_recent(), [])
+
     def test_round_trip_preserves_identity_and_dedup(self):
         seed_history(self.source_store)
 

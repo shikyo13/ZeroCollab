@@ -95,6 +95,20 @@ def import_archive(zip_bytes: bytes, store, channel_list: list[str],
         _import_lock.release()
 
 
+def _message_lines(zf):
+    # Preserve read-before-mutation checksum validation without retaining the
+    # entire uncompressed entry. The second pass retains one line at a time.
+    with zf.open("messages.jsonl") as stream:
+        total = 0
+        while chunk := stream.read(64 * 1024):
+            total += len(chunk)
+            if total > MAX_IMPORT_SIZE:
+                raise ValueError("messages.jsonl exceeds import size limit")
+    with zf.open("messages.jsonl") as stream:
+        with io.TextIOWrapper(stream, encoding="utf-8", errors="replace", newline="\n") as text:
+            yield from text
+
+
 def _do_import(zip_bytes, store, channel_list, max_channels):
     warnings = []
 
@@ -162,8 +176,7 @@ def _do_import(zip_bytes, store, channel_list, max_channels):
     # Two-pass: first import all messages, then rebuild reply_to links
     pending_replies = []  # (new_local_id, reply_to_uid)
     if "messages.jsonl" in zf.namelist():
-        raw = zf.read("messages.jsonl").decode("utf-8", errors="replace")
-        for line in raw.strip().split("\n"):
+        for line in _message_lines(zf):
             line = line.strip()
             if not line:
                 continue
