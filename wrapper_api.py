@@ -28,6 +28,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import queue_file as file_queue
+
 ROOT = Path(__file__).parent
 
 
@@ -287,7 +289,7 @@ def main():
     # Queue watcher — polls queue file for @mentions
     queue_file = data_dir / f"{name}_queue.jsonl"
     if queue_file.exists():
-        queue_file.write_text("", "utf-8")
+        file_queue.clear(queue_file)
 
     print(f"\n  === {agent_cfg.get('label', agent)} API Wrapper ===")
     print(f"  Model endpoint: {base_url}/chat/completions")
@@ -304,9 +306,7 @@ def main():
                 qf = data_dir / f"{current_name}_queue.jsonl"
 
                 if qf.exists() and qf.stat().st_size > 0:
-                    with open(qf, "r", encoding="utf-8") as f:
-                        lines = f.readlines()
-                    qf.write_text("", "utf-8")
+                    lines = file_queue.drain(qf)
 
                     channels_triggered = set()
                     for line in lines:

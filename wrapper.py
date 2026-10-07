@@ -26,6 +26,8 @@ import threading
 import time
 from pathlib import Path
 
+import queue_file as file_queue
+
 ROOT = Path(__file__).parent
 
 SERVER_NAME = "zerocollab"
@@ -449,9 +451,7 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
         try:
             _, queue_file = get_identity_fn()
             if queue_file.exists() and queue_file.stat().st_size > 0:
-                with open(queue_file, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                queue_file.write_text("", "utf-8")
+                lines = file_queue.drain(queue_file)
 
                 prompt = _queued_prompt(lines)
                 if prompt:
@@ -620,7 +620,7 @@ def main():
 
     queue_file = _identity["queue"]
     if queue_file.exists():
-        queue_file.write_text("", "utf-8")
+        file_queue.clear(queue_file)
 
     strip_vars = {"CLAUDECODE"} | set(agent_cfg.get("strip_env", []))
     env = {k: v for k, v in os.environ.items() if k not in strip_vars}
