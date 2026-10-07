@@ -9,6 +9,7 @@ import platform
 import re
 import subprocess
 import time
+import tempfile
 import uuid
 from collections import deque
 from pathlib import Path
@@ -32,6 +33,65 @@ from steering_delivery import SteeringDelivery
 ROOT = Path(__file__).resolve().parent
 FILE_TOOLS = {"read_file", "file_glob_search", "grep_search", "write_file", "edit_file", "get_info"}
 PRIVATE_PARTS = {".git", ".codex", ".claude", ".gemini", ".aws", ".ssh", ".env", ".agents"}
+
+
+def load_workspace(path):
+    """Recover a validated selection; never silently select a different project."""
+    def read(candidate):
+        value = json.loads(candidate.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("Workspace state must be an object")
+        for key in ("project", "project_id"):
+            if value.get(key) is not None and not isinstance(value[key], str):
+                raise ValueError(f"Invalid workspace {key}")
+        return value
+
+    backup = path.with_suffix('.json.bak')
+    if not path.exists() and not backup.exists():
+        return {}
+    try:
+        return read(path)
+    except (OSError, ValueError) as primary_error:
+        try:
+            saved = read(backup)
+        except (OSError, ValueError) as backup_error:
+            raise RuntimeError(f"Cannot recover workspace selection from {path}; restore a valid workspace.json or its .bak") from backup_error
+        logging.getLogger(__name__).warning("Recovered workspace selection from %s after %s", backup, primary_error)
+        # Recovery must not automatically launch work under an older selection.
+        return {**saved, "paused": True}
+
+
+def save_workspace(path, value):
+    """Atomically retain the previous valid selection before installing the next."""
+    def replace(target, text):
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                             prefix=target.name + '.', suffix='.tmp', delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    encoded = json.dumps(value, indent=2)
+    if path.exists():
+        try:
+            previous = path.read_text(encoding='utf-8')
+            parsed = json.loads(previous)
+            if not isinstance(parsed, dict):
+                raise ValueError('Invalid workspace state')
+            for key in ('project', 'project_id'):
+                if parsed.get(key) is not None and not isinstance(parsed[key], str):
+                    raise ValueError('Invalid workspace selection')
+        except ValueError:
+            pass  # Keep the valid backup when replacing a corrupt primary.
+        else:
+            replace(path.with_suffix('.json.bak'), previous)
+    replace(path, encoded)
 
 
 def local_tool_definitions():
@@ -428,10 +488,10 @@ class RoomRuntime:
                 self.profiles.items[name]['paused'] = state.get('paused', False)
         if self.profiles.path:
             self.profiles.save()
-        (self.data / "workspace.json").write_text(json.dumps({"project": str(self.project) if self.project else None,
+        save_workspace(self.data / "workspace.json", {"project": str(self.project) if self.project else None,
               "project_id": self.identity, "paused": self.paused,
               "paused_agents": [n for n, s in self.states.items() if s.get("paused")],
-              "worktrees": {n: s["worktree"] for n, s in self.states.items()}}, indent=2), "utf-8")
+              "worktrees": {n: s["worktree"] for n, s in self.states.items()}})
 
     def setup_project(self, project, identity=None):
         """Activate a project. identity keeps a project's board, team and chats when its
@@ -584,10 +644,7 @@ class RoomRuntime:
     async def start(self):
         self.loop = asyncio.get_running_loop()
         self.data.mkdir(parents=True, exist_ok=True)
-        saved = {}
-        path = self.data / "workspace.json"
-        if path.exists():
-            saved = json.loads(path.read_text("utf-8"))
+        saved = load_workspace(self.data / "workspace.json")
         self.paused = saved.get("paused", False)
         project = saved.get('project')
         if project:
