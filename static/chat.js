@@ -665,7 +665,7 @@ function maybeInsertDateDivider(container, msg) {
         divider.dataset.channel = channel;
         divider.innerHTML = `<span>${formatDateDivider(msgDate)}</span>`;
         if (channel !== activeChannel) {
-            divider.style.display = 'none';
+            divider.classList.add('off-channel');
         }
         container.appendChild(divider);
     }
@@ -688,7 +688,7 @@ function dayFloatLabel() {
     const top = scroll.getBoundingClientRect().top;
     let label = null;
     for (const d of dayFloatDividers) {
-        if (d.style.display === 'none') continue;
+        if (d.classList.contains('off-channel')) continue;
         if (d.getBoundingClientRect().top <= top) {
             label = d.textContent;
         } else {
@@ -803,7 +803,7 @@ function appendMessage(msg, options = {}) {
 
     // Hide messages from other channels
     if (msgChannel !== activeChannel) {
-        el.style.display = 'none';
+        el.classList.add('off-channel');
         // Track unread for background channels (skip joins/leaves and initial history load)
         if (!options.history && soundEnabled && msg.type !== 'join' && msg.type !== 'leave') {
             channelUnread[msgChannel] = (channelUnread[msgChannel] || 0) + 1;

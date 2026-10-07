@@ -11,6 +11,7 @@ let _viewing = '';
 let _moreOpen = false;
 const CHAT_TITLE_MAX = 40;    // project_registry.py SESSION_TITLE_MAX
 const UNREAD_SHOWN_MAX = 99;  // larger unread counts show as "99+"
+const SESSION_PREF_PREFIX = 'zerocollab-session:';  // + project id: the last chat opened there
 window.chatSessionTitle = id => _sessions.find(s => s.id === id)?.title || id;
 window.chatSessionReadonly = id => !_sessions.some(s => s.id === id && !s.readonly);
 Object.defineProperty(window, 'activeProjectId', { get: () => _sessionProject });
@@ -23,8 +24,21 @@ async function sessionRequest(path, body) {
     if (!response.ok) throw new Error(data.error || response.statusText);
     return data;
 }
+// POST /sessions/<id>[/action] for the active project.
+function _sessionPath(id, action = '') {
+    return '/sessions/' + encodeURIComponent(id) + (action ? '/' + action : '');
+}
 function _rememberSession(id) {
-    prefSet('zerocollab-session:' + _sessionProject, id);
+    prefSet(SESSION_PREF_PREFIX + _sessionProject, id);
+}
+// Open (writable) chats; a history channel being viewed is the only read-only entry.
+function _openSessions() {
+    return _sessions.filter(s => !s.readonly);
+}
+// Publish the session list to chat.js (channelList) and the shared store.
+function _syncSessions() {
+    window.channelList = _sessions.map(s => s.id);
+    Store.set('chatSessions', [..._sessions]);
 }
 function _getTopVisibleMsgId() {
     const scroll = document.getElementById('timeline');
@@ -32,7 +46,7 @@ function _getTopVisibleMsgId() {
     if (!scroll || !container) return null;
     const rect = scroll.getBoundingClientRect();
     for (const el of container.children) {
-        if (el.style.display === 'none' || !el.dataset.id) continue;
+        if (el.classList.contains('off-channel') || !el.dataset.id) continue;
         if (el.getBoundingClientRect().bottom > rect.top) return el.dataset.id;
     }
     return null;
@@ -60,19 +74,18 @@ function applyProjectSessions(data) {
     _sessions = data.sessions.filter(s => !s.readonly);
     const viewed = _history.find(h => h.id === _viewing);
     if (viewed) _sessions.push({ id: viewed.id, title: viewed.title, readonly: true });
-    window.channelList = _sessions.map(s => s.id);
-    const saved = prefGet('zerocollab-session:' + _sessionProject, '');
+    _syncSessions();
+    const saved = prefGet(SESSION_PREF_PREFIX + _sessionProject, '');
     const valid = id => _sessions.some(s => s.id === id);
     const linked = new URLSearchParams(location.search).get('channel');
     let next = !changed && valid(window.activeChannel) ? window.activeChannel :
         initial && valid(linked) ? linked : valid(saved) ? saved : valid(data.last_session) ? data.last_session :
-        _sessions.find(s => !s.readonly)?.id || _sessions[0]?.id || '';
+        _openSessions()[0]?.id || _sessions[0]?.id || '';
     switchChannel(next, true);
     Store.set('projectId', _sessionProject);
-    Store.set('chatSessions', _sessions);
     for (const id of ['channel-add-btn', 'channel-sidebar-add']) {
         const add = document.getElementById(id);
-        if (add) { add.style.display = ''; add.disabled = !_sessionProject; add.title = 'New chat'; }
+        if (add) add.disabled = !_sessionProject;
     }
 }
 window.applyProjectSessions = applyProjectSessions;
@@ -109,9 +122,9 @@ function _renderSessions(container, sidebar) {
         }
         const close = document.createElement('button'); close.className = 'ch-delete-btn';
         close.textContent = '×';
-        close.title = session.readonly ? 'Stop viewing ' + session.title
-            : 'Close ' + session.title + ' (history is kept; reopen it from Closed & older chats)';
-        close.setAttribute('aria-label', session.readonly ? 'Stop viewing ' + session.title : 'Close ' + session.title);
+        const closeLabel = (session.readonly ? 'Stop viewing ' : 'Close ') + session.title;
+        close.title = session.readonly ? closeLabel : closeLabel + ' (history is kept; reopen it from Closed & older chats)';
+        close.setAttribute('aria-label', closeLabel);
         close.onclick = () => session.readonly ? _stopViewing() : _closeSession(name, close);
         actions.append(close); tab.append(actions);
         container.append(tab);
@@ -132,7 +145,7 @@ function renderChannelSidebar() { _renderSessions(document.getElementById('chann
 function filterMessagesByChannel() {
     const container = document.getElementById('messages');
     if (!container) return;
-    for (const el of container.children) el.style.display = (el.dataset.channel || 'general') === window.activeChannel ? '' : 'none';
+    for (const el of container.children) el.classList.toggle('off-channel', (el.dataset.channel || 'general') !== window.activeChannel);
 }
 function switchChannel(name, fromSettings = false) {
     if (!_sessions.some(s => s.id === name) && name !== '') return;
@@ -148,7 +161,7 @@ function switchChannel(name, fromSettings = false) {
     filterMessagesByChannel(); renderChannelTabs();
     Store.set('activeChannel', name);
     if (!fromSettings && name && !window.chatSessionReadonly(name)) {
-        sessionRequest('/sessions/' + encodeURIComponent(name) + '/open', {}).catch(error => console.warn(error.message));
+        sessionRequest(_sessionPath(name, 'open'), {}).catch(error => console.warn(error.message));
     }
     if (name === prev) return;
     const saved = _channelScrollMsg[name];
@@ -175,15 +188,15 @@ function _sessionEditor(id, sidebar = false) {
         if (project !== _sessionProject) { wrapper.remove(); return; }
         submit.disabled = true; error.textContent = '';
         try {
-            const result = await sessionRequest(id ? '/sessions/' + encodeURIComponent(id) : '/sessions', { title });
+            const result = await sessionRequest(id ? _sessionPath(id) : '/sessions', { title });
             if (project === _sessionProject) {
                 // The settings broadcast and REST response may arrive in either order.
                 const target = id || result.id;
                 if (target) {
                     const known = _sessions.find(s => s.id === target);
-                    if (known) known.title = title; else _sessions.push({ id: target, title, readonly: false });
-                    window.channelList = _sessions.map(s => s.id);
-                    switchChannel(target); Store.set('chatSessions', [..._sessions]);
+                    if (known) known.title = title; else _addOpenSession(target, title);
+                    _syncSessions();
+                    switchChannel(target);
                 }
                 wrapper.remove();
             }
@@ -212,57 +225,54 @@ function _moreMenu() {
     menu.append(summary, list);
     return menu;
 }
-function _syncSessions() {
-    window.channelList = _sessions.map(s => s.id);
-    Store.set('chatSessions', [..._sessions]);
+// New and reopened chats go after the open ones, before any history being viewed.
+function _addOpenSession(id, title) {
+    if (!_sessions.some(s => s.id === id)) _sessions.splice(_openSessions().length, 0, { id, title, readonly: false });
 }
-async function _closeSession(id, button) {
+// Run a close/reopen request with its control disabled meanwhile. apply(result) updates
+// local state only if the project is unchanged; a failure re-enables the control.
+async function _sessionAction(id, action, control, apply) {
     const project = _sessionProject;
-    if (button) button.disabled = true;
+    if (control) control.disabled = true;
     try {
-        await sessionRequest('/sessions/' + encodeURIComponent(id) + '/close', {});
-        if (project !== _sessionProject) return;
+        const result = await sessionRequest(_sessionPath(id, action), {});
+        if (project === _sessionProject) apply(result);
+    } catch (e) {
+        if (control) control.disabled = false;
+        showToast(e.message, 'error');
+    }
+}
+function _closeSession(id, button) {
+    return _sessionAction(id, 'close', button, () => {
         const session = _sessions.find(s => s.id === id);
         _sessions = _sessions.filter(s => s.id !== id);
         if (session && !_closed.some(c => c.id === id)) _closed.push({ id, title: session.title });
         _syncSessions();
-        switchChannel(window.activeChannel === id ? (_sessions.find(s => !s.readonly)?.id || '') : window.activeChannel);
-    } catch (e) {
-        if (button) button.disabled = false;
-        showToast(e.message, 'error');
-    }
+        switchChannel(window.activeChannel === id ? (_openSessions()[0]?.id || '') : window.activeChannel);
+    });
 }
-async function _reopenSession(id, row) {
-    const project = _sessionProject;
-    if (row) row.disabled = true;
-    try {
-        const result = await sessionRequest('/sessions/' + encodeURIComponent(id) + '/reopen', {});
-        if (project !== _sessionProject) return;
+function _reopenSession(id, row) {
+    return _sessionAction(id, 'reopen', row, result => {
         _closed = _closed.filter(c => c.id !== id);
-        // Reopened chats go after the open ones, before any history being viewed.
-        if (!_sessions.some(s => s.id === id)) _sessions.splice(_sessions.filter(s => !s.readonly).length, 0, { id, title: result.title, readonly: false });
+        _addOpenSession(id, result.title);
         _moreOpen = false;
         _syncSessions();
         switchChannel(id);
-    } catch (e) {
-        if (row) row.disabled = false;
-        showToast(e.message, 'error');
-    }
+    });
 }
 function _viewHistory(id) {
     const item = _history.find(h => h.id === id);
     if (!item) return;
-    _sessions = _sessions.filter(s => !s.readonly);
-    _sessions.push({ id: item.id, title: item.title, readonly: true });
+    _sessions = [..._openSessions(), { id: item.id, title: item.title, readonly: true }];
     _viewing = id; _moreOpen = false;
-    window.channelList = _sessions.map(s => s.id);
+    _syncSessions();
     switchChannel(id);
 }
 function _stopViewing() {
     const id = _viewing;
     _viewing = '';
-    _sessions = _sessions.filter(s => !s.readonly);
-    window.channelList = _sessions.map(s => s.id);
+    _sessions = _openSessions();
+    _syncSessions();
     if (window.activeChannel === id) switchChannel(_sessions[0]?.id || ''); else renderChannelTabs();
 }
 document.addEventListener('click', e => {
@@ -270,10 +280,8 @@ document.addEventListener('click', e => {
     _moreOpen = false;
     document.querySelectorAll('.channel-more').forEach(m => { m.open = false; });
 });
+// Rename is the tab's ✎ button or double-click; chats are closed (×), never deleted.
 function showChannelCreateDialog() { _sessionEditor(null, document.body.classList.contains('channels-in-sidebar')); }
-function showChannelRenameDialog(id) { _sessionEditor(id); }
-// Chats are closed, never deleted: history is kept and they reopen from Closed & older chats.
-function deleteChannel(id) { if (id) _closeSession(id); }
 
 // ---------------------------------------------------------------------------
 // Sidebar mode toggle + resize grip
@@ -299,6 +307,11 @@ function setChannelSidebarMode(mode, persist = true) {
     if (on) renderChannelSidebar();
 }
 
+// The width is a CSS variable (#channel-sidebar uses var(--channel-sidebar-w)).
+function _setSidebarWidth(panel, px) {
+    panel.style.setProperty('--channel-sidebar-w', px + 'px');
+}
+
 function setupChannelSidebarGrip() {
     const grip = document.getElementById('channel-sidebar-grip');
     const panel = document.getElementById('channel-sidebar');
@@ -307,47 +320,38 @@ function setupChannelSidebarGrip() {
     let dragging = false;
     let startX = 0;
     let startWidth = 0;
+    // body.channel-sidebar-resizing keeps the resize cursor and blocks text selection mid-drag.
+    const setDragging = on => {
+        dragging = on;
+        grip.classList.toggle('dragging', on);
+        document.body.classList.toggle('channel-sidebar-resizing', on);
+    };
 
     grip.addEventListener('mousedown', (e) => {
         e.preventDefault();
-        dragging = true;
         startX = e.clientX;
         startWidth = panel.offsetWidth;
-        grip.classList.add('dragging');
-        panel.style.transition = 'none';
-        document.body.style.cursor = 'col-resize';
-        document.body.style.userSelect = 'none';
+        setDragging(true);
     });
 
     document.addEventListener('mousemove', (e) => {
         if (!dragging) return;
         // Sidebar is on the left, so dragging right grows it (positive delta).
         const delta = e.clientX - startX;
-        const newWidth = Math.min(Math.max(startWidth + delta, SIDEBAR_MIN_PX), SIDEBAR_MAX_PX);
-        panel.style.setProperty('--channel-sidebar-w', newWidth + 'px');
-        panel.style.width = newWidth + 'px';
+        _setSidebarWidth(panel, Math.min(Math.max(startWidth + delta, SIDEBAR_MIN_PX), SIDEBAR_MAX_PX));
     });
 
     document.addEventListener('mouseup', () => {
         if (!dragging) return;
-        dragging = false;
-        grip.classList.remove('dragging');
-        panel.style.transition = '';
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
+        setDragging(false);
         prefSet(SIDEBAR_WIDTH_KEY, panel.offsetWidth);
     });
 }
 
 function _restoreSidebarState() {
     const savedWidth = parseInt(prefGet(SIDEBAR_WIDTH_KEY, ''), 10);
-    if (savedWidth && savedWidth >= SIDEBAR_MIN_PX && savedWidth <= SIDEBAR_MAX_PX) {
-        const panel = document.getElementById('channel-sidebar');
-        if (panel) {
-            panel.style.setProperty('--channel-sidebar-w', savedWidth + 'px');
-            panel.style.width = savedWidth + 'px';
-        }
-    }
+    const panel = document.getElementById('channel-sidebar');
+    if (panel && savedWidth >= SIDEBAR_MIN_PX && savedWidth <= SIDEBAR_MAX_PX) _setSidebarWidth(panel, savedWidth);
     const savedMode = prefGet(SIDEBAR_MODE_KEY, 'top');
     setChannelSidebarMode(savedMode, false);
 }
@@ -388,8 +392,5 @@ window.showChannelCreateDialog = showChannelCreateDialog;
 window.switchChannel = switchChannel;
 window.filterMessagesByChannel = filterMessagesByChannel;
 window.renderChannelTabs = renderChannelTabs;
-window.deleteChannel = deleteChannel;
-window.showChannelRenameDialog = showChannelRenameDialog;
-window.renderChannelSidebar = renderChannelSidebar;
 window.setChannelSidebarMode = setChannelSidebarMode;
 window.Channels = { init: _channelsInit };

@@ -559,6 +559,11 @@ main#timeline {
     gap: 6px;
 }
 
+/* Messages and date dividers of chats other than the active one (channels.js filterMessagesByChannel). */
+#messages > .off-channel {
+    display: none;
+}
+
 .message {
     display: flex;
     align-items: flex-start;
@@ -1229,6 +1234,11 @@ main#timeline {
 .channel-sidebar-grip:hover,
 .channel-sidebar-grip.dragging {
     background: var(--accent);
+}
+
+body.channel-sidebar-resizing {
+    cursor: col-resize;
+    user-select: none;
 }
 
 /* When the sidebar is on, hide the top channel bar entirely. */
