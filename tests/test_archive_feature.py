@@ -53,6 +53,28 @@ class ArchiveRoundTripTests(unittest.TestCase):
         self.source_store = make_store(self.root / "source")
         self.target_store = make_store(self.root / "target")
 
+    def test_preparation_finishes_before_store_transaction(self):
+        seed_history(self.source_store)
+        blob = archive.build_export(self.source_store)
+        original = archive._message_lines
+        parsing = False
+        def lines(zf):
+            nonlocal parsing
+            parsing = True
+            try:
+                yield from original(zf)
+            finally:
+                parsing = False
+        original_batch = self.target_store.import_batch
+        def batch():
+            self.assertFalse(parsing)
+            return original_batch()
+        with patch('archive._message_lines', side_effect=lines), patch.object(
+            self.target_store, 'import_batch', side_effect=batch
+        ):
+            report = archive.import_archive(blob, self.target_store, ['general'])
+        self.assertEqual(report['sections']['messages']['created'], 2)
+
     def test_failed_import_commit_does_not_publish_staged_messages(self):
         seed_history(self.source_store)
         self.target_store.add('user', 'existing', uid='existing')

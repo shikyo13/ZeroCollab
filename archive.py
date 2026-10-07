@@ -124,15 +124,20 @@ def _message_lines(zf):
             yield from text
 
 
-def _do_import(zip_bytes, store, channel_list, max_channels):
-    warnings = []
-
+def _prepare_import(zip_bytes):
+    """Validate and parse without holding the store lock or changing live state."""
     # Validate zip
     try:
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
     except zipfile.BadZipFile:
         return {"ok": False, "error": "invalid zip archive"}
 
+    with zf:
+        return _parse_import(zf)
+
+
+def _parse_import(zf):
+    warnings = []
     # Check total uncompressed size
     total_size = sum(info.file_size for info in zf.infolist())
     if total_size > MAX_IMPORT_SIZE:
@@ -165,6 +170,37 @@ def _do_import(zip_bytes, store, channel_list, max_channels):
         "warnings": warnings,
     }
 
+    # Parsed records are retained for the short apply phase. The archive input
+    # is capped, but Python objects cost more than their serialized bytes.
+    records = []
+    skipped = 0
+    if "messages.jsonl" in zf.namelist():
+        for line in _message_lines(zf):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                skipped += 1
+                continue
+            msg_uid = msg.get("uid") or "fp-" + _fingerprint(msg)
+            records.append((msg, msg_uid))
+
+    # Archives from older versions may carry sections for features that no
+    # longer exist; they are reported and skipped rather than failing the import.
+    legacy = [n for n in ("jobs.json", "rules.json", "summaries.json") if n in zf.namelist()]
+    if legacy:
+        warnings.append("skipped sections for removed features: " + ", ".join(legacy))
+
+    return report, records, skipped
+
+
+def _do_import(zip_bytes, store, channel_list, max_channels):
+    prepared = _prepare_import(zip_bytes)
+    if isinstance(prepared, dict):
+        return prepared
+    report, records, skipped = prepared
     # Collect existing UIDs for dedup
     existing_msg_uids = set()
     for m in store.get_recent(count=999_999_999):
@@ -187,21 +223,12 @@ def _do_import(zip_bytes, store, channel_list, max_channels):
         return "general"
 
     # --- Import messages (preserve archive uid, timestamp, time, reply links) ---
-    msg_report = {"created": 0, "duplicates": 0, "conflicts": 0, "skipped": 0}
+    msg_report = {"created": 0, "duplicates": 0, "conflicts": 0, "skipped": skipped}
     # Two-pass: first import all messages, then rebuild reply_to links
     pending_replies = []  # (new_local_id, reply_to_uid)
-    if "messages.jsonl" in zf.namelist():
+    if records:
         with store.import_batch():
-            for line in _message_lines(zf):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
-                    msg_report["skipped"] += 1
-                    continue
-                msg_uid = msg.get("uid") or "fp-" + _fingerprint(msg)
+            for msg, msg_uid in records:
                 if msg_uid in existing_msg_uids:
                     msg_report["duplicates"] += 1
                     continue
@@ -227,11 +254,5 @@ def _do_import(zip_bytes, store, channel_list, max_channels):
             if pending_replies:
                 store.resolve_import_replies(pending_replies)
     report["sections"]["messages"] = msg_report
-
-    # Archives from older versions may carry sections for features that no
-    # longer exist; they are reported and skipped rather than failing the import.
-    legacy = [n for n in ("jobs.json", "rules.json", "summaries.json") if n in zf.namelist()]
-    if legacy:
-        warnings.append("skipped sections for removed features: " + ", ".join(legacy))
 
     return report
