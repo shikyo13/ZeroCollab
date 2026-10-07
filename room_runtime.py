@@ -12,6 +12,8 @@ import time
 import uuid
 from pathlib import Path
 
+import queue_file as file_queue
+
 from durable import atomic_write
 
 import httpx
@@ -1314,7 +1316,7 @@ class RoomRuntime:
             while not queue.empty():
                 queue.get_nowait()
         for path in self.data.glob("*_queue.jsonl"):
-            path.write_text("", "utf-8")
+            file_queue.clear(path)
         await asyncio.gather(*(self.cancel_turn(name) for name in self.states))
         self.host.store.add("system", "Room stopped. Active turns cancelled and queues cleared. Click Resume when ready.", channel=self.default_channel())
         await self.publish_status()
