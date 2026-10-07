@@ -110,6 +110,27 @@ def git(path, *args):
     return result.stdout.strip()
 
 
+def _worktree_diff(worktree, provider):
+    path = Path(worktree)
+    exclusions = [":(exclude)" + name for name in PRIVATE_PARTS]
+    exclusions += [":(exclude)" + name + "/**" for name in PRIVATE_PARTS]
+    diff = git(path, "diff", "HEAD", "--", ".", ":(exclude).env.*", *exclusions)
+    # The temporary Gemini MCP connection is runtime metadata, not project work.
+    if provider == 'antigravity':
+        diff = git(path, 'diff', 'HEAD', '--', '.', ':(exclude).env.*', ':(exclude).agents/mcp_config.json', *exclusions)
+    untracked = git(path, "ls-files", "--others", "--exclude-standard").splitlines()
+    for filename in untracked[:8]:
+        if filename.replace('\\', '/') == '.agents/mcp_config.json':
+            continue
+        try:
+            file = scoped_path(path, filename)
+            if file.stat().st_size <= 24000:
+                diff += f"\nNew file {filename}:\n" + file.read_text("utf-8")
+        except (ValueError, UnicodeError, OSError):
+            continue
+    return diff[:24000]
+
+
 def scoped_path(root, raw):
     if not isinstance(raw, str) or not raw or "\x00" in raw:
         raise ValueError("A project file path is required")
@@ -800,35 +821,19 @@ class RoomRuntime:
             self.host.store.add("system", f"{name}'s pending channel queue is full; this request was refused.", channel=channel)
             return False
 
-    def diffs(self):
+    async def collect_diffs(self):
         if not self.project:
             return {}
+        targets = [(name, state['worktree'], state['provider'])
+                   for name, state in self.states.items() if state.get('worktree')]
         result = {}
-        for name, state in self.states.items():
-            if not state.get("worktree"):
-                continue
-            path = Path(state["worktree"])
-            exclusions = [":(exclude)" + name for name in PRIVATE_PARTS]
-            exclusions += [":(exclude)" + name + "/**" for name in PRIVATE_PARTS]
-            diff = git(path, "diff", "HEAD", "--", ".", ":(exclude).env.*", *exclusions)
-            # The temporary Gemini MCP connection is runtime metadata, not project work.
-            if self.states[name]['provider'] == 'antigravity':
-                diff = git(path, 'diff', 'HEAD', '--', '.', ':(exclude).env.*', ':(exclude).agents/mcp_config.json', *exclusions)
-            untracked = git(path, "ls-files", "--others", "--exclude-standard").splitlines()
-            for filename in untracked[:8]:
-                if filename.replace('\\', '/') == '.agents/mcp_config.json':
-                    continue
-                try:
-                    file = scoped_path(path, filename)
-                    if file.stat().st_size <= 24000:
-                        diff += f"\nNew file {filename}:\n" + file.read_text("utf-8")
-                except (ValueError, UnicodeError, OSError):
-                    continue
-            result[name] = diff[:24000]
+        # Serial within a request: do not fan out one worker per agent.
+        for name, worktree, provider in targets:
+            result[name] = await asyncio.to_thread(_worktree_diff, worktree, provider)
         return result
 
-    def context(self, run):
-        return self.project_room.context(run) + self.goals.context(run)
+    def context(self, run, changes):
+        return self.project_room.context(run, changes) + self.goals.context(run)
 
     async def worker(self, name):
         while True:
@@ -928,7 +933,8 @@ class RoomRuntime:
         await self.emit("runtime_start", {"run": run.id, "agent": name, "channel": run.channel, "settings": run.settings}, persist=True)
         await self.publish_status()
         try:
-            prompt = self.context(run)
+            changes = await self.collect_diffs()
+            prompt = self.context(run, changes)
             async with asyncio.timeout(None) as deadline:
                 run.begin(deadline)
                 provider = self.states[name]["provider"]
@@ -1006,7 +1012,10 @@ class RoomRuntime:
             await self.emit('project_state', self.project_room.snapshot())
             return result
         if tool == 'room_read':
-            return self.project_room.read(run, **arguments)
+            allowed = {'section', 'offset', 'limit', 'query', 'after_id', 'task_id', 'owner', 'status'}
+            options = {key: value for key, value in arguments.items() if key in allowed}
+            changes = await self.collect_diffs() if options.get('section') == 'patches' else None
+            return self.project_room.read(run, **options, changes=changes)
         if tool == 'room_repository':
             result = project_registry.request_repository(self, run.name, **arguments)
             action = 'create a new repository at' if result['create'] else 'attach the repository'
@@ -1487,7 +1496,7 @@ def install(host):
 
     @host.app.get("/api/runtime/diffs")
     async def diffs():
-        return runtime.diffs()
+        return await runtime.collect_diffs()
 
     @host.app.get('/api/runtime/project-state')
     async def project_state():
