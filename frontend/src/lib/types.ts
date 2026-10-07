@@ -210,6 +210,18 @@ export interface RuntimeState {
   budgets: Chain[];
   approvals: Approval[];
   runs: RunInfo[];
+  /** A repository change in progress for the attached project, or null. */
+  repository_transition?: RepositoryTransition | null;
+}
+
+/** draining: running turns finish (or are interrupted) while new turns are held;
+ * preparing: agent worktrees are being made in the new repository. */
+export interface RepositoryTransition {
+  path: string;
+  phase: 'draining' | 'preparing';
+  waiting_on: string[];
+  queued: number;
+  cancel_requested: boolean;
 }
 
 /** Every WS frame is {type, ...}; runtime frames carry their payload in `data`. */

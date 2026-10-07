@@ -10,7 +10,7 @@
 .pj-card-head strong { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pj-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--bd-muted); }
 .bd-root .pj-path { display: block; color: var(--bd-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-.pj-path-full { white-space: normal; overflow-wrap: anywhere; }
+.bd-root .pj-path-full { white-space: normal; overflow-wrap: anywhere; }
 .pj-active { color: var(--bd-success); }
 .pj-missing { color: var(--bd-danger); }
 .pj-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--bd-surface-2); gap: 1px; }
@@ -84,4 +84,12 @@
 .pj-new input[type=radio] { width: auto; }
 .pj-new input, .pj-repo-form input, .pj-repo-form select { min-width: 0; width: 100%; }
 .pj-repo-form { display: grid; gap: 10px; }
-.pj-repository { margin-bottom: 10px; }
+.pj-repository { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+.pj-repository > .pj-repo-form, .pj-notice, .pj-history { align-self: stretch; min-width: 0; }
+.pj-notice { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--bd-warn); border-radius: var(--bd-radius); background: var(--bd-surface-2); font-size: 13px; }
+.pj-choice { display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+.pj-repo-form .pj-choice label { flex-direction: row; align-items: flex-start; gap: 8px; font-size: 13px; }
+.pj-repo-form .pj-choice input { width: auto; margin-top: 3px; }
+.pj-choice span { display: flex; flex-direction: column; gap: 2px; }
+.pj-history ul { display: flex; flex-direction: column; gap: 8px; margin: 6px 0; font-size: 12.5px; }
+.pj-history li { display: flex; flex-direction: column; gap: 2px; }

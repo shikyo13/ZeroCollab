@@ -32,10 +32,33 @@ export interface ProjectSummary {
   channels: string[];
   sessions: { id: string; title: string; readonly: boolean }[];
   last_session?: string;
-  repo_request?: { by: string; path: string; create: boolean; reason: string; time: number } | null;
+  repo_request?: RepositoryRequest | null;
+  repository_history?: RepositoryHistoryEntry[];
   team: ProjectMember[];
   spec: boolean;
   updated: number;
+}
+
+/** An agent's room_repository proposal; replace is true when the project already has one. */
+export interface RepositoryRequest {
+  by: string;
+  path: string;
+  create: boolean;
+  reason: string;
+  time: number;
+  replace?: boolean;
+  current?: string;
+}
+
+/** One repository this project has used. attached is null for a repository recorded from
+ * before history was kept; detached is null while it is the current one. Worktrees are kept
+ * on disk and reused when the project switches back. */
+export interface RepositoryHistoryEntry {
+  path: string;
+  attached: number | null;
+  detached: number | null;
+  by?: string;
+  worktrees: Record<string, string>;
 }
 
 /** Board edits arrive as bursts of project_state frames; re-read at most this often. */
