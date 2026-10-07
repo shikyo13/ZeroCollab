@@ -21,7 +21,8 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         r.publish_status, r.emit = AsyncMock(), AsyncMock()
         r.parallel_capacity = lambda: 4
         r.turn_admission_open = lambda: True
-        r.context = lambda run: 'context'
+        r.collect_diffs = AsyncMock(return_value={})
+        r.context = lambda run, changes: 'context'
         r.save_project = Mock()
         r.default_channel = lambda: 'general'
         return r

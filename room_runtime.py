@@ -1375,7 +1375,7 @@ class RoomRuntime:
         for name, entries in saved.get('queues', {}).items():
             if name in self.queues:
                 for entry in entries:
-                    self.queues[name].put_nowait(entry)
+                    self.queues[name].restore(entry)
         # The checkpoint remains until startup verification opens admission.
         self.deploy_checkpoint_restored = bool(saved)
 
