@@ -595,6 +595,8 @@ Available models: `MiniMax-M3` (default), `MiniMax-M2.7`, `MiniMax-M2.7-highspee
 | `wrapper_windows.py` | Windows: keystroke injection + screen buffer activity detection |
 | `wrapper_unix.py` | Mac/Linux: tmux bracketed-paste injection + pane capture activity detection |
 | `config.toml` | All configuration (agents, ports, routing) |
+| `windows/_launch.bat`, `macos-linux/_launch.sh` | Shared launcher steps: venv bootstrap, CLI check, server start and wait on the configured port |
+| `windows/start_*.bat`, `macos-linux/start_*.sh` | Per-agent launchers; each sets its CLI, hints and wrapper arguments and calls the shared launcher |
 | `windows/start_*_yolo/bypass.bat` | Auto-approve launchers (Windows) |
 | `macos-linux/start_*_yolo/bypass.sh` | Auto-approve launchers (Mac/Linux) |
 
