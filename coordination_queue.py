@@ -3,6 +3,7 @@ import asyncio
 
 # Admission budget per channel batch; prevents one busy chat bypassing slot limits.
 MAX_BATCH_REQUESTS = 128
+MAX_BATCH_PROMPT_BYTES = 1024 * 1024  # Retained prompt payload budget per admitted batch.
 
 
 def receipt_key(request):
@@ -20,8 +21,7 @@ class WakeQueue(asyncio.Queue):
     def merge(batch, incoming):
         staged = {**batch, 'requests': list(batch['requests'])}
         WakeQueue._merge(staged, incoming)
-        if len(staged['requests']) > MAX_BATCH_REQUESTS:
-            raise asyncio.QueueFull
+        WakeQueue._check_budget(staged)
         batch.update(staged)
 
     @staticmethod
@@ -37,13 +37,27 @@ class WakeQueue(asyncio.Queue):
                 batch['requests'].append(request)
         batch['chain'] = incoming['chain']
 
+    @staticmethod
+    def _check_budget(batch):
+        if len(batch['requests']) > MAX_BATCH_REQUESTS:
+            raise asyncio.QueueFull
+        remaining = MAX_BATCH_PROMPT_BYTES
+        for request in batch['requests']:
+            prompt = request.get('prompt', '')
+            # UTF-8 needs at least one byte per character; reject huge strings
+            # before allocating an encoded copy merely to measure them.
+            if len(prompt) > remaining:
+                raise asyncio.QueueFull
+            remaining -= len(prompt.encode('utf-8'))
+            if remaining < 0:
+                raise asyncio.QueueFull
+
     def put_nowait(self, item):
         for pending in reversed(self._queue):
             if pending['channel'] == item['channel']:
                 self.merge(pending, item)
                 return
-        if len(item['requests']) > MAX_BATCH_REQUESTS:
-            raise asyncio.QueueFull
+        self._check_budget(item)
         super().put_nowait(item)
 
     def restore(self, item):
