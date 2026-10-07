@@ -17,19 +17,24 @@ How the pieces fit at runtime, then the four flows most changes touch: a chat me
  |  uvicorn: app.py (FastAPI)            MCP HTTP :8200 (daemon thread)   MCP SSE :8201        |
  |    - /  page + session token (run.py)   mcp_bridge.py chat_* tools       mcp_bridge.py      |
  |    - /ws  one WebSocket per tab                                                             |
- |    - /api/...  REST                   room_mcp.py: run-scoped room_* tools for native CLIs  |
- |                                                                                             |
- |  shared in-process objects:  store (store.py)  registry (registry.py)  router (router.py)   |
- |                              RoomRuntime (room_runtime.py) + ProjectRoom (project_room.py)  |
- |                              project_registry  room_goals  room_deploy (MutationGate)       |
- +---------------------------------------------------------------------------------------------+
-        |                                   |                                  |
-        v                                   v                                  v
-  data/  (JSON / JSONL records)      native CLIs per turn                Git worktrees
-  see file-index.md                  (native_adapters.py: claude,        data/worktrees/<project>/
-                                      codex, gemini, antigravity;        <repo-key>/<agent>
-                                      local models via
-                                      local_protocol.py)
+ |    - /api/...  REST, including /api/runtime/coordination/{run_id}  <-------------------+     |
+ |                                                                                        |     |
+ |  shared in-process objects:  store (store.py)  registry (registry.py)  router          |     |
+ |                              RoomRuntime (room_runtime.py) + ProjectRoom               |     |
+ |                              project_registry  room_goals  room_deploy (MutationGate)  |     |
+ +----------------------------------------------------------------------------------------|-----+
+        |                                   |                                  |          |
+        v                                   v spawns per turn                  v          | HTTP, run-scoped
+  data/  (JSON / JSONL records)      native CLI (native_adapters.py:     Git worktrees    | token and run id
+  see file-index.md                  claude, codex, gemini,              data/worktrees/  |
+                                     antigravity; local models via       <project>/       |
+                                     local_protocol.py)                  <repo-key>/      |
+                                            |                            <agent>          |
+                                            | stdio MCP                                   |
+                                            v                                             |
+                                     room_mcp.py (separate Python process per run) -------+
+                                     room_* tools; AGENT_ROOM_URL, AGENT_ROOM_SESSION_TOKEN,
+                                     AGENT_ROOM_RUN_ID come from native_adapters.room_environment
 ```
 
 Browser side:
@@ -129,18 +134,39 @@ Detail in [repositories.md](repositories.md).
 ## Flow 4: a deployment
 
 ```
- release_pack.py <rev>          -> data/deploy/releases/<id>/
+ python release_pack.py build --repo <repo> --commit <rev> --spool <spool>
+                                -> <spool>/releases/<id>/  (the live spool is data/deploy/)
  human approves in Deployments  -> app writes data/deploy/requests/<id>.json
         |
         v
- supervisor.py run picks it up (single-flight lock, journal.json)
-   drain: maintenance.json admission closed (interrupt only if the request allows)
-   block writes, stop server, confirm the port is down
-   snapshot data records, back up replaced files to backups/<id>/
-   apply release, start with writes blocked, verify the served release
-   reopen admission and writes, write receipts/<id>.json, update current.json
-   on failure after stop: compare-and-swap restore, previous current.json and data snapshot,
-                          restart and verify the previous release (rolled_back / conflict)
+ Deployment.run() in supervisor.py run (single-flight lock, journal.json)
+   take, plan
+   drain: maintenance.json admission closed, writes open (interrupt only if the request allows)
+          then writes blocked
+        |  failure up to here: gate reopened (if it was closed), receipt rejected or aborted,
+        |  server untouched
+        v
+   ---- server stop boundary: any later failure goes to rollback() ----
+   stop server and confirm it exited
+   snapshot data records (exact only while writes stay blocked)
+   apply: back up replaced files and the previous current.json to backups/<id>/,
+          place the release, write current.json            (writes still blocked)
+   verified_start + verify: served release, endpoints, static files, on-disk hashes
+        |
+        |  rollback() on failure in this block:
+        |    server not confirmed stopped  -> recovery_required, nothing restored
+        |    compare-and-swap restore of files, previous current.json and data snapshot
+        |      conflicts                    -> conflict, room left STOPPED (no restart)
+        |      clean -> verified_start(previous) -> reopen -> rolled_back
+        |               previous fails to verify  -> rollback_failed, room left stopped
+        v
+   ---- reopen boundary: journal records reopen_expect, then open_gate ----
+   reopen admission and writes, resume agents unless they were paused
+   receipt deployed; journal.json removed
+   from here nothing is restored: an error while reopening is noted in the receipt only,
+   and supervisor.py recover keeps the reopened release and its data
 ```
+
+`supervisor.py recover` (room stopped) handles a crash mid-deployment: before the reopen boundary it restores files and data, after it keeps the release; either way the next start verifies before reopening.
 
 Inside the app, `room_deploy.DeploymentState` reads `maintenance.json`; `enter_mutation` / `leave_mutation` / `track_continuation` count in-flight writes so the drain knows when the room is quiet, and `MutationGate` refuses mutating routes while writes are blocked.

@@ -7,8 +7,8 @@ A project can have no repository (a conversation project), one, or several. The 
 | Field | Meaning |
 |-|-|
 | `path` | The primary repository root (kept for older readers) |
-| `repositories` | `[{key, path, primary}]`; exactly one entry has `primary: true` |
-| `repository_history` | `[{key, path, attached, detached, by, worktrees}]`; one open entry (no `detached`) per attached repository |
+| `repositories` | `[{key, path, primary}]`; absent or empty before the first attachment, otherwise exactly one entry has `primary: true` |
+| `repository_history` | `[{key, path, attached, detached, by?, worktrees}]`; one open entry (no `detached`) per attached repository. New attachments record `by: "user"`. Entries synthesized for a repository attached before history existed have `attached: null` and no `by` |
 | `initial_repository_key` | Set at the first attachment. Tasks created before any repository existed resolve to it |
 | `repo_request` | An agent's pending request: `{by, path, create, reason, time, action, replace, current}` |
 
@@ -72,4 +72,4 @@ The change runs as a background job that survives the HTTP caller disconnecting:
 - `repository_history` grows without bound.
 - File names containing `:` cannot be addressed by the local file tools, because they read the text before the colon as a repository key.
 - The drain loop polls every 100 ms.
-- History `by` is always `user`. It does not record which agent requested the change.
+- History `by` is `user` on new attachments and missing on synthesized legacy entries. It never records which agent requested the change.

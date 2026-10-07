@@ -17,7 +17,7 @@ ZeroCollab (version 0.9.0, `VERSION`) is a local, single-user workspace where a 
 | Local models | OpenAI-compatible endpoints as managed agents with validated structured tool calls | `local_protocol.py`, `wrapper_api.py` |
 | Launcher agents | Older path: a visible terminal per agent, prompts typed in by a wrapper | `wrapper*.py`, `agents.py`, `queue_file.py`, `windows/`, `macos-linux/` |
 
-Agents talk to the room through two MCP surfaces: the `chat_*` tools (`mcp_bridge.py`, HTTP 8200 and SSE 8201, identity per instance through `mcp_proxy.py`) and the run-scoped `room_*` coordination tools for managed native CLIs (`room_mcp.py`).
+Agents talk to the room through two MCP surfaces: the `chat_*` tools (`mcp_bridge.py`, HTTP 8200 and SSE 8201, identity per instance through `mcp_proxy.py`) and the run-scoped `room_*` coordination tools for managed native CLIs. `room_mcp.py` runs as a separate stdio MCP process for each turn and calls back to the app over HTTP with that turn's run id.
 
 ## Design rules that shape the code
 
