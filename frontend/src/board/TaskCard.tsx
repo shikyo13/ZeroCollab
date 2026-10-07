@@ -1,7 +1,6 @@
-import { since } from '../lib/room';
 import type { Followup, ProjectState, Review, Task } from '../lib/types';
 import { CardThumbnails } from './Attachments';
-import { AgentChip, LabelChips, displayName, type Agents } from './shared';
+import { AgentChip, LabelChips, RelativeTime, displayName, type Agents } from './shared';
 import { USER } from '../lib/constants';
 
 export interface TaskFacts {
@@ -187,8 +186,8 @@ export function TaskCard({
           <strong>{latest.by === USER ? 'You' : latest.by}:</strong> {latest.text}
         </p>
       )}
-      <p className="bd-card-age" title={new Date(task.updated * 1000).toLocaleString()}>
-        Updated {since(task.updated, now)}
+      <p className="bd-card-age">
+        <RelativeTime time={task.updated} now={now} prefix="Updated " />
       </p>
     </article>
   );

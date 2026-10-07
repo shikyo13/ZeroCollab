@@ -288,7 +288,7 @@ export function ProfileEditor({
       </div>
       {(catalog?.error || catalog?.effort_note) && <p className={catalog?.error ? 'bd-error' : 'bd-muted'}>{catalog?.error || catalog?.effort_note}</p>}
 
-      <Field label="Background and personal prompt" hint={`${draft.background.length.toLocaleString()} / 16,000 characters · added to this agent's instructions alongside the shared collaboration rules.`}>
+      <Field label="Background and personal prompt" hint={`${draft.background.length.toLocaleString()} / ${LIMITS.profileText.toLocaleString()} characters · added to this agent's instructions alongside the shared collaboration rules.`}>
         <textarea
           value={draft.background}
           rows={9}

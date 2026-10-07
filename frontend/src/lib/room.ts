@@ -111,12 +111,17 @@ export function useNow(intervalMs = 30000): number {
   return now;
 }
 
+const MINUTE = 60;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** Coarse age of an epoch-seconds timestamp: "just now", "5m ago", "3h ago", "2d ago". */
 export function since(timestamp: number, now = Date.now() / 1000): string {
   const seconds = Math.max(0, Math.floor(now - timestamp));
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
+  if (seconds < MINUTE) return 'just now';
+  if (seconds < HOUR) return `${Math.floor(seconds / MINUTE)}m ago`;
+  if (seconds < DAY) return `${Math.floor(seconds / HOUR)}h ago`;
+  return `${Math.floor(seconds / DAY)}d ago`;
 }
 
 interface Resource<T> {

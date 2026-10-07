@@ -1,6 +1,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { errorMessage } from '../lib/api';
-import type { AgentState, ReviewStatus, TaskStatus } from '../lib/types';
+import { since } from '../lib/room';
+import type { AgentState, FollowupStatus, ReviewStatus, TaskStatus } from '../lib/types';
 import { USER } from '../lib/constants';
 
 export type Agents = Record<string, AgentState>;
@@ -18,6 +19,12 @@ export const REVIEW_LABELS: Record<ReviewStatus, string> = {
   approved: 'Approved',
   changes_requested: 'Changes requested',
   superseded: 'Superseded',
+  cancelled: 'Cancelled',
+};
+
+export const FOLLOWUP_LABELS: Record<FollowupStatus, string> = {
+  open: 'Open',
+  resolved: 'Resolved',
   cancelled: 'Cancelled',
 };
 
@@ -49,7 +56,7 @@ export function displayName(name: string, agents: Agents): string {
 
 export function AgentChip({ name, agents, empty = 'Unclaimed' }: { name: string; agents: Agents; empty?: string }) {
   if (!name) return <span className="bd-chip bd-chip-empty">{empty}</span>;
-  const color = name === USER ? 'var(--accent, #7aa2ff)' : agents[name]?.color || 'var(--text-muted, #9aa4b2)';
+  const color = name === USER ? 'var(--accent)' : agents[name]?.color || 'var(--text-muted)';
   return (
     <span className="bd-chip" title={name === USER ? 'You' : '@' + name}>
       <span className="bd-dot" style={{ background: color }} aria-hidden="true" />
@@ -64,6 +71,21 @@ export function StatusPill({ status }: { status: TaskStatus }) {
 
 export function ReviewPill({ status }: { status: ReviewStatus }) {
   return <span className={`bd-pill bd-review-${status}`}>{REVIEW_LABELS[status]}</span>;
+}
+
+export function FollowupPill({ status }: { status: FollowupStatus }) {
+  return <span className={`bd-pill bd-followup-${status}`}>{FOLLOWUP_LABELS[status]}</span>;
+}
+
+/** Relative age ("5m ago") with the absolute local time as its tooltip. `time` is in epoch seconds;
+ * pass `now` from useNow() where the age should keep ticking. */
+export function RelativeTime({ time, now, prefix = '', className }: { time: number; now?: number; prefix?: string; className?: string }) {
+  return (
+    <span className={className} title={new Date(time * 1000).toLocaleString()}>
+      {prefix}
+      {since(time, now)}
+    </span>
+  );
 }
 
 export function ErrorText({ message }: { message: string }) {
