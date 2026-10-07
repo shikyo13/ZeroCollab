@@ -125,7 +125,7 @@ function updateMentionMenu() {
         const row = document.createElement('div');
         row.className = 'mention-item' + (i === mentionMenuIndex ? ' active' : '');
         row.dataset.name = item.name;
-        row.innerHTML = `<span class="mention-dot" style="background: ${escapeHtml(item.color)}"></span><span class="mention-name">${escapeHtml(item.label)}</span>`;
+        row.innerHTML = `<span class="mention-dot" style="--sender-color: ${escapeHtml(item.color)}"></span><span class="mention-name">${escapeHtml(item.label)}</span>`;
         row.addEventListener('mousedown', (e) => {
             e.preventDefault();
             selectMention(item.name);

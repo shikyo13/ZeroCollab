@@ -280,10 +280,10 @@ header h1 {
     padding: 1.5px;
     background: conic-gradient(
         from var(--border-angle),
-        var(--agent-color, #4ade80),
+        var(--agent-color, var(--online)),
         transparent 40%,
         transparent 60%,
-        var(--agent-color, #4ade80)
+        var(--agent-color, var(--online))
     );
     -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
     -webkit-mask-composite: xor;
@@ -588,6 +588,7 @@ main#timeline {
 }
 
 .avatar {
+    background-color: var(--sender-color);
     width: 32px;
     height: 32px;
     border-radius: var(--radius-full);
@@ -607,6 +608,7 @@ main#timeline {
 /* --- Chat bubble --- */
 
 .chat-bubble {
+    --bubble-color: var(--sender-color);
     background: color-mix(in srgb, var(--bubble-color, var(--text-dim)) 10%, var(--bg-msg));
     border: 1px solid color-mix(in srgb, var(--bubble-color, var(--text-dim)) 15%, transparent);
     border-radius: 16px;
@@ -810,7 +812,7 @@ main#timeline {
     border-left-color: var(--accent);
 }
 
-.reply-sender { font-weight: 600; }
+.reply-sender { color: var(--sender-color); font-weight: 600; }
 
 /* --- Reply button --- */
 
@@ -1258,6 +1260,7 @@ body.channels-in-sidebar #channel-bar {
 }
 
 .msg-sender {
+    color: var(--sender-color);
     font-weight: 700;
     font-size: 13px;
 }
@@ -1268,12 +1271,14 @@ body.channels-in-sidebar #channel-bar {
 
 .msg-text .mention {
     font-weight: 600;
-    /* color set inline from agent config */
+    color: var(--mention-color, var(--user-color));
     background: color-mix(in srgb, currentColor 10%, transparent);
     padding: 1px 5px;
     border-radius: 3px;
     border: 1px solid color-mix(in srgb, currentColor 15%, transparent);
 }
+
+.msg-text .mention-all { --mention-color: var(--accent); }
 
 /* --- Markdown inside messages --- */
 
@@ -1379,6 +1384,7 @@ body.channels-in-sidebar #channel-bar {
 }
 
 .join-dot {
+    background: var(--sender-color);
     width: 6px;
     height: 6px;
     border-radius: var(--radius-full);
@@ -1390,6 +1396,7 @@ body.channels-in-sidebar #channel-bar {
     font-size: 12px;
     color: var(--text-dim);
 }
+.join-text strong { color: var(--sender-color); }
 
 .message.system-msg {
     color: var(--text-system);
@@ -2030,6 +2037,7 @@ footer {
 }
 
 .mention-dot {
+    background: var(--sender-color);
     width: 8px;
     height: 8px;
     border-radius: var(--radius-full);
