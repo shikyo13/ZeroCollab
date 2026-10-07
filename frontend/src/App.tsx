@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Board from './board/Board';
 import Team from './team/Team';
 import { LegacySlot } from './components/LegacySlot';
@@ -10,74 +10,39 @@ import { WorkControls } from './components/WorkControls';
 import Projects from './workspace/Projects';
 import { ProjectSwitcher } from './workspace/ProjectSwitcher';
 import { useProjects } from './workspace/projectData';
-import { Deployments, DeploymentNotice, useDeploymentState } from './components/Deployments';
-import { readStored, writeStored } from './lib/storage';
-import { EVENTS, STORAGE_KEYS } from './lib/constants';
+import { useWorkspaceRoute, type View } from './workspace/useWorkspaceRoute';
+import { DeploymentNotice, useDeploymentState } from './components/Deployments';
+import { WelcomeBar } from './components/WelcomeBar';
+import { ActivityPage } from './components/ActivityPage';
 
-
-type View = 'projects' | 'chat' | 'board' | 'team' | 'activity';
-const VIEWS: View[] = ['projects', 'chat', 'board', 'team', 'activity'];
-const validView = (value: string | null): View => VIEWS.includes(value as View) ? value as View : 'chat';
+const NAV_ITEMS: { view: View; label: string }[] = [
+  { view: 'projects', label: 'Projects' },
+  { view: 'chat', label: 'Chat' },
+  { view: 'board', label: 'Board' },
+  { view: 'team', label: 'Team' },
+  { view: 'activity', label: 'Activity' },
+];
 
 export default function App() {
-  const [view, setView] = useState<View>(() => validView(new URL(location.href).searchParams.get('view')));
+  const { view, navigate, focus, setFocus } = useWorkspaceRoute();
   const [help, setHelp] = useState(false);
   const projects = useProjects();
   const deployments = useDeploymentState(view === 'activity');
-  const [focus, setFocusState] = useState(() => new URL(location.href).searchParams.get('project') || '');
-  function setFocus(id: string) {
-    setFocusState(id);
-    const url = new URL(location.href);
-    if (id) url.searchParams.set('project', id); else url.searchParams.delete('project');
-    history.replaceState({}, '', url);
-  }
   const openProject = (id: string) => { setFocus(id); navigate('projects'); };
-  const [welcome, setWelcome] = useState(() => {
-    return readStored(STORAGE_KEYS.welcomeDismissed) !== '1';
-  });
-  function navigate(next: View) {
-    setView(next);
-    const url = new URL(location.href);
-    url.searchParams.set('view', next);
-    history.pushState({}, '', url);
-  }
-  useEffect(() => {
-    const back = () => setView(validView(new URL(location.href).searchParams.get('view')));
-    const showTeam = () => navigate('team');
-    const toolbar = (event: Event) => {
-      const target = (event.target as HTMLElement).closest('button');
-      if (target?.id === 'settings-toggle') navigate('chat');
-    };
-    window.addEventListener('popstate', back);
-    window.addEventListener(EVENTS.team, showTeam);
-    legacy.header.addEventListener('click', toolbar, true);
-    return () => {
-      window.removeEventListener('popstate', back);
-      window.removeEventListener(EVENTS.team, showTeam);
-      legacy.header.removeEventListener('click', toolbar, true);
-    };
-  }, []);
-  useEffect(() => {
-    document.body.dataset.workspaceView = view;
-    if (view === 'chat') window.dispatchEvent(new Event('resize'));
-  }, [view]);
-  const dismissWelcome = () => {
-    setWelcome(false);
-    writeStored(STORAGE_KEYS.welcomeDismissed, '1');
-  };
+  const openHelp = () => setHelp(true);
   return <div className="workspace-shell">
     <a className="workspace-skip" href="#workspace-content">Skip to workspace</a>
     <nav className="workspace-nav" aria-label="Workspace">
       <a className="workspace-brand" href="?view=chat" aria-label={`${brand.name} - Chat`} onClick={e => { e.preventDefault(); navigate('chat'); }}><img src={brand.logo} alt="" /><span>{brand.name}</span></a>
       <ProjectSwitcher projects={projects.projects} active={projects.active} onOpen={openProject} />
       <div className="workspace-nav-items">
-        <button aria-current={view === 'projects' ? 'page' : undefined} onClick={() => navigate('projects')}><Icon name="projects" /><span>Projects</span></button>
-        <button aria-current={view === 'chat' ? 'page' : undefined} onClick={() => navigate('chat')}><Icon name="chat" /><span>Chat</span></button>
-        <button aria-current={view === 'board' ? 'page' : undefined} onClick={() => navigate('board')}><Icon name="board" /><span>Board</span></button>
-        <button aria-current={view === 'team' ? 'page' : undefined} onClick={() => navigate('team')}><Icon name="team" /><span>Team</span></button>
-        <button aria-current={view === 'activity' ? 'page' : undefined} onClick={() => navigate('activity')}><Icon name="activity" /><span>Activity</span></button>
+        {NAV_ITEMS.map(item => (
+          <button key={item.view} aria-current={view === item.view ? 'page' : undefined} onClick={() => navigate(item.view)}>
+            <Icon name={item.view} /><span>{item.label}</span>
+          </button>
+        ))}
       </div>
-      <div className="workspace-nav-bottom"><button onClick={() => setHelp(true)}><Icon name="help" /><span>Quick guide</span></button></div>
+      <div className="workspace-nav-bottom"><button onClick={openHelp}><Icon name="help" /><span>Quick guide</span></button></div>
     </nav>
     <div className="workspace-main">
       <LegacySlot node={legacy.header} className="workspace-toolbar" />
@@ -85,13 +50,13 @@ export default function App() {
       <LegacySlot node={legacy.approvals} className="workspace-approvals" />
       <WorkControls navigate={navigate} />
       <DeploymentNotice feed={deployments} onOpen={() => navigate('activity')} />
-      {welcome && <div className="workspace-welcome"><span>Start in Chat. Track work on the Board. Manage agents in Team.</span><button onClick={() => setHelp(true)}>Quick guide</button><button onClick={dismissWelcome} aria-label="Dismiss welcome">✕</button></div>}
+      <WelcomeBar onHelp={openHelp} />
       <main id="workspace-content" className="workspace-content" tabIndex={-1}>
         <section className="workspace-projects" hidden={view !== 'projects'} aria-label="Projects"><Projects {...projects} focus={focus} setFocus={setFocus} navigate={navigate} /></section>
         <section className="workspace-chat" hidden={view !== 'chat'} aria-label="Shared chat"><LegacySlot node={legacy.chat} className="workspace-chat-slot" /></section>
         <section className="workspace-board" hidden={view !== 'board'} aria-label="Task board"><Board /></section>
         <section className="workspace-team" hidden={view !== 'team'} aria-label="Team"><Team /></section>
-        <section className="workspace-activity" hidden={view !== 'activity'} aria-labelledby="activity-title"><div className="workspace-page-heading"><div><span className="workspace-eyebrow">ROOM OPERATIONS</span><h1 id="activity-title">Activity & controls</h1><p>Agent requests, recent tool calls and the Changes view. Repositories are in Projects; agents and models are in Team.</p></div><button onClick={() => navigate('team')}>Manage team</button></div><Deployments feed={deployments} /><LegacySlot node={legacy.runtime} /></section>
+        <section className="workspace-activity" hidden={view !== 'activity'} aria-labelledby="activity-title"><ActivityPage deployments={deployments} onManageTeam={() => navigate('team')} /></section>
       </main>
     </div>
     <Help open={help} onClose={() => setHelp(false)} />
