@@ -32,7 +32,11 @@ export function useWorkspaceRoute() {
   }, []);
 
   useEffect(() => {
-    const back = () => setView(validView(param('view')));
+    // Back/Forward: the entry's URL is the source of truth for both the view and the project.
+    const back = () => {
+      setView(validView(param('view')));
+      setFocusState(param('project') || '');
+    };
     const showTeam = () => navigate('team');
     // The legacy Settings button lives in the chat header; open the chat so its panel is visible.
     const toolbar = (event: Event) => {
