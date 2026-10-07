@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import native_adapters as native
+from durable import atomic_write
 
 EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
 
@@ -158,9 +159,8 @@ class ProviderControls:
     def change(self, name, model, effort):
         self.validate(name, model, effort)
         self.values[name] = {'model': model, 'effort': effort}
-        temporary = self.path.with_suffix('.tmp')
-        temporary.write_text(json.dumps(self.values, indent=2), 'utf-8')
-        temporary.replace(self.path)
+        content = json.dumps(self.values, indent=2)
+        atomic_write(self.path, lambda stream: stream.write(content))
         if hasattr(self.runtime, 'profiles'):
             self.runtime.profiles.preferences(name, self.values[name])
         return dict(self.values[name])
