@@ -4,6 +4,7 @@ import { sessionTitle } from '../lib/room';
  * the same /api/runtime endpoints and project_state/runtime_state events. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useActiveChannel, useNow, useProjectState, useRuntimeState } from '../lib/room';
+import { readStored, writeStored } from '../lib/storage';
 import { TASK_STATUSES, type Task, type TaskStatus } from '../lib/types';
 import { installAnnotateHook } from '../annotate';
 import { ActivityFeed } from './ActivityFeed';
@@ -29,12 +30,12 @@ installAnnotateHook();
 const CHANGE_HIGHLIGHT_MS = 2500;
 
 function readTab(): Tab {
-  const saved = localStorage.getItem(TAB_KEY);
+  const saved = readStored(TAB_KEY);
   return saved === 'coordination' || saved === 'spec' || saved === 'memory' || saved === 'controls' ? saved : 'tasks';
 }
 
 function readChoice<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
-  const saved = localStorage.getItem(key) as T | null;
+  const saved = readStored(key) as T | null;
   return saved && allowed.includes(saved) ? saved : fallback;
 }
 
@@ -66,7 +67,7 @@ export default function Board() {
   const [sortBy, setSortByState] = useState<SortBy>(() => readChoice(SORT_KEY, ['recent', 'oldest', 'title'], 'recent'));
   // The activity rail sits beside the columns on wide screens; on narrow ones it is an overlay, so it starts closed.
   const [feedOpen, setFeedOpenState] = useState(() => {
-    const saved = localStorage.getItem(FEED_KEY);
+    const saved = readStored(FEED_KEY);
     return saved ? saved === '1' : window.matchMedia('(min-width: 1101px)').matches;
   });
   const [showAllDone, setShowAllDone] = useState(false);
@@ -77,19 +78,19 @@ export default function Board() {
 
   const setTab = (next: Tab) => {
     setTabState(next);
-    localStorage.setItem(TAB_KEY, next);
+    writeStored(TAB_KEY, next);
   };
   const setGroupBy = (next: GroupBy) => {
     setGroupByState(next);
-    localStorage.setItem(GROUP_KEY, next);
+    writeStored(GROUP_KEY, next);
   };
   const setSortBy = (next: SortBy) => {
     setSortByState(next);
-    localStorage.setItem(SORT_KEY, next);
+    writeStored(SORT_KEY, next);
   };
   const setFeedOpen = (next: boolean) => {
     setFeedOpenState(next);
-    localStorage.setItem(FEED_KEY, next ? '1' : '0');
+    writeStored(FEED_KEY, next ? '1' : '0');
   };
 
   // Highlight cards that changed while the board is open. The first load only records a baseline.

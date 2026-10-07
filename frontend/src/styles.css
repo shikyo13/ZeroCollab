@@ -193,3 +193,7 @@ body.modern-workspace {
 .modern-workspace .bubble-header { flex-wrap: wrap; padding-right: 0; }
 .chat-session-readonly .message-toolbar > :not(.bubble-copy) { display: none !important; }
 @media (hover: none) { .modern-workspace .message-toolbar { opacity: 1; } }
+
+/* Root error boundary fallback (components/ErrorBoundary.tsx). */
+.workspace-crash { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 12px 20px; background: var(--bg-elevated); border-left: 3px solid var(--error-color, var(--accent)); color: var(--text); font-size: var(--fs-md); }
+.workspace-crash p { margin: 0; }

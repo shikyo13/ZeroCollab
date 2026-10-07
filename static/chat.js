@@ -22,7 +22,16 @@ const linkedChannel = new URLSearchParams(location.search).get('channel');
 let activeChannel = (linkedChannel && /^[a-z0-9][a-z0-9-]{0,19}$/.test(linkedChannel) ? linkedChannel : null) || localStorage.getItem('zerocollab-channel') || 'general';
 let channelList = [];
 let channelUnread = {};  // { channelName: count }
-let colorOverrides = JSON.parse(localStorage.getItem('zerocollab-color-overrides') || '{}');
+// Saved preferences may be corrupt or storage may be disabled; fall back instead of halting chat.js.
+function storedJson(key, fallback) {
+    try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+    } catch {
+        return fallback;
+    }
+}
+let colorOverrides = storedJson('zerocollab-color-overrides', {});
 
 // Expose globals that channels.js and the React shell read via window.*
 // Using defineProperty so live values are always returned.
@@ -72,7 +81,7 @@ const SOUND_OPTIONS = [
 const DEFAULT_SOUND = 'soft-chime';
 const DICTATION_POLL_MS = 300;
 const CROSS_CHANNEL_SOUND = 'pluck';
-let soundPrefs = JSON.parse(localStorage.getItem('zerocollab-sounds') || '{}');
+let soundPrefs = storedJson('zerocollab-sounds', {});
 const soundCache = {};
 
 function playNotificationSound(sender) {

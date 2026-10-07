@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { prepareLegacy } from './legacy';
 import { brand } from './components/brand';
 import './styles.css';
@@ -11,4 +12,4 @@ const root = document.createElement('div');
 root.id = 'workspace-root';
 document.body.append(root);
 document.body.classList.add('modern-workspace');
-createRoot(root).render(<App />);
+createRoot(root).render(<ErrorBoundary><App /></ErrorBoundary>);
