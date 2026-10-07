@@ -4,6 +4,7 @@ import json
 import os
 import time
 import threading
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -19,6 +20,9 @@ class MessageStore:
         self._delete_callbacks: list = []  # called on message deletion
         self.upload_dir = self._path.parent.parent / "uploads"  # Default fallback
         self._load()
+        counter = self._path.with_suffix(self._path.suffix + ".next-id")
+        if counter.exists():
+            self._next_id = max(self._next_id, int(counter.read_text(encoding="utf-8")))
 
     def _load(self):
         if not self._path.exists():
@@ -71,12 +75,12 @@ class MessageStore:
             if metadata:
                 msg["metadata"] = metadata
             self._next_id += 1
-            self._messages.append(msg)
             if not _bulk:
                 with open(self._path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(msg, ensure_ascii=False) + "\n")
                     f.flush()
                     os.fsync(f.fileno())
+            self._messages.append(msg)
 
         # Fire callbacks outside the lock (skip during bulk import)
         if not _bulk:
@@ -95,20 +99,42 @@ class MessageStore:
 
     def update_reply_to(self, msg_id: int, reply_to: int):
         """Set reply_to on an existing message (used by import to rebuild links)."""
-        with self._lock:
-            for m in self._messages:
-                if m["id"] == msg_id:
-                    m["reply_to"] = reply_to
-                    self._rewrite()
-                    return
+        self.update_message(msg_id, {"reply_to": reply_to})
 
-    def _rewrite(self):
-        """Rewrite the full JSONL file from memory (used after bulk edits)."""
-        with open(self._path, "w", encoding="utf-8") as f:
-            for m in self._messages:
-                f.write(json.dumps(m, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+    @staticmethod
+    def _atomic_write(path, write):
+        """Prepare a sibling file completely before replacing durable state."""
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                             dir=path.parent, prefix=path.name + ".",
+                                             suffix=".tmp", delete=False) as stream:
+                temp_path = Path(stream.name)
+                write(stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_path, path)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+    def _rewrite(self, messages=None):
+        """Commit a replacement log, then publish its in-memory view.
+
+        Persist the high-water mark first: if log replacement fails, skipping
+        IDs is safe; reusing IDs referenced by saved cursors is not.
+        Caller holds _lock. Bulk imports may already have staged memory edits.
+        """
+        candidate = self._messages if messages is None else messages
+        counter = self._path.with_suffix(self._path.suffix + ".next-id")
+        self._atomic_write(counter, lambda stream: stream.write(str(self._next_id)))
+
+        def write_messages(stream):
+            for message in candidate:
+                stream.write(json.dumps(message, ensure_ascii=False) + "\n")
+
+        self._atomic_write(self._path, write_messages)
+        self._messages = candidate
 
     def get_by_id(self, msg_id: int) -> dict | None:
         with self._lock:
@@ -132,40 +158,21 @@ class MessageStore:
             return msgs
 
     def delete(self, msg_ids: list[int]) -> list[int]:
-        """Delete messages by ID. Returns list of IDs actually deleted."""
-        deleted = []
-        deleted_attachments = []
+        """Delete messages, retaining uploads shared by chat and board records."""
         with self._lock:
-            for mid in msg_ids:
-                for i, m in enumerate(self._messages):
-                    if m["id"] == mid:
-                        # Collect attachment files for cleanup
-                        for att in m.get("attachments", []):
-                            url = att.get("url", "")
-                            if url.startswith("/uploads/"):
-                                deleted_attachments.append(url.split("/")[-1])
-                        self._messages.pop(i)
-                        deleted.append(mid)
-                        break
+            existing = {m["id"] for m in self._messages}
+            deleted = list(dict.fromkeys(mid for mid in msg_ids if mid in existing))
             if deleted:
-                self._rewrite_jsonl()
+                removed = set(deleted)
+                self._rewrite([m for m in self._messages if m["id"] not in removed])
 
-        # Clean up uploaded images outside the lock
-        for filename in deleted_attachments:
-            filepath = self.upload_dir / filename
-            if filepath.exists():
-                try:
-                    filepath.unlink()
-                except Exception:
-                    pass
-
-        # Fire callbacks
+        # Upload lifetime is independent of a message: task evidence and other
+        # messages can retain the same URL. Physical cleanup needs all references.
         for cb in self._delete_callbacks:
             try:
                 cb(deleted)
             except Exception:
                 pass
-
         return deleted
 
     def on_delete(self, callback):
@@ -173,64 +180,46 @@ class MessageStore:
         self._delete_callbacks.append(callback)
 
     def update_message(self, msg_id: int, updates: dict) -> dict | None:
-        """Update fields on a message in-place. Returns the updated message or None."""
+        """Commit updated fields and return the updated message, or None."""
         with self._lock:
-            for m in self._messages:
-                if m["id"] == msg_id:
-                    m.update(updates)
-                    self._rewrite_jsonl()
-                    return dict(m)
+            for i, message in enumerate(self._messages):
+                if message["id"] == msg_id:
+                    updated = {**message, **updates}
+                    candidate = list(self._messages)
+                    candidate[i] = updated
+                    self._rewrite(candidate)
+                    return dict(updated)
             return None
 
-    def _rewrite_jsonl(self):
-        """Rewrite the JSONL file from current in-memory messages."""
-        with open(self._path, "w", encoding="utf-8") as f:
-            for m in self._messages:
-                f.write(json.dumps(m, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-
     def clear(self, channel: str | None = None):
-        """Wipe messages and rewrite the log file.
-        If channel is given, only clear messages in that channel."""
+        """Clear all messages, or only messages in the specified channel."""
         with self._lock:
-            if channel:
-                self._messages = [m for m in self._messages if m.get("channel", "general") != channel]
-                self._rewrite_jsonl()
-            else:
-                self._messages.clear()
-                self._path.write_text("")
+            candidate = [m for m in self._messages
+                         if channel and m.get("channel", "general") != channel]
+            self._rewrite(candidate)
 
     def rename_channel(self, old_name: str, new_name: str):
         """Migrate all messages from old_name to new_name."""
         with self._lock:
-            modified = False
-            for m in self._messages:
-                if m.get("channel") == old_name:
-                    m["channel"] = new_name
-                    modified = True
-            if modified:
-                self._rewrite_jsonl()
+            if any(m.get("channel") == old_name for m in self._messages):
+                self._rewrite([{**m, "channel": new_name} if m.get("channel") == old_name
+                               else m for m in self._messages])
 
     def rename_sender(self, old_name: str, new_name: str) -> int:
-        """Rename sender on all messages from old_name to new_name. Returns count updated."""
+        """Rename sender on all matching messages. Returns count updated."""
         with self._lock:
-            count = 0
-            for m in self._messages:
-                if m.get("sender") == old_name:
-                    m["sender"] = new_name
-                    count += 1
+            count = sum(m.get("sender") == old_name for m in self._messages)
             if count:
-                self._rewrite_jsonl()
+                self._rewrite([{**m, "sender": new_name} if m.get("sender") == old_name
+                               else m for m in self._messages])
         return count
 
     def delete_channel(self, name: str):
         """Remove all messages belonging to a deleted channel."""
         with self._lock:
-            original_len = len(self._messages)
-            self._messages = [m for m in self._messages if m.get("channel") != name]
-            if len(self._messages) != original_len:
-                self._rewrite_jsonl()
+            candidate = [m for m in self._messages if m.get("channel") != name]
+            if len(candidate) != len(self._messages):
+                self._rewrite(candidate)
 
     @property
     def last_id(self) -> int:
