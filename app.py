@@ -7,6 +7,7 @@ import sys
 import threading
 import uuid
 import logging
+import weakref
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
@@ -31,6 +32,10 @@ agents: AgentTrigger | None = None
 registry: RuntimeRegistry | None = None
 config: dict = {}
 ws_clients: set[WebSocket] = set()
+# Locks live only as long as their sockets; broadcasts must retain per-client order.
+_ws_send_locks = weakref.WeakKeyDictionary()
+WS_SEND_TIMEOUT_SECONDS = 5
+WS_CLOSE_TIMEOUT_SECONDS = 1
 
 # --- Security: session token (set by configure()) ---
 session_token: str = ""
@@ -561,14 +566,23 @@ async def _handle_new_message(msg: dict):
 # --- broadcasting ---
 
 async def _broadcast(raw_json: str):
-    """Send a pre-serialized JSON string to all WebSocket clients."""
-    dead = set()
-    for client in list(ws_clients):
-        try:
-            await client.send_text(raw_json)
-        except Exception:
-            dead.add(client)
-    ws_clients.difference_update(dead)
+    """Deliver in order per socket without making healthy clients wait for a slow one."""
+    async def send(client):
+        lock = _ws_send_locks.setdefault(client, asyncio.Lock())
+        async with lock:
+            if client not in ws_clients:
+                return
+            try:
+                await asyncio.wait_for(client.send_text(raw_json), WS_SEND_TIMEOUT_SECONDS)
+            except Exception:
+                # Remove before releasing the lock so queued broadcasts skip this
+                # socket. Closing lets the browser reconnect and reload history.
+                ws_clients.discard(client)
+                try:
+                    await asyncio.wait_for(client.close(code=1013), WS_CLOSE_TIMEOUT_SECONDS)
+                except Exception:
+                    pass
+    await asyncio.gather(*(send(client) for client in list(ws_clients)))
 
 
 async def broadcast(msg: dict):
