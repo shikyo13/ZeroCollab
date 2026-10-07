@@ -270,8 +270,12 @@ async def codex(run, prompt):
     args = command('codex') + ['app-server', '--stdio']
     if run.automatic_tool_approvals:
         args += ['-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"']
+    # required: Codex otherwise gives optional MCP servers a 1s grace and starts the turn without the room
+    # tools; required holds thread start until they are ready and fails the thread if they cannot start.
+    # A cold Python start right after a deployment can be slow, so allow more than the 10s default.
     for key, value in {'command': server['command'], 'args': server['args'],
-                       'env_vars': list(room_environment(run))}.items():
+                       'env_vars': list(room_environment(run)), 'required': True,
+                       'startup_timeout_sec': 30}.items():
         args += ['-c', 'mcp_servers.zerocollab_coordination.' + key + '=' + json.dumps(value)]
     proc = await spawn(run, args, stream_limit=CODEX_MESSAGE_LIMIT)
     rpc = Rpc(run, proc, notify, incoming)
