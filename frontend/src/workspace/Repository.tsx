@@ -65,9 +65,11 @@ function previousRepositories(entries: RepositoryHistoryEntry[], attached: Attac
   return [...latest.values()].sort((a, b) => (b.detached ?? 0) - (a.detached ?? 0));
 }
 
-/** An agent request: add another repository, or replace the primary one. */
-function requestAction(request: RepositoryRequest): 'add' | 'replace' {
-  return request.action ?? 'replace';
+/** An agent request: add another repository, or replace the primary one. Adding to a project
+ * with no repository yet is its first attachment, which the server applies the same way as
+ * replace (the requested repository becomes primary), so it uses the first-attach form. */
+function requestAction(request: RepositoryRequest, project: ProjectSummary): 'add' | 'replace' {
+  return request.action === 'add' && project.path ? 'add' : 'replace';
 }
 
 function TransitionStatus({ project, transition, state }: { project: ProjectSummary; transition: RepositoryTransition; state: RuntimeState | null }) {
@@ -93,7 +95,7 @@ function TransitionStatus({ project, transition, state }: { project: ProjectSumm
 
 function RequestCard({ project, request, state, onReview, onChanged }: { project: ProjectSummary; request: RepositoryRequest; state: RuntimeState | null; onReview: (() => void) | null; onChanged: () => void }) {
   const dismiss = useAction();
-  const add = requestAction(request) === 'add';
+  const add = requestAction(request, project) === 'add';
   const replace = !add && (request.replace ?? !!project.path);
   return <div className="pj-notice">
     <strong className="bd-attention">{agentName(state, request.by)} requested {add ? 'an additional repository' : replace ? 'a repository change' : 'a repository'}</strong>
@@ -222,7 +224,7 @@ export function Repository({ project, team, onChanged }: { project: ProjectSumma
   return <div className="pj-repository">
     {transition && <TransitionStatus project={project} transition={transition} state={state} />}
     {request && !transition && <RequestCard project={project} request={request} state={state} onChanged={onChanged}
-      onReview={pending || (requestAction(request) === 'add' && !multi) ? null : () => open({ action: requestAction(request) }, request)} />}
+      onReview={pending ? null : () => open({ action: requestAction(request, project) }, request)} />}
     {repos.length > 0 && <ul className="pj-repos">{repos.map(repo => <RepositoryRow key={repo.key || repo.path} repo={repo} team={team} actions={rowActions(repo)} />)}</ul>}
     {idle && <div className="pj-actions">
       <button className="bd-btn" onClick={() => open({ action: 'replace' })}>{!project.path ? 'Add repository' : extras ? 'Change primary repository' : 'Change repository'}</button>
