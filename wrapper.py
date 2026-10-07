@@ -419,6 +419,29 @@ _IDENTITY_HINT = (
 )
 
 
+def _queued_prompt(lines):
+    """Preserve every custom instruction and each mentioned channel in arrival order."""
+    prompts, channels = [], set()
+    for line in lines:
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        custom = data.get('prompt', '')
+        if isinstance(custom, str) and custom.strip():
+            prompts.append(custom.strip())
+            continue
+        channel = data.get('channel', 'general')
+        if not isinstance(channel, str) or not channel:
+            channel = 'general'
+        if channel not in channels:
+            channels.add(channel)
+            prompts.append(f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond")
+    return '\n\n'.join(prompts)
+
+
 def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = False, trigger_flag=None):
     """Poll queue file and inject an MCP read task when triggered."""
     first_mention = True
@@ -430,45 +453,12 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
                     lines = f.readlines()
                 queue_file.write_text("", "utf-8")
 
-                has_trigger = False
-                channel = "general"
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    has_trigger = True
-                    if isinstance(data, dict) and "channel" in data:
-                        channel = data["channel"]
-
-                if has_trigger:
+                prompt = _queued_prompt(lines)
+                if prompt:
                     # Signal activity BEFORE injecting — covers the thinking phase
                     if trigger_flag is not None:
                         trigger_flag[0] = True
                     time.sleep(0.5)
-
-                    # A trigger may carry a custom prompt
-                    custom_prompt = ""
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            data = json.loads(line)
-                            if isinstance(data, dict):
-                                raw_prompt = data.get("prompt", "")
-                                if isinstance(raw_prompt, str) and raw_prompt.strip():
-                                    custom_prompt = raw_prompt.strip()
-                        except json.JSONDecodeError:
-                            pass
-
-                    if custom_prompt:
-                        prompt = custom_prompt
-                    else:
-                        prompt = f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond"
 
                     if first_mention and is_multi_instance:
                         prompt += _IDENTITY_HINT
