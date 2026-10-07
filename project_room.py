@@ -487,7 +487,7 @@ class ProjectRoom:
         self.save()
         return note
 
-    def read(self, run, section='overview', offset=0, limit=4000, query='', after_id=0, task_id='', owner='', status=''):
+    def read(self, run, section='overview', offset=0, limit=4000, query='', after_id=0, task_id='', owner='', status='', *, changes=None):
         limit = max(100, min(6000, int(limit)))
         offset = max(0, int(offset))
         if section == 'spec':
@@ -523,7 +523,9 @@ class ProjectRoom:
         elif section == 'messages':
             text = '\n'.join(message_text(m, self.origin()) for m in self.runtime.host.store.get_since(int(after_id), channel=run.channel))
         elif section == 'patches':
-            text = json.dumps(self.runtime.diffs(), ensure_ascii=False)
+            if changes is None:
+                raise ValueError('Patch collection must be supplied by the async caller')
+            text = json.dumps(changes, ensure_ascii=False)
         elif section == 'overview':
             text = json.dumps({'conversation': 'Current chat is available independently of an optional spec or repository.',
                 # 'project' used to be the repository path, so a conversation project read as "no project".
@@ -562,7 +564,7 @@ class ProjectRoom:
         if ref:
             run.receipts.add(receipt_key({'ref': ref}))
 
-    def context(self, run):
+    def context(self, run, changes=None):
         maximum = self.limits['input_chars']
         task_limit, spec_limit, memory_limit = int(maximum * .18), int(maximum * .28), int(maximum * .12)
         # Views carry the observed execution state; your own tasks first, by priority (1 highest).
@@ -639,7 +641,7 @@ class ProjectRoom:
                            f'room_read(section="messages", after_id={cursor}) before acting on older work.]\n' + history)
             history = f'[Older unread messages remain available via room_read(section="messages", after_id={cursor}).]\n' + history
         peer_limit = int(maximum * .12)
-        changes = self.runtime.diffs()
+        changes = changes if changes is not None else {}
         changed = [f"{name}'s worktree:\n{clipped(diff, max(200, peer_limit // max(1, len(changes))))}" for name, diff in changes.items() if diff]
         patches = chr(10).join(changed)
         values = {'spec': self.state['spec'], 'tasks': ledger, 'memory': decisions, 'patches': patches,
