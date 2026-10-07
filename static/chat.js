@@ -18,8 +18,10 @@ let unreadCount = 0;    // messages received while scrolled up
 let lastMessageDate = null;  // track date for dividers (general channel)
 let lastMessageDates = {};  // { channel: dateString } for per-channel dividers
 let soundEnabled = false;  // suppress sounds during initial history load
+// Chat (session) ids, as app.py _CHANNEL_NAME_RE and project_registry.py SESSION_ID accept them.
+const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,19}$/;
 const linkedChannel = new URLSearchParams(location.search).get('channel');
-let activeChannel = (linkedChannel && /^[a-z0-9][a-z0-9-]{0,19}$/.test(linkedChannel) ? linkedChannel : null) || prefGet('zerocollab-channel') || 'general';
+let activeChannel = (linkedChannel && CHANNEL_NAME_RE.test(linkedChannel) ? linkedChannel : null) || prefGet('zerocollab-channel') || 'general';
 let channelList = [];
 let channelUnread = {};  // { channelName: count }
 let colorOverrides = prefObject('zerocollab-color-overrides');
@@ -70,32 +72,49 @@ const SOUND_OPTIONS = [
     { value: 'none', label: 'None' },
 ];
 const DEFAULT_SOUND = 'soft-chime';
-const DICTATION_POLL_MS = 300;
 const CROSS_CHANNEL_SOUND = 'pluck';
 let soundPrefs = prefObject('zerocollab-sounds');
 const soundCache = {};
 
-function playNotificationSound(sender) {
-    const key = sender.toLowerCase();
-    const soundName = soundPrefs[key] || soundPrefs['default'] || DEFAULT_SOUND;
+// Timings (ms), distances (px) and counts used across the chat client.
+const CONFIG = {
+    sessionRejectedCode: 4003,  // websocket close code for a stale session token: reload the page
+    reconnectDelayMs: 2000,     // wait before reconnecting a dropped websocket
+    historyBatch: 100,          // history messages rendered per task, keeps the page responsive
+    defaultHistory: 50,         // history setting when the field is not a number
+    nearBottomPx: 60,           // this close to the bottom counts as "at the bottom" (auto-scroll)
+    anchorGapPx: 12,            // jump-to-latest button gap above the composer
+    dragEdgePx: 60,             // delete-drag auto-scrolls inside this band at the timeline edges
+    dragScrollPx: 8,            // ...by this much
+    dragScrollTickMs: 16,       // ...every frame
+    scrollSettleFrames: 20,     // frames to hold the scroll position while layout settles
+    composerMaxPx: 120,         // the composer grows with its text up to this height
+    dictationPollMs: 300,       // composer value check while focused (OS dictation fires no events)
+    voiceRestartMs: 250,        // restart voice input once edits pause this long
+    mentionLookbackChars: 30,   // how far back from the cursor an @mention is searched
+    replyPreviewChars: 100,     // composer reply banner
+    quotePreviewChars: 80,      // quoted parent inside a reply bubble
+    feedbackMs: 1500,           // copy confirmations and the jump highlight
+    dayLabelMs: 1200,           // floating date label after scrolling stops
+    toastMs: 4000,
+    toastFadeMs: 300,           // matches the .toast transition in style.css
+    fadeOutMs: 200,             // matches the .delete-radio.leaving transition in style.css
+};
+
+function playSound(soundName) {
     if (soundName === 'none') return;
-    if (!soundCache[soundName]) {
-        soundCache[soundName] = new Audio(`/static/sounds/${soundName}.mp3`);
-    }
+    soundCache[soundName] ||= new Audio(`/static/sounds/${soundName}.mp3`);
     const audio = soundCache[soundName];
     audio.currentTime = 0;
     audio.play().catch(() => {});  // ignore autoplay policy errors
 }
 
+function playNotificationSound(sender) {
+    playSound(soundPrefs[sender.toLowerCase()] || soundPrefs['default'] || DEFAULT_SOUND);
+}
+
 function playCrossChannelSound() {
-    const soundName = soundPrefs['cross-channel'] || CROSS_CHANNEL_SOUND;
-    if (soundName === 'none') return;
-    if (!soundCache[soundName]) {
-        soundCache[soundName] = new Audio(`/static/sounds/${soundName}.mp3`);
-    }
-    const audio = soundCache[soundName];
-    audio.currentTime = 0;
-    audio.play().catch(() => {});
+    playSound(soundPrefs['cross-channel'] || CROSS_CHANNEL_SOUND);
 }
 window.playCrossChannelSound = playCrossChannelSound;
 
@@ -323,10 +342,10 @@ function addCodeCopyButtons(container) {
             try {
                 await navigator.clipboard.writeText(code);
                 btn.textContent = 'copied!';
-                setTimeout(() => { btn.textContent = 'copy'; }, 1500);
+                setTimeout(() => { btn.textContent = 'copy'; }, CONFIG.feedbackMs);
             } catch (err) {
                 btn.textContent = 'failed';
-                setTimeout(() => { btn.textContent = 'copy'; }, 1500);
+                setTimeout(() => { btn.textContent = 'copy'; }, CONFIG.feedbackMs);
             }
         };
         pre.style.position = 'relative';
@@ -370,7 +389,7 @@ function scheduleHistoryRender() {
 function renderHistoryBatch() {
     historyScheduled = false;
     const fragment = document.createDocumentFragment();
-    for (const msg of pendingHistory.splice(0, 100)) {
+    for (const msg of pendingHistory.splice(0, CONFIG.historyBatch)) {
         appendMessage(msg, { history: true, container: fragment });
     }
     document.getElementById('messages').appendChild(fragment);
@@ -585,7 +604,7 @@ function connectWebSocket() {
     ws.onclose = (e) => {
         // Server sends 4003 when session token is invalid (server restarted).
         // Auto-reload to pick up the fresh token from the new HTML page.
-        if (e.code === 4003) {
+        if (e.code === CONFIG.sessionRejectedCode) {
             console.warn('Session token rejected (server restarted?) — reloading page...');
             location.reload();
             return;
@@ -599,7 +618,7 @@ function connectWebSocket() {
         pendingHistory = [];
         pendingLiveEvents = [];
         setHistoryIndicator(true);
-        reconnectTimer = setTimeout(connectWebSocket, 2000);
+        reconnectTimer = setTimeout(connectWebSocket, CONFIG.reconnectDelayMs);
     };
 
     ws.onerror = (err) => {
@@ -701,7 +720,7 @@ function dayFloatOnScroll() {
         dayFloatFadeTimer = setTimeout(() => {
             dayFloatFadeTimer = null;
             float.classList.remove('visible');
-        }, 1200);
+        }, CONFIG.dayLabelMs);
     });
 }
 
@@ -766,7 +785,7 @@ function appendMessage(msg, options = {}) {
             if (parentEl) {
                 const parentSender = parentEl.querySelector('.msg-sender')?.textContent || '?';
                 const parentText = parentEl.dataset.rawText || parentEl.querySelector('.msg-text')?.textContent || '';
-                const truncated = parentText.length > 80 ? parentText.slice(0, 80) + '...' : parentText;
+                const truncated = parentText.length > CONFIG.quotePreviewChars ? parentText.slice(0, CONFIG.quotePreviewChars) + '...' : parentText;
                 const parentColor = parentEl.querySelector('.msg-sender')?.style.color || 'var(--text-dim)';
                 replyHtml = `<div class="reply-quote" onclick="scrollToMessage(${msg.reply_to})"><span class="reply-sender" style="color: ${escapeHtml(parentColor)}">${escapeHtml(parentSender)}</span> ${escapeHtml(truncated)}</div>`;
             }
@@ -905,7 +924,7 @@ function repositionScrollAnchor() {
     if (!anchor) return;
     const footer = document.querySelector('#app footer');
     if (footer) {
-        anchor.style.bottom = (footer.offsetHeight + 12) + 'px';
+        anchor.style.bottom = (footer.offsetHeight + CONFIG.anchorGapPx) + 'px';
     }
     const timeline = document.getElementById('timeline');
     if (timeline) {
@@ -1130,7 +1149,7 @@ function saveSettings() {
     const newSubtitle = document.getElementById('setting-subtitle').value.trim();
     const newFont = document.getElementById('setting-font').value;
     const histVal = document.getElementById('setting-history').value;
-    const newHistory = histVal === 'all' ? 'all' : (parseInt(histVal) || 50);
+    const newHistory = histVal === 'all' ? 'all' : (parseInt(histVal, 10) || CONFIG.defaultHistory);
     const newContrast = document.getElementById('setting-contrast').value;
 
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1191,8 +1210,8 @@ function showToast(message, type = 'info') {
     requestAnimationFrame(() => toast.classList.add('toast--visible'));
     setTimeout(() => {
         toast.classList.remove('toast--visible');
-        setTimeout(() => toast.remove(), 300);
-    }, 4000);
+        setTimeout(() => toast.remove(), CONFIG.toastFadeMs);
+    }, CONFIG.toastMs);
 }
 
 // --- Export / Import ---
@@ -1374,8 +1393,7 @@ function updateMentionMenu() {
         if (text[i] === '@') { atPos = i; break; }
         // Allow spaces if we are still matching a multi-word label like "all agents"
         if (!/[\w\-\s]/.test(text[i])) break;
-        // Optimization: don't look back more than 30 chars
-        if (cursor - i > 30) break;
+        if (cursor - i > CONFIG.mentionLookbackChars) break;
     }
 
     if (atPos < 0 || (atPos > 0 && /\w/.test(text[atPos - 1]))) {
@@ -1512,7 +1530,7 @@ function setupInput() {
     function onInputChange() {
         restartVoiceAfterEdit();
         input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+        input.style.height = Math.min(input.scrollHeight, CONFIG.composerMaxPx) + 'px';
         updateSlashMenu(input.value);
         updateMentionMenu();
         updateSendButton();
@@ -1532,7 +1550,7 @@ function setupInput() {
                 _lastInputVal = input.value;
                 updateSendButton();
             }
-        }, DICTATION_POLL_MS);
+        }, CONFIG.dictationPollMs);
     });
     input.addEventListener('blur', () => { clearInterval(_dictationPoll); _dictationPoll = null; });
     updateSendButton();
@@ -1747,7 +1765,7 @@ function setupScroll() {
 
     timeline.addEventListener('scroll', () => {
         const distFromBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
-        autoScroll = distFromBottom < 60;
+        autoScroll = distFromBottom < CONFIG.nearBottomPx;
 
         if (autoScroll) {
             unreadCount = 0;
@@ -1785,7 +1803,7 @@ function copyMessage(msgId, event) {
         const btn = el.querySelector('.bubble-copy');
         if (btn) {
             btn.classList.add('copied');
-            setTimeout(() => btn.classList.remove('copied'), 1500);
+            setTimeout(() => btn.classList.remove('copied'), CONFIG.feedbackMs);
         }
     };
     // Rich HTML + raw markdown — rich editors get HTML, code/markdown editors get source
@@ -1841,7 +1859,7 @@ function renderReplyPreview() {
         const inputRow = document.getElementById('input-row');
         inputRow.parentNode.insertBefore(container, inputRow);
     }
-    const truncated = replyingTo.text.length > 100 ? replyingTo.text.slice(0, 100) + '...' : replyingTo.text;
+    const truncated = replyingTo.text.length > CONFIG.replyPreviewChars ? replyingTo.text.slice(0, CONFIG.replyPreviewChars) + '...' : replyingTo.text;
     const color = getColor(replyingTo.sender);
     container.innerHTML = `<span class="reply-preview-label">replying to</span> <span style="color: ${escapeHtml(color)}; font-weight: 600">${escapeHtml(replyingTo.sender)}</span>: ${escapeHtml(truncated)} <button class="dismiss-btn reply-cancel" onclick="cancelReply()">&times;</button>`;
 }
@@ -1880,7 +1898,7 @@ function scrollToMessage(msgId) {
     if (!el) return;
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     el.classList.add('highlight');
-    setTimeout(() => el.classList.remove('highlight'), 1500);
+    setTimeout(() => el.classList.remove('highlight'), CONFIG.feedbackMs);
 }
 
 // --- Todos ---
@@ -1994,9 +2012,8 @@ function exitDeleteMode() {
 
     // Fade out radios then remove
     document.querySelectorAll('.delete-radio').forEach(el => {
-        el.style.opacity = '0';
-        el.style.transition = 'opacity 0.2s';
-        setTimeout(() => el.remove(), 200);
+        el.classList.add('leaving');
+        setTimeout(() => el.remove(), CONFIG.fadeOutMs);
     });
 
     repositionScrollAnchor();
@@ -2008,17 +2025,17 @@ document.addEventListener('mousemove', (e) => {
     if (!deleteDragging) return;
     const timeline = document.getElementById('timeline');
     const rect = timeline.getBoundingClientRect();
-    const edgeZone = 60;
+    const edgeZone = CONFIG.dragEdgePx;
 
     if (e.clientY < rect.top + edgeZone) {
         // Near top — scroll up
         if (!deleteScrollInterval) {
-            deleteScrollInterval = setInterval(() => timeline.scrollTop -= 8, 16);
+            deleteScrollInterval = setInterval(() => timeline.scrollTop -= CONFIG.dragScrollPx, CONFIG.dragScrollTickMs);
         }
     } else if (e.clientY > rect.bottom - edgeZone) {
         // Near bottom — scroll down
         if (!deleteScrollInterval) {
-            deleteScrollInterval = setInterval(() => timeline.scrollTop += 8, 16);
+            deleteScrollInterval = setInterval(() => timeline.scrollTop += CONFIG.dragScrollPx, CONFIG.dragScrollTickMs);
         }
     } else if (deleteScrollInterval) {
         clearInterval(deleteScrollInterval);
@@ -2137,7 +2154,7 @@ function toggleVoice() {
 function scheduleVoiceRestart() {
     clearTimeout(voiceRestartTimer);
     // Avoid restarting the microphone for every keystroke while the user edits.
-    voiceRestartTimer = setTimeout(startVoiceRecognition, 250);
+    voiceRestartTimer = setTimeout(startVoiceRecognition, CONFIG.voiceRestartMs);
 }
 
 function restartVoiceAfterEdit() {
@@ -2340,7 +2357,7 @@ async function _preserveScroll(fn) {
     if (!timeline) { await fn(); return; }
 
     // Check if we are at the bottom (with a small buffer)
-    const wasAtBottom = autoScroll || (timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 60);
+    const wasAtBottom = autoScroll || (timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < CONFIG.nearBottomPx);
     const topId = _getTopVisibleMsgId();
 
     // Save the exact pixel offset of the top visible message
@@ -2376,11 +2393,11 @@ async function _preserveScroll(fn) {
     void timeline.scrollHeight;
     correctScroll();
 
-    // Keep correcting each frame during the transition (~300ms)
+    // Keep correcting each frame while the transition settles
     let frames = 0;
     function tick() {
         correctScroll();
-        if (++frames < 20) requestAnimationFrame(tick); // ~333ms at 60fps
+        if (++frames < CONFIG.scrollSettleFrames) requestAnimationFrame(tick);
         else timeline.style.scrollBehavior = oldSmooth;
     }
     requestAnimationFrame(tick);

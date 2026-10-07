@@ -9,6 +9,8 @@ let _history = [];
 // A history channel opened from the menu for this visit only; it is never a permanent tab.
 let _viewing = '';
 let _moreOpen = false;
+const CHAT_TITLE_MAX = 40;    // project_registry.py SESSION_TITLE_MAX
+const UNREAD_SHOWN_MAX = 99;  // larger unread counts show as "99+"
 window.chatSessionTitle = id => _sessions.find(s => s.id === id)?.title || id;
 window.chatSessionReadonly = id => !_sessions.some(s => s.id === id && !s.readonly);
 Object.defineProperty(window, 'activeProjectId', { get: () => _sessionProject });
@@ -96,7 +98,7 @@ function _renderSessions(container, sidebar) {
         const unread = window.channelUnread[name] || 0;
         if (unread && name !== window.activeChannel) {
             const dot = document.createElement('span'); dot.className = 'channel-unread-dot';
-            dot.textContent = unread > 99 ? '99+' : unread; tab.append(dot);
+            dot.textContent = unread > UNREAD_SHOWN_MAX ? UNREAD_SHOWN_MAX + '+' : unread; tab.append(dot);
         }
         const actions = document.createElement('span'); actions.className = 'channel-tab-actions';
         if (!session.readonly) {
@@ -160,7 +162,7 @@ function _sessionEditor(id, sidebar = false) {
     container.querySelector('.channel-inline-create')?.remove();
     const project = _sessionProject;
     const wrapper = document.createElement('form'); wrapper.className = 'channel-inline-create';
-    const input = document.createElement('input'); input.type = 'text'; input.maxLength = 40;
+    const input = document.createElement('input'); input.type = 'text'; input.maxLength = CHAT_TITLE_MAX;
     input.value = id ? window.chatSessionTitle(id) : ''; input.placeholder = 'Chat name';
     input.setAttribute('aria-label', id ? 'Rename chat' : 'New chat name');
     const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = id ? 'Rename' : 'Create';
@@ -279,6 +281,8 @@ function deleteChannel(id) { if (id) _closeSession(id); }
 
 const SIDEBAR_MODE_KEY = 'zerocollab-channel-sidebar-mode';
 const SIDEBAR_WIDTH_KEY = 'zerocollab-channel-sidebar-w';
+const SIDEBAR_MIN_PX = 140;
+const SIDEBAR_MAX_PX = 400;
 
 function setChannelSidebarMode(mode, persist = true) {
     const sidebar = document.getElementById('channel-sidebar');
@@ -319,7 +323,7 @@ function setupChannelSidebarGrip() {
         if (!dragging) return;
         // Sidebar is on the left, so dragging right grows it (positive delta).
         const delta = e.clientX - startX;
-        const newWidth = Math.min(Math.max(startWidth + delta, 140), 400);
+        const newWidth = Math.min(Math.max(startWidth + delta, SIDEBAR_MIN_PX), SIDEBAR_MAX_PX);
         panel.style.setProperty('--channel-sidebar-w', newWidth + 'px');
         panel.style.width = newWidth + 'px';
     });
@@ -337,7 +341,7 @@ function setupChannelSidebarGrip() {
 
 function _restoreSidebarState() {
     const savedWidth = parseInt(prefGet(SIDEBAR_WIDTH_KEY, ''), 10);
-    if (savedWidth && savedWidth >= 140 && savedWidth <= 400) {
+    if (savedWidth && savedWidth >= SIDEBAR_MIN_PX && savedWidth <= SIDEBAR_MAX_PX) {
         const panel = document.getElementById('channel-sidebar');
         if (panel) {
             panel.style.setProperty('--channel-sidebar-w', savedWidth + 'px');
