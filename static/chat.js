@@ -41,6 +41,8 @@ Object.defineProperty(window, 'autoScroll', { get() { return autoScroll; } });
 
 // --- Drag-scroll for overflow containers ---
 function enableDragScroll(el) {
+    if (el.dataset.dragScroll) return;  // re-renders call this repeatedly; listeners attach once
+    el.dataset.dragScroll = '1';
     let isDown = false, startX, scrollLeft;
     el.addEventListener('mousedown', e => {
         if (e.button !== 0) return;  // left-click only
@@ -68,6 +70,7 @@ const SOUND_OPTIONS = [
     { value: 'none', label: 'None' },
 ];
 const DEFAULT_SOUND = 'soft-chime';
+const DICTATION_POLL_MS = 300;
 const CROSS_CHANNEL_SOUND = 'pluck';
 let soundPrefs = JSON.parse(localStorage.getItem('zerocollab-sounds') || '{}');
 const soundCache = {};
@@ -242,7 +245,21 @@ function renderMarkdown(text) {
     html = colorMentions(html);
     html = linkifyUrls(html);
     html = linkifyPaths(html);
-    return html;
+    return stripUnsafeUrls(html);
+}
+
+// Markdown links and images may carry any scheme; keep only ones that cannot run script.
+const SAFE_URL = /^(https?:|mailto:|\/|#|\.{0,2}\/|[^:]*$)/i;
+function stripUnsafeUrls(html) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    for (const el of tpl.content.querySelectorAll('[href], [src]')) {
+        for (const attr of ['href', 'src']) {
+            const value = el.getAttribute(attr);
+            if (value !== null && !SAFE_URL.test(value.trim())) el.removeAttribute(attr);
+        }
+    }
+    return tpl.innerHTML;
 }
 
 function linkifyUrls(html) {
@@ -719,7 +736,7 @@ function appendMessage(msg, options = {}) {
     if (msg.type === 'join' || msg.type === 'leave') {
         el.classList.add('join-msg');
         const color = getColor(msg.sender);
-        el.innerHTML = `<span class="join-dot" style="background: ${color}"></span><span class="join-text"><strong style="color: ${color}">${escapeHtml(getAgentDisplayName(msg.sender))}</strong> ${msg.type === 'join' ? 'joined' : 'left'}</span>`;
+        el.innerHTML = `<span class="join-dot" style="background: ${escapeHtml(color)}"></span><span class="join-text"><strong style="color: ${escapeHtml(color)}">${escapeHtml(getAgentDisplayName(msg.sender))}</strong> ${msg.type === 'join' ? 'joined' : 'left'}</span>`;
     } else if (msg.type === 'system' || msg.sender === 'system') {
         el.classList.add('system-msg');
         el.innerHTML = `<span class="msg-text">${escapeHtml(msg.text)}</span>`;
@@ -737,7 +754,7 @@ function appendMessage(msg, options = {}) {
         if (msg.attachments && msg.attachments.length > 0) {
             attachmentsHtml = '<div class="msg-attachments">';
             for (const att of msg.attachments) {
-                attachmentsHtml += `<img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" onclick="openImageModal('${escapeHtml(att.url)}')">`;
+                attachmentsHtml += `<img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" data-url="${escapeHtml(att.url)}" onclick="openImageModal(this.dataset.url)">`;
             }
             attachmentsHtml += '</div>';
         }
@@ -751,15 +768,15 @@ function appendMessage(msg, options = {}) {
                 const parentText = parentEl.dataset.rawText || parentEl.querySelector('.msg-text')?.textContent || '';
                 const truncated = parentText.length > 80 ? parentText.slice(0, 80) + '...' : parentText;
                 const parentColor = parentEl.querySelector('.msg-sender')?.style.color || 'var(--text-dim)';
-                replyHtml = `<div class="reply-quote" onclick="scrollToMessage(${msg.reply_to})"><span class="reply-sender" style="color: ${parentColor}">${escapeHtml(parentSender)}</span> ${escapeHtml(truncated)}</div>`;
+                replyHtml = `<div class="reply-quote" onclick="scrollToMessage(${msg.reply_to})"><span class="reply-sender" style="color: ${escapeHtml(parentColor)}">${escapeHtml(parentSender)}</span> ${escapeHtml(truncated)}</div>`;
             }
         }
 
         const agentKey = (resolveAgent(msg.sender.toLowerCase()) || msg.sender).toLowerCase();
-        const avatarHtml = `<div class="avatar-wrap" data-agent="${escapeHtml(agentKey)}"><div class="avatar" style="background-color: ${senderColor}">${getAvatarSvg(msg.sender)}</div></div>`;
+        const avatarHtml = `<div class="avatar-wrap" data-agent="${escapeHtml(agentKey)}"><div class="avatar" style="background-color: ${escapeHtml(senderColor)}">${getAvatarSvg(msg.sender)}</div></div>`;
 
         el.dataset.rawText = msg.text;
-        el.innerHTML = `${isSelf ? '' : avatarHtml}<div class="chat-bubble" style="--bubble-color: ${senderColor}">${replyHtml}<div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(getAgentDisplayName(msg.sender))}</span><span class="msg-time">${msg.time || ''}</span><span class="msg-num">#${msg.id}</span><div class="message-toolbar" role="group" aria-label="Message actions"><button class="create-task-pill" onclick="createTaskFromMessage(${msg.id}); event.stopPropagation();" title="Create a Board task from this message">Create task</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><button class="reply-btn" onclick="startReply(${msg.id}, event)">Reply</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete">Delete</button></div></div><div class="msg-text">${textHtml}</div>${attachmentsHtml}</div>`;
+        el.innerHTML = `${isSelf ? '' : avatarHtml}<div class="chat-bubble" style="--bubble-color: ${escapeHtml(senderColor)}">${replyHtml}<div class="bubble-header"><span class="msg-sender" style="color: ${escapeHtml(senderColor)}">${escapeHtml(getAgentDisplayName(msg.sender))}</span><span class="msg-time">${msg.time || ''}</span><span class="msg-num">#${msg.id}</span><div class="message-toolbar" role="group" aria-label="Message actions"><button class="create-task-pill" onclick="createTaskFromMessage(${msg.id}); event.stopPropagation();" title="Create a Board task from this message">Create task</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><button class="reply-btn" onclick="startReply(${msg.id}, event)">Reply</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete">Delete</button></div></div><div class="msg-text">${textHtml}</div>${attachmentsHtml}</div>`;
 
         // Add copy buttons to code blocks
         addCodeCopyButtons(el);
@@ -843,7 +860,7 @@ function colorMentions(textHtml) {
         const resolved = resolveAgent(lower);
         if (resolved) {
             const color = getColor(resolved);
-            return `<span class="mention" style="color: ${color}">@${name}</span>`;
+            return `<span class="mention" style="color: ${escapeHtml(color)}">@${name}</span>`;
         }
         // Non-agent mention (e.g. @user, @user) — use user color
         return `<span class="mention" style="color: var(--user-color)">@${name}</span>`;
@@ -1389,7 +1406,7 @@ function updateMentionMenu() {
         const row = document.createElement('div');
         row.className = 'mention-item' + (i === mentionMenuIndex ? ' active' : '');
         row.dataset.name = item.name;
-        row.innerHTML = `<span class="mention-dot" style="background: ${item.color}"></span><span class="mention-name">${escapeHtml(item.label)}</span>`;
+        row.innerHTML = `<span class="mention-dot" style="background: ${escapeHtml(item.color)}"></span><span class="mention-name">${escapeHtml(item.label)}</span>`;
         row.addEventListener('mousedown', (e) => {
             e.preventDefault();
             selectMention(item.name);
@@ -1504,14 +1521,20 @@ function setupInput() {
     // Voice typing doesn't always fire 'input' — catch with additional events
     input.addEventListener('compositionend', onInputChange);
     input.addEventListener('change', onInputChange);
-    // Fallback poll for speech-to-text that bypasses all events
+    // OS dictation can change the value without firing any event, so poll,
+    // but only while the composer has focus (dictation needs focus anyway).
     let _lastInputVal = '';
-    setInterval(() => {
-        if (input.value !== _lastInputVal) {
-            _lastInputVal = input.value;
-            updateSendButton();
-        }
-    }, 300);
+    let _dictationPoll = null;
+    input.addEventListener('focus', () => {
+        clearInterval(_dictationPoll);
+        _dictationPoll = setInterval(() => {
+            if (input.value !== _lastInputVal) {
+                _lastInputVal = input.value;
+                updateSendButton();
+            }
+        }, DICTATION_POLL_MS);
+    });
+    input.addEventListener('blur', () => { clearInterval(_dictationPoll); _dictationPoll = null; });
     updateSendButton();
 }
 
@@ -1677,7 +1700,7 @@ function renderAttachments() {
         const wrap = document.createElement('div');
         wrap.className = 'attachment-preview';
         wrap.innerHTML = `
-            <img src="${att.url}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" onclick="openImageModal('${escapeHtml(att.url)}')" title="Click to preview">
+            <img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" data-url="${escapeHtml(att.url)}" onclick="openImageModal(this.dataset.url)" title="Click to preview">
             <button class="remove-btn" onclick="removeAttachment(${i})">x</button>
         `;
         container.appendChild(wrap);
@@ -1743,13 +1766,10 @@ function setupScroll() {
 
     // Reposition scroll-anchor when window resizes or sidebars toggle
     window.addEventListener('resize', repositionScrollAnchor);
-    const contentArea = document.querySelector('.content-area');
+    const contentArea = document.getElementById('content-area');
     if (contentArea) {
         new ResizeObserver(repositionScrollAnchor).observe(contentArea);
     }
-
-    // Support button label collapses via CSS overflow (grid column shrinks naturally).
-    // No JS measurement needed.
 }
 
 // --- Reply ---
@@ -1823,7 +1843,7 @@ function renderReplyPreview() {
     }
     const truncated = replyingTo.text.length > 100 ? replyingTo.text.slice(0, 100) + '...' : replyingTo.text;
     const color = getColor(replyingTo.sender);
-    container.innerHTML = `<span class="reply-preview-label">replying to</span> <span style="color: ${color}; font-weight: 600">${escapeHtml(replyingTo.sender)}</span>: ${escapeHtml(truncated)} <button class="dismiss-btn reply-cancel" onclick="cancelReply()">&times;</button>`;
+    container.innerHTML = `<span class="reply-preview-label">replying to</span> <span style="color: ${escapeHtml(color)}; font-weight: 600">${escapeHtml(replyingTo.sender)}</span>: ${escapeHtml(truncated)} <button class="dismiss-btn reply-cancel" onclick="cancelReply()">&times;</button>`;
 }
 
 // Replies only reach an agent through an @mention, so Reply addresses the
@@ -2385,10 +2405,11 @@ function styleHashtags(html) {
 // --- Helpers ---
 
 
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+// Safe for element text and quoted attribute values (not for inline JS).
 function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return String(text ?? '').replace(/[&<>"']/g, ch => HTML_ESCAPES[ch]);
 }
 window.escapeHtml = escapeHtml;
 
