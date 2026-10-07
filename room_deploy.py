@@ -1,0 +1,260 @@
+"""App side of the supervisor protocol. This module never stops or replaces the server."""
+import asyncio
+import hashlib
+import json
+import os
+import re
+import threading
+import time
+import uuid
+from functools import wraps
+from pathlib import Path
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+TERMINAL = {'deployed', 'aborted', 'rolled_back', 'rollback_failed', 'conflict', 'recovery_required', 'rejected'}
+
+
+def read_json(path, default=None):
+    try:
+        return json.loads(path.read_text('utf-8-sig'))
+    except FileNotFoundError:
+        return default
+
+
+def release_order(item):
+    """Releases sort by semantic version, then build time; staging order and folder names don't matter."""
+    numbers = tuple(int(part) for part in re.findall(r'\d+', str((item or {}).get('version') or ''))[:3])
+    return numbers, str((item or {}).get('created', ''))
+
+
+def atomic_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        temp.write_text(json.dumps(value, indent=2), 'utf-8')
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+class DeploymentState:
+    def __init__(self, data):
+        self.root = Path(data).resolve() / 'deploy'
+        self.lock = threading.RLock()
+        self.mutations = 0
+        self.gate = {}
+        self.stamp = None
+        self.version = read_json(self.root / 'current.json', {}) or {}
+        self.rehearsal = os.environ.get('ZC_REHEARSAL') == '1'
+        self.reload()
+
+    def reload(self):
+        with self.lock:
+            path = self.root / 'maintenance.json'
+            try:
+                stat = path.stat()
+                stamp = (stat.st_mtime_ns, stat.st_size)
+                if stamp != self.stamp:
+                    value = read_json(path)
+                    if not isinstance(value, dict) or value.get('admission') not in ('open', 'closed') or value.get('writes') not in ('open', 'blocked') or not isinstance(value.get('seq'), int):
+                        raise ValueError('Invalid maintenance record')
+                    self.gate = value
+                    self.stamp = stamp
+            except FileNotFoundError:
+                self.gate = {'seq': 0, 'admission': 'open', 'writes': 'open'}
+                self.stamp = None
+            except (OSError, ValueError, TypeError):
+                self.gate = {'seq': -1, 'admission': 'closed', 'writes': 'blocked', 'reason': 'Maintenance state cannot be read safely'}
+                self.stamp = None
+            return dict(self.gate)
+
+    def admission_open(self):
+        return not self.rehearsal and self.reload()['admission'] == 'open' and self.gate['writes'] == 'open'
+
+    def enter_mutation(self):
+        with self.lock:
+            if self.reload()['writes'] != 'open':
+                return False
+            self.mutations += 1
+            return True
+
+    def leave_mutation(self):
+        with self.lock:
+            self.mutations -= 1
+
+    def track_continuation(self):
+        # Store callbacks belong to a write already admitted by HTTP/MCP or a running turn.
+        # Count them before scheduling, so drain cannot stop between storage and routing.
+        with self.lock:
+            self.mutations += 1
+
+    def guard_tool(self, fn):
+        @wraps(fn)
+        def guarded(*args, **kwargs):
+            if not self.enter_mutation():
+                return 'Error: deploying; the room is temporarily read-only. Try again after it reconnects.'
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                self.leave_mutation()
+        return guarded
+
+    def releases(self):
+        result = []
+        for folder in sorted((self.root / 'releases').glob('*')):
+            if not re.fullmatch(r'[0-9a-f]{12}', folder.name) or folder.is_symlink():
+                continue
+            try:
+                item = self.release(folder.name)
+                result.append(item)
+            except (OSError, ValueError, TypeError):
+                continue
+        return sorted(result, key=release_order, reverse=True)
+
+    def release(self, identifier):
+        if not re.fullmatch(r'[0-9a-f]{12}', str(identifier or '')):
+            raise ValueError('Choose a staged release')
+        folder = self.root / 'releases' / identifier
+        if not folder.resolve().is_relative_to((self.root / 'releases').resolve()):
+            raise ValueError('Release is outside the staging directory')
+        item = read_json(folder / 'RELEASE.json')
+        raw = (folder / 'manifest.json').read_bytes()
+        sha = hashlib.sha256(raw).hexdigest()
+        manifest = json.loads(raw)
+        if not isinstance(item, dict) or item.get('id') != identifier or item.get('manifest_sha') != sha or identifier != sha[:12]:
+            raise ValueError('Release fingerprint changed; prepare and review it again')
+        if not isinstance(manifest, dict) or any(item.get(key) != manifest.get(key) for key in ('commit', 'files', 'deletions')):
+            raise ValueError('Release details disagree with the approved manifest')
+        evidence = read_json(folder / 'rehearsal.json', {}) or {}
+        ready = isinstance(evidence, dict) and (evidence.get('release_id'), evidence.get('manifest_sha'), evidence.get('status')) == (identifier, sha, 'passed')
+        # review.json (written when staging, outside the fingerprint) names the board reviews behind
+        # this exact package; the panel shows their live board state, not a claim in the package.
+        linked = read_json(folder / 'review.json', {}) or {}
+        review_ids = [str(r) for r in linked.get('reviews', []) if isinstance(r, str)][:12] if isinstance(linked, dict) and             (linked.get('release_id'), linked.get('manifest_sha')) == (identifier, sha) else []
+        if identifier == self.version.get('id'):
+            relation = 'current'
+        else:
+            relation = 'newer' if release_order(item) > release_order(self.version) else 'older'
+        return {**item, 'rehearsal_passed': ready, 'relation': relation, 'review_ids': review_ids,
+                'rehearsal': 'Passed for this exact package.' if ready else 'Required rehearsal has not passed for this package.'}
+
+    def snapshot(self):
+        receipts = []
+        for path in sorted((self.root / 'receipts').glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:10]:
+            try:
+                item = read_json(path)
+                if isinstance(item, dict):
+                    receipts.append(item)
+            except (OSError, ValueError):
+                continue
+        status = read_json(self.root / 'status.json', {}) or {}
+        return {'current': self.version, 'supervisor': status, 'maintenance': self.reload(),
+                'releases': self.releases(), 'receipts': receipts,
+                'pending': [read_json(p, {}) for p in (self.root / 'requests').glob('*.json')]}
+
+
+class MutationGate:
+    def __init__(self, app, state):
+        self.app, self.state = app, state
+
+    async def __call__(self, scope, receive, send):
+        mutation = scope['type'] == 'http' and scope['method'] not in ('GET', 'HEAD', 'OPTIONS')
+        path = scope.get('path', '')
+        if self.state.rehearsal and mutation and ('/repository' in path or path.startswith(('/api/open-path', '/api/runtime/providers', '/api/runtime/login', '/api/runtime/settings'))):
+            await JSONResponse({'error': 'External operations are disabled during rehearsal'}, 503)(scope, receive, send)
+            return
+        if mutation and not self.state.enter_mutation():
+            await JSONResponse({'error': 'Deploying: the room is temporarily read-only'}, 503)(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if mutation:
+                self.state.leave_mutation()
+
+
+def install(host, runtime):
+    state = DeploymentState(runtime.data)
+    host.deployment = state
+    runtime.deployment = state
+    host.app.add_middleware(MutationGate, state=state)
+    import mcp_bridge
+    mcp_bridge.deployment = state
+
+    @host.app.get('/api/version')
+    async def version():
+        return state.version
+
+    @host.app.get('/api/runtime/maintenance')
+    async def maintenance():
+        gate = state.reload()
+        # Explicit interrupt cancels active provider turns; it never discards pending wakes.
+        if gate.get('interrupt') and gate['admission'] == 'closed':
+            tasks = [s.get('task') for name, s in runtime.states.items() if name in runtime.running]
+            for task in tasks:
+                if task:
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*(t for t in tasks if t), return_exceptions=True)
+        active = len(runtime.running) + sum(bool(s.get('task')) and not s.get('waiting') and name not in runtime.running for name, s in runtime.states.items())
+        with state.lock:
+            mutations = state.mutations
+        if gate['writes'] == 'blocked' and active == 0 and mutations == 0:
+            runtime.save_deploy_queue()
+        return {'seq_applied': gate['seq'], 'admission': gate['admission'], 'writes': gate['writes'],
+                'active_runs': active, 'active_mutations': mutations, 'release_id': state.version.get('id', ''),
+                'project_id': runtime.identity, 'paused': runtime.paused}
+
+    def board_reviews(ids):
+        records = {r.get('id'): r for r in runtime.project_room.state.get('reviews', [])}
+        tasks = {t.get('id'): t.get('title', '') for t in runtime.project_room.state.get('tasks', [])}
+        return [{'id': i, 'status': 'not_found'} if i not in records else
+                {k: records[i].get(k, '') for k in ('id', 'status', 'reviewer', 'revision', 'task_id')}
+                | {'task_title': tasks.get(records[i].get('task_id'), '')} for i in ids]
+
+    @host.app.get('/api/runtime/deployments')
+    async def deployments():
+        try:
+            snapshot = state.snapshot()
+            for item in snapshot['releases']:
+                item['reviews'] = board_reviews(item.pop('review_ids', []))
+            return snapshot
+        except (OSError, ValueError, TypeError) as exc:
+            return JSONResponse({'error': 'Deployment records unavailable: ' + str(exc)}, 503)
+
+    @host.app.post('/api/runtime/deployments/approve')
+    async def approve(request: Request):
+        try:
+            body = await request.json()
+            item = state.release(body.get('release_id'))
+            if body.get('manifest_sha') != item['manifest_sha']:
+                raise ValueError('Candidate changed; review the release shown now')
+            if not item['rehearsal_passed']:
+                raise ValueError('This exact package must pass rehearsal before approval')
+            if item['relation'] == 'current':
+                raise ValueError('This release is already running')
+            if item['relation'] == 'older' and body.get('rollback') is not True:
+                raise ValueError(f"{item.get('version') or item['id']} is older than the running release; "
+                                 'choose it under Earlier releases to roll back deliberately')
+            status = read_json(state.root / 'status.json', {}) or {}
+            if time.time() - float(status.get('updated', 0)) > 15:
+                raise ValueError('Supervisor is offline; external bootstrap is required')
+            if status.get('state') not in ('running', 'ready', 'idle'):
+                raise ValueError('The supervisor is busy or needs recovery')
+            if any((state.root / 'requests').glob('*.json')):
+                raise ValueError('A deployment is already queued')
+            if body.get('interrupt', False) is not False:
+                raise ValueError('This control waits for current turns; interrupt deployment is not enabled')
+            seconds = body.get('drain_seconds', 600)
+            if not isinstance(seconds, int) or isinstance(seconds, bool) or not 10 <= seconds <= 3600:
+                raise ValueError('Drain time must be between 10 and 3600 seconds')
+            identifier = uuid.uuid4().hex
+            record = {'id': identifier, 'release_id': item['id'], 'manifest_sha': item['manifest_sha'],
+                      'approved_by': 'user', 'approved_at': time.time(), 'drain_seconds': seconds, 'interrupt': False,
+                      'rollback': item['relation'] == 'older'}
+            atomic_json(state.root / 'requests' / (identifier + '.json'), record)
+            return record
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            return JSONResponse({'error': str(exc)}, 409)

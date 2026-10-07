@@ -1,0 +1,23 @@
+#runtime-panel{padding:10px 20px;border-bottom:1px solid #353b49;background:#171b24;flex-shrink:0;font-size:12px;max-height:40vh;overflow:auto}
+.runtime-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+#runtime-panel button{border:1px solid #4a5262;border-radius:6px;background:#272e3b;color:#eef2fa;padding:6px 10px;cursor:pointer}
+#runtime-panel button:disabled{opacity:.4;cursor:default}
+#room-stop{border-color:#ef7676!important;color:#ffb6b6!important}
+#room-resume{border-color:#75cfa5!important}
+#room-providers{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;margin-top:8px}
+.runtime-provider{display:flex;flex-direction:column;gap:3px;background:#202633;padding:8px;border-radius:6px}
+.runtime-provider small{color:#aeb9cf;line-height:1.4}
+.provider-stop{align-self:start;margin-top:5px}
+.provider-settings{display:grid;grid-template-columns:minmax(0,1fr) minmax(90px,.6fr) auto;gap:6px;align-items:end;margin:8px 0 4px}
+.provider-settings label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#dce5f6}
+.provider-settings select{width:100%;min-width:0;background:#10141c;color:#eef2fa;border:1px solid #61718d;border-radius:5px;padding:7px 5px;font-size:12px}
+.provider-settings select:disabled{opacity:.55}.provider-selection-note{color:#b1d3f1!important}.provider-active-settings{color:#a7e8c7!important}
+#runtime-panel details{margin:6px 0}#runtime-panel summary{cursor:pointer;color:#b5c4db}
+#room-project-form{display:flex;gap:8px;margin-top:8px}#room-project-path{flex:1;min-width:0}
+#runtime-panel input{background:#10141c;color:#e6edfa;border:1px solid #4a5262;border-radius:4px;padding:6px}
+#room-worktrees{overflow-wrap:anywhere;font-family:monospace;font-size:11px;line-height:1.7}
+.runtime-approval{border:1px solid #d4a962;background:#352d21;padding:12px;margin:8px 0;border-radius:7px}
+.runtime-approval p{white-space:pre-wrap;overflow-wrap:anywhere}.runtime-approval pre,#room-tools{max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.runtime-approval button{margin-right:8px}.runtime-live .chat-bubble{border:1px solid #607eb5;max-width:90%}.runtime-live .bubble-header{color:#9cc2ff}
+dialog{background:#171b24;color:#e6edfa;border:1px solid #61718d;border-radius:10px;max-width:90vw;max-height:80vh}dialog pre{white-space:pre-wrap;overflow:auto}dialog::backdrop{background:#0009}
+@media(max-width:700px){#runtime-panel{padding:8px}#room-providers{grid-template-columns:1fr 1fr}.runtime-controls{gap:5px}}

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZeroCollab</title>
+    <meta name="application-name" content="ZeroCollab">
+
+    <meta name="author" content="ZeroTheAbsolute">
+    <meta name="theme-color" content="#0c0e10">
+    <link rel="stylesheet" href="/static/style.css?v=zerocollab-repo-1">
+    <link rel="stylesheet" href="/static/runtime.css?v=1">
+    <link rel="icon" type="image/svg+xml" href="/static/brand/zerocollab-mark.svg">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="header-left">
+                <img src="/static/brand/zerocollab-mark.svg" alt="ZeroCollab" class="header-logo">
+                <h1 id="room-title">ZeroCollab</h1>
+                <span class="subtitle" id="room-subtitle"></span>
+            </div>
+            <div class="header-right">
+                <div id="agent-status"></div>
+                <button class="settings-btn" id="settings-toggle" onclick="toggleSettings()" title="Settings">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M6.5 1L7.1 3.1C7.4 3.2 7.7 3.4 8 3.6L10 2.8L11.5 5.4L9.8 6.7C9.8 7 9.8 7.3 9.8 7.6L11.5 8.9L10 11.5L8 10.7C7.7 10.9 7.4 11 7.1 11.2L6.5 13.3H3.5L2.9 11.2C2.6 11 2.3 10.9 2 10.7L0 11.5L-1.5 8.9L0.2 7.6C0.2 7.3 0.2 7 0.2 6.7L-1.5 5.4L0 2.8L2 3.6C2.3 3.4 2.6 3.2 2.9 3.1L3.5 1H6.5Z" transform="translate(3 1)" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                        <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <div id="settings-bar" class="hidden">
+            <div class="settings-field">
+                <label for="setting-username">Name</label>
+                <input type="text" id="setting-username" placeholder="your name" maxlength="20">
+            </div>
+            <div class="settings-field">
+                <label for="setting-subtitle">This server</label>
+                <input type="text" id="setting-subtitle" placeholder="e.g. frontend project" maxlength="40" title="Shown next to ZeroCollab, to tell this server apart from others">
+            </div>
+            <div class="settings-field">
+                <label for="setting-font">Font</label>
+                <select id="setting-font">
+                    <option value="mono">Monospace</option>
+                    <option value="sans">Sans</option>
+                </select>
+            </div>
+            <div class="settings-field">
+                <label for="setting-history">History</label>
+                <select id="setting-history">
+                    <option value="all">All</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                </select>
+            </div>
+            <div class="settings-field">
+                <label for="setting-contrast">Contrast</label>
+                <select id="setting-contrast">
+                    <option value="normal">Normal</option>
+                    <option value="high">High</option>
+                </select>
+            </div>
+            <div class="settings-field">
+                <label for="setting-channel-sidebar">Chat tabs</label>
+                <select id="setting-channel-sidebar" title="Show chat sessions in a sidebar instead of a top bar">
+                    <option value="top">Top bar</option>
+                    <option value="sidebar">Sidebar</option>
+                </select>
+            </div>
+            <div class="settings-divider"></div>
+            <div class="settings-field">
+                <div id="sound-settings"></div>
+            </div>
+            <div class="settings-divider"></div>
+            <div class="settings-field">
+                <label>Project History</label>
+                <div class="settings-history-btns">
+                    <button class="settings-btn" onclick="exportHistory()">Export History</button>
+                    <button class="settings-btn" id="import-history-btn" onclick="document.getElementById('import-file').click()">Import History</button>
+                    <input type="file" id="import-file" accept=".zip" style="display:none" onchange="importHistory(this)">
+                </div>
+            </div>
+        </div>
+
+        <div id="channel-bar">
+            <div class="channel-bar-left-spacer" aria-hidden="true"></div>
+            <div class="channel-main">
+                <div id="channel-tabs"></div>
+                <button id="channel-add-btn" class="channel-add" onclick="showChannelCreateDialog()" title="New chat">+</button>
+            </div>
+        </div>
+
+        <div id="content-area">
+            <aside id="channel-sidebar" class="hidden">
+                <div class="channel-sidebar-header">
+                    <span>Channels</span>
+                    <button id="channel-sidebar-add" class="channel-sidebar-header-add" onclick="showChannelCreateDialog()" title="New chat">+</button>
+                </div>
+                <div id="channel-sidebar-list"></div>
+                <div class="channel-sidebar-grip" id="channel-sidebar-grip"></div>
+            </aside>
+            <main id="timeline">
+                <div id="day-float" aria-hidden="true"><span></span></div>
+                <div id="loading-indicator">
+                    <div class="loading-spinner"></div>
+                    <span>Loading messages...</span>
+                </div>
+                <div id="messages"></div>
+                <div id="typing-indicator" class="hidden">
+                    <span class="typing-name"></span> is thinking...
+                </div>
+            </main>
+        </div>
+
+        <div id="scroll-anchor" class="hidden" onclick="scrollToBottom()"><span class="unread-badge">0</span><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+
+        <footer>
+            <div id="mention-toggles-row">
+                <div id="mention-toggles"></div>
+                <button id="clear-chat-btn" class="ghost-btn" onclick="clearChat()" title="Clear chat in this channel">Clear Chat</button>
+            </div>
+            <div id="slash-menu" class="hidden"></div>
+            <div id="mention-menu" class="hidden"></div>
+            <div id="attachments"></div>
+            <div id="input-row">
+                <span id="sender-label" class="sender-label">user</span>
+                <textarea id="input"
+                    placeholder="Type a message... (use @name to mention agents)"
+                    rows="1"
+                    autofocus></textarea>
+                <button id="mic" type="button" onmousedown="event.preventDefault()" onclick="toggleVoice()" title="Voice typing (local speech-to-text)" aria-label="Voice typing" aria-pressed="false">
+                    <svg id="mic-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                        <line x1="12" y1="19" x2="12" y2="23"/>
+                        <line x1="8" y1="23" x2="16" y2="23"/>
+                    </svg>
+                </button>
+                <div class="send-group">
+                    <button id="send" onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+            <div class="input-hint">
+                Enter to send &middot; Shift+Enter for newline &middot; Paste/drop images &middot; Mic for voice &middot; Type / or @ for autocomplete
+            </div>
+        </footer>
+    </div>
+
+    <div id="dropzone" class="hidden">
+        <div class="dropzone-inner">Drop image here</div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/static/core.js?v=zerocollab-repo-1"></script>
+    <script src="/static/store.js?v=zerocollab-repo-1"></script>
+    <script src="/static/channels.js?v=zerocollab-repo-1"></script>
+    <script src="/static/chat.js?v=zerocollab-repo-1"></script>
+    <script src="/static/runtime.js?v=handoffs-070"></script>
+    <script>
+        (function () {
+            var style = document.createElement('link');
+            style.rel = 'stylesheet'; style.href = '/static/modern/workspace.css?v=zerocollab-repo-1';
+            document.head.append(style);
+            import('/static/modern/workspace.js?v=zerocollab-repo-1').catch(function (error) {
+                console.error(error);
+                var notice = document.createElement('p');
+                notice.setAttribute('role', 'alert');
+                notice.style.cssText = 'margin:0;padding:12px 20px;background:#452531;color:#ffc1c9;font:14px system-ui,sans-serif';
+                notice.textContent = 'The workspace failed to load. Reload the page; if this persists, rebuild the frontend (npm run build in frontend/).';
+                document.body.prepend(notice);
+            });
+        })();
+    </script>
+</body>
+</html>

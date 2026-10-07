@@ -1,0 +1,57 @@
+[server]
+port = 8300
+host = "127.0.0.1"
+data_dir = "./data"
+
+[runtime]
+# Applies only to provider processes launched by this room.
+automatic_tool_approvals = true
+
+[agents.codex]
+command = "codex"
+managed = true
+provider = "codex"
+color = "#10a37f"
+label = "Codex"
+
+[agents.claude]
+command = "claude"
+managed = true
+provider = "claude"
+color = "#da7756"
+label = "Claude"
+
+[agents.gemini]
+command = "agy"
+managed = true
+provider = "antigravity"
+color = "#4285f4"
+label = "Gemini (Antigravity)"
+model = "gemini-3.8-flash-medium"
+
+[agents.bonsai]
+type = "api"
+managed = true
+provider = "api"
+base_url = "http://127.0.0.1:8080/v1"
+tool_schema_url = "http://127.0.0.1:8080/tools"
+model = "Bonsai-2-27B"
+max_tokens = 1024
+color = "#80b918"
+label = "Bonsai"
+
+[agents.bonsai.request_options]
+reasoning_effort = "medium"
+thinking_budget_tokens = 256
+
+[routing]
+default = "none"
+max_agent_hops = 4
+
+[mcp]
+http_port = 8200
+sse_port = 8201
+
+[images]
+upload_dir = "./uploads"
+max_size_mb = 10

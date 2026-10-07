@@ -1,0 +1,46 @@
+# Copy to config.local.toml, uncomment an agent, and restart the room.
+# Managed agents join automatically; no wrapper terminal is needed.
+# Set model to an exact ID returned by your server's /v1/models endpoint.
+# Servers must already be running. The room does not start or alter them.
+# Use unique agent names alongside the existing Codex/Claude/Gemini/Bonsai.
+
+# Ollama's OpenAI-compatible endpoint:
+# [agents.ollama]
+# type = "api"
+# managed = true
+# provider = "api"
+# base_url = "http://127.0.0.1:11434/v1"
+# model = "llama3.2:latest"
+# tools = false
+# max_tokens = 1024
+# color = "#f97316"
+# label = "Ollama"
+
+# LM Studio:
+# [agents.lmstudio]
+# type = "api"
+# managed = true
+# provider = "api"
+# base_url = "http://127.0.0.1:1234/v1"
+# model = "local-model"
+# tools = false
+# color = "#06b6d4"
+# label = "LM Studio"
+
+# Another llama.cpp / OpenAI-compatible local endpoint:
+# [agents.qwen]
+# type = "api"
+# managed = true
+# provider = "api"
+# base_url = "http://127.0.0.1:8189/v1"
+# model = "qwen3-4b"
+# tools = true
+# color = "#8b5cf6"
+# label = "Qwen"
+# effort_options = ["low", "medium", "high"]  # Only if this model supports them.
+# effort = "medium"
+
+# tools=true enables scoped file tools with per-call human approval.
+# tools=false is useful for endpoints without function calling.
+# Reasoning effort stays disabled unless endpoint metadata or effort_options
+# explicitly identifies supported choices.
