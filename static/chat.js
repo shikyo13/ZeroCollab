@@ -168,8 +168,33 @@ function renderHistoryBatch() {
 
 // --- WebSocket ---
 
+// Live events that must wait until saved history has rendered (replayed in order after it).
+const HISTORY_BUFFERED_EVENTS = new Set(['message', 'delete', 'clear', 'channel_renamed', 'agent_renamed']);
+
+const SERVER_EVENTS = {
+    message: event => {
+        if (document.getElementById(`message-${event.data.id}`)) return;
+        // Play notification sound for new messages from others (not joins, not when focused)
+        if (soundEnabled && !document.hasFocus() && event.data.type !== 'join' && event.data.type !== 'leave' && event.data.sender && event.data.sender.toLowerCase() !== username.toLowerCase()) {
+            playNotificationSound(event.data.sender);
+        }
+        appendMessage(event.data);
+    },
+    agent_renamed: onAgentRenamed,
+    agents: event => applyAgentConfig(event.data),
+    base_colors: event => { baseColors = event.data || {}; },
+    status: event => updateStatus(event.data),
+    typing: event => updateTyping(event.agent, event.active),
+    settings: event => applySettings(event.data),
+    delete: event => handleDeleteBroadcast(event.ids),
+    channel_renamed: onChannelRenamed,
+    clear: onClear,
+    // Server requests full page reload (e.g. after import)
+    reload: () => location.reload(),
+};
+
 function handleServerEvent(event) {
-    if (historyLoading && ['message', 'edit', 'message_update', 'delete', 'clear', 'channel_renamed', 'agent_renamed'].includes(event.type)) {
+    if (historyLoading && HISTORY_BUFFERED_EVENTS.has(event.type)) {
         pendingLiveEvents.push(event);
         return;
     }
@@ -185,137 +210,96 @@ function handleServerEvent(event) {
     }
     // Emit through Hub for modules to subscribe (PR 1 seam)
     Hub.emit(event.type, event);
-    if (event.type === 'message') {
-        if (document.getElementById(`message-${event.data.id}`)) return;
-        // Play notification sound for new messages from others (not joins, not when focused)
-        if (soundEnabled && !document.hasFocus() && event.data.type !== 'join' && event.data.type !== 'leave' && event.data.sender && event.data.sender.toLowerCase() !== username.toLowerCase()) {
-            playNotificationSound(event.data.sender);
-        }
-        appendMessage(event.data);
-    } else if (event.type === 'agent_renamed') {
-        // Migrate active mentions before the agents config rebuild
-        if (activeMentions.has(event.old_name)) {
-            activeMentions.delete(event.old_name);
-            activeMentions.add(event.new_name);
-        }
-        // Migrate the per-channel remembered toggles too
-        for (const ch of Object.keys(_channelMentions)) {
-            const arr = _channelMentions[ch];
-            const idx = arr.indexOf(event.old_name);
-            if (idx !== -1) arr[idx] = event.new_name;
-        }
-        // Move existing messages (chat and join/leave) to the new name. Matched on the raw
-        // sender id: the visible label can differ from the handle.
-        const newAvatar = getAvatarSvg(event.new_name);
-        const newAgentKey = (resolveAgent(event.new_name.toLowerCase()) || event.new_name).toLowerCase();
-        document.querySelectorAll(`${SENDER_MESSAGES}[data-sender="${CSS.escape(event.old_name)}"]`).forEach(el => {
-            el.dataset.sender = event.new_name;
-            const avatarWrap = el.querySelector('.avatar-wrap');
-            if (avatarWrap) {
-                avatarWrap.dataset.agent = newAgentKey;
-                avatarWrap.querySelector('.avatar').innerHTML = newAvatar;
-            }
-            applySender(el);
-        });
-    } else if (event.type === 'agents') {
-        applyAgentConfig(event.data);
-    } else if (event.type === 'base_colors') {
-        baseColors = event.data || {};
-    } else if (event.type === 'status') {
-        updateStatus(event.data);
-    } else if (event.type === 'typing') {
-        updateTyping(event.agent, event.active);
-    } else if (event.type === 'settings') {
-        applySettings(event.data);
-    } else if (event.type === 'delete') {
-        handleDeleteBroadcast(event.ids);
-    } else if (event.type === 'channel_renamed') {
-        // Migrate per-channel client state to the new name
-        const channelIndex = channelList.indexOf(event.old_name);
-        if (channelIndex !== -1) {
-            channelList = [...channelList];
-            channelList[channelIndex] = event.new_name;
-        }
-        if (channelUnread[event.old_name] !== undefined) {
-            channelUnread[event.new_name] = channelUnread[event.old_name];
-            delete channelUnread[event.old_name];
-        }
-        if (_channelMentions[event.old_name] !== undefined) {
-            _channelMentions[event.new_name] = _channelMentions[event.old_name];
-            delete _channelMentions[event.old_name];
-        }
-        if (pendingChannelSwitch === event.old_name) {
-            pendingChannelSwitch = event.new_name;
-        }
-        // Migrate data-channel on existing DOM elements
-        const container = document.getElementById('messages');
-        for (const el of container.children) {
-            if ((el.dataset.channel || 'general') === event.old_name) {
-                el.dataset.channel = event.new_name;
-            }
-        }
-        // Update per-channel date tracking
-        if (lastMessageDates[event.old_name]) {
-            lastMessageDates[event.new_name] = lastMessageDates[event.old_name];
-            delete lastMessageDates[event.old_name];
-        }
-        // Update active channel if we were on the renamed one
-        if (activeChannel === event.old_name) {
-            activeChannel = event.new_name;
-            prefSet('zerocollab-channel', event.new_name);
-            Store.set('activeChannel', event.new_name);
-        }
-        filterMessagesByChannel();
-        renderChannelTabs();
-    } else if (event.type === 'edit') {
-        // A message was edited/demoted — re-render it in place
-        const updatedMsg = event.message;
-        if (updatedMsg && updatedMsg.id != null) {
-            const el = document.querySelector(`.message[data-id="${updatedMsg.id}"]`);
-            if (el) {
-                // Insert a fresh message after the old one, then remove the old
-                const placeholder = document.createElement('div');
-                el.after(placeholder);
-                el.remove();
-                // Temporarily hijack container to insert at the right spot
-                const container = document.getElementById('messages');
-                appendMessage(updatedMsg, { history: true });
-                // Move the newly appended message to where the old one was
-                const newEl = container.lastElementChild;
-                if (newEl && newEl.dataset.id == updatedMsg.id) {
-                    placeholder.replaceWith(newEl);
-                } else {
-                    placeholder.remove();
-                }
-            }
-        }
-    } else if (event.type === 'clear') {
-        const clearChannel = event.channel || null;
-        if (clearChannel) {
-            // Per-channel clear: remove only messages from that channel
-            const container = document.getElementById('messages');
-            const toRemove = [];
-            for (const el of container.children) {
-                const isDivider = el.classList.contains('date-divider');
-                if ((el.dataset.id || isDivider) && (el.dataset.channel || 'general') === clearChannel) {
-                    toRemove.push(el);
-                }
-            }
-            toRemove.forEach(el => el.remove());
-            // Clean up orphaned date dividers and reset tracking
-            delete lastMessageDates[clearChannel];
-            filterMessagesByChannel();
-        } else {
-            // Full clear (all channels)
-            document.getElementById('messages').innerHTML = '';
-            lastMessageDate = null;
-            lastMessageDates = {};
-        }
-        dayFloatRefresh();
-    } else if (event.type === 'reload') {
-        // Server requests full page reload (e.g. after import)
-        location.reload();
+    SERVER_EVENTS[event.type]?.(event);
+}
+
+// Send a client event if the socket is open; returns whether it was sent.
+function sendServerEvent(payload) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(payload));
+    return true;
+}
+
+function onAgentRenamed(event) {
+    // Migrate active mentions before the agents config rebuild
+    if (activeMentions.has(event.old_name)) {
+        activeMentions.delete(event.old_name);
+        activeMentions.add(event.new_name);
     }
+    // Migrate the per-channel remembered toggles too
+    for (const ch of Object.keys(_channelMentions)) {
+        const arr = _channelMentions[ch];
+        const idx = arr.indexOf(event.old_name);
+        if (idx !== -1) arr[idx] = event.new_name;
+    }
+    // Move existing messages (chat and join/leave) to the new name. Matched on the raw
+    // sender id: the visible label can differ from the handle.
+    const newAvatar = getAvatarSvg(event.new_name);
+    const newAgentKey = (resolveAgent(event.new_name.toLowerCase()) || event.new_name).toLowerCase();
+    document.querySelectorAll(`${SENDER_MESSAGES}[data-sender="${CSS.escape(event.old_name)}"]`).forEach(el => {
+        el.dataset.sender = event.new_name;
+        const avatarWrap = el.querySelector('.avatar-wrap');
+        if (avatarWrap) {
+            avatarWrap.dataset.agent = newAgentKey;
+            avatarWrap.querySelector('.avatar').innerHTML = newAvatar;
+        }
+        applySender(el);
+    });
+}
+
+// Move a per-channel key in a plain object map, if present.
+function renameKey(map, oldName, newName) {
+    if (map[oldName] === undefined) return;
+    map[newName] = map[oldName];
+    delete map[oldName];
+}
+
+function onChannelRenamed(event) {
+    // Migrate per-channel client state to the new name
+    const channelIndex = channelList.indexOf(event.old_name);
+    if (channelIndex !== -1) {
+        channelList = [...channelList];
+        channelList[channelIndex] = event.new_name;
+    }
+    renameKey(channelUnread, event.old_name, event.new_name);
+    renameKey(_channelMentions, event.old_name, event.new_name);
+    renameKey(lastMessageDates, event.old_name, event.new_name);
+    if (pendingChannelSwitch === event.old_name) {
+        pendingChannelSwitch = event.new_name;
+    }
+    // Migrate data-channel on existing DOM elements
+    for (const el of document.getElementById('messages').children) {
+        if ((el.dataset.channel || 'general') === event.old_name) {
+            el.dataset.channel = event.new_name;
+        }
+    }
+    // Update active channel if we were on the renamed one
+    if (activeChannel === event.old_name) {
+        activeChannel = event.new_name;
+        prefSet('zerocollab-channel', event.new_name);
+        Store.set('activeChannel', event.new_name);
+    }
+    filterMessagesByChannel();
+    renderChannelTabs();
+}
+
+function onClear(event) {
+    const clearChannel = event.channel || null;
+    const container = document.getElementById('messages');
+    if (clearChannel) {
+        // Per-channel clear: remove only messages and date dividers from that channel
+        const toRemove = [...container.children].filter(el =>
+            (el.dataset.id || el.classList.contains('date-divider')) && (el.dataset.channel || 'general') === clearChannel);
+        toRemove.forEach(el => el.remove());
+        delete lastMessageDates[clearChannel];
+        filterMessagesByChannel();
+    } else {
+        // Full clear (all channels)
+        container.innerHTML = '';
+        lastMessageDate = null;
+        lastMessageDates = {};
+    }
+    dayFloatRefresh();
 }
 
 function connectWebSocket() {
@@ -659,176 +643,6 @@ function updateTyping(agent, active) {
     }
 }
 
-// --- Settings ---
-
-let pendingChannelSwitch = null;
-
-function applySettings(data) {
-    if (data.title) {
-        document.getElementById('room-title').textContent = data.title;
-        // Tab title carries both names, so several servers are distinguishable
-        document.title = data.subtitle ? data.title + ' - ' + data.subtitle : data.title;
-    }
-    if (data.subtitle !== undefined) {
-        const subEl = document.getElementById('room-subtitle');
-        if (subEl) subEl.textContent = data.subtitle;
-        const subInput = document.getElementById('setting-subtitle');
-        if (subInput) subInput.value = data.subtitle;
-    }
-    if (data.username) {
-        username = data.username;
-        document.getElementById('sender-label').textContent = username;
-        document.getElementById('setting-username').value = username;
-    }
-    if (data.font) {
-        document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
-        document.body.classList.add('font-' + data.font);
-        document.getElementById('setting-font').value = data.font;
-    }
-    if (data.history_limit !== undefined) {
-        document.getElementById('setting-history').value = String(data.history_limit);
-    }
-    if (data.contrast) {
-        document.body.classList.toggle('high-contrast', data.contrast === 'high');
-        document.getElementById('setting-contrast').value = data.contrast;
-    }
-    if (Array.isArray(data.sessions)) window.applyProjectSessions?.(data);
-
-}
-
-function toggleSettings() {
-    const bar = document.getElementById('settings-bar');
-    bar.classList.toggle('hidden');
-    document.getElementById('settings-toggle').classList.toggle('active', !bar.classList.contains('hidden'));
-    if (!bar.classList.contains('hidden')) {
-        document.getElementById('setting-username').focus();
-    }
-}
-
-function _clearClearChatConfirm() {
-    const btn = document.getElementById('clear-chat-btn');
-    const confirmEl = document.getElementById('clear-chat-confirm');
-    if (confirmEl) confirmEl.remove();
-    if (btn) {
-        btn.textContent = 'Clear Chat';
-        btn.classList.remove('confirming');
-    }
-    document.removeEventListener('click', _clearChatOutsideClick, true);
-}
-
-function _clearChatOutsideClick(e) {
-    const btn = document.getElementById('clear-chat-btn');
-    const confirmEl = document.getElementById('clear-chat-confirm');
-    if (!btn || !confirmEl) return;
-    if (!btn.contains(e.target) && !confirmEl.contains(e.target)) {
-        _clearClearChatConfirm();
-    }
-}
-
-function clearChat() {
-    if (window.chatSessionReadonly?.(activeChannel)) return;
-    const btn = document.getElementById('clear-chat-btn');
-    if (!btn) return;
-
-    // Second click -> execute. First click -> inline confirm, matching the
-    // End Session pattern elsewhere.
-    if (btn.classList.contains('confirming')) {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'message', text: '/clear', sender: username, channel: activeChannel }));
-        }
-        _clearClearChatConfirm();
-        document.getElementById('settings-bar').classList.add('hidden');
-        return;
-    }
-
-    btn.textContent = 'Clear Chat?';
-    btn.classList.add('confirming');
-
-    const confirmWrap = document.createElement('span');
-    confirmWrap.id = 'clear-chat-confirm';
-    confirmWrap.className = 'inline-confirm';
-    confirmWrap.innerHTML = `
-        <button class="inline-confirm-yes ch-confirm-yes" title="Confirm clear chat">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 8.5l3.5 3.5 6.5-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <button class="inline-confirm-no ch-confirm-no" title="Cancel">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        </button>
-    `;
-    btn.parentElement.insertBefore(confirmWrap, btn);
-
-    confirmWrap.querySelector('.ch-confirm-yes').onclick = (e) => {
-        e.stopPropagation();
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'message', text: '/clear', sender: username, channel: activeChannel }));
-        }
-        _clearClearChatConfirm();
-        document.getElementById('settings-bar').classList.add('hidden');
-    };
-    confirmWrap.querySelector('.ch-confirm-no').onclick = (e) => {
-        e.stopPropagation();
-        _clearClearChatConfirm();
-    };
-
-    setTimeout(() => document.addEventListener('click', _clearChatOutsideClick, true), 0);
-}
-
-function saveSettings() {
-    const newUsername = document.getElementById('setting-username').value.trim();
-    const newSubtitle = document.getElementById('setting-subtitle').value.trim();
-    const newFont = document.getElementById('setting-font').value;
-    const histVal = document.getElementById('setting-history').value;
-    const newHistory = histVal === 'all' ? 'all' : (parseInt(histVal, 10) || CONFIG.defaultHistory);
-    const newContrast = document.getElementById('setting-contrast').value;
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'update_settings',
-            data: {
-                username: newUsername || 'user',
-                subtitle: newSubtitle,
-                font: newFont,
-                history_limit: newHistory,
-                contrast: newContrast,
-            }
-        }));
-    }
-}
-
-function setupSettingsKeys() {
-    // Auto-save on blur/Enter for text/number fields
-    for (const id of ['setting-username', 'setting-subtitle']) {
-        const el = document.getElementById(id);
-        el.addEventListener('blur', () => saveSettings());
-        el.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                el.blur();
-            }
-            if (e.key === 'Escape') {
-                toggleSettings();
-            }
-        });
-    }
-
-    // Auto-save on change for selects, escape to close
-    for (const id of ['setting-font', 'setting-history', 'setting-contrast']) {
-        const el = document.getElementById(id);
-        el.addEventListener('change', () => {
-            // Apply contrast immediately (don't wait for server round-trip)
-            if (id === 'setting-contrast') {
-                document.body.classList.toggle('high-contrast', el.value === 'high');
-            }
-            saveSettings();
-        });
-        el.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                toggleSettings();
-            }
-        });
-    }
-}
-
 // --- Toast notifications ---
 
 function showToast(message, type = 'info') {
@@ -858,286 +672,6 @@ function setupKeyboardShortcuts() {
         if (modalOpen && e.key === 'ArrowRight') { e.preventDefault(); modalNext(e); }
 
     });
-}
-
-// --- Input ---
-
-function setupInput() {
-    const input = document.getElementById('input');
-
-    input.addEventListener('keydown', (e) => {
-        if (mentionMenuVisible) {
-            const menu = document.getElementById('mention-menu');
-            const items = menu.querySelectorAll('.mention-item');
-            if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                mentionMenuIndex = (mentionMenuIndex - 1 + items.length) % items.length;
-                items.forEach((el, i) => el.classList.toggle('active', i === mentionMenuIndex));
-                return;
-            }
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                mentionMenuIndex = (mentionMenuIndex + 1) % items.length;
-                items.forEach((el, i) => el.classList.toggle('active', i === mentionMenuIndex));
-                return;
-            }
-            if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                e.preventDefault();
-                const active = items[mentionMenuIndex];
-                if (active) {
-                    selectMention(active.dataset.name);
-                }
-                return;
-            }
-            if (e.key === 'Escape') {
-                menu.classList.add('hidden');
-                mentionMenuVisible = false;
-                return;
-            }
-        }
-        if (slashMenuVisible) {
-            const menu = document.getElementById('slash-menu');
-            const items = menu.querySelectorAll('.slash-item');
-            if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                slashMenuIndex = (slashMenuIndex - 1 + items.length) % items.length;
-                items.forEach((el, i) => el.classList.toggle('active', i === slashMenuIndex));
-                return;
-            }
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                slashMenuIndex = (slashMenuIndex + 1) % items.length;
-                items.forEach((el, i) => el.classList.toggle('active', i === slashMenuIndex));
-                return;
-            }
-            if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                e.preventDefault();
-                const active = items[slashMenuIndex];
-                if (active) selectSlashCommand(active.querySelector('.slash-cmd').textContent);
-                if (e.key === 'Enter') sendMessage();
-                return;
-            }
-            if (e.key === 'Escape') {
-                menu.classList.add('hidden');
-                slashMenuVisible = false;
-                return;
-            }
-        }
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-        }
-    });
-
-    // Auto-resize + slash menu + mention menu + send button state
-    function onInputChange() {
-        restartVoiceAfterEdit();
-        input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, CONFIG.composerMaxPx) + 'px';
-        updateSlashMenu(input.value);
-        updateMentionMenu();
-        updateSendButton();
-    }
-    input.addEventListener('input', onInputChange);
-    // Voice typing doesn't always fire 'input' — catch with additional events
-    input.addEventListener('compositionend', onInputChange);
-    input.addEventListener('change', onInputChange);
-    // OS dictation can change the value without firing any event, so poll,
-    // but only while the composer has focus (dictation needs focus anyway).
-    let _lastInputVal = '';
-    let _dictationPoll = null;
-    input.addEventListener('focus', () => {
-        clearInterval(_dictationPoll);
-        _dictationPoll = setInterval(() => {
-            if (input.value !== _lastInputVal) {
-                _lastInputVal = input.value;
-                updateSendButton();
-            }
-        }, CONFIG.dictationPollMs);
-    });
-    input.addEventListener('blur', () => { clearInterval(_dictationPoll); _dictationPoll = null; });
-    updateSendButton();
-}
-
-function updateSendButton() {
-    const input = document.getElementById('input');
-    const group = document.querySelector('.send-group');
-    if (!input || !group) return;
-    const hasContent = input.value.trim().length > 0 || pendingAttachments.length > 0;
-    group.classList.toggle('inactive', !hasContent);
-}
-
-function sendMessage() {
-    if (window.chatSessionReadonly?.(activeChannel)) return;
-    const input = document.getElementById('input');
-    let text = input.value.trim();
-
-    if (document.body.classList.contains('modern-workspace') && /^\/goal(?:\s|$)/i.test(text)) {
-        window.dispatchEvent(new CustomEvent('workspace-goal', {detail: text.replace(/^\/goal\s*/i, '')}));
-        input.value = '';
-        input.style.height = 'auto';
-        updateSendButton();
-        return;
-    }
-
-    if (!text && pendingAttachments.length === 0) return;
-
-    // Prepend active mention toggles if the message doesn't already mention them
-    // Skip for non-broadcast slash commands (e.g. /clear, /continue)
-    let skipMentions = false;
-    if (text.startsWith('/')) {
-        const cmdWord = text.split(/\s/)[0].toLowerCase();
-        const matchedCmd = SLASH_COMMANDS.find(c => c.cmd.startsWith(cmdWord) || cmdWord.startsWith(c.cmd.split(/\s/)[0]));
-        if (matchedCmd && !matchedCmd.broadcast) {
-            skipMentions = true;
-        }
-    }
-    if (activeMentions.size > 0 && text && !skipMentions) {
-        const prefix = [...activeMentions].map(n => `@${n}`).join(' ');
-        // Only prepend if user didn't already @mention these agents
-        const lower = text.toLowerCase();
-        const missing = [...activeMentions].filter(n => !lower.includes(`@${n}`));
-        if (missing.length > 0) {
-            text = missing.map(n => `@${n}`).join(' ') + ' ' + text;
-        }
-    }
-
-    const payload = {
-        type: 'message',
-        text: text,
-        sender: username,
-        channel: activeChannel,
-        project_id: window.activeProjectId,
-        attachments: pendingAttachments.map(a => ({
-            path: a.path,
-            name: a.name,
-            url: a.url,
-            ...(a.note ? { note: a.note } : {}),
-            ...(a.source ? { source: a.source } : {}),
-        })),
-    };
-    if (replyingTo) {
-        payload.reply_to = replyingTo.id;
-    }
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(payload));
-    }
-
-    input.value = '';
-    restartVoiceAfterEdit();
-    input.style.height = 'auto';
-    clearAttachments();
-    cancelReply();
-    updateSendButton();
-    input.focus();
-}
-
-// --- Image paste/drop ---
-
-function setupPaste() {
-    document.addEventListener('paste', async (e) => {
-        const items = e.clipboardData?.items;
-        if (!items) return;
-
-        for (const item of items) {
-            if (item.type.startsWith('image/')) {
-                e.preventDefault();
-                await uploadImage(item.getAsFile());
-            }
-        }
-    });
-}
-
-function setupDragDrop() {
-    const dropzone = document.getElementById('dropzone');
-    let dragCount = 0;
-
-    document.addEventListener('dragenter', (e) => {
-        e.preventDefault();
-        dragCount++;
-        if (e.dataTransfer?.types?.includes('Files')) {
-            dropzone.classList.remove('hidden');
-        }
-    });
-
-    document.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        dragCount--;
-        if (dragCount <= 0) {
-            dragCount = 0;
-            dropzone.classList.add('hidden');
-        }
-    });
-
-    document.addEventListener('dragover', (e) => {
-        e.preventDefault();
-    });
-
-    document.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        dragCount = 0;
-        dropzone.classList.add('hidden');
-
-        const files = e.dataTransfer?.files;
-        if (!files) return;
-
-        for (const file of files) {
-            if (file.type.startsWith('image/')) {
-                await uploadImage(file);
-            }
-        }
-    });
-}
-
-async function uploadImage(file) {
-    if (window.chatSessionReadonly?.(activeChannel)) return;
-    const uploadSession = activeChannel;
-    const form = new FormData();
-    form.append('file', file);
-
-    try {
-        const resp = await fetch('/api/upload', { method: 'POST', headers: { 'X-Session-Token': SESSION_TOKEN }, body: form });
-        const data = await resp.json();
-
-        const attachment = { path: data.path, name: data.name, url: data.url };
-        if (activeChannel === uploadSession) pendingAttachments.push(attachment);
-        else {
-            const draft = sessionDrafts.get(uploadSession) || { text: '', attachments: [] };
-            draft.attachments.push(attachment); sessionDrafts.set(uploadSession, draft);
-        }
-
-        renderAttachments();
-    } catch (err) {
-        console.error('Upload failed:', err);
-    }
-}
-
-function renderAttachments() {
-    const container = document.getElementById('attachments');
-    container.innerHTML = '';
-
-    pendingAttachments.forEach((att, i) => {
-        const wrap = document.createElement('div');
-        wrap.className = 'attachment-preview';
-        wrap.innerHTML = `
-            <img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" data-url="${escapeHtml(att.url)}" onclick="openImageModal(this.dataset.url)" title="Click to preview">
-            <button class="remove-btn" onclick="removeAttachment(${i})">x</button>
-        `;
-        container.appendChild(wrap);
-    });
-    repositionScrollAnchor();
-}
-
-function removeAttachment(index) {
-    pendingAttachments.splice(index, 1);
-    renderAttachments();
-}
-
-function clearAttachments() {
-    pendingAttachments = [];
-    document.getElementById('attachments').innerHTML = '';
-    repositionScrollAnchor();
 }
 
 // --- Scroll tracking ---
@@ -1305,20 +839,3 @@ function createTaskFromMessage(msgId) {
 // --- Start ---
 
 document.addEventListener('DOMContentLoaded', init);
-
-// Keep unsent content scoped to a stable session ID, including project switches.
-const sessionDrafts = new Map();
-window._onSessionDraftSwitch = function(previous, next) {
-    const input = document.getElementById('input');
-    if (!input) return;
-    sessionDrafts.set(previous, { text: input.value, attachments: [...pendingAttachments], reply: replyingTo });
-    exitDeleteMode();
-    cancelReply();
-    const draft = sessionDrafts.get(next);
-    replyingTo = draft?.reply || null;
-    renderReplyPreview();
-    input.value = draft?.text || '';
-    pendingAttachments = draft?.attachments ? [...draft.attachments] : [];
-    renderAttachments();
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-};
