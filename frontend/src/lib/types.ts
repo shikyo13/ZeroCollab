@@ -219,6 +219,8 @@ export interface RuntimeState {
 export interface RepositoryTransition {
   path: string;
   phase: 'draining' | 'preparing';
+  /** Absent from servers without multi-repository support, which only replace. */
+  action?: 'replace' | 'add' | 'primary' | 'remove';
   waiting_on: string[];
   queued: number;
   cancel_requested: boolean;

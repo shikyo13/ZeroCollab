@@ -17,6 +17,10 @@ type Pending = { action: 'replace' | 'add' } | { action: 'primary' | 'remove'; r
 
 const BUSY_LABELS: Record<RepositoryAction, string> = { replace: 'Changing…', add: 'Adding…', primary: 'Switching…', remove: 'Removing…' };
 
+const TRANSITION_TITLES: Record<RepositoryAction, string> = {
+  replace: 'Changing repository', add: 'Adding repository', primary: 'Changing primary repository', remove: 'Removing repository',
+};
+
 function agentName(state: RuntimeState | null, handle: string): string {
   return state?.agents[handle]?.label ?? handle;
 }
@@ -74,7 +78,7 @@ function TransitionStatus({ project, transition, state }: { project: ProjectSumm
     ? `Waiting for ${plural(transition.waiting_on.length, 'running turn')}${waiting ? ` (${waiting})` : ''}. New turns are held.`
     : 'Preparing a separate worktree for each agent.';
   return <div className="pj-notice" role="status">
-    <strong className="bd-attention">{project.path ? 'Changing repositories' : 'Adding repository'}</strong>
+    <strong className="bd-attention">{project.path ? TRANSITION_TITLES[transition.action ?? 'replace'] : TRANSITION_TITLES.add}</strong>
     {transition.path && <code className="pj-path pj-path-full">{transition.path}</code>}
     <span>{step}{transition.queued ? ` ${transition.queued} queued.` : ''}</span>
     {transition.cancel_requested
