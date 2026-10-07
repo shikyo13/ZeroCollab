@@ -40,6 +40,8 @@ Activity shows recent tool activity. A project starts without a repository. When
 
 **Change repository** switches the project to another repository without stopping the room. Running turns finish first (or stop at once if you choose to interrupt them), new turns wait, and queued work, board, chats, team and goal are kept. Each agent then starts a fresh session in a separate worktree for the new repository. The previous repository's worktrees stay on disk, are listed under **Previous repositories**, and are reused if you switch back.
 
+A project can also hold several repositories. Once it has one, **Add repository** attaches another: every agent gets a separate worktree in it, while their working directory stays in the primary repository, and their instructions list each additional repository's key and worktree. **Make primary** moves the agents' working directory to another attached repository (the old primary stays attached), and **Remove** detaches an additional repository, keeping its worktrees on disk. Remove is refused while an unfinished task still reserves paths in that repository; release or re-scope the task first. Task reservations and review files name another repository as `key:relative/path`; a bare path refers to the primary repository at the time it was claimed and keeps that meaning after the primary changes.
+
 Click **Changes** in the top control bar to inspect each agent's patch. Agents receive peer patches in their context so they can review concrete results. Integration into your main branch is a deliberate task: request it explicitly when you want that change.
 
 ## How agents work here
