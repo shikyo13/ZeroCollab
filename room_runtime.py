@@ -830,6 +830,10 @@ class RoomRuntime:
 
     async def worker(self, name):
         while True:
+            # Keep pending work in the queue after provider failure. Refresh can
+            # recover the provider; explicit Stop still drains the queue.
+            while self.states[name]['state'] in ('blocked', 'login_required'):
+                await asyncio.sleep(.1)
             entry = await self.queues[name].get()
             self.deploy_held[name] = entry
             while not self.turn_admission_open():
@@ -957,8 +961,6 @@ class RoomRuntime:
                 diagnostic = re.sub(r'\b(?:sk-|hf_)[A-Za-z0-9_-]+', '[redacted]', diagnostic)
                 detail += ": " + diagnostic[-1200:]
             self.states[name].update(state="blocked", detail=detail[:600])
-            while not self.queues[name].empty():
-                self.queues[name].get_nowait()
             self.host.store.add("system", f"{name} failed: {detail[:600]}", channel=run.channel)
             await run.finish_message(partial=True)
         finally:
