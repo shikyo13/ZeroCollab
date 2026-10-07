@@ -51,7 +51,7 @@ def build_export(store, app_version: str = "") -> bytes:
     messages_lines = []
     for msg in messages:
         exported = dict(msg)
-        exported["uid"] = _ensure_uid(msg)
+        exported["uid"] = uid_by_id[msg["id"]]
         # Convert reply_to int to reply_to_uid if possible
         if "reply_to" in exported:
             reply_id = exported["reply_to"]
