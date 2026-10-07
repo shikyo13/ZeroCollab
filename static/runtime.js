@@ -18,6 +18,8 @@
     const active = new Map();
     const approvalCards = new Map();
     const activity = [];
+    const ACTIVITY_SHOWN = 12;           // tool calls kept in the panel
+    const ACTIVITY_DETAIL_CHARS = 4000;  // detail kept per call
     const steeringNotice = document.createElement('div');
     steeringNotice.id = 'steering-delivery';
     steeringNotice.setAttribute('role', 'status');
@@ -117,7 +119,11 @@
     Hub.on('runtime_end', e => { const run = active.get(e.data.run); if(run) {run.el.remove(); active.delete(e.data.run);} });
     Hub.on('runtime_approval', e => approval(e.data));
     Hub.on('runtime_approval_resolved', e => { approvalCards.get(e.data.id)?.remove(); approvalCards.delete(e.data.id); });
-    Hub.on('runtime_tool', e => { activity.unshift(e.data.agent + ': ' + e.data.tool + ' · ' + e.data.status + '\n' + JSON.stringify(e.data.details, null, 2).slice(0,4000)); document.getElementById('room-tools').textContent = activity.slice(0,12).join('\n\n'); });
+    Hub.on('runtime_tool', e => {
+        activity.unshift(e.data.agent + ': ' + e.data.tool + ' · ' + e.data.status + '\n' + JSON.stringify(e.data.details, null, 2).slice(0, ACTIVITY_DETAIL_CHARS));
+        activity.length = Math.min(activity.length, ACTIVITY_SHOWN);  // only the shown entries are kept
+        document.getElementById('room-tools').textContent = activity.join('\n\n');
+    });
     Hub.on('history_complete', () => api('').then(render).catch(showError));
     Store.watch('activeChannel', () => {
         refreshDelivery();

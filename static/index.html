@@ -158,15 +158,16 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="/static/core.js?v=zerocollab-repo-1"></script>
     <script src="/static/store.js?v=zerocollab-repo-1"></script>
-    <script src="/static/channels.js?v=zerocollab-repo-1"></script>
-    <script src="/static/chat.js?v=zerocollab-repo-1"></script>
-    <script src="/static/runtime.js?v=handoffs-070"></script>
+    <script src="/static/prefs.js?v=zerocollab-fixes-2"></script>
+    <script src="/static/channels.js?v=zerocollab-fixes-2"></script>
+    <script src="/static/chat.js?v=zerocollab-fixes-2"></script>
+    <script src="/static/runtime.js?v=zerocollab-fixes-1"></script>
     <script>
         (function () {
             var style = document.createElement('link');
-            style.rel = 'stylesheet'; style.href = '/static/modern/workspace.css?v=zerocollab-repo-1';
+            style.rel = 'stylesheet'; style.href = '/static/modern/workspace.css?v=zerocollab-fixes-2';
             document.head.append(style);
-            import('/static/modern/workspace.js?v=zerocollab-repo-1').catch(function (error) {
+            import('/static/modern/workspace.js?v=zerocollab-fixes-2').catch(function (error) {
                 console.error(error);
                 var notice = document.createElement('p');
                 notice.setAttribute('role', 'alert');

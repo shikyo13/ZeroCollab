@@ -11,6 +11,9 @@ import Projects from './workspace/Projects';
 import { ProjectSwitcher } from './workspace/ProjectSwitcher';
 import { useProjects } from './workspace/projectData';
 import { Deployments, DeploymentNotice, useDeploymentState } from './components/Deployments';
+import { readStored, writeStored } from './lib/storage';
+
+const WELCOME_KEY = 'workspace-welcome-dismissed';
 
 type View = 'projects' | 'chat' | 'board' | 'team' | 'activity';
 const VIEWS: View[] = ['projects', 'chat', 'board', 'team', 'activity'];
@@ -20,7 +23,7 @@ export default function App() {
   const [view, setView] = useState<View>(() => validView(new URL(location.href).searchParams.get('view')));
   const [help, setHelp] = useState(false);
   const projects = useProjects();
-  const deployments = useDeploymentState();
+  const deployments = useDeploymentState(view === 'activity');
   const [focus, setFocusState] = useState(() => new URL(location.href).searchParams.get('project') || '');
   function setFocus(id: string) {
     setFocusState(id);
@@ -30,7 +33,7 @@ export default function App() {
   }
   const openProject = (id: string) => { setFocus(id); navigate('projects'); };
   const [welcome, setWelcome] = useState(() => {
-    try { return localStorage.getItem('workspace-welcome-dismissed') !== '1'; } catch { return true; }
+    return readStored(WELCOME_KEY) !== '1';
   });
   function navigate(next: View) {
     setView(next);
@@ -64,7 +67,7 @@ export default function App() {
   }, [view]);
   const dismissWelcome = () => {
     setWelcome(false);
-    try { localStorage.setItem('workspace-welcome-dismissed', '1'); } catch { /* storage may be disabled */ }
+    writeStored(WELCOME_KEY, '1');
   };
   return <div className="workspace-shell">
     <a className="workspace-skip" href="#workspace-content">Skip to workspace</a>

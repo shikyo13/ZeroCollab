@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, errorMessage, runtime } from '../lib/api';
+import { useRoomEvent } from '../lib/room';
 import './deployments.css';
 
 type Release = { id: string; commit: string; version?: string; title?: string; subject?: string; notes?: string; created: string | number; manifest_sha: string; files: { path: string; sha256: string }[]; deletions: string[]; rehearsal?: string; rehearsal_passed?: boolean; rollback?: string; relation?: 'newer' | 'older' | 'current'; reviews?: BoardReview[] };
@@ -20,7 +21,19 @@ function ReviewEvidence({ reviews }: { reviews?: BoardReview[] }) {
   </span>)}</>;
 }
 
-export function useDeploymentState() {
+/** The server pushes no deployment events, so poll: quickly while the panel is open or a
+ * deployment is underway, slowly otherwise (the notice still has to see a deploy start). */
+const DEPLOY_POLL_ACTIVE_MS = 3000;
+const DEPLOY_POLL_IDLE_MS = 30000;
+const SETTLED_STATES = new Set(['idle', 'ready', 'running', '']);
+
+function deploymentUnderway(state: State | null): boolean {
+  if (!state) return false;
+  return state.pending.length > 0 || state.maintenance.admission === 'closed'
+    || state.maintenance.writes === 'blocked' || !SETTLED_STATES.has(state.supervisor.state ?? '');
+}
+
+export function useDeploymentState(panelOpen: boolean) {
   const [data, setData] = useState<State | null>(null);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(false);
@@ -37,10 +50,22 @@ export function useDeploymentState() {
     } finally { inFlight.current = false; }
   }, []);
   useEffect(() => {
-    mounted.current = true; void refresh();
-    const timer = window.setInterval(() => void refresh(), 3000);
-    return () => { mounted.current = false; window.clearInterval(timer); };
-  }, [refresh]);
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const delay = panelOpen || reload || deploymentUnderway(data) ? DEPLOY_POLL_ACTIVE_MS : DEPLOY_POLL_IDLE_MS;
+  useEffect(() => {
+    void refresh();
+    let timer: number | null = null;
+    const start = () => { if (timer === null && !document.hidden) timer = window.setInterval(() => void refresh(), delay); };
+    const stop = () => { if (timer !== null) window.clearInterval(timer); timer = null; };
+    const onVisibility = () => { if (document.hidden) stop(); else { void refresh(); start(); } };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility); };
+  }, [refresh, delay]);
+  // 'settings' is the first frame of every socket (re)connect, e.g. after a restart.
+  useRoomEvent('settings', () => void refresh());
   return { data, error, reload, refresh };
 }
 type Feed = ReturnType<typeof useDeploymentState>;

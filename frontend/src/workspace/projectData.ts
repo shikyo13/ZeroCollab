@@ -3,7 +3,7 @@
  * at a time; switching stops the room because each agent's worktree belongs to it. */
 import { useCallback, useEffect, useState } from 'react';
 import { errorMessage, runtime } from '../lib/api';
-import { useRoomEvent } from '../lib/room';
+import { useCoalesced, useRoomEvent } from '../lib/room';
 import type { Followup, Note, Review, RuntimeState, Task, TaskStatus } from '../lib/types';
 
 export interface ProjectMember {
@@ -38,6 +38,9 @@ export interface ProjectSummary {
   updated: number;
 }
 
+/** Board edits arrive as bursts of project_state frames; re-read at most this often. */
+export const PROJECT_REFRESH_MS = 500;
+
 export interface ProjectDetail extends ProjectSummary {
   board: { spec: string; tasks: Task[]; notes: Note[]; reviews?: Review[]; followups?: Followup[] };
 }
@@ -59,13 +62,22 @@ export function useProjects() {
     }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
-  useRoomEvent('project_state', () => void refresh());
+  const refreshSoon = useCoalesced(() => void refresh(), PROJECT_REFRESH_MS);
+  useRoomEvent('project_state', refreshSoon);
   useRoomEvent('settings', () => void refresh());
   // runtime_state fires often (agent state, streaming); only a new project needs a re-read.
   const [attached, setAttached] = useState<string | null>(null);
   useRoomEvent<RuntimeState>('runtime_state', event => setAttached(event.data.project_id ?? event.data.project ?? ''));
   useEffect(() => { if (attached !== null) void refresh(); }, [attached, refresh]);
   return { projects, error, loaded, refresh, active: projects.find(p => p.active) };
+}
+
+/** Changes only when an agent's visible team state does, not on every streamed runtime frame. */
+export function teamSignature(state: RuntimeState): string {
+  return Object.entries(state.agents)
+    .map(([id, agent]) => `${id}:${agent.state}:${agent.paused}:${agent.branch ?? ''}:${agent.archived}`)
+    .sort()
+    .join('|');
 }
 
 export function projectLabel(project: ProjectSummary): string {
