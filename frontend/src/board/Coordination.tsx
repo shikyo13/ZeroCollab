@@ -3,9 +3,8 @@
  * assigned as reviewer, and create/resolve/cancel any follow-up. */
 import { useState, type FormEvent } from 'react';
 import { runtime } from '../lib/api';
-import { since } from '../lib/room';
 import type { Followup, ProjectState, Review, Task } from '../lib/types';
-import { AgentChip, ErrorText, Field, ParticipantOptions, ReviewPill, displayName, useAction, type Agents } from './shared';
+import { AgentChip, ErrorText, Field, FollowupPill, ParticipantOptions, RelativeTime, ReviewPill, displayName, useAction, type Agents } from './shared';
 import { LIMITS, USER } from '../lib/constants';
 
 const OPEN_REVIEW = new Set(['pending', 'changes_requested']);
@@ -120,9 +119,7 @@ export function ReviewItem({
             task && <strong> {task.title}</strong>
           )}
         </span>
-        <span className="bd-muted" title={new Date(review.updated * 1000).toLocaleString()}>
-          {since(review.updated)}
-        </span>
+        <RelativeTime className="bd-muted" time={review.updated} />
       </div>
       <p className="bd-record-meta">
         Revision <code>{review.revision}</code> · requested by {displayName(review.requested_by, agents)} · <code>{review.id}</code>
@@ -216,7 +213,7 @@ export function FollowupItem({
   return (
     <li className="bd-record">
       <div className="bd-record-head">
-        <span className={`bd-pill bd-followup-${followup.status}`}>{followup.status === 'open' ? 'Open' : followup.status === 'resolved' ? 'Resolved' : 'Cancelled'}</span>
+        <FollowupPill status={followup.status} />
         <span>
           for <AgentChip name={followup.assigned_to} agents={agents} />
           {task && onOpenTask && (
@@ -229,9 +226,7 @@ export function FollowupItem({
             </>
           )}
         </span>
-        <span className="bd-muted" title={new Date(followup.updated * 1000).toLocaleString()}>
-          {since(followup.updated)}
-        </span>
+        <RelativeTime className="bd-muted" time={followup.updated} />
       </div>
       <p className="bd-record-meta">
         From {displayName(followup.created_by, agents)} · <code>{followup.id}</code>

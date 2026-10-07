@@ -2,9 +2,9 @@
  * Same endpoints and limit ranges as the legacy static/project.js panel. */
 import { useEffect, useState, type FormEvent } from 'react';
 import { runtime } from '../lib/api';
-import { sendChatMessage, sessionTitle, since } from '../lib/room';
+import { sendChatMessage, sessionTitle } from '../lib/room';
 import type { Chain, Limits, ProjectState } from '../lib/types';
-import { ErrorText, Field, useAction, type Agents, displayName } from './shared';
+import { ErrorText, Field, RelativeTime, useAction, type Agents, displayName } from './shared';
 import { LIMITS } from '../lib/constants';
 
 export function SpecPanel({ project, channel, refresh }: { project: ProjectState; channel: string; refresh: () => Promise<void> }) {
@@ -84,7 +84,7 @@ export function SpecPanel({ project, channel, refresh }: { project: ProjectState
             Use my last chat message
           </button>
           <span className="bd-muted" role="status">
-            {state} {text.length > 0 && `· ${text.length.toLocaleString()} / 64,000`}
+            {state} {text.length > 0 && `· ${text.length.toLocaleString()} / ${LIMITS.spec.toLocaleString()}`}
           </span>
         </div>
         <ErrorText message={error} />
@@ -129,9 +129,7 @@ export function MemoryPanel({ project, agents }: { project: ProjectState; agents
                 )}
                 <strong>{displayName(n.by, agents)}</strong>
                 {n.time && (
-                  <span className="bd-muted" title={new Date(n.time * 1000).toLocaleString()}>
-                    {since(n.time)}
-                  </span>
+                  <RelativeTime className="bd-muted" time={n.time} />
                 )}
               </div>
               <p>{n.text}</p>

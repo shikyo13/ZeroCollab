@@ -2,9 +2,9 @@
  * (check-ins, ownership/status moves, notes, unlinked reviews and follow-ups).
  * Task-linked reviews and follow-ups already log into task history, so only
  * unlinked records are read directly to avoid listing the same action twice. */
-import { sessionTitle, since } from '../lib/room';
+import { sessionTitle } from '../lib/room';
 import type { ProjectState, RunInfo } from '../lib/types';
-import { AgentChip, REVIEW_LABELS, displayName, type Agents } from './shared';
+import { AgentChip, REVIEW_LABELS, RelativeTime, displayName, type Agents } from './shared';
 
 const FEED_LIMIT = 50;
 
@@ -114,9 +114,7 @@ export function ActivityFeed({
                 <div className="bd-history-head">
                   <AgentChip name={item.by} agents={agents} />
                   {item.tag && <span className="bd-feed-tag">{item.tag}</span>}
-                  <span className="bd-muted" title={new Date(item.time * 1000).toLocaleString()}>
-                    {since(item.time, now)}
-                  </span>
+                  <RelativeTime className="bd-muted" time={item.time} now={now} />
                 </div>
                 <p>{item.text}</p>
                 {item.taskId && (

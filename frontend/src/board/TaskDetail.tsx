@@ -3,7 +3,7 @@
  * The sections live in ./detail; this component owns status and ownership. */
 import { useEffect, useRef, useState } from 'react';
 import { runtime } from '../lib/api';
-import { sessionTitle, since } from '../lib/room';
+import { sessionTitle } from '../lib/room';
 import { TASK_STATUSES, type ProjectState, type Task, type TaskStatus } from '../lib/types';
 import { TaskAttachments } from './Attachments';
 import { isOpenReview } from './Coordination';
@@ -13,7 +13,7 @@ import { TaskOverview } from './detail/TaskOverview';
 import { TaskProgress } from './detail/TaskProgress';
 import { TaskEvidence, TaskFollowups, TaskReviews } from './detail/TaskRecords';
 import { useResizablePanel } from './detail/useResizablePanel';
-import { ErrorText, Field, ParticipantOptions, STATUS_LABELS, StatusPill, displayName, useAction, type Agents } from './shared';
+import { ErrorText, Field, ParticipantOptions, RelativeTime, STATUS_LABELS, StatusPill, displayName, useAction, type Agents } from './shared';
 import { executionLine, isStale, waitInfo } from './TaskCard';
 
 const newestFirst = <T extends { updated: number }>(a: T, b: T) => b.updated - a.updated;
@@ -86,7 +86,7 @@ export function TaskDetail({
           </h2>
           <p className="bd-muted">
             <code className="bd-id">{task.id}</code> · <StatusPill status={task.status} /> ·{' '}
-            <span title={new Date(task.updated * 1000).toLocaleString()}>updated {since(task.updated, now)}</span>
+            <RelativeTime time={task.updated} now={now} prefix="updated " />
           </p>
         </div>
         <button type="button" className="bd-btn bd-btn-quiet bd-close" onClick={onClose} aria-label="Close task details">

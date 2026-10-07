@@ -1,9 +1,8 @@
 /* Check-in form and the task's update history, newest first. */
 import { useEffect, useState, type FormEvent } from 'react';
 import { LIMITS } from '../../lib/constants';
-import { since } from '../../lib/room';
 import type { Task } from '../../lib/types';
-import { AgentChip, Field, type Agents } from '../shared';
+import { AgentChip, Field, RelativeTime, type Agents } from '../shared';
 
 export function TaskProgress({
   task,
@@ -46,9 +45,7 @@ export function TaskProgress({
               <div className="bd-history-head">
                 <AgentChip name={u.by} agents={agents} />
                 {u.event && !u.auto && <span className="bd-feed-tag">{u.event}</span>}
-                <span className="bd-muted" title={new Date(u.time * 1000).toLocaleString()}>
-                  {since(u.time, now)}
-                </span>
+                <RelativeTime className="bd-muted" time={u.time} now={now} />
               </div>
               <p>{u.auto ? u.event ?? u.text : u.text}</p>
             </li>
