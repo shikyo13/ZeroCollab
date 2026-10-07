@@ -80,7 +80,7 @@
 .tb-summary h2 { font-size: 17px; }
 .tb-summary div { display: flex; flex-direction: column; gap: 2px; }
 .tb-summary small { color: var(--bd-muted); font-size: 12.5px; }
-.tb-summary-review { border-top: 1px solid var(--bd-border); padding-top: 12px; gap: 6px !important; }
+.tb-summary .tb-summary-review { border-top: 1px solid var(--bd-border); padding-top: 12px; gap: 6px; }
 .tb-settled { white-space: pre-wrap; }
 .tb-add { width: 100%; }
 @media (max-width: 1000px) {

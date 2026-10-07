@@ -16,9 +16,9 @@
 .deploy-receipt { border-top: 1px solid var(--border); padding-top: 8px; }
 .deploy-receipt pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; background: var(--bg); padding: 12px; }
 @media (max-width: 700px) { .deploy-panel { margin: 12px; padding: 16px; } .deploy-evidence { grid-template-columns: 1fr; gap: 0; } .deploy-heading, .deploy-notice, .deploy-select { align-items: flex-start; flex-direction: column; } }
-.deploy-panel, .deploy-notice { --bd-surface: var(--bg-msg); --bd-surface-2: var(--bg-elevated); --bd-border: var(--border); --bd-text: var(--text); --bd-muted: var(--text-dim); --bd-accent: var(--accent); --bd-on-accent: var(--text-on-accent, #061317); --bd-radius: 12px; --bd-danger: var(--error-color, #f87171); line-height: 1.5; }
+.deploy-panel, .deploy-notice { --bd-surface: var(--bg-msg); --bd-surface-2: var(--bg-elevated); --bd-border: var(--border); --bd-text: var(--text); --bd-muted: var(--text-dim); --bd-accent: var(--accent); --bd-on-accent: var(--text-on-accent); --bd-radius: 12px; --bd-danger: var(--error-color); line-height: 1.5; }
 .deploy-panel .bd-btn, .deploy-notice .bd-btn { min-height: 36px; padding: 7px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated); color: var(--text); font-weight: 600; }
-.deploy-panel .bd-btn-primary { background: var(--accent); color: var(--text-on-accent, #061317); border-color: var(--accent); }
+.deploy-panel .bd-btn-primary { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
 .deploy-panel .bd-btn:disabled { opacity: .45; cursor: not-allowed; }
 .deploy-panel p { margin: 8px 0; }
 .deploy-panel .bd-pill { padding: 3px 10px; border: 1px solid var(--border); border-radius: 20px; background: var(--bg-elevated); }

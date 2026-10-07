@@ -9,7 +9,7 @@
 .tm-agent-text { display: flex; flex-direction: column; min-width: 0; }
 .tm-agent-text strong { font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tm-agent-text small { color: var(--bd-muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tm-avatar { flex: 0 0 auto; display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; color: #fff; font-weight: 800; font-size: 13px; text-shadow: var(--avatar-text-shadow); }
+.tm-avatar { flex: 0 0 auto; display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; color: var(--text-strong); font-weight: 800; font-size: 13px; text-shadow: var(--avatar-text-shadow); }
 .tm-avatar-lg { width: 48px; height: 48px; border-radius: 10px; font-size: 16px; }
 .tm-agent-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; }
 .tm-stop { margin-left: auto; min-height: 28px; padding: 2px 12px; font-size: 12.5px; }
@@ -25,9 +25,9 @@
 .tm-editor { min-width: 0; }
 .tm-editor-head { display: flex; align-items: center; gap: 14px; }
 .tm-editor-head h2 { font-size: 19px; }
-.tm-handle { display: flex; align-items: center; border: 1px solid var(--bd-border); border-radius: 8px; background: var(--bg-input, #111418); }
+.tm-handle { display: flex; align-items: center; border: 1px solid var(--bd-border); border-radius: 8px; background: var(--bg-input); }
 .tm-handle span { padding: 0 4px 0 10px; color: var(--bd-muted); }
-.bd-root .tm-handle input { border: 0 !important; background: transparent !important; box-shadow: none !important; padding-left: 2px !important; }
+.bd-root .tm-handle input { border: 0; background: transparent; box-shadow: none; padding-left: 2px; }
 .tm-handle:focus-within { border-color: var(--bd-accent); box-shadow: 0 0 0 2px var(--bd-accent-soft); }
 .tm-colors { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 34px; }
 .tm-colors input[type='color'] { width: 40px; height: 32px; padding: 0; border: 1px solid var(--bd-border); border-radius: 8px; background: none; }
