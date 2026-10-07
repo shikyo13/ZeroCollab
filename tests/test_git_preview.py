@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from git_preview import capture, ERROR_BYTES
@@ -36,3 +37,12 @@ class GitPreviewTests(unittest.TestCase):
             git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'file')
             (root / 'tracked.txt').write_text('large change\n' * 20000)
             self.assertEqual(len(_worktree_diff(folder, 'api')), 24000)
+
+    def test_timeout_with_descendant_inheriting_pipes(self):
+        code = ("import subprocess,sys,time; "
+                "subprocess.Popen([sys.executable,'-c','import time; time.sleep(4)']); "
+                "time.sleep(4)")
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            capture([sys.executable, '-c', code], timeout=.2)
+        self.assertLess(time.monotonic() - started, 3)
