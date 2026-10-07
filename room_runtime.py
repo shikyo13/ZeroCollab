@@ -20,6 +20,7 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from git_preview import preview as git_preview
 import native_adapters as native
 from provider_controls import ProviderControls
 from coordination_state import pending_human_wait
@@ -110,25 +111,37 @@ def git(path, *args):
     return result.stdout.strip()
 
 
+DIFF_CHAR_LIMIT = 24000
+UNTRACKED_PREVIEW_FILES = 8
+
+
 def _worktree_diff(worktree, provider):
     path = Path(worktree)
     exclusions = [":(exclude)" + name for name in PRIVATE_PARTS]
     exclusions += [":(exclude)" + name + "/**" for name in PRIVATE_PARTS]
-    diff = git(path, "diff", "HEAD", "--", ".", ":(exclude).env.*", *exclusions)
-    # The temporary Gemini MCP connection is runtime metadata, not project work.
     if provider == 'antigravity':
-        diff = git(path, 'diff', 'HEAD', '--', '.', ':(exclude).env.*', ':(exclude).agents/mcp_config.json', *exclusions)
-    untracked = git(path, "ls-files", "--others", "--exclude-standard").splitlines()
-    for filename in untracked[:8]:
+        exclusions.append(':(exclude).agents/mcp_config.json')
+    env = native.subscription_env()
+    diff = git_preview(path, "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", ".",
+                       ":(exclude).env.*", *exclusions, env=env).strip()[:DIFF_CHAR_LIMIT]
+    if len(diff) == DIFF_CHAR_LIMIT:
+        return diff
+    # NUL framing avoids treating quoted or newline-containing filenames as paths.
+    untracked = git_preview(path, "ls-files", "-z", "--others", "--exclude-standard", env=env)
+    for filename in untracked.split('\0')[:-1][:UNTRACKED_PREVIEW_FILES]:
         if filename.replace('\\', '/') == '.agents/mcp_config.json':
             continue
         try:
             file = scoped_path(path, filename)
-            if file.stat().st_size <= 24000:
-                diff += f"\nNew file {filename}:\n" + file.read_text("utf-8")
+            if file.stat().st_size <= DIFF_CHAR_LIMIT:
+                with file.open(encoding='utf-8') as stream:
+                    content = stream.read(DIFF_CHAR_LIMIT)
+                diff = (diff + f"\nNew file {filename}:\n" + content)[:DIFF_CHAR_LIMIT]
+                if len(diff) == DIFF_CHAR_LIMIT:
+                    break
         except (ValueError, UnicodeError, OSError):
             continue
-    return diff[:24000]
+    return diff
 
 
 def scoped_path(root, raw):
