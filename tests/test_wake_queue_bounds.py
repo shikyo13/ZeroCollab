@@ -30,3 +30,41 @@ class WakeQueueBoundsTests(unittest.TestCase):
             q.merge_waiting(held)
             self.assertEqual(held, batch(1, 2))
             self.assertEqual(q.get_nowait(), batch(3))
+
+    def test_restore_preserves_accepted_work_above_admission_limits(self):
+        from types import SimpleNamespace
+        from pathlib import Path
+        from room_runtime import RoomRuntime
+        with patch('coordination_queue.MAX_BATCH_REQUESTS', 2):
+            q = WakeQueue(maxsize=4)
+            entries = [batch(1, 2), batch(3, 4), batch(5, 6, 7)]
+            entries += [{**batch(n), 'channel': str(n)} for n in range(8, 13)]
+            runtime = RoomRuntime.__new__(RoomRuntime)
+            runtime.deployment = SimpleNamespace(root=Path('.'))
+            runtime.identity = 'project'
+            runtime.queues = {'agent': q}
+            saved = {'project_id': 'project', 'queues': {'agent': entries}}
+            with patch('room_deploy.read_json', return_value=saved):
+                runtime.restore_deploy_queue()
+            self.assertTrue(runtime.deploy_checkpoint_restored)
+            self.assertEqual([q.get_nowait() for _ in entries], entries)
+
+    def test_restore_keeps_new_arrivals_after_saved_work(self):
+        with patch('coordination_queue.MAX_BATCH_REQUESTS', 2):
+            q = WakeQueue(maxsize=4)
+            q.restore(batch(1))
+            q.restore(batch(2))
+            q.put_nowait(batch(3))
+            self.assertEqual(q.get_nowait(), batch(1))
+            self.assertEqual(q.get_nowait()['requests'], batch(2, 3)['requests'])
+
+    def test_waiting_merge_does_not_skip_full_older_batch(self):
+        with patch('coordination_queue.MAX_BATCH_REQUESTS', 2):
+            q = WakeQueue(maxsize=4)
+            held = batch(1)
+            q.restore(batch(2, 3))
+            q.restore(batch(4))
+            q.merge_waiting(held)
+            self.assertEqual(held, batch(1))
+            self.assertEqual(q.get_nowait(), batch(2, 3))
+            self.assertEqual(q.get_nowait(), batch(4))

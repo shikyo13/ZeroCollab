@@ -38,7 +38,7 @@ class WakeQueue(asyncio.Queue):
         batch['chain'] = incoming['chain']
 
     def put_nowait(self, item):
-        for pending in self._queue:
+        for pending in reversed(self._queue):
             if pending['channel'] == item['channel']:
                 self.merge(pending, item)
                 return
@@ -46,13 +46,20 @@ class WakeQueue(asyncio.Queue):
             raise asyncio.QueueFull
         super().put_nowait(item)
 
+    def restore(self, item):
+        """Replay already-admitted work verbatim, including pre-limit checkpoints."""
+        self._put(item)
+        self._unfinished_tasks += 1
+        self._finished.clear()
+        self._wakeup_next(self._getters)
+
     def merge_waiting(self, batch):
         for pending in list(self._queue):
             if pending['channel'] == batch['channel']:
                 try:
                     self.merge(batch, pending)
                 except asyncio.QueueFull:
-                    continue  # Preserve the queued batch for the next turn.
+                    break  # Keep this and later batches in arrival order for the next turn.
                 self._queue.remove(pending)
                 self._wakeup_next(self._putters)
 
