@@ -8,6 +8,9 @@ Thread-safe: a single threading.Lock guards all mutations.
 
 import colorsys
 import json
+import logging
+import os
+import tempfile
 import secrets
 import threading
 import time
@@ -36,6 +39,7 @@ class RuntimeRegistry:
 
     def __init__(self, data_dir: str = "./data"):
         self._lock = threading.Lock()
+        self._persistence_lock = threading.Lock()
         self._bases: dict[str, dict] = {}          # base name → config template
         self._instances: dict[str, Instance] = {}   # canonical name → Instance
         self._reserved: dict[str, float] = {}       # name → deregister timestamp
@@ -78,17 +82,37 @@ class RuntimeRegistry:
             except Exception:
                 self._renames = {}
 
+    def _persist_snapshot(self, path: Path, snapshot):
+        """Serialize snapshot-through-replace; callers must not hold _lock.
+
+        Take the persistence lock before capturing state so a delayed writer
+        cannot overwrite a newer snapshot. Keep disk I/O outside the state lock.
+        """
+        with self._persistence_lock:
+            temp_path = None
+            try:
+                self._data_dir.mkdir(parents=True, exist_ok=True)
+                with self._lock:
+                    data = snapshot()
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                                 dir=self._data_dir, prefix=path.name + ".",
+                                                 suffix=".tmp", delete=False) as stream:
+                    temp_path = Path(stream.name)
+                    json.dump(data, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp_path, path)
+            except Exception:
+                # Preserve the established in-memory mutation contract, but make
+                # persistence failures visible without logging identity tokens.
+                logging.getLogger(__name__).exception("Failed to persist registry file %s", path.name)
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+
     def _save_renames(self):
-        """Persist renames to disk. Must be called outside the lock."""
-        try:
-            self._data_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self._renames_path().with_suffix(".tmp")
-            with self._lock:
-                data = dict(self._renames)
-            tmp.write_text(json.dumps(data), "utf-8")
-            tmp.replace(self._renames_path())
-        except Exception:
-            pass
+        """Persist renames to disk. Must be called outside the state lock."""
+        self._persist_snapshot(self._renames_path(), lambda: dict(self._renames))
 
     # --- Instance persistence (survives server restart) ---
 
@@ -101,18 +125,10 @@ class RuntimeRegistry:
         Tokens live in the local ./data dir, consistent with the existing local-only
         posture (server binds 127.0.0.1). Must be called outside the lock.
         """
-        try:
-            self._data_dir.mkdir(parents=True, exist_ok=True)
-            with self._lock:
-                data = {
-                    "instances": {n: _inst_full(i) for n, i in self._instances.items()},
-                    "reclaimable": {n: _inst_full(i) for n, i in self._reclaimable.items()},
-                }
-            tmp = self._instances_path().with_suffix(".tmp")
-            tmp.write_text(json.dumps(data), "utf-8")
-            tmp.replace(self._instances_path())
-        except Exception:
-            pass
+        self._persist_snapshot(self._instances_path(), lambda: {
+            "instances": {n: _inst_full(i) for n, i in self._instances.items()},
+            "reclaimable": {n: _inst_full(i) for n, i in self._reclaimable.items()},
+        })
 
     def _load_instances(self):
         p = self._instances_path()
