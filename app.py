@@ -559,8 +559,11 @@ async def _handle_new_message(msg: dict):
         if not mcp_bridge.is_online(target):
             store.add("system", f"{target} appears offline — message queued.", msg_type="system", channel=channel)
         if agents.is_available(target):
-            await agents.trigger(target, message=chat_msg, channel=channel, chain=chain,
-                                 routing={'message_id': msg.get('id'), 'human': not sender_is_agent})
+            queued = await agents.trigger(target, message=chat_msg, channel=channel, chain=chain,
+                                          routing={'message_id': msg.get('id'), 'human': not sender_is_agent})
+            if queued is False:
+                store.add("system", f"Could not queue {target}'s wake. Retry the mention when its wrapper is available.",
+                          msg_type="system", channel=channel, metadata={'no_route': True})
 
 
 # --- broadcasting ---
