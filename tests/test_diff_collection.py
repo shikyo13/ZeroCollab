@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import subprocess
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -54,3 +55,26 @@ class DiffCollectionTests(unittest.IsolatedAsyncioTestCase):
                                             {'section': 'patches', 'changes': {'a': 'fake'}})
         self.assertEqual(result, {'a': 'actual'})
         self.assertEqual(seen['section'], 'patches')
+
+    async def test_failed_worktree_does_not_hide_later_diffs(self):
+        for failure in (OSError('missing'), RuntimeError('private output'),
+                        subprocess.TimeoutExpired('git', 15)):
+            with self.subTest(failure=type(failure).__name__):
+                runtime = RoomRuntime.__new__(RoomRuntime)
+                runtime.project = 'project'
+                runtime.states = {name: {'worktree': name, 'provider': 'api'}
+                                  for name in ('bad', 'good')}
+                with patch('room_runtime._worktree_diff', side_effect=[failure, 'actual diff']), \
+                     self.assertLogs('room_runtime', level='WARNING'):
+                    result = await runtime.collect_diffs()
+                self.assertIn('unavailable', result['bad'])
+                self.assertNotIn('private output', result['bad'])
+                self.assertEqual(result['good'], 'actual diff')
+
+    async def test_cancellation_is_not_a_worktree_failure(self):
+        runtime = RoomRuntime.__new__(RoomRuntime)
+        runtime.project = 'project'
+        runtime.states = {'a': {'worktree': 'a', 'provider': 'api'}}
+        with patch('room_runtime.asyncio.to_thread', side_effect=asyncio.CancelledError):
+            with self.assertRaises(asyncio.CancelledError):
+                await runtime.collect_diffs()
