@@ -952,8 +952,8 @@ async def export_history():
     import archive as _archive
     import time as _time
     try:
-        zip_bytes = _archive.build_export(
-            store,
+        zip_bytes = await asyncio.to_thread(
+            _archive.build_export, store,
             app_version=config.get("server", {}).get("version", ""),
         )
     except Exception as exc:
