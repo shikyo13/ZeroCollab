@@ -8,7 +8,7 @@
 
     <meta name="author" content="ZeroTheAbsolute">
     <meta name="theme-color" content="#0c0e10">
-    <link rel="stylesheet" href="/static/style.css?v=zerocollab-fixes-4">
+    <link rel="stylesheet" href="/static/style.css?v=zerocollab-fixes-5">
     <link rel="stylesheet" href="/static/runtime.css?v=zerocollab-fixes-3">
     <link rel="icon" type="image/svg+xml" href="/static/brand/zerocollab-mark.svg">
 </head>
@@ -160,7 +160,18 @@
     <script src="/static/store.js?v=zerocollab-repo-1"></script>
     <script src="/static/prefs.js?v=zerocollab-fixes-2"></script>
     <script src="/static/channels.js?v=zerocollab-fixes-4"></script>
-    <script src="/static/chat.js?v=zerocollab-fixes-4"></script>
+    <script src="/static/chat.js?v=zerocollab-fixes-5"></script>
+    <!-- chat/* share chat.js globals; they only run from DOMContentLoaded or user events. -->
+    <script src="/static/chat/avatars.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/sounds.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/format.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/dates.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/transfer.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/menus.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/reply.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/delete.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/voice.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/modal.js?v=zerocollab-fixes-5"></script>
     <script src="/static/runtime.js?v=zerocollab-fixes-3"></script>
     <script>
         (function () {

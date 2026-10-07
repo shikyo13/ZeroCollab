@@ -1109,7 +1109,7 @@ main#timeline {
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-/* Hashtag styling in messages */
+/* Hashtag styling in messages (.muted: #clear, #off, #none, #end) */
 .msg-hashtag {
     color: var(--accent);
     font-weight: 500;
@@ -1118,6 +1118,7 @@ main#timeline {
     border-radius: 3px;
     cursor: default;
 }
+.msg-hashtag.muted { opacity: 0.5; }
 
 /* --- Channel sidebar --- */
 
@@ -1302,6 +1303,7 @@ body.channels-in-sidebar #channel-bar {
 }
 
 .msg-text pre {
+    position: relative;  /* anchors .code-copy-btn */
     background: rgba(0, 0, 0, 0.3);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -1458,8 +1460,9 @@ body.channels-in-sidebar #channel-bar {
     transform: translateX(-50%);
     background: var(--accent);
     color: var(--text-on-accent);
-    width: 40px;
     height: 40px;
+    padding: 0 16px;
+    gap: 8px;
     border-radius: var(--radius-full);
     display: flex;
     align-items: center;
@@ -1475,6 +1478,9 @@ body.channels-in-sidebar #channel-bar {
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 }
 #scroll-anchor.hidden { display: none; }
+
+/* Horizontally drag-scrolled strips (chat.js enableDragScroll) while the mouse is held. */
+.drag-scrolling { cursor: grabbing; }
 
 .unread-badge {
     position: absolute;
@@ -1612,8 +1618,31 @@ pre:hover .code-copy-btn { opacity: 1; }
 }
 
 .modal-nav:hover { background: rgba(255, 255, 255, 0.2); }
+.modal-nav[hidden] { display: none; }
 .modal-prev { left: 16px; }
 .modal-next { right: 16px; }
+
+.image-modal-tools {
+    position: absolute;
+    top: 16px;
+    right: 20px;
+    display: flex;
+    gap: 12px;
+}
+
+.image-modal-notes {
+    position: absolute;
+    bottom: 16px;
+    left: 5%;
+    width: 90%;
+    max-height: 30vh;
+    overflow: auto;
+    background: var(--bg-input);
+    color: var(--text);
+    padding: 12px;
+    border-radius: 8px;
+}
+.image-modal-notes p { white-space: pre-wrap; }
 
 .modal-counter {
     position: absolute;
