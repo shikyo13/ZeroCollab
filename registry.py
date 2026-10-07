@@ -10,7 +10,7 @@ import colorsys
 import json
 import logging
 import os
-import tempfile
+from durable import atomic_write
 import secrets
 import threading
 import time
@@ -89,26 +89,15 @@ class RuntimeRegistry:
         cannot overwrite a newer snapshot. Keep disk I/O outside the state lock.
         """
         with self._persistence_lock:
-            temp_path = None
             try:
                 self._data_dir.mkdir(parents=True, exist_ok=True)
                 with self._lock:
                     data = snapshot()
-                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
-                                                 dir=self._data_dir, prefix=path.name + ".",
-                                                 suffix=".tmp", delete=False) as stream:
-                    temp_path = Path(stream.name)
-                    json.dump(data, stream)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temp_path, path)
+                atomic_write(path, lambda stream: json.dump(data, stream))
             except Exception:
                 # Preserve the established in-memory mutation contract, but make
                 # persistence failures visible without logging identity tokens.
                 logging.getLogger(__name__).exception("Failed to persist registry file %s", path.name)
-            finally:
-                if temp_path is not None:
-                    temp_path.unlink(missing_ok=True)
 
     def _save_renames(self):
         """Persist renames to disk. Must be called outside the state lock."""

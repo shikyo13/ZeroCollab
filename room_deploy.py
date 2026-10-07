@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from functools import wraps
+from durable import atomic_write
 from pathlib import Path
 
 from fastapi import Request
@@ -30,13 +31,7 @@ def release_order(item):
 
 
 def atomic_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
-    try:
-        temp.write_text(json.dumps(value, indent=2), 'utf-8')
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
+    atomic_write(path, lambda stream: json.dump(value, stream, indent=2))
 
 
 class DeploymentState:

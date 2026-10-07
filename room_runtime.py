@@ -9,7 +9,7 @@ import platform
 import re
 import subprocess
 import time
-import tempfile
+from durable import atomic_write
 import uuid
 from collections import deque
 from pathlib import Path
@@ -30,68 +30,51 @@ from local_protocol import visible_text, validate_calls
 from coordination_queue import WakeQueue, current_request, receipt_key
 from steering_delivery import SteeringDelivery
 
+LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
 FILE_TOOLS = {"read_file", "file_glob_search", "grep_search", "write_file", "edit_file", "get_info"}
 PRIVATE_PARTS = {".git", ".codex", ".claude", ".gemini", ".aws", ".ssh", ".env", ".agents"}
 
 
+def _parse_workspace(text):
+    value = json.loads(text)
+    if not isinstance(value, dict):
+        raise ValueError("Workspace state must be an object")
+    for key in ("project", "project_id"):
+        if value.get(key) is not None and not isinstance(value[key], str):
+            raise ValueError(f"Invalid workspace {key}")
+    return value
+
+
 def load_workspace(path):
     """Recover a validated selection; never silently select a different project."""
-    def read(candidate):
-        value = json.loads(candidate.read_text(encoding="utf-8"))
-        if not isinstance(value, dict):
-            raise ValueError("Workspace state must be an object")
-        for key in ("project", "project_id"):
-            if value.get(key) is not None and not isinstance(value[key], str):
-                raise ValueError(f"Invalid workspace {key}")
-        return value
-
     backup = path.with_suffix('.json.bak')
     if not path.exists() and not backup.exists():
         return {}
     try:
-        return read(path)
+        return _parse_workspace(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as primary_error:
         try:
-            saved = read(backup)
+            saved = _parse_workspace(backup.read_text(encoding="utf-8"))
         except (OSError, ValueError) as backup_error:
-            raise RuntimeError(f"Cannot recover workspace selection from {path}; restore a valid workspace.json or its .bak") from backup_error
-        logging.getLogger(__name__).warning("Recovered workspace selection from %s after %s", backup, primary_error)
+            raise RuntimeError(f"Cannot recover workspace selection from {path} ({primary_error}); restore a valid workspace.json or its .bak") from backup_error
+        LOGGER.warning("Recovered workspace selection from %s after %s", backup, primary_error)
         # Recovery must not automatically launch work under an older selection.
         return {**saved, "paused": True}
 
 
 def save_workspace(path, value):
     """Atomically retain the previous valid selection before installing the next."""
-    def replace(target, text):
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
-                                             prefix=target.name + '.', suffix='.tmp', delete=False) as stream:
-                temporary = Path(stream.name)
-                stream.write(text)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, target)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-
     encoded = json.dumps(value, indent=2)
     if path.exists():
         try:
             previous = path.read_text(encoding='utf-8')
-            parsed = json.loads(previous)
-            if not isinstance(parsed, dict):
-                raise ValueError('Invalid workspace state')
-            for key in ('project', 'project_id'):
-                if parsed.get(key) is not None and not isinstance(parsed[key], str):
-                    raise ValueError('Invalid workspace selection')
+            _parse_workspace(previous)
         except ValueError:
             pass  # Keep the valid backup when replacing a corrupt primary.
         else:
-            replace(path.with_suffix('.json.bak'), previous)
-    replace(path, encoded)
+            atomic_write(path.with_suffix('.json.bak'), lambda stream: stream.write(previous))
+    atomic_write(path, lambda stream: stream.write(encoded))
 
 
 def local_tool_definitions():
@@ -746,7 +729,7 @@ class RoomRuntime:
             try:
                 await self.resume_deploy_checks()
             except Exception:
-                logging.getLogger(__name__).exception('Post-deployment provider refresh failed; turns remain held')
+                LOGGER.exception('Post-deployment provider refresh failed; turns remain held')
             if self.deployment and self.deployment.reload()["writes"] == "blocked":
                 await asyncio.sleep(.25)
                 continue
@@ -863,7 +846,7 @@ class RoomRuntime:
                 if asyncio.current_task().cancelling():
                     raise
             except Exception:
-                logging.getLogger(__name__).exception('Turn admission failed; worker remains available')
+                LOGGER.exception('Turn admission failed; worker remains available')
                 with contextlib.suppress(Exception):
                     self.goals.pause('Turn admission failed; inspect server logs before resuming.')
             finally:
@@ -876,7 +859,7 @@ class RoomRuntime:
                         self.goals.schedule()
                     await self.publish_status()
                 except Exception:
-                    logging.getLogger(__name__).exception('Goal scheduling/status failed; worker remains available')
+                    LOGGER.exception('Goal scheduling/status failed; worker remains available')
                     with contextlib.suppress(Exception):
                         self.goals.pause('Goal scheduling failed; inspect server logs before resuming.')
 

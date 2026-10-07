@@ -4,7 +4,7 @@ import json
 import os
 import time
 import threading
-import tempfile
+from durable import atomic_write
 import uuid
 from pathlib import Path
 
@@ -101,23 +101,6 @@ class MessageStore:
         """Set reply_to on an existing message (used by import to rebuild links)."""
         self.update_message(msg_id, {"reply_to": reply_to})
 
-    @staticmethod
-    def _atomic_write(path, write):
-        """Prepare a sibling file completely before replacing durable state."""
-        temp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
-                                             dir=path.parent, prefix=path.name + ".",
-                                             suffix=".tmp", delete=False) as stream:
-                temp_path = Path(stream.name)
-                write(stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp_path, path)
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
-
     def _rewrite(self, messages=None):
         """Commit a replacement log, then publish its in-memory view.
 
@@ -127,13 +110,13 @@ class MessageStore:
         """
         candidate = self._messages if messages is None else messages
         counter = self._path.with_suffix(self._path.suffix + ".next-id")
-        self._atomic_write(counter, lambda stream: stream.write(str(self._next_id)))
+        atomic_write(counter, lambda stream: stream.write(str(self._next_id)))
 
         def write_messages(stream):
             for message in candidate:
                 stream.write(json.dumps(message, ensure_ascii=False) + "\n")
 
-        self._atomic_write(self._path, write_messages)
+        atomic_write(self._path, write_messages)
         self._messages = candidate
 
     def get_by_id(self, msg_id: int) -> dict | None:
