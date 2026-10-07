@@ -5,11 +5,13 @@ from contextlib import asynccontextmanager
 import hashlib
 import io
 import json
+import math
 import re
 import threading
 import time
 import uuid
 import zipfile
+import zlib
 
 SCHEMA_VERSION = 1
 MAX_IMPORT_SIZE = 50 * 1024 * 1024  # 50MB uncompressed
@@ -160,12 +162,37 @@ def _prepare_import(zip_bytes):
     """Validate and parse without holding the store lock or changing live state."""
     # Validate zip
     try:
-        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    except zipfile.BadZipFile:
-        return {"ok": False, "error": "invalid zip archive"}
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            return _parse_import(zf)
+    except (zipfile.BadZipFile, EOFError, zlib.error):
+        return {"ok": False, "error": "invalid or corrupt zip archive"}
+    except NotImplementedError:
+        return {"ok": False, "error": "unsupported zip compression"}
 
-    with zf:
-        return _parse_import(zf)
+
+def _valid_message(msg):
+    """Check fields consumed by fingerprinting, merge and the chat renderer."""
+    if not isinstance(msg, dict):
+        return False
+    for key in ("sender", "text", "type", "channel", "created_by", "title", "body"):
+        if key in msg and not isinstance(msg[key], str):
+            return False
+    for key in ("uid", "reply_to_uid", "time"):
+        if msg.get(key) is not None and not isinstance(msg[key], str):
+            return False
+    ts = msg.get("timestamp")
+    if ts is not None and (type(ts) not in (int, float) or
+                           (isinstance(ts, float) and not math.isfinite(ts))):
+        return False
+    if msg.get("metadata") is not None and not isinstance(msg["metadata"], dict):
+        return False
+    attachments = msg.get("attachments")
+    if attachments is not None and (
+        not isinstance(attachments, list) or
+        any(not isinstance(item, dict) for item in attachments)
+    ):
+        return False
+    return True
 
 
 def _parse_import(zf):
@@ -174,6 +201,8 @@ def _parse_import(zf):
     total_size = sum(info.file_size for info in zf.infolist())
     if total_size > MAX_IMPORT_SIZE:
         return {"ok": False, "error": f"archive too large ({total_size // 1024 // 1024}MB, limit {MAX_IMPORT_SIZE // 1024 // 1024}MB)"}
+    if any(info.flag_bits & 1 for info in zf.infolist()):
+        return {"ok": False, "error": "encrypted zip archives are not supported"}
 
     # Read manifest
     if "manifest.json" not in zf.namelist():
@@ -181,9 +210,11 @@ def _parse_import(zf):
 
     try:
         manifest = json.loads(zf.read("manifest.json"))
-    except (json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, UnicodeDecodeError, KeyError):
         return {"ok": False, "error": "corrupt manifest.json"}
 
+    if not isinstance(manifest, dict) or type(manifest.get("schema_version", 0)) is not int:
+        return {"ok": False, "error": "invalid manifest.json: expected an object with an integer schema_version"}
     if manifest.get("schema_version", 0) > SCHEMA_VERSION:
         return {"ok": False, "error": f"unsupported archive schema_version: {manifest.get('schema_version')}. Update zerocollab to import this archive."}
 
@@ -216,8 +247,14 @@ def _parse_import(zf):
             except json.JSONDecodeError:
                 skipped += 1
                 continue
+            if not _valid_message(msg):
+                skipped += 1
+                continue
             msg_uid = msg.get("uid") or "fp-" + _fingerprint(msg)
             records.append((msg, msg_uid))
+
+    if skipped:
+        warnings.append(f"skipped {skipped} invalid message record(s)")
 
     # Archives from older versions may carry sections for features that no
     # longer exist; they are reported and skipped rather than failing the import.

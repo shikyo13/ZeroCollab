@@ -24,6 +24,14 @@ def make_store(root: Path):
     return MessageStore(str(root / "messages.jsonl"))
 
 
+def make_archive(manifest, records=()):
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, 'w', zipfile.ZIP_STORED) as zf:
+        zf.writestr('manifest.json', json.dumps(manifest))
+        zf.writestr('messages.jsonl', ''.join(json.dumps(row) + '\n' for row in records))
+    return data.getvalue()
+
+
 def seed_history(store: MessageStore):
     root = store.add(
         "user",
@@ -102,9 +110,25 @@ class ArchiveRoundTripTests(unittest.TestCase):
             zf.writestr('manifest.json', json.dumps({'schema_version': 1}))
             zf.writestr('messages.jsonl', payload)
         corrupt = data.getvalue().replace(b'unique-corruption-marker', b'UNIQUE-corruption-marker', 1)
-        with self.assertRaises(zipfile.BadZipFile):
-            archive.import_archive(corrupt, self.target_store, ['general'])
+        report = archive.import_archive(corrupt, self.target_store, ['general'])
+        self.assertFalse(report['ok'])
+        self.assertIn('corrupt zip', report['error'])
         self.assertEqual(self.target_store.get_recent(), [])
+
+    def test_invalid_rows_are_skipped_without_breaking_valid_merge(self):
+        malformed = [None, [], 'text', 42, {'uid': ['bad']},
+                     {'sender': {}}, {'text': 5}, {'channel': ['bad']},
+                     {'reply_to_uid': {}}, {'timestamp': float('nan')},
+                     {'timestamp': True}, {'attachments': ['bad']}, {'metadata': []}]
+        valid = {'sender': 'user', 'text': 'valid', 'channel': 'planning', 'uid': 'valid'}
+        blob = make_archive({'schema_version': 1}, [valid, *malformed, valid])
+        channels = ['general']
+        report = archive.import_archive(blob, self.target_store, channels)
+        self.assertEqual(report['sections']['messages'],
+                         {'created': 1, 'duplicates': 1, 'conflicts': 0, 'skipped': len(malformed)})
+        self.assertEqual(len(report['warnings']), 1)
+        self.assertEqual(channels, ['general', 'planning'])
+        self.assertEqual(self.target_store.get_recent()[0]['text'], 'valid')
 
     def test_round_trip_preserves_identity_and_dedup(self):
         seed_history(self.source_store)
@@ -340,6 +364,29 @@ class ImportExportApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         payload = json.loads(response.body.decode("utf-8"))
         self.assertIn("expected .zip", payload["error"])
+
+    def test_invalid_archives_return_400_without_mutation_and_release_admission(self):
+        valid = {'sender': 'user', 'text': 'crc-marker', 'uid': 'valid', 'channel': 'new-channel'}
+        corrupt = make_archive({'schema_version': 1}, [valid]).replace(b'crc-marker', b'CRC-marker', 1)
+        invalid_encoding = io.BytesIO()
+        with zipfile.ZipFile(invalid_encoding, 'w') as zf:
+            zf.writestr('manifest.json', b'\xff')
+        blobs = [make_archive(m, [valid]) for m in
+                 ([], None, 'manifest', {'schema_version': '1'}, {'schema_version': None}, {'schema_version': True})]
+        blobs.extend([corrupt, invalid_encoding.getvalue()])
+        for blob in blobs:
+            with self.subTest(blob=blob[:30]), patch.object(app, '_save_settings') as save, patch.object(app, '_broadcast', new_callable=AsyncMock) as broadcast:
+                response = asyncio.run(app.import_history(UploadFile(filename='history.zip', file=io.BytesIO(blob))))
+                self.assertEqual(response.status_code, 400)
+                self.assertTrue(json.loads(response.body)['error'])
+                self.assertEqual(self.store.get_recent(), [])
+                self.assertEqual(app.room_settings['channels'], ['general'])
+                self.assertFalse(archive._import_lock.locked())
+                save.assert_not_called()
+                broadcast.assert_not_called()
+        # A corrected upload succeeds immediately after the failed requests.
+        response = asyncio.run(app.import_history(UploadFile(filename='history.zip', file=io.BytesIO(make_archive({'schema_version': 1}, [valid])))))
+        self.assertEqual(response.status_code, 200)
 
 
 if __name__ == "__main__":
