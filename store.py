@@ -4,9 +4,10 @@ import json
 import os
 import time
 import threading
-from durable import atomic_write
 import uuid
 from pathlib import Path
+
+from durable import atomic_write
 
 
 class MessageStore:
