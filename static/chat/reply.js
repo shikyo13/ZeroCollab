@@ -106,13 +106,16 @@ function cancelReply() {
 
 function scrollToMessage(msgId) {
     let el = document.querySelector(`.message[data-id="${msgId}"]`);
+    const built = !el;
     // An earlier message of this chat that is not shown yet: add batches until it is.
     const msg = messageIndex.get(msgId);
     while (!el && msg && (msg.channel || 'general') === activeChannel && loadOlderMessages()) {
         el = document.querySelector(`.message[data-id="${msgId}"]`);
     }
     if (!el) return;
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Images in just-built batches grow as they load. The browser keeps a target that is already in
+    // view in place (scroll anchoring), but not one a smooth scroll is still travelling to.
+    el.scrollIntoView({ behavior: built ? 'instant' : 'smooth', block: 'center' });
     el.classList.add('highlight');
     setTimeout(() => el.classList.remove('highlight'), CONFIG.feedbackMs);
 }
