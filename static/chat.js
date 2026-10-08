@@ -16,7 +16,7 @@ let _channelMentions = {};  // channel -> array of toggled agent names (per-chan
 let replyingTo = null;  // { id, sender, text, mention } or null; mention is the '@handle ' Reply inserted
 let unreadCount = 0;    // messages received while scrolled up
 let lastMessageDate = null;  // track date for dividers (general channel)
-let lastMessageDates = {};  // { channel: dateString } for per-channel dividers
+let lastMessageDates = Object.create(null);  // { channel: dateString } for per-channel dividers; no prototype, chats can be named constructor
 let soundEnabled = false;  // suppress sounds during initial history load
 // Chat (session) ids, as app.py _CHANNEL_NAME_RE and project_registry.py SESSION_ID accept them.
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,19}$/;
@@ -126,8 +126,9 @@ let historyGeneration = 0;
 // CONFIG.historyWindow of each chat are built into the page. Every received message stays in
 // messageIndex (reply quotes, jumps), and the older ones wait in olderHistory, per chat and
 // oldest first, until the reader scrolls up.
+// Keyed by chat name, so a Map: chats named like Object members (constructor, __proto__) stay plain keys.
 const messageIndex = new Map();
-let olderHistory = {};
+let olderHistory = new Map();
 // A task queue yields between batches and also runs in background tabs,
 // where animation frames can be suspended.
 const historyTasks = new MessageChannel();
@@ -180,14 +181,18 @@ function renderHistoryBatch() {
 // the rest go to olderHistory. After a reconnect, a chat that already has messages on the page
 // keeps them; only what is newer than its oldest shown message is rendered.
 function windowHistory() {
-    const byChannel = {};
-    for (const msg of pendingHistory) (byChannel[msg.channel || 'general'] ??= []).push(msg);
+    const byChannel = new Map();
+    for (const msg of pendingHistory) {
+        const channel = msg.channel || 'general';
+        if (!byChannel.has(channel)) byChannel.set(channel, []);
+        byChannel.get(channel).push(msg);
+    }
     const render = new Set();
-    olderHistory = {};
-    for (const [channel, list] of Object.entries(byChannel)) {
+    olderHistory = new Map();
+    for (const [channel, list] of byChannel) {
         const shown = list.findIndex(msg => document.getElementById(`message-${msg.id}`));
         const cut = shown === -1 ? Math.max(0, list.length - CONFIG.historyWindow) : shown;
-        olderHistory[channel] = list.slice(0, cut);
+        olderHistory.set(channel, list.slice(0, cut));
         for (const msg of list.slice(cut)) render.add(msg);
     }
     pendingHistory = pendingHistory.filter(msg => render.has(msg));
@@ -196,7 +201,7 @@ function windowHistory() {
 // Build the next batch of earlier messages of the active chat above the shown ones, keeping
 // the reader's place. Returns whether anything was added.
 function loadOlderMessages() {
-    const older = olderHistory[activeChannel];
+    const older = olderHistory.get(activeChannel);
     if (historyLoading || !older?.length) return false;
     const batch = older.splice(-CONFIG.olderBatch);
     const timeline = document.getElementById('timeline');
@@ -208,13 +213,16 @@ function loadOlderMessages() {
     for (const msg of batch) appendMessage(msg, { history: true, container: fragment });
     const batchEnd = lastMessageDates[activeChannel];
     lastMessageDates[activeChannel] = liveDate;
-    const before = timeline.scrollHeight;
+    // Everything shown moves with the container's bottom edge. Measuring how far it actually moved
+    // also covers the browser's own scroll anchoring, which may already have compensated.
+    const bottom = container.getBoundingClientRect().bottom;
     // A day that continues into the shown messages keeps one divider, the batch's.
     const firstShown = [...container.children].find(el => (el.dataset.channel || 'general') === activeChannel);
     if (firstShown?.classList.contains('date-divider') && firstShown.dataset.date === batchEnd) firstShown.remove();
     container.prepend(fragment);
-    timeline.scrollTo({ top: timeline.scrollTop + timeline.scrollHeight - before, behavior: 'instant' });
+    // Hiding the bar after the last batch also changes the height above the reader.
     updateOlderBar();
+    timeline.scrollBy({ top: container.getBoundingClientRect().bottom - bottom, behavior: 'instant' });
     dayFloatRefresh();
     return true;
 }
@@ -222,7 +230,7 @@ function loadOlderMessages() {
 function updateOlderBar() {
     const bar = document.getElementById('older-messages');
     if (!bar) return;
-    const count = olderHistory[activeChannel]?.length || 0;
+    const count = olderHistory.get(activeChannel)?.length || 0;
     bar.classList.toggle('hidden', !count);
     bar.querySelector('.older-count').textContent = `${count.toLocaleString()} more in this chat`;
 }
@@ -231,9 +239,7 @@ window.updateOlderBar = updateOlderBar;
 // Drop deleted or cleared messages from the index and from the not-yet-shown history.
 function forgetMessages(matches) {
     for (const [id, msg] of messageIndex) if (matches(msg)) messageIndex.delete(id);
-    for (const channel of Object.keys(olderHistory)) {
-        olderHistory[channel] = olderHistory[channel].filter(msg => !matches(msg));
-    }
+    for (const [channel, list] of olderHistory) olderHistory.set(channel, list.filter(msg => !matches(msg)));
     updateOlderBar();
 }
 
@@ -341,7 +347,10 @@ function onChannelRenamed(event) {
     renameKey(channelUnread, event.old_name, event.new_name);
     renameKey(_channelMentions, event.old_name, event.new_name);
     renameKey(lastMessageDates, event.old_name, event.new_name);
-    renameKey(olderHistory, event.old_name, event.new_name);
+    if (olderHistory.has(event.old_name)) {
+        olderHistory.set(event.new_name, olderHistory.get(event.old_name));
+        olderHistory.delete(event.old_name);
+    }
     for (const msg of messageIndex.values()) {
         if ((msg.channel || 'general') === event.old_name) msg.channel = event.new_name;
     }
@@ -379,9 +388,9 @@ function onClear(event) {
         // Full clear (all channels)
         container.innerHTML = '';
         lastMessageDate = null;
-        lastMessageDates = {};
+        lastMessageDates = Object.create(null);
         messageIndex.clear();
-        olderHistory = {};
+        olderHistory.clear();
         updateOlderBar();
     }
     dayFloatRefresh();
