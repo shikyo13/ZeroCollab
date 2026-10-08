@@ -1168,6 +1168,8 @@ class RoomRuntime:
             return {'ok': True}
         run.touch()
         run.coordination_calls += 1
+        if tool == 'room_browser':
+            return await self.browser.act(run.id, run.name, arguments)
         if tool == 'room_team_builder':
             action = arguments.get('action', 'get')
             if action == 'get':
@@ -1545,6 +1547,9 @@ class RoomRuntime:
         for worker in self.workers.values():
             worker.cancel()
         await asyncio.gather(self.heartbeat, *self.workers.values(), return_exceptions=True)
+        if hasattr(self, 'browser'):
+            async with self.browser.lock:
+                await self.browser.close()
 
 
 def install(host):
@@ -1556,6 +1561,8 @@ def install(host):
     project_registry.install(host, runtime)
     import team_builder
     team_builder.install(host, runtime)
+    import shared_browser
+    shared_browser.install(host, runtime)
     import mcp_bridge
     mcp_bridge.channel_guard = runtime.owns_channel
 

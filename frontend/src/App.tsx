@@ -8,6 +8,7 @@ import { brand } from './components/brand';
 import { legacy } from './legacy';
 import { WorkControls } from './components/WorkControls';
 import Projects from './workspace/Projects';
+import SidePanel from './sidepanel/SidePanel';
 import { ProjectSwitcher } from './workspace/ProjectSwitcher';
 import { useProjects } from './workspace/projectData';
 import { useWorkspaceRoute, type View } from './workspace/useWorkspaceRoute';
@@ -51,13 +52,13 @@ export default function App() {
       <WorkControls navigate={navigate} />
       <DeploymentNotice feed={deployments} onOpen={() => navigate('activity')} />
       <WelcomeBar onHelp={openHelp} />
-      <main id="workspace-content" className="workspace-content" tabIndex={-1}>
+      <SidePanel><main id="workspace-content" className="workspace-content" tabIndex={-1}>
         <section className="workspace-projects" hidden={view !== 'projects'} aria-label="Projects"><Projects {...projects} focus={focus} setFocus={setFocus} navigate={navigate} /></section>
         <section className="workspace-chat" hidden={view !== 'chat'} aria-label="Shared chat"><LegacySlot node={legacy.chat} className="workspace-chat-slot" /></section>
         <section className="workspace-board" hidden={view !== 'board'} aria-label="Task board"><Board /></section>
         <section className="workspace-team" hidden={view !== 'team'} aria-label="Team"><Team /></section>
         <section className="workspace-activity" hidden={view !== 'activity'} aria-labelledby="activity-title"><ActivityPage deployments={deployments} onManageTeam={() => navigate('team')} /></section>
-      </main>
+      </main></SidePanel>
     </div>
     <Help open={help} onClose={() => setHelp(false)} />
   </div>;

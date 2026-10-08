@@ -1,0 +1,21 @@
+.companion-layout { display: flex; position: relative; flex: 1; min-height: 0; min-width: 0; }
+.companion-panel { flex: 0 0 auto; min-width: 340px; max-width: 75%; border-left: 1px solid var(--border-strong); background: var(--bg); display: flex; flex-direction: column; position: relative; }
+.companion-panel.companion-expanded { position: absolute; inset: 0; width: 100% !important; max-width: none; z-index: 20; }
+.companion-tabs { min-height: 45px; display: flex; align-items: stretch; border-bottom: 1px solid var(--border); background: var(--bg-header); padding: 5px 6px 0; gap: 4px; }
+.companion-tabs span { flex: 1; }
+.companion-tabs button,.companion-open { border: 1px solid var(--border-control); background: transparent; color: var(--text); padding: 7px 12px; border-radius: 6px; cursor: pointer; }
+.companion-tabs button[aria-selected=true] { background: var(--accent-surface); border-color: var(--accent-border); color: var(--accent-text); }
+.companion-body { overflow: auto; flex: 1; min-height: 0; }
+.companion-resize { width: 7px; position: absolute; left: -4px; top: 0; bottom: 0; cursor: col-resize; touch-action: none; z-index: 2; }
+.companion-resize:hover,.companion-resize:focus { background: var(--accent); outline: none; }
+.companion-empty { color: var(--text-dim); padding: 20px; }
+.companion-panel .shared-browser { padding: 12px; }
+.companion-panel .browser-heading { flex-wrap: wrap; gap: 8px; }
+.companion-panel .browser-heading h1 { font-size: 18px; }
+.companion-panel .browser-heading p,.companion-panel .workspace-eyebrow { display: none; }
+.companion-panel .browser-toolbar { margin: 10px 0; gap: 5px; }
+.companion-panel .browser-toolbar input { width: 180px; }
+.companion-panel .shared-browser button { padding: 6px 9px; font-size: 12px; }
+.companion-panel .browser-owner,.companion-panel .browser-hint { font-size: 12px; }
+.companion-panel .browser-empty { min-height: 230px; padding: 20px; }
+@media(max-width:900px) { .companion-panel { position: absolute; inset: 0; width: 100% !important; max-width: none; min-width: 0; z-index: 20; } .companion-resize { display: none; } }

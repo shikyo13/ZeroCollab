@@ -1,0 +1,23 @@
+.shared-browser { padding: 24px; max-width: 1500px; margin: auto; }
+.browser-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.browser-heading h1 { margin: 6px 0; font-size: 26px; }
+.browser-heading p,.browser-hint,.browser-location { color: var(--text-dim); }
+.browser-location { overflow-wrap: anywhere; font-size: 13px; }
+.browser-owner { padding: 8px 14px; border-radius: 20px; border: 1px solid var(--accent-border); background: var(--accent-surface); white-space: nowrap; }
+.browser-toolbar,.browser-type { display: flex; gap: 8px; margin: 16px 0; flex-wrap: wrap; }
+.shared-browser button { padding: 9px 14px; background: var(--bg-elevated); border: 1px solid var(--border-control); border-radius: 6px; color: var(--text); cursor: pointer; }
+.shared-browser button:disabled { opacity: .45; cursor: default; }
+.shared-browser input { background: var(--bg-input); color: var(--text); border: 1px solid var(--border-control); border-radius: 6px; padding: 10px; min-width: 150px; }
+.browser-toolbar input,.browser-type input { flex: 1; }
+.shared-browser .browser-primary { background: var(--accent); color: var(--text-on-accent); }
+.browser-stage { border: 1px solid var(--border-strong); background: var(--bg-input); border-radius: 8px; overflow: hidden; }
+.browser-stage img { width: 100%; display: block; aspect-ratio: 1.6; touch-action: none; }
+.browser-stage img:focus { outline: 3px solid var(--accent); outline-offset: -3px; }
+.browser-empty { min-height: 320px; display: flex; flex-direction: column; justify-content: center; padding: 32px; }
+.browser-empty p { max-width: 650px; color: var(--text-dim); }
+.browser-error,.browser-dialog { padding: 14px; background: var(--warning-surface); border: 1px solid var(--danger-border); border-radius: 6px; display: block; }
+.browser-dialog button { margin: 4px; }
+.browser-events { padding: 14px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; }
+.browser-events ul { max-height: 240px; overflow: auto; padding-left: 20px; overflow-wrap: anywhere; }
+.browser-events time { color: var(--text-dim); }
+@media(max-width:700px) { .shared-browser { padding: 12px; } .browser-heading { align-items: flex-start; flex-direction: column; } }

@@ -1,5 +1,7 @@
 """Run-scoped local coordination tools for official native CLIs."""
 import os
+import base64
+import json
 from pathlib import Path
 
 import httpx
@@ -152,6 +154,34 @@ def room_team_builder(action: str = 'get', proposal_id: str = '', revision: int 
     """
     return call('room_team_builder', dict(action=action, proposal_id=proposal_id,
                                          revision=revision, payload=payload))
+
+
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
+def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
+                 text: str = '', key: str = '', modifiers: int = 0,
+                 x: float | None = None, y: float | None = None, delta: float = 500,
+                 accept: bool = False) -> list:
+    """Use the Browser panel's shared local-preview page. status/inspect/screenshot observe it.
+    claim control before open/click/type/key/scroll/reload/dialog/stop; release when finished.
+    Another agent or the user may own it; never steal control. Agent control expires after 60s.
+    open accepts local http(s) URLs only. inspect returns visible text and numbered element refs;
+    use ref with click/type, or viewport x/y coordinates. type inserts text into the focused field.
+    select chooses an option by ref and text (option value). key accepts Enter, Tab, Backspace, Delete,
+    Escape, arrows, Home/End, PageUp/Down or a (modifiers: Ctrl=2, Shift=8).
+    screenshot returns the same page pixels the user sees. The page uses a temporary profile.
+    """
+    args = dict(action=action, url=url, ref=ref, text=text, key=key, modifiers=modifiers,
+                delta=delta, accept=accept)
+    if x is not None:
+        args['x'] = x
+    if y is not None:
+        args['y'] = y
+    result = call('room_browser', args)
+    pixels = result.pop('image', None)
+    content = [json.dumps(result)]
+    if pixels:
+        content.append(Image(data=base64.b64decode(pixels), format='jpeg'))
+    return content
 
 
 if __name__ == '__main__':
