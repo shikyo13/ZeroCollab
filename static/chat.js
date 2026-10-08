@@ -203,6 +203,9 @@ function windowHistory() {
 function loadOlderMessages() {
     const older = olderHistory.get(activeChannel);
     if (historyLoading || !older?.length) return false;
+    // The reader is going back in time (scroll-up, the bar, or a jump to an earlier message). Stop
+    // following the bottom, or the resize observer pins the view there as the page grows.
+    autoScroll = false;
     const batch = older.splice(-CONFIG.olderBatch);
     const timeline = document.getElementById('timeline');
     const container = document.getElementById('messages');
