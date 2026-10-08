@@ -17,6 +17,7 @@ export default function SidePanel({children, fileView}: Props) {
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<PanelRequest>).detail;
       if (!detail || !['file', 'browser'].includes(detail.tab || '')) return;
+      event.preventDefault(); // Tell the legacy link handler that the panel handled this reference.
       setTab(detail.tab!); setOpen(true);
       if (detail.tab === 'file') setRequest(detail);
     };

@@ -21,13 +21,88 @@ WIDTH, HEIGHT = 1280, 800
 LEASE_SECONDS = 60
 
 
-def preview_url(value):
+class WindowsBrowserProcess:
+    """A suspended launch assigned to a kill-on-close job before it can create children."""
+    def __init__(self, args):
+        import ctypes
+        from ctypes import wintypes as w
+        import _winapi
+        self.api = _winapi
+        self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        class Basic(ctypes.Structure):
+            _fields_ = [('process_time', ctypes.c_int64), ('job_time', ctypes.c_int64),
+                        ('flags', w.DWORD), ('min_working_set', ctypes.c_size_t),
+                        ('max_working_set', ctypes.c_size_t), ('active_processes', w.DWORD),
+                        ('affinity', ctypes.c_size_t), ('priority', w.DWORD), ('scheduling', w.DWORD)]
+        class Limits(ctypes.Structure):
+            _fields_ = [('basic', Basic), ('io', ctypes.c_uint64 * 6),
+                        ('process_memory', ctypes.c_size_t), ('job_memory', ctypes.c_size_t),
+                        ('peak_process_memory', ctypes.c_size_t), ('peak_job_memory', ctypes.c_size_t)]
+        self.kernel.CreateJobObjectW.restype = w.HANDLE
+        self.kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, w.LPCWSTR]
+        self.kernel.SetInformationJobObject.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD]
+        self.kernel.AssignProcessToJobObject.argtypes = [w.HANDLE, w.HANDLE]
+        self.kernel.CloseHandle.argtypes = [w.HANDLE]
+        self.kernel.ResumeThread.argtypes = [w.HANDLE]
+        self.kernel.ResumeThread.restype = w.DWORD
+        self.job = self.kernel.CreateJobObjectW(None, None)
+        self.handle = None
+        if not self.job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = Limits()
+        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        thread = None
+        try:
+            if not self.kernel.SetInformationJobObject(self.job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.handle, thread, self.pid, _ = _winapi.CreateProcess(
+                None, subprocess.list2cmdline(args), None, None, False,
+                subprocess.CREATE_NO_WINDOW | 4, None, None, subprocess.STARTUPINFO())  # CREATE_SUSPENDED
+            if not self.kernel.AssignProcessToJobObject(self.job, self.handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if self.kernel.ResumeThread(thread) == 0xFFFFFFFF:
+                raise ctypes.WinError(ctypes.get_last_error())
+        except Exception:
+            if self.handle:
+                _winapi.TerminateProcess(self.handle, 1)
+            self.close_handles()
+            raise
+        finally:
+            if thread:
+                _winapi.CloseHandle(thread)
+
+    @property
+    def returncode(self):
+        code = self.api.GetExitCodeProcess(self.handle)
+        return None if code == 259 else code  # STILL_ACTIVE
+
+    def terminate(self):
+        self.api.TerminateProcess(self.handle, 1)
+
+    kill = terminate
+
+    async def wait(self):
+        await asyncio.to_thread(self.api.WaitForSingleObject, self.handle, 0xFFFFFFFF)
+        return self.returncode
+
+    def close_handles(self):
+        if self.job:
+            self.kernel.CloseHandle(self.job)  # Also terminates all surviving children.
+            self.job = None
+        if self.handle:
+            self.api.CloseHandle(self.handle)
+            self.handle = None
+
+
+def preview_url(value, blocked_ports=()):
     if not isinstance(value, str) or len(value) > 4096:
         raise ValueError('Enter a local preview URL')
     parsed = urlsplit(value)
     if (parsed.scheme not in ('http', 'https') or parsed.hostname not in ('localhost', '127.0.0.1', '::1')
             or parsed.username or parsed.password):
         raise ValueError('This browser opens local previews: http(s)://localhost, 127.0.0.1 or [::1]')
+    if (parsed.port or (443 if parsed.scheme == 'https' else 80)) in blocked_ports:
+        raise ValueError('The room, MCP and browser-control ports cannot be opened in the shared browser')
     return value
 
 
@@ -48,6 +123,7 @@ class Browser:
         self.runtime = runtime
         self.lock = asyncio.Lock()
         self.proc = self.ws = self.reader = self.profile = None
+        self.page_id = self.page_session = None
         self.pending, self.serial = {}, 0
         self.project = self.owner = self.owner_label = ''
         self.expires = 0
@@ -58,6 +134,11 @@ class Browser:
         self.generation = 0
         self.ref_serial = 0
         self.background = set()
+        cfg = getattr(runtime, 'cfg', {})
+        self.blocked_ports = {int(cfg.get('server', {}).get('port', 8300)),
+                              int(cfg.get('mcp', {}).get('http_port', 8200)),
+                              int(cfg.get('mcp', {}).get('sse_port', 8201))}
+        self.debug_port = None
         self.frame, self.frame_at = b'', 0
         self.width, self.height = WIDTH, HEIGHT
 
@@ -77,6 +158,17 @@ class Browser:
                             waiter.set_result(message.get('result', {}))
                     continue
                 method, p = message.get('method'), message.get('params', {})
+                if method == 'Target.attachedToTarget' and p.get('targetInfo', {}).get('type') == 'page':
+                    if p['targetInfo']['targetId'] != self.page_id:
+                        # Auto-attach pauses new pages before their document can run or navigate.
+                        task = asyncio.create_task(self.close_popup(p['targetInfo']['targetId'], p['sessionId']))
+                        self.background.add(task)
+                        task.add_done_callback(self.background.discard)
+                    else:
+                        self.page_session = p['sessionId']
+                    continue
+                if message.get('sessionId') != self.page_session:
+                    continue
                 if method == 'Page.frameNavigated' and not p.get('frame', {}).get('parentId'):
                     self.url = p['frame']['url']
                     self.generation += 1
@@ -105,28 +197,48 @@ class Browser:
                     waiter.set_exception(ValueError('Browser disconnected; stop and reopen it'))
             self.pending.clear()
 
+    async def close_popup(self, target, session):
+        with contextlib.suppress(ValueError, websockets.ConnectionClosed):
+            # Close before resuming: otherwise its initial navigation may still escape.
+            # Release debugger waits after close so window.open does not stall the opener.
+            await self.command('Network.enable', session=session)
+            await self.command('Network.setBlockedURLs', {'urls': ['*']}, session=session)
+            await self.command('Target.closeTarget', {'targetId': target})
+            with contextlib.suppress(ValueError):
+                await self.command('Runtime.runIfWaitingForDebugger', session=session)
+            await self.command('Runtime.runIfWaitingForDebugger')
+            self.note('navigation', 'Blocked a new browser window; use the shared page')
+
     async def route_document(self, params):
         try:
             url = params['request']['url']
             try:
-                if url != 'about:blank':
-                    preview_url(url)
+                parsed = urlsplit(url)
+                ports = self.blocked_ports | {self.debug_port}
+                # Block admin/control origins for every resource, not only top-level pages.
+                if parsed.hostname in ('localhost', '127.0.0.1', '::1') and (parsed.port or (443 if parsed.scheme == 'https' else 80)) in ports:
+                    raise ValueError('Protected room endpoint')
+                if params.get('resourceType') == 'Document' and url != 'about:blank':
+                    preview_url(url, ports)
             except ValueError:
                 await self.command('Fetch.failRequest', {'requestId': params['requestId'], 'errorReason': 'BlockedByClient'})
-                self.note('navigation', 'Blocked navigation outside local previews')
+                self.note('navigation', 'Blocked protected endpoint or navigation outside local previews')
             else:
                 await self.command('Fetch.continueRequest', {'requestId': params['requestId']})
         except (ValueError, websockets.ConnectionClosed):
             pass
 
-    async def command(self, method, params=None):
+    async def command(self, method, params=None, session=None):
         self.serial += 1
         identifier = self.serial
         waiter = asyncio.get_running_loop().create_future()
         self.pending[identifier] = waiter
         dialog_waiter = None
         try:
-            await self.ws.send(json.dumps({'id': identifier, 'method': method, 'params': params or {}}))
+            message = {'id': identifier, 'method': method, 'params': params or {}}
+            if not method.startswith(('Target.', 'Browser.')):
+                message['sessionId'] = session or self.page_session
+            await self.ws.send(json.dumps(message))
             # Chromium leaves a click pending while its JS alert is open. Return control
             # to the user/agent so it can answer the dialog instead of holding our lock.
             if method.startswith('Input.'):
@@ -158,13 +270,15 @@ class Browser:
         if not binary:
             raise ValueError('Install Microsoft Edge, Google Chrome or Chromium to use the shared browser')
         self.profile = tempfile.TemporaryDirectory(prefix='zerocollab-browser-')
-        opts = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         try:
-            self.proc = await asyncio.create_subprocess_exec(binary, '--headless=new', '--disable-gpu',
+            args = [binary, '--headless=new', '--disable-gpu', '--guest',
                 '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0',
                 '--remote-debugging-address=127.0.0.1', '--disable-background-networking',
-                '--user-data-dir=' + self.profile.name, 'about:blank',
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, **opts)
+                '--block-new-web-contents',
+                '--user-data-dir=' + self.profile.name, 'about:blank']
+            self.proc = (WindowsBrowserProcess(args) if os.name == 'nt' else
+                         await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL,
+                                                              stderr=asyncio.subprocess.DEVNULL))
             marker = Path(self.profile.name) / 'DevToolsActivePort'
             for _ in range(80):
                 if marker.exists():
@@ -175,15 +289,23 @@ class Browser:
             if not marker.exists():
                 raise ValueError('Chromium did not start within 8 seconds')
             port = int(marker.read_text().splitlines()[0])
+            self.debug_port = port
             async with httpx.AsyncClient(trust_env=False, timeout=3) as client:
                 pages = (await client.get(f'http://127.0.0.1:{port}/json/list')).json()
-            page = next(p for p in pages if p['type'] == 'page')
-            self.ws = await websockets.connect(page['webSocketDebuggerUrl'], max_size=8 * 1024 * 1024)
+                version = (await client.get(f'http://127.0.0.1:{port}/json/version')).json()
+            page = next(p for p in pages if p['type'] == 'page' and p['url'] == 'about:blank')
+            self.page_id = page['id']
+            self.ws = await websockets.connect(version['webSocketDebuggerUrl'], max_size=8 * 1024 * 1024)
             self.reader = asyncio.create_task(self.receive())
+            self.page_session = (await self.command('Target.attachToTarget', {'targetId': self.page_id, 'flatten': True}))['sessionId']
+            await self.command('Target.setAutoAttach', {'autoAttach': True, 'waitForDebuggerOnStart': True,
+                'flatten': True, 'filter': [{'type': 'page', 'exclude': False}, {'exclude': True}]})
             self.width, self.height = WIDTH, HEIGHT
             for domain in ('Page', 'Runtime', 'Network'):
                 await self.command(domain + '.enable')
-            await self.command('Fetch.enable', {'patterns': [{'resourceType': 'Document', 'requestStage': 'Request'}]})
+            await self.command('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]})
+            await self.command('Network.setBlockedURLs', {'urls': [f'*://{host}:{p}/*'
+                for host in ('localhost', '127.0.0.1', '[::1]') for p in self.blocked_ports | {port}]})
             await self.command('Emulation.setDeviceMetricsOverride', {'width': WIDTH, 'height': HEIGHT, 'deviceScaleFactor': 1, 'mobile': False})
             await self.command('Page.setInterceptFileChooserDialog', {'enabled': True})
             self.project = self.runtime.identity
@@ -211,10 +333,13 @@ class Browser:
             except asyncio.TimeoutError:
                 self.proc.kill()
                 await self.proc.wait()
+        if isinstance(self.proc, WindowsBrowserProcess):
+            self.proc.close_handles()
         if self.profile:
             with contextlib.suppress(OSError):
                 self.profile.cleanup()
         self.proc = self.ws = self.reader = self.profile = None
+        self.page_id = self.page_session = None
         self.owner = self.owner_label = self.project = self.url = self.title = ''
         self.frame, self.frame_at = b'', 0
         self.dialog = self.file_node = None
@@ -272,7 +397,7 @@ class Browser:
             if action not in ('inspect', 'screenshot'):
                 self.control(actor)
             if action == 'open':
-                url = preview_url(arguments.get('url', ''))
+                url = preview_url(arguments.get('url', ''), self.blocked_ports | {self.debug_port})
                 if not self.status()['running']:
                     await self.close()
                     self.owner, self.owner_label = actor, label

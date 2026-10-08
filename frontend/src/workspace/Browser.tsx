@@ -73,6 +73,13 @@ export default function Browser({ active }: {active: boolean}) {
     return {x: Math.max(0, Math.min(width - 1, (event.clientX - box.left) * width / box.width)),
       y: Math.max(0, Math.min(height - 1, (event.clientY - box.top) * height / box.height))};
   };
+  useEffect(() => {
+    const page = image.current;
+    if (!page || !controlling) return;
+    const wheel = (event: WheelEvent) => {event.preventDefault(); input('scroll', {...point(event), delta: event.deltaY});};
+    page.addEventListener('wheel', wheel, {passive: false});
+    return () => page.removeEventListener('wheel', wheel);
+  }, [frame, controlling]);
   const upload = async (file: File) => {
     if (!state) return;
     setBusy(true);
@@ -88,6 +95,7 @@ export default function Browser({ active }: {active: boolean}) {
   };
 
   return <div className="shared-browser">
+    <div className="browser-controls">
     <div className="browser-heading"><div><span className="workspace-eyebrow">SHARED WORKSPACE</span><h1>Browser</h1>
       <p>One local preview, visible to you and the team.</p></div>
       <span className="browser-owner" role="status">{controlling ? 'You are controlling' : state?.owner ? `${state.owner_label} is controlling` : 'Available to control'}</span>
@@ -100,16 +108,16 @@ export default function Browser({ active }: {active: boolean}) {
       <button type="button" disabled={!controlling || !state?.running || busy} onClick={() => void command('stop')}>Stop browser</button>
       <button type="button" disabled={!controlling || !state?.running || busy} onClick={() => void command('resize', {width: Math.round(image.current?.clientWidth || 720), height: 600})}>Fit page</button>
     </form>
+    </div>
     {error && <p role="alert" className="browser-error">{error}</p>}
     {state?.running && <p className="browser-location">{state.title || 'Shared page'} · {state.url}</p>}
     <div className="browser-stage">
       {state?.running && frame ? <img ref={image} src={frame} style={{aspectRatio: `${state.width}/${state.height}`}} draggable={false} tabIndex={controlling ? 0 : -1}
         alt="Live shared browser page" aria-label="Shared page. Click then type to interact; Tab navigates page fields. Escape exits the page."
-        onPointerDown={e => {if (!controlling) return; e.preventDefault(); e.currentTarget.focus(); e.currentTarget.setPointerCapture(e.pointerId); dragging.current = true; input('pointer', {...point(e), phase: 'mousePressed'});}}
+        onPointerDown={e => {if (!controlling || e.button !== 0) return; e.preventDefault(); e.currentTarget.focus(); e.currentTarget.setPointerCapture(e.pointerId); dragging.current = true; input('pointer', {...point(e), phase: 'mousePressed'});}}
         onPointerUp={e => {if (!dragging.current) return; dragging.current = false; input('pointer', {...point(e), phase: 'mouseReleased'});}}
         onPointerCancel={() => {dragging.current = false; input('pointer', {x: 0, y: 0, phase: 'mouseReleased'});}}
         onPointerMove={e => {if (controlling && dragging.current && Date.now() - lastMove.current > 60) {lastMove.current = Date.now(); input('pointer', {...point(e), phase: 'mouseMoved'});}}}
-        onWheel={e => {if (controlling) input('scroll', {...point(e), delta: e.deltaY});}}
         onPaste={e => {if (controlling) {e.preventDefault(); input('type', {text: e.clipboardData.getData('text')});}}}
         onKeyDown={e => {
           if (!controlling) return;

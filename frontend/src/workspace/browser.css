@@ -1,4 +1,5 @@
 .shared-browser { padding: 24px; max-width: 1500px; margin: auto; }
+.browser-controls { position: sticky; top: 0; z-index: 1; background: var(--bg); padding-top: 1px; border-bottom: 1px solid var(--border); }
 .browser-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .browser-heading h1 { margin: 6px 0; font-size: 26px; }
 .browser-heading p,.browser-hint,.browser-location { color: var(--text-dim); }

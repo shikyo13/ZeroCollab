@@ -164,7 +164,8 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
     """Use the Browser panel's shared local-preview page. status/inspect/screenshot observe it.
     claim control before open/click/type/key/scroll/reload/dialog/stop; release when finished.
     Another agent or the user may own it; never steal control. Agent control expires after 60s.
-    open accepts local http(s) URLs only. inspect returns visible text and numbered element refs;
+    open accepts local http(s) previews, excluding room and control ports. Pop-ups are blocked.
+    inspect writes data-room-ref attributes on page elements and returns visible text and refs;
     use ref with click/type, or viewport x/y coordinates. type inserts text into the focused field.
     select chooses an option by ref and text (option value). key accepts Enter, Tab, Backspace, Delete,
     Escape, arrows, Home/End, PageUp/Down or a (modifiers: Ctrl=2, Shift=8).
