@@ -274,7 +274,8 @@
 }
 
 .bd-detail-resize { position: sticky; top: 0; z-index: 3; align-self: stretch; flex-shrink:0; padding: 4px 12px; background: var(--bd-surface-2); color: var(--bd-muted); cursor: ew-resize; touch-action: none; text-align: center; font-size:12px; user-select:none; }
-.bd-detail-head { top: 26px; }
+/* Only the task detail has the sticky resize bar to clear; the Team activity rail shares .bd-detail-head without it. */
+.bd-detail-resize + .bd-detail-head { top: 26px; }
 .bd-image-open { padding:0; border:0; background:transparent; cursor:zoom-in; }
 .bd-image-notes summary { cursor:pointer; font-size:12px; color:var(--bd-accent); }
 .bd-image-notes .bd-gallery-note { display:block; overflow:visible; -webkit-line-clamp:unset; margin-top:8px; }
@@ -285,7 +286,7 @@
 .bd-image-viewer-content { display:grid;grid-template-columns:minmax(0,1fr) 320px;height:calc(100% - 72px); }
 .bd-image-canvas { overflow:auto;display:grid;place-items:center;background:var(--bg);padding:16px; }.bd-image-canvas img { max-width:100%;max-height:100%;object-fit:contain; }
 .bd-image-viewer-content aside {overflow:auto;padding:20px;border-left:1px solid var(--border-control);}.bd-image-viewer-content p {white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;font-size:14px;}.bd-image-viewer-content a {display:block;margin:20px 0;color:var(--accent-text);}
-@media(max-width:720px){.bd-image-viewer-content{grid-template-columns:1fr;grid-template-rows:minmax(220px,1fr) minmax(160px,.6fr);}.bd-image-viewer-content aside{border-left:0;border-top:1px solid var(--border-control);}.bd-detail-resize{display:none;}.bd-detail-head{top:0;}}
+@media(max-width:720px){.bd-image-viewer-content{grid-template-columns:1fr;grid-template-rows:minmax(220px,1fr) minmax(160px,.6fr);}.bd-image-viewer-content aside{border-left:0;border-top:1px solid var(--border-control);}.bd-detail-resize{display:none;}.bd-detail-resize + .bd-detail-head{top:0;}}
 
 /* Execution and evidence facts in the task detail. */
 .bd-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
