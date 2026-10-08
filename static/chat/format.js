@@ -72,33 +72,104 @@ async function detectPlatform() {
     } catch (e) { /* fallback to win32 */ }
 }
 
-function linkifyPaths(html) {
-    // Windows paths: E:\foo\bar or E:/foo/bar
-    html = html.replace(/(?<!["=\/])([A-Z]):[\\\/][\w\-.\\ \/]+/g, (match) => {
-        const escaped = match.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-        return `<a class="file-link" href="#" onclick="openPath('${escaped}'); return false;" title="Open in file manager">${match}</a>`;
-    });
-    // Unix paths: /Users/..., /home/..., /tmp/..., /opt/..., /var/..., /etc/...
-    if (serverPlatform !== 'win32') {
-        html = html.replace(/(?<!["=\w])(\/(?:Users|home|tmp|opt|var|etc|usr)\/[\w\-.\/ ]+)/g, (match) => {
-            const escaped = match.replace(/'/g, "\\'");
-            return `<a class="file-link" href="#" onclick="openPath('${escaped}'); return false;" title="Open in file manager">${match}</a>`;
-        });
-    }
-    return html;
+// --- File references ---
+// Absolute paths (C:/x/y.py, /home/x/y.py, MSYS /c/x), repository paths (static/chat.js:42) and
+// file names (app.py) become links that open the file in the workspace side panel. Plain text
+// stops a path at whitespace; inline code may hold an absolute path with spaces.
+const FILE_EXTS = 'py|pyi|js|mjs|cjs|ts|tsx|jsx|css|scss|html|md|json|jsonl|toml|yaml|yml|ini|cfg|txt|ps1|psm1|sh|bat|cmd|cs|csproj|sln|go|rs|java|kt|c|h|cpp|hpp|rb|php|sql|lua|gd|tscn|tres|xml|svg|lock|log';
+const FILE_SEG = String.raw`\.?[\w-]+(?:\.[\w-]+)*`;  // never ends in a sentence's full stop
+// Folders of an absolute Windows path may hold spaces (Program Files (x86), Microsoft VS Code); the file name may not.
+const FILE_DIR = String.raw`\.?[\w-]+(?:[. ]\(?[\w-]+\)?)*`;
+const FILE_LINE = String.raw`(?::\d+(?:-\d+|:\d+)?|#L\d+(?:-L?\d+)?)?`;
+const FILE_REF = new RegExp(String.raw`(?<![\w./\\:@-])(?:` +
+    String.raw`(?<abs>[A-Za-z]:[\\/](?:${FILE_DIR}[\\/])*${FILE_SEG}` +
+    String.raw`|/(?:[A-Za-z]|Users|home|tmp|opt|var|etc|usr|mnt)/(?:${FILE_SEG}/)*${FILE_SEG})` +
+    String.raw`|(?<rel>(?:${FILE_SEG}/)+[\w-]+(?:\.[\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,7})` +
+    String.raw`|(?<bare>[\w-]+(?:\.[\w-]+)*\.(?:${FILE_EXTS}))` +
+    String.raw`)(?<line>${FILE_LINE})(?![\w/\\])`, 'g');
+// Inline code that is a single absolute path, spaces allowed: `C:\Program Files\x\y.exe`.
+const CODE_ABS_REF = new RegExp(String.raw`^(?:[A-Za-z]:[\\/]|/(?:[A-Za-z]|Users|home|tmp|opt|var|etc|usr|mnt)/)[^\n<>"|?*]*?${FILE_LINE}$`);
+
+function fileRefLink(ref, text) {
+    const a = document.createElement('a');
+    a.className = 'file-link file-ref';
+    a.href = '#';
+    a.dataset.ref = ref;
+    a.title = 'Open ' + ref;
+    a.textContent = text;
+    return a;
 }
 
-async function openPath(path) {
-    try {
-        await fetch('/api/open-path', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
-            body: JSON.stringify({ path: path }),
-        });
-    } catch (err) {
-        console.error('Failed to open path:', err);
+// Replace file references in one text node; inCode accepts capitalised bare names such as README.md.
+function linkifyFileText(node, inCode) {
+    const text = node.nodeValue;
+    const parts = [];
+    let last = 0;
+    for (const m of text.matchAll(FILE_REF)) {
+        // In prose, a bare name needs to look like a file: lowercase (app.py) or with a line (Board.tsx:12).
+        if (m.groups.bare && !inCode && !m.groups.line && /[A-Z]/.test(m.groups.bare)) continue;
+        parts.push(text.slice(last, m.index), fileRefLink(m[0], m[0]));
+        last = m.index + m[0].length;
+    }
+    if (!parts.length) return;
+    parts.push(text.slice(last));
+    node.replaceWith(...parts.filter(p => p !== ''));
+}
+
+function linkifyPaths(html) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    for (const code of tpl.content.querySelectorAll('code')) {
+        if (code.closest('pre, a')) continue;
+        const text = code.textContent.trim();
+        if (CODE_ABS_REF.test(text) && !/\s-/.test(text)) {
+            code.replaceChildren(fileRefLink(text, code.textContent));
+        }
+    }
+    const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT, {
+        acceptNode: n => n.parentElement?.closest('a, pre') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) linkifyFileText(node, !!node.parentElement?.closest('code'));
+    return tpl.innerHTML;
+}
+
+// The workspace side panel claims the event (preventDefault); without it, open the file in the editor.
+function openFileRef(link) {
+    const message = link.closest('.message');
+    const id = message ? Number(message.dataset.id) : null;
+    const detail = {
+        tab: 'file',
+        ref: link.dataset.ref,
+        sender: message?.dataset.sender || '',
+        messageId: id,
+        time: messageIndex.get(id)?.timestamp || null,
+    };
+    if (window.dispatchEvent(new CustomEvent('workspace-side-panel', { detail, cancelable: true }))) {
+        openFileExternally(detail, 'editor');
     }
 }
+
+async function openFileExternally(detail, target) {
+    try {
+        const r = await fetch('/api/file-view/open', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
+            body: JSON.stringify({ ref: detail.ref, sender: detail.sender, root: detail.root, target }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    } catch (err) {
+        console.error('Failed to open file:', err);
+    }
+}
+
+document.addEventListener('click', (e) => {
+    const link = e.target.closest?.('a.file-ref');
+    if (!link) return;
+    e.preventDefault();
+    openFileRef(link);
+});
 
 function addCodeCopyButtons(container) {
     const blocks = container.querySelectorAll('pre');

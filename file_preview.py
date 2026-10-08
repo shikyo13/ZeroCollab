@@ -89,7 +89,8 @@ def _git_or_none(root, *args):
 
 
 def _private(rel):
-    return any(part.lower() in PRIVATE_PARTS for part in PurePosixPath(rel).parts)
+    """Same boundary as room_runtime.scoped_path: tool folders, Git metadata and .env files."""
+    return any(part.lower() in PRIVATE_PARTS or part.lower().startswith('.env.') for part in PurePosixPath(rel).parts)
 
 
 def _inside(path, root):
@@ -117,18 +118,25 @@ def resolve(ref, roots, root_index=None):
     """Find the referenced file. Returns a dict whose 'kind' is ok, ambiguous, missing or outside."""
     path, start, end = parse_ref(ref)
     lines = {'start': start, 'end': end}
+    if _private(path):
+        raise FileViewError('Private tool and credential folders are not shown')
+    if ':' in re.sub(r'^[A-Za-z]:', '', path):
+        raise FileViewError('Alternate data streams are not shown')
+    # Keep each root's position in the full list, so a chosen copy is reopened as the same copy.
+    indexed = list(enumerate(roots))
     if root_index is not None:
         if not 0 <= root_index < len(roots):
             raise FileViewError('That copy of the code is no longer available')
-        roots = [roots[root_index]]
+        indexed = [indexed[root_index]]
+    labels = [label for _, (label, _) in indexed]
     absolute = re.match(r'^[A-Za-z]:/', path) or path.startswith('/')
     if absolute:
         target = Path(path).resolve()
-        for index, (label, root) in enumerate(roots):
+        for index, (label, root) in indexed:
             if _inside(target, root):
                 return _found(label, root, target.relative_to(root).as_posix(), index, lines)
         if not target.is_file():
-            return {'kind': 'missing', 'path': path, **lines, 'searched': [label for label, _ in roots]}
+            return {'kind': 'missing', 'path': path, **lines, 'searched': labels, 'directory': target.is_dir()}
         tracked = _tracked_root(target)
         if tracked:
             return _found(f'repository {tracked[0].name}', tracked[0], tracked[1], None, lines)
@@ -139,13 +147,13 @@ def resolve(ref, roots, root_index=None):
     if '..' in rel.parts:
         raise FileViewError('References may not leave the repository')
     if len(rel.parts) > 1:
-        for index, (label, root) in enumerate(roots):
+        for index, (label, root) in indexed:
             target = (root / rel).resolve()
             if _inside(target, root) and target.is_file():
                 return _found(label, root, target.relative_to(root).as_posix(), index, lines)
     else:
         # A bare file name: the first copy of the code that has it decides; several matches there are listed.
-        for index, (label, root) in enumerate(roots):
+        for index, (label, root) in indexed:
             listed = _git_or_none(root, 'ls-files', '--cached', '--others', '--exclude-standard', '--',
                                   ':(glob)**/' + rel.name)
             matches = sorted({line for line in (listed or '').splitlines() if line and not _private(line)})
@@ -154,14 +162,18 @@ def resolve(ref, roots, root_index=None):
             if matches:
                 return {'kind': 'ambiguous', 'path': path, **lines, 'root_label': label, 'root_index': index,
                         'candidates': matches[:MAX_CANDIDATES], 'more': max(0, len(matches) - MAX_CANDIDATES)}
-    return {'kind': 'missing', 'path': path, **lines, 'searched': [label for label, _ in roots]}
+    return {'kind': 'missing', 'path': path, **lines, 'searched': labels}
 
 
 def _found(label, root, rel, index, lines):
-    if _private(rel):
+    # resolve() follows symlinks and junctions, including parent directories; check where it really lands.
+    target = (root / rel).resolve()
+    if not _inside(target, root):
+        raise FileViewError('That file links outside its repository')
+    if _private(rel) or _private(target.relative_to(root).as_posix()):
         raise FileViewError('Private tool and credential folders are not shown')
     return {'kind': 'ok', 'root_label': label, 'root': str(root), 'root_index': index,
-            'path': rel, 'absolute': str((root / rel).resolve()), **lines}
+            'path': rel, 'absolute': str(target), **lines}
 
 
 def _text(data):
@@ -199,9 +211,10 @@ def view(found, message_time=None, at=None):
         if message_time and stat.st_mtime > float(message_time) + 1:
             result['changed_since_message'] = True
             if in_git:
-                # The committed version as of the message; uncommitted edits from then are not recoverable.
+                # Only an inference: the last commit on the current branch dated before the message. The sender
+                # may have meant another branch or uncommitted edits, and commit dates can be rewritten.
                 before = _git_or_none(root, 'rev-list', '-1', f'--before=@{int(float(message_time))}', 'HEAD', '--', rel)
-                result['at_message'] = (before or '')[:12] or None
+                result['committed_before_message'] = (before or '')[:12] or None
     text = _text(data[:MAX_BYTES])
     if text is None:
         result.update(binary=True, text='')
@@ -231,18 +244,15 @@ def open_externally(found, target, line=None):
         raise FileViewError('The file no longer exists')
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     if target == 'editor':
+        # Never fall back to the file's default association: for .py, .cmd or .exe that runs the file.
         code = shutil.which('code')
-        if code:
-            if CMD_UNSAFE & set(str(path)):
-                raise FileViewError('This path has characters the editor launcher cannot pass safely; use Show in Explorer')
-            subprocess.Popen([code, '-g', f'{path}:{int(line or 1)}'], creationflags=flags,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return 'VS Code'
-        if os.name == 'nt':
-            os.startfile(path)  # noqa: S606 - the file's default application, chosen by the user's OS.
-            return 'default application'
-        subprocess.Popen(['open' if sys.platform == 'darwin' else 'xdg-open', str(path)])
-        return 'default application'
+        if not code:
+            raise FileViewError('VS Code was not found on this computer; use Show in Explorer')
+        if CMD_UNSAFE & set(str(path)):
+            raise FileViewError('This path has characters the editor launcher cannot pass safely; use Show in Explorer')
+        subprocess.Popen([code, '-g', f'{path}:{int(line or 1)}'], creationflags=flags,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return 'VS Code'
     if target == 'explorer':
         if os.name == 'nt':
             subprocess.Popen(['explorer', '/select,', str(path)])

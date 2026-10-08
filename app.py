@@ -1332,7 +1332,7 @@ async def file_view_open(body: dict):
         found = _resolve_file_ref(str(body.get("ref", "")), str(body.get("sender", "")), body.get("root"))
         if found["kind"] != "ok":
             raise file_preview.FileViewError("The file could not be found")
-        return file_preview.open_externally(found, body.get("target"), body.get("line"))
+        return file_preview.open_externally(found, body.get("target"), body.get("line") or found.get("start"))
     try:
         return JSONResponse({"ok": True, "opened_with": await asyncio.to_thread(work)})
     except (file_preview.FileViewError, ValueError, OSError) as exc:
