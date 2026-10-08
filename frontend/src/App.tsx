@@ -9,6 +9,7 @@ import { legacy } from './legacy';
 import { WorkControls } from './components/WorkControls';
 import Projects from './workspace/Projects';
 import SidePanel from './sidepanel/SidePanel';
+import FileView from './sidepanel/FileView';
 import { ProjectSwitcher } from './workspace/ProjectSwitcher';
 import { useProjects } from './workspace/projectData';
 import { useWorkspaceRoute, type View } from './workspace/useWorkspaceRoute';
@@ -52,7 +53,7 @@ export default function App() {
       <WorkControls navigate={navigate} />
       <DeploymentNotice feed={deployments} onOpen={() => navigate('activity')} />
       <WelcomeBar onHelp={openHelp} />
-      <SidePanel><main id="workspace-content" className="workspace-content" tabIndex={-1}>
+      <SidePanel fileView={(request, active, close) => <FileView request={request} active={active} onClose={close} />}><main id="workspace-content" className="workspace-content" tabIndex={-1}>
         <section className="workspace-projects" hidden={view !== 'projects'} aria-label="Projects"><Projects {...projects} focus={focus} setFocus={setFocus} navigate={navigate} /></section>
         <section className="workspace-chat" hidden={view !== 'chat'} aria-label="Shared chat"><LegacySlot node={legacy.chat} className="workspace-chat-slot" /></section>
         <section className="workspace-board" hidden={view !== 'board'} aria-label="Task board"><Board /></section>
