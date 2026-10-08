@@ -5,6 +5,8 @@
 .companion-tabs span { flex: 1; }
 .companion-tabs button,.companion-open { border: 1px solid var(--border-control); background: transparent; color: var(--text); padding: 7px 12px; border-radius: 6px; cursor: pointer; }
 .companion-tabs button[aria-selected=true] { background: var(--accent-surface); border-color: var(--accent-border); color: var(--accent-text); }
+.companion-open { max-width: 310px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.companion-open.companion-active { border-color: var(--accent-border); color: var(--accent-text); background: var(--accent-surface); }
 .companion-body { overflow: auto; flex: 1; min-height: 0; }
 .companion-resize { width: 7px; position: absolute; left: -4px; top: 0; bottom: 0; cursor: col-resize; touch-action: none; z-index: 2; }
 .companion-resize:hover,.companion-resize:focus { background: var(--accent); outline: none; }

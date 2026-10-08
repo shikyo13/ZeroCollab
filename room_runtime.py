@@ -1169,7 +1169,17 @@ class RoomRuntime:
         run.touch()
         run.coordination_calls += 1
         if tool == 'room_browser':
-            return await self.browser.act(run.id, run.name, arguments)
+            action = arguments.get('action', 'status')
+            if action == 'status':
+                return await self.browser.act(run.id, run.name, arguments)
+            await self.browser.publish_activity(run.id, run.name, action, 'working')
+            try:
+                result = await self.browser.act(run.id, run.name, arguments)
+            except Exception:
+                await self.browser.publish_activity(run.id, run.name, action, 'failed')
+                raise
+            await self.browser.publish_activity(run.id, run.name, action, 'done')
+            return {**result, 'activity': self.browser.activity}
         if tool == 'room_team_builder':
             action = arguments.get('action', 'get')
             if action == 'get':

@@ -141,6 +141,13 @@ class Browser:
         self.debug_port = None
         self.frame, self.frame_at = b'', 0
         self.width, self.height = WIDTH, HEIGHT
+        self.activity = None
+
+    async def publish_activity(self, actor, label, action, phase):
+        # Only action metadata is broadcast, never typed text, DOM contents or pixels.
+        self.activity = {'actor': actor, 'label': label, 'action': action,
+                         'phase': phase, 'time': time.time()}
+        await self.runtime.emit('browser_activity', self.status())
 
     def note(self, kind, text):
         self.events.append({'time': time.time(), 'kind': kind, 'text': str(text)[:500]})
@@ -341,6 +348,7 @@ class Browser:
         self.proc = self.ws = self.reader = self.profile = None
         self.page_id = self.page_session = None
         self.owner = self.owner_label = self.project = self.url = self.title = ''
+        self.activity = None
         self.frame, self.frame_at = b'', 0
         self.dialog = self.file_node = None
         self.dialog_event.clear()
@@ -357,7 +365,8 @@ class Browser:
                 'owner': self.owner, 'owner_label': self.owner_label,
                 'lease_seconds': max(0, int(self.expires - time.monotonic())) if self.owner != 'user' else None,
                 'width': self.width, 'height': self.height, 'generation': self.generation,
-                'events': list(self.events), 'dialog': self.dialog, 'file_chooser': bool(self.file_node)}
+                'events': list(self.events), 'dialog': self.dialog, 'file_chooser': bool(self.file_node),
+                'activity': self.activity}
 
     def control(self, actor):
         self.expire()
@@ -508,7 +517,9 @@ def install(host, runtime):
                 raise ValueError('Browser arguments must be an object')
             if body.get('project') != runtime.identity:
                 return JSONResponse({'error': 'Project changed; reload the browser view'}, 409)
-            return await browser.act('user', 'You', body)
+            result = await browser.act('user', 'You', body)
+            await browser.publish_activity('user', 'You', body.get('action', 'status'), 'done')
+            return {**result, 'activity': browser.activity}
         except (ValueError, TypeError, OSError) as exc:
             return JSONResponse({'error': str(exc)}, 400)
 

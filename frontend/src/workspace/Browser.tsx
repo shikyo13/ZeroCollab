@@ -1,13 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { runtime, sessionToken, errorMessage } from '../lib/api';
+import { useRoomEvent } from '../lib/room';
 import './browser.css';
 
-type BrowserState = {
+export type BrowserState = {
   running: boolean; project: string; url: string; title: string; owner: string; owner_label: string;
   width: number; height: number; lease_seconds: number | null;
   events: {time: number; kind: string; text: string}[];
   dialog: {type: string; message: string} | null; file_chooser: boolean;
+  activity?: {actor: string; label: string; action: string; phase: string; time: number} | null;
 };
+
+export function activityLabel(state?: BrowserState): string {
+  if (!state) return 'Browser';
+  const a = state.activity;
+  const actions: Record<string, string> = {claim: 'Taking control', open: 'Opening page', inspect: 'Reading page', screenshot: 'Viewing page', click: 'Clicking', type: 'Typing', key: 'Using keyboard', scroll: 'Scrolling', select: 'Selecting', reload: 'Reloading', dialog: 'Answering dialog', release: 'Released control', stop: 'Stopped browser'};
+  if (a && Date.now() / 1000 - a.time < 30) {
+    const action = actions[a.action] || 'Using browser';
+    return `${a.label} · ${a.phase === 'failed' ? 'Action failed' : a.phase === 'working' ? action : 'Last: ' + action.toLowerCase()}`;
+  }
+  return state.owner ? `${state.owner_label} controls browser` : state.running ? 'Shared browser open' : 'Open browser';
+}
 
 export default function Browser({ active }: {active: boolean}) {
   const [state, setState] = useState<BrowserState>();
@@ -23,15 +36,19 @@ export default function Browser({ active }: {active: boolean}) {
   const dragging = useRef(false);
   const lastMove = useRef(0);
   const addressEditing = useRef(false);
+  const refreshFrame = useRef<() => void>(() => undefined);
   stateRef.current = state;
   const controlling = state?.owner === 'user';
   useEffect(() => {if (state?.url && !addressEditing.current) setAddress(state.url);}, [state?.url]);
+  useRoomEvent<BrowserState>('browser_activity', event => {setState(event.data); refreshFrame.current();});
 
   useEffect(() => {
     if (!active) return;
-    let stopped = false, timer: ReturnType<typeof setTimeout>, objectUrl = '';
+    let stopped = false, polling = false, refreshPending = false, timer: ReturnType<typeof setTimeout>, objectUrl = '';
     const abort = new AbortController();
     async function poll() {
+      if (polling) {refreshPending = true; return;}
+      polling = true;
       try {
         const next = await runtime<BrowserState>('/browser');
         if (stopped) return;
@@ -47,10 +64,11 @@ export default function Browser({ active }: {active: boolean}) {
           }
         } else { setFrame(''); }
       } catch (e) { if (!stopped) setError(errorMessage(e)); }
-      finally { if (!stopped) timer = setTimeout(poll, 650); }
+      finally { polling = false; if (!stopped) {timer = setTimeout(poll, refreshPending ? 0 : 650); refreshPending = false;} }
     }
+    refreshFrame.current = () => {clearTimeout(timer); void poll();};
     void poll();
-    return () => { stopped = true; abort.abort(); clearTimeout(timer); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+    return () => { stopped = true; refreshFrame.current = () => undefined; abort.abort(); clearTimeout(timer); if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [active]);
 
   const send = useCallback(async (action: string, args: Record<string, unknown> = {}) => {
@@ -108,6 +126,7 @@ export default function Browser({ active }: {active: boolean}) {
       <button type="button" disabled={!controlling || !state?.running || busy} onClick={() => void command('stop')}>Stop browser</button>
       <button type="button" disabled={!controlling || !state?.running || busy} onClick={() => void command('resize', {width: Math.round(image.current?.clientWidth || 720), height: 600})}>Fit page</button>
     </form>
+    <p className="browser-live-activity" role="status">{activityLabel(state)}</p>
     </div>
     {error && <p role="alert" className="browser-error">{error}</p>}
     {state?.running && <p className="browser-location">{state.title || 'Shared page'} · {state.url}</p>}
