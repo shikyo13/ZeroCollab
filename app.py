@@ -1292,6 +1292,53 @@ async def open_path(body: dict):
     return JSONResponse({"ok": True})
 
 
+def _file_view_roots(sender: str):
+    """Where a chat file reference may point: the sender's worktrees, the project repositories, other worktrees."""
+    import file_preview
+    import project_registry
+    runtime = _runtime()
+    if not runtime:
+        return []
+    return file_preview.candidate_roots(sender, runtime.states, project_registry.repositories(runtime))
+
+
+def _resolve_file_ref(ref: str, sender: str, root):
+    import file_preview
+    found = file_preview.resolve(ref, _file_view_roots(sender), None if root in (None, '') else int(root))
+    return found
+
+
+@app.get("/api/file-view")
+async def file_view(ref: str, sender: str = "", message_time: float = 0, at: str = "", root: str = ""):
+    """A file referenced in chat, read-only and size-bounded, with the Git context it came from."""
+    import file_preview
+
+    def work():
+        found = _resolve_file_ref(ref, sender, root)
+        return file_preview.view(found, message_time or None, at or None) if found["kind"] == "ok" else found
+    try:
+        return JSONResponse(await asyncio.to_thread(work))
+    except (file_preview.FileViewError, ValueError) as exc:
+        return JSONResponse({"kind": "error", "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/file-view/open")
+async def file_view_open(body: dict):
+    """Open a chat file reference in VS Code at its line, or reveal it in the file manager.
+    The server resolves the reference again; it never opens a path the browser supplies directly."""
+    import file_preview
+
+    def work():
+        found = _resolve_file_ref(str(body.get("ref", "")), str(body.get("sender", "")), body.get("root"))
+        if found["kind"] != "ok":
+            raise file_preview.FileViewError("The file could not be found")
+        return file_preview.open_externally(found, body.get("target"), body.get("line"))
+    try:
+        return JSONResponse({"ok": True, "opened_with": await asyncio.to_thread(work)})
+    except (file_preview.FileViewError, ValueError, OSError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
 # Serve uploaded images
 @app.get("/uploads/{filename}")
 async def serve_upload(filename: str):
