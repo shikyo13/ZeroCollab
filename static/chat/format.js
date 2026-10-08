@@ -84,7 +84,7 @@ const FILE_LINE = String.raw`(?::\d+(?:-\d+|:\d+)?|#L\d+(?:-L?\d+)?)?`;
 const FILE_REF = new RegExp(String.raw`(?<![\w./\\:@-])(?:` +
     String.raw`(?<abs>[A-Za-z]:[\\/](?:${FILE_DIR}[\\/])*${FILE_SEG}` +
     String.raw`|/(?:[A-Za-z]|Users|home|tmp|opt|var|etc|usr|mnt)/(?:${FILE_SEG}/)*${FILE_SEG})` +
-    String.raw`|(?<rel>(?:${FILE_SEG}/)+[\w-]+(?:\.[\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,7})` +
+    String.raw`|(?<rel>(?:\.?[\w-]+/)+[\w-]+(?:\.[\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,7})` +
     String.raw`|(?<bare>[\w-]+(?:\.[\w-]+)*\.(?:${FILE_EXTS}))` +
     String.raw`)(?<line>${FILE_LINE})(?![\w/\\])`, 'g');
 // Inline code that is a single absolute path, spaces allowed: `C:\Program Files\x\y.exe`.

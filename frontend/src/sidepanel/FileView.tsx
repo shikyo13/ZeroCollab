@@ -151,7 +151,7 @@ export default function FileView({ request, active }: Props) {
   const linkedFrom = [sender && `linked from ${sender}`, messageTime(time)].filter(Boolean).join(', ');
 
   return <div className="fileview">
-    <header className="fileview-head">
+    <div className="fileview-head">
       <h2><span>{result.path}</span>{start && <small>{lineSuffix({ start, end })}</small>}</h2>
       <p className="fileview-meta">
         <span>{result.root_label}</span>
@@ -159,7 +159,7 @@ export default function FileView({ request, active }: Props) {
         <span className={`fileview-badge fileview-${result.state.replace(/\s+/g, '-')}`}>{result.source === 'revision' ? `commit ${result.at}` : result.state}</span>
         {linkedFrom && <span>{linkedFrom}</span>}
       </p>
-    </header>
+    </div>
     {result.source === 'revision'
       ? <div className="fileview-banner">
           Showing commit {result.at}: the last commit before the message, inferred from commit dates.
