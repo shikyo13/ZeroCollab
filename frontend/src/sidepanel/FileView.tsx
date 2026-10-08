@@ -82,7 +82,8 @@ export default function FileView({ request, active }: Props) {
   }, [result]);
 
   if (!request) return <div className="fileview-empty">Click a file name in a chat message to open it here.</div>;
-  if (!result || (loading && result.kind !== 'ok')) return <div className="fileview-empty">Opening {ref}...</div>;
+  // While a new reference or revision loads, the previous file's actions would act on the new reference: show nothing stale.
+  if (!result || loading) return <div className="fileview-empty">Opening {ref}...</div>;
 
   async function open(target: 'editor' | 'explorer') {
     setNotice('');

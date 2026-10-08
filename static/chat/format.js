@@ -116,9 +116,31 @@ function linkifyFileText(node, inCode) {
     node.replaceWith(...parts.filter(p => p !== ''));
 }
 
+// The file reference a Markdown link points at ([app](app.py:12), [x](C:/repo/x.py), file:///...), or null
+// for web, mail, in-page, upload and API links.
+function localLinkRef(href) {
+    let ref = (href || '').trim();
+    if (!ref || /^(https?:|mailto:|#|\/uploads\/|\/api\/|\/static\/)/i.test(ref)) return null;
+    ref = ref.replace(/^file:\/\/(localhost)?\/(?=[A-Za-z]:)/i, '').replace(/^file:\/\/(localhost)?(?=\/)/i, '');
+    try { ref = decodeURI(ref); } catch { /* keep it encoded */ }
+    if (/^[a-z][\w+.-]*:\/\//i.test(ref)) return null;  // any other scheme
+    if (CODE_ABS_REF.test(ref)) return ref;
+    const match = [...ref.matchAll(FILE_REF)];
+    return match.length === 1 && match[0][0] === ref ? ref : null;
+}
+
 function linkifyPaths(html) {
     const tpl = document.createElement('template');
     tpl.innerHTML = html;
+    for (const a of tpl.content.querySelectorAll('a[href]')) {
+        const ref = localLinkRef(a.getAttribute('href'));
+        if (!ref) continue;
+        a.className = 'file-link file-ref';
+        a.dataset.ref = ref;
+        a.title = 'Open ' + ref;
+        a.setAttribute('href', '#');
+        a.removeAttribute('target');
+    }
     for (const code of tpl.content.querySelectorAll('code')) {
         if (code.closest('pre, a')) continue;
         const text = code.textContent.trim();
