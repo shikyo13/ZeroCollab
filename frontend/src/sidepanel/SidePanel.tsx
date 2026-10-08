@@ -18,6 +18,8 @@ export default function SidePanel({children, fileView}: Props) {
   const [browserState, setBrowserState] = useState<BrowserState>();
   const browserButton = useRef<HTMLButtonElement | null>(null);
   const seenRuns = useRef(new Set<string>());
+  const panelState = useRef({open, tab});
+  panelState.current = {open, tab};
   const receiveBrowser = useCallback((state: BrowserState) => {
     setBrowserState(state);
     const activity = state.activity;
@@ -25,7 +27,10 @@ export default function SidePanel({children, fileView}: Props) {
     const recent = Date.now() / 1000 - activity.time < 20 || state.owner === activity.actor;
     const key = `${state.project}:${activity.actor}`;
     if (recent && !seenRuns.current.has(key) && (state.running || ['claim', 'open'].includes(activity.action))) {
-      seenRuns.current.add(key); setTab('browser'); setOpen(true);
+      seenRuns.current.add(key);
+      if (!(panelState.current.open && panelState.current.tab === 'file')) {
+        setTab('browser'); setOpen(true);
+      }
     }
   }, []);
   useRoomEvent<BrowserState>('browser_activity', event => receiveBrowser(event.data));

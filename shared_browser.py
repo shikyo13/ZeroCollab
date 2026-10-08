@@ -144,7 +144,7 @@ class Browser:
         self.activity = None
 
     async def publish_activity(self, actor, label, action, phase):
-        # Only action metadata is broadcast, never typed text, DOM contents or pixels.
+        # Broadcast existing observer status plus action metadata, not action arguments or screenshots.
         self.activity = {'actor': actor, 'label': label, 'action': action,
                          'phase': phase, 'time': time.time()}
         await self.runtime.emit('browser_activity', self.status())
