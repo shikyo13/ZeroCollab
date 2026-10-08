@@ -14,12 +14,16 @@ function renderMarkdown(text) {
     // can't break layout or cause XSS, while preserving angle brackets
     // inside backtick-delimited code where users expect them to render.
     // Protect fenced code blocks and inline code by replacing them with placeholders
-    // Angle-bracket link destinations ([x](<C:/a b/y.py:12>), needed for paths with spaces) are kept too;
-    // they hold no < or > inside, so no raw HTML gets through.
     var codeSlots = [];
-    text = text.replace(/(```[\s\S]*?```|`[^`\n]+`|\]\(<[^<>\n]*>)/g, function(match) {
+    text = text.replace(/(```[\s\S]*?```|`[^`\n]+`)/g, function(match) {
         codeSlots.push(match);
         return '\x00C' + (codeSlots.length - 1) + '\x00';
+    });
+    // A complete link with an angle-bracket destination ([x](<C:/a b/y.py:12>), the Markdown form for
+    // paths with spaces) is rewritten with a percent-encoded destination, so no angle bracket survives.
+    text = text.replace(/\[([^\[\]\n]*)\]\(<([^<>\n]*)>\)/g, (_, label, dest) => {
+        dest = dest.replace(/\x00P(\d+)\x00/g, (_, i) => pathSlots[parseInt(i)]);
+        return `[${label}](${encodeURI(dest).replace(/\(/g, '%28').replace(/\)/g, '%29')})`;
     });
     // Escape angle brackets in non-code text only
     text = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
