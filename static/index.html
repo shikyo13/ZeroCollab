@@ -164,7 +164,7 @@
     <!-- chat/* share chat.js globals; they only run from DOMContentLoaded or user events. -->
     <script src="/static/chat/avatars.js?v=zerocollab-fixes-5"></script>
     <script src="/static/chat/sounds.js?v=zerocollab-fixes-5"></script>
-    <script src="/static/chat/format.js?v=zerocollab-fixes-5"></script>
+    <script src="/static/chat/format.js?v=zerocollab-companion-1"></script>
     <script src="/static/chat/dates.js?v=zerocollab-window-1"></script>
     <script src="/static/chat/transfer.js?v=zerocollab-fixes-5"></script>
     <script src="/static/chat/settings.js?v=zerocollab-split2-1"></script>
@@ -178,9 +178,9 @@
     <script>
         (function () {
             var style = document.createElement('link');
-            style.rel = 'stylesheet'; style.href = '/static/modern/workspace.css?v=zerocollab-fixes-3';
+            style.rel = 'stylesheet'; style.href = '/static/modern/workspace.css?v=zerocollab-companion-1';
             document.head.append(style);
-            import('/static/modern/workspace.js?v=zerocollab-fixes-3').catch(function (error) {
+            import('/static/modern/workspace.js?v=zerocollab-companion-1').catch(function (error) {
                 console.error(error);
                 var notice = document.createElement('p');
                 notice.setAttribute('role', 'alert');
