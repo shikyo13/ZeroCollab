@@ -173,7 +173,7 @@ function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void
           : <p className="bd-muted">No chat sessions yet.</p>}
         <small className="bd-muted">{detail.active ? 'Conversations in this project.' : 'Switch to this project to open its conversations.'}</small>
       </div>
-      <div className="bd-panel">
+      <div className="bd-panel" id="pj-repository">
         <h3>{(detail.repositories?.length ?? 0) > 1 ? 'Repositories' : 'Repository'}</h3>
         {detail.conversation && <p className="bd-muted">No repository. Agents work in private scratch folders; the board still works.</p>}
         {detail.active

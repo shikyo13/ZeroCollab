@@ -121,3 +121,18 @@
   .ws-badge { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; padding: 0; font-size: 0; }
   .ws-crumb, .ws-roster-text, .ws-goal-chip span, .ws-goal-chip small { display: none; }
 }
+
+/* Waiting-on-you bell (AttentionBell.tsx). */
+.ws-bell { position: relative; }
+.ws-bell-button { position: relative; }
+.ws-bell-button.has-items { color: var(--text-strong); }
+.ws-bell-count { position: absolute; top: 2px; right: 1px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--accent); color: var(--text-on-accent); font-size: 11px; font-weight: 700; line-height: 17px; text-align: center; }
+.ws-bell-menu { width: 380px; max-width: 92vw; padding: 8px; }
+.ws-bell-menu h2 { margin: 4px 8px 8px; font-size: 14px; }
+.ws-bell-menu > p { margin: 4px 8px 8px; color: var(--text-dim); }
+.ws-bell-menu ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 60vh; overflow: auto; }
+.ws-popover.ws-bell-menu li button { display: grid; gap: 3px; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; }
+.ws-popover.ws-bell-menu li button:hover, .ws-popover.ws-bell-menu li button:focus-visible { background: var(--bg-elevated); }
+.ws-bell-menu small { color: var(--text-dim); font-size: 12px; overflow-wrap: anywhere; }
+.ws-bell-action { color: var(--accent-text); font-size: 12px; font-weight: 600; }
+.ws-attention-flash { outline: 2px solid var(--accent); outline-offset: 3px; transition: outline-color 0.4s; }

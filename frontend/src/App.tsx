@@ -7,6 +7,7 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { legacy } from './legacy';
 import { WorkControls } from './components/WorkControls';
 import { HeaderBar } from './components/HeaderBar';
+import { AttentionBell } from './components/AttentionBell';
 import { ChatSearch } from './components/ChatSearch';
 import Projects from './workspace/Projects';
 import SidePanel from './sidepanel/SidePanel';
@@ -33,7 +34,8 @@ export default function App() {
       {/* One header row. Stop/Resume/Changes and the room mode line live on the Activity page
           (inside legacy.runtime); the goal is a header chip while one is open. */}
       <LegacySlot node={legacy.header} className="workspace-toolbar" />
-      <HeaderBar view={view} projectName={projects.active?.name ?? ''} onTeam={() => navigate('team')} />
+      <HeaderBar view={view} projectName={projects.active?.name ?? ''} onTeam={() => navigate('team')}
+        bell={<AttentionBell projects={projects.projects} deployments={deployments} navigate={navigate} openProject={openProject} />} />
       <LegacySlot node={legacy.approvals} className="workspace-approvals" />
       <WorkControls navigate={navigate} />
       <DeploymentNotice feed={deployments} onOpen={() => navigate('activity')} />

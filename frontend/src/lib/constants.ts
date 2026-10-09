@@ -31,6 +31,7 @@ export const EVENTS = {
   goal: 'workspace-goal',              // chat.js /goal command, detail = argument
   createTask: 'workspace-create-task', // chat.js message menu, detail = {id, text}
   newProject: 'workspace-new-project', // project switcher: open the create form
+  openTask: 'workspace-open-task',     // header bell: detail = {task} or {tab: 'coordination'}
 } as const;
 
 export const STORAGE_KEYS = {

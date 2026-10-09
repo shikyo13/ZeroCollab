@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { sessionTitle, useActiveChannel, useNow, useProjectState, useRuntimeState } from '../lib/room';
 import type { Task } from '../lib/types';
-import { USER } from '../lib/constants';
+import { EVENTS, USER } from '../lib/constants';
 import { installAnnotateHook } from '../annotate';
 import { ActivityFeed } from './ActivityFeed';
 import { BoardToolbar } from './BoardToolbar';
@@ -43,6 +43,15 @@ export default function Board() {
     setSelected(id);
     setTab('tasks', false);
   }, [setTab]);
+  useEffect(() => {
+    const open = (event: Event) => {
+      const { task, tab: next } = (event as CustomEvent<{ task?: string; tab?: 'coordination' }>).detail ?? {};
+      if (task) openTask(task);
+      else if (next) setTab(next, false);
+    };
+    window.addEventListener(EVENTS.openTask, open);
+    return () => window.removeEventListener(EVENTS.openTask, open);
+  }, [openTask, setTab]);
 
   useEffect(() => {
     if (!selected) return;
