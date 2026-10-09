@@ -48,6 +48,11 @@ export function ChatSearch({ open, setOpen, projects, navigate, onOpenProject }:
     return (q ? all.filter(r => r.label.toLowerCase().includes(q)) : all).slice(0, RESULTS_SHOWN);
   }, [sessions, archive, projects, query, navigate, onOpenProject]);
 
+  useEffect(() => {
+    const key = results[index]?.key;
+    if (key) document.getElementById(`ws-search-${key}`)?.scrollIntoView({ block: 'nearest' });
+  }, [index, results]);
+
   const choose = (result: Result | undefined) => { if (!result) return; setOpen(false); result.run(); };
   return <dialog ref={dialog} className="ws-search" aria-label="Search chats and projects" onClose={() => setOpen(false)}
     onClick={e => { if (e.target === dialog.current) setOpen(false); }}>

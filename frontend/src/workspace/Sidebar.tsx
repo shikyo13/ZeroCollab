@@ -34,7 +34,7 @@ export function Sidebar({ view, navigate, projects, active, onOpenProject, onSea
   const newChat = () => { setChatsOpen(true); navigate('chat'); window.showChannelCreateDialog?.(); };
   const newProject = () => { onOpenProject(''); window.dispatchEvent(new Event(EVENTS.newProject)); };
   const item = (target: View, label: string, extra?: React.ReactNode) =>
-    <button className="ws-nav-item" aria-current={view === target ? 'page' : undefined} onClick={() => navigate(target)}>
+    <button className="ws-nav-item" aria-current={view === target ? 'page' : undefined} title={label} onClick={() => navigate(target)}>
       <Icon name={target} size={18} /><span>{label}</span>{extra}
     </button>;
   return <nav className="workspace-nav" aria-label="Workspace">
@@ -42,8 +42,8 @@ export function Sidebar({ view, navigate, projects, active, onOpenProject, onSea
       <img src={brand.logo} alt="" /><span>{brand.name}</span>
     </a>
     <div className="ws-nav-group">
-      <button className="ws-nav-item" onClick={newChat} disabled={!active}><Icon name="compose" size={18} /><span>New chat</span></button>
-      <button className="ws-nav-item" onClick={onSearch} aria-keyshortcuts="Control+K"><Icon name="search" size={18} /><span>Search</span><kbd>Ctrl K</kbd></button>
+      <button className="ws-nav-item" onClick={newChat} disabled={!active} title="New chat"><Icon name="compose" size={18} /><span>New chat</span></button>
+      <button className="ws-nav-item" onClick={onSearch} aria-keyshortcuts="Control+K" title="Search (Ctrl+K)"><Icon name="search" size={18} /><span>Search</span><kbd>Ctrl K</kbd></button>
     </div>
     <div className="ws-nav-group">
       {item('board', 'Board', busy ? <small className="ws-count">{busy} active</small> : null)}
@@ -69,8 +69,8 @@ export function Sidebar({ view, navigate, projects, active, onOpenProject, onSea
     <div className="workspace-nav-bottom">
       <BackendControls />
       <div className="ws-footer-row">
-        <button className="ws-nav-item" onClick={() => { navigate('chat'); window.toggleSettings?.(); }}><Icon name="settings" size={18} /><span>Settings</span></button>
-        <button className="ws-nav-item" onClick={onHelp}><Icon name="help" size={18} /><span>Guide</span></button>
+        <button className="ws-nav-item" onClick={() => { navigate('chat'); window.toggleSettings?.(); }} title="Settings"><Icon name="settings" size={18} /><span>Settings</span></button>
+        <button className="ws-nav-item" onClick={onHelp} title="Guide"><Icon name="help" size={18} /><span>Guide</span></button>
       </div>
     </div>
   </nav>;
