@@ -887,6 +887,9 @@ class RoomRuntime:
                 if not connected and self.states[peer]['provider'] == 'antigravity':
                     self.states[peer].update(state='blocked', detail=self.controls.catalogs[name]['error'])
         self.deploy_refresh_pending = False
+        # Team's provider catalog is loaded with profiles, not runtime_state.
+        # Notify open editors after automatic refresh too; their draft stays mounted.
+        await self.host.broadcast_agents()
         await self.publish_status()
 
     async def resume_deploy_checks(self):
