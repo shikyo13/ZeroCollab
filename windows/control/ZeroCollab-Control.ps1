@@ -38,6 +38,14 @@ if ($Action -ne 'Window') {
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class ZeroCollabWindowIdentity {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern int SetCurrentProcessExplicitAppUserModelID(string appID);
+}
+'@
+[void][ZeroCollabWindowIdentity]::SetCurrentProcessExplicitAppUserModelID('ZeroCollab.Control')
 [Windows.Forms.Application]::EnableVisualStyles()
 $hash = [Security.Cryptography.SHA256]::Create()
 $key = [BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($RoomRoot.ToLowerInvariant()))).Replace('-','')
@@ -62,7 +70,12 @@ $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object Drawing.Font('Segoe UI',10)
 $form.BackColor = [Drawing.Color]::FromArgb(24,28,36)
 $form.ForeColor = [Drawing.Color]::FromArgb(235,239,246)
-$form.Icon = [Drawing.SystemIcons]::Application
+$productIcon = $null
+$iconPath = Join-Path $PSScriptRoot 'ZeroCollab.ico'
+if (Test-Path -LiteralPath $iconPath) {
+    $productIcon = New-Object Drawing.Icon($iconPath)
+    $form.Icon = $productIcon
+} else { $form.Icon = [Drawing.SystemIcons]::Application }
 $title = New-Object Windows.Forms.Label
 $title.Text = 'ZeroCollab'
 $title.Font = New-Object Drawing.Font('Segoe UI',20,[Drawing.FontStyle]::Bold)
@@ -196,5 +209,6 @@ try {
     if ($script:webProcess -and !$script:webProcess.HasExited) { $script:webProcess.Kill(); $script:webProcess.Dispose() }
     $timer.Stop(); $timer.Dispose()
     $tray.Visible = $false; $tray.Dispose(); $menu.Dispose(); $form.Dispose()
+    if ($productIcon) { $productIcon.Dispose() }
     $mutex.ReleaseMutex(); $mutex.Dispose()
 }

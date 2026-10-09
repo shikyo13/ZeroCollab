@@ -4,7 +4,7 @@ $RoomRoot = (Resolve-Path -LiteralPath $RoomRoot).Path
 if (!(Test-Path -LiteralPath (Join-Path $RoomRoot 'supervisor.py'))) { throw 'RoomRoot must be the installed ZeroCollab folder.' }
 $destination = Join-Path $env:LOCALAPPDATA 'ZeroCollabControl'
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
-foreach ($file in @('ZeroCollab-Control.ps1','control_server.py')) {
+foreach ($file in @('ZeroCollab-Control.ps1','control_server.py','ZeroCollab.ico')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $destination $file)
     if ((Get-FileHash (Join-Path $PSScriptRoot $file)).Hash -ne (Get-FileHash (Join-Path $destination $file)).Hash) { throw "Copy verification failed: $file" }
 }
@@ -16,6 +16,7 @@ foreach ($name in @('ZeroCollab Control')) {
     $link.Arguments = '-NoProfile -STA -WindowStyle Hidden -File "{0}" -RoomRoot "{1}"' -f (Join-Path $destination 'ZeroCollab-Control.ps1'),$RoomRoot
     $link.WorkingDirectory = $destination
     $link.Description = 'Start, stop and restart the local ZeroCollab backend'
+    $link.IconLocation = (Join-Path $destination 'ZeroCollab.ico') + ',0'
     $link.Save()
     Write-Output (Join-Path $desktop "$name.lnk")
 }
