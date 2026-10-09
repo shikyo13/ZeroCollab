@@ -43,20 +43,10 @@ export function WorkControls({ navigate }: { navigate: (view: 'board' | 'team') 
   }
   const agents = Object.entries(data?.agents ?? {}).filter(([, a]) => !a.archived);
   return <>
-    <div className="workspace-goalbar">
-      {goal ? <><strong>Goal · {goal.status}</strong><span title={goal.evidence || goal.text}>{goal.text}</span><small>{goal.rounds}/{goal.max_rounds} rounds · @{goal.owner}</small>
-        {goal.status === 'active' && <button disabled={busy} onClick={() => void change('pause')}>Pause goal</button>}
-        {['paused', 'blocked'].includes(goal.status) && <button disabled={busy} onClick={() => void change('resume')}>Resume goal</button>}
-        {!['complete', 'cancelled'].includes(goal.status) && <button disabled={busy} onClick={() => void change('cancel')}>Cancel goal</button>}
-        <button onClick={() => { setText(''); setDialog('goal'); }}>Details</button>
-      </> : <span>Shared goals keep the team working toward an explicit outcome.</span>}
-      {(!goal || ['complete', 'cancelled'].includes(goal.status)) && <button onClick={() => { setText(''); setError(''); setDialog('goal'); }}>Set goal</button>}
-      {error && !dialog && <span role="alert">{error}</span>}
-    </div>
     {dialog && <>
       <dialog ref={modal} onCancel={() => setDialog('')} aria-modal="true" aria-labelledby="work-dialog-title" className="workspace-work-dialog" onClick={e => e.stopPropagation()} onKeyDown={e => { if (e.key === 'Escape' && !busy) setDialog(''); }}>
         <h2 id="work-dialog-title">{dialog === 'goal' ? 'Shared goal' : 'Create Board task'}</h2>
-        {dialog === 'goal' && goal && !['complete', 'cancelled'].includes(goal.status) ? <><p>{goal.text}</p><p>Status: {goal.status}. {goal.evidence}</p><p>Use the goal bar to pause, resume or cancel this goal before starting another.</p></> : <form onSubmit={async e => {
+        {dialog === 'goal' && goal && !['complete', 'cancelled'].includes(goal.status) ? <><p>{goal.text}</p><p>Status: {goal.status}. {goal.evidence}</p><p>{goal.rounds}/{goal.max_rounds} rounds · lead @{goal.owner}</p><div className="workspace-goal-actions">{goal.status === 'active' && <button disabled={busy} onClick={() => void change('pause')}>Pause goal</button>}{['paused', 'blocked'].includes(goal.status) && <button disabled={busy} onClick={() => void change('resume')}>Resume goal</button>}<button disabled={busy} onClick={() => void change('cancel')}>Cancel goal</button></div><p>Pause, resume or cancel this goal before starting another.</p></> : <form onSubmit={async e => {
           e.preventDefault(); if (busy) return; setBusy(true); setError('');
           try {
             if (dialog === 'goal') await runtime('/goal', { action: 'start', text, owner, channel, max_rounds: rounds });
@@ -74,4 +64,15 @@ export function WorkControls({ navigate }: { navigate: (view: 'board' | 'team') 
       </dialog>
     </>}
   </>;
+}
+
+/** Header chip shown only while a shared goal is open; it opens the goal dialog above.
+ * New goals start from the chat's /goal command. */
+export function GoalChip() {
+  const { data } = useRuntimeState();
+  const goal = (data as (typeof data & { goal?: Goal }))?.goal;
+  if (!goal || ['complete', 'cancelled'].includes(goal.status)) return null;
+  return <button className="ws-goal-chip" title={goal.text} onClick={() => window.dispatchEvent(new CustomEvent(EVENTS.goal, { detail: 'status' }))}>
+    Goal <b>{goal.status}</b><span>{goal.text}</span><small>{goal.rounds}/{goal.max_rounds}</small>
+  </button>;
 }

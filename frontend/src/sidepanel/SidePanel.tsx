@@ -51,21 +51,30 @@ export default function SidePanel({children, fileView}: Props) {
       setTab(detail.tab!); setOpen(true);
       if (detail.tab === 'file') setRequest(detail);
     };
+    // Icon-only toggle like the Codex desktop side panel (Ctrl+Shift+B); it reopens the last tab.
     const button = document.createElement('button');
-    button.type = 'button'; button.className = 'companion-open'; button.textContent = 'Open browser';
-    button.setAttribute('aria-label', 'Open shared browser beside conversation');
+    button.type = 'button'; button.className = 'companion-toggle ws-icon-button';
+    button.setAttribute('aria-label', 'Toggle side panel');
+    button.setAttribute('aria-keyshortcuts', 'Control+Shift+B');
+    button.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg><i class="companion-ping" aria-hidden="true"></i>';
     browserButton.current = button;
-    button.onclick = () => {setTab('browser'); setOpen(true);};
-    (legacy.header.querySelector('.header-right') || legacy.header).prepend(button);
+    button.onclick = () => setOpen(v => !v);
+    (legacy.header.querySelector('.header-right') || legacy.header).append(button);
+    const shortcut = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {e.preventDefault(); setOpen(v => !v);}
+    };
     window.addEventListener('workspace-side-panel', listener);
-    return () => {browserButton.current = null; button.remove(); window.removeEventListener('workspace-side-panel', listener);};
+    window.addEventListener('keydown', shortcut);
+    return () => {browserButton.current = null; button.remove(); window.removeEventListener('workspace-side-panel', listener); window.removeEventListener('keydown', shortcut);};
   }, []);
   useEffect(() => {
     if (!browserButton.current) return;
-    browserButton.current.textContent = activityLabel(browserState);
+    const activity = activityLabel(browserState);
     browserButton.current.classList.toggle('companion-active', !!browserState?.running);
-    browserButton.current.title = 'Show the shared browser beside the conversation';
-  }, [browserState]);
+    browserButton.current.setAttribute('aria-pressed', String(open));
+    browserButton.current.title = `${open ? 'Hide' : 'Show'} side panel (Ctrl+Shift+B)` + (browserState?.running ? ` - ${activity}` : '');
+    browserButton.current.setAttribute('aria-description', activity);
+  }, [browserState, open]);
   useEffect(() => {writeStored('workspace.companion.open', open ? '1' : '0'); window.dispatchEvent(new Event('resize'));}, [open]);
   useEffect(() => {writeStored('workspace.companion.width', String(width)); window.dispatchEvent(new Event('resize'));}, [width]);
   const close = () => {setOpen(false); setExpanded(false);};

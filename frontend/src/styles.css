@@ -29,29 +29,17 @@ body.modern-workspace {
 .modern-workspace button:disabled { cursor: default; opacity: .55; }
 .modern-workspace :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .modern-workspace button, .modern-workspace input, .modern-workspace select, .modern-workspace textarea { border-radius: 8px; }
-.workspace-shell { display: grid; grid-template-columns: 212px minmax(0, 1fr); height: 100dvh; overflow: hidden; }
-.workspace-nav { display: flex; flex-direction: column; gap: 36px; background: var(--bg-header); border-right: 1px solid var(--border); padding: 26px 14px 18px; }
 .workspace-brand { display: flex; align-items: center; gap: 10px; color: var(--text-bright); text-decoration: none; font-weight: 650; font-size: 16px; padding: 0 4px; white-space: nowrap; letter-spacing: -.025em; }
 .workspace-brand img { width: 30px; height: 30px; }
 .workspace-brand small { display: block; color: var(--text-faint); font-size: 10px; letter-spacing: .015em; font-weight: 400; margin-top: 3px; }
-.workspace-nav-items { display: grid; gap: 8px; }
-.workspace-nav :where(.workspace-nav-items, .workspace-nav-bottom) button { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid transparent; background: transparent; color: var(--text-muted); text-align: left; font-weight: 600; width: 100%; }
-.workspace-nav :where(.workspace-nav-items, .workspace-nav-bottom) button:hover { background: var(--bg-elevated); color: var(--text-strong); }
-.workspace-nav :where(.workspace-nav-items, .workspace-nav-bottom) button[aria-current] { background: var(--accent-surface); color: var(--accent-text); border-color: var(--accent-border); }
-.workspace-nav-bottom { margin-top: auto; display: grid; gap: 20px; }
-.workspace-nav-bottom > span { font-size: 12px; line-height: 1.8; color: var(--text-faint); padding: 0 14px; }
 .workspace-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .workspace-toolbar { flex: 0 0 auto; }
-.modern-workspace .workspace-toolbar header { min-height: 64px; padding: 12px 24px; gap: 12px; box-shadow: none; border-bottom: 1px solid var(--border); background: var(--bg-header); flex-wrap: wrap; }
 .modern-workspace .header-left { min-width: 0; }
 .modern-workspace .header-left h1 { font-size: 16px; white-space: nowrap; }
 .modern-workspace .header-logo { display: none; }
 .modern-workspace .header-left .subtitle { color: var(--text-dim); font-size: 12px; overflow-wrap: anywhere; }
-.modern-workspace .header-right { flex-wrap: wrap; gap: 6px; }
 .modern-workspace .settings-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px; height: auto; width: auto; color: var(--text-muted); border: 1px solid transparent; font-size: 12px; }
 .modern-workspace .settings-btn:hover { border-color: var(--border); background: var(--bg-msg); }
-.modern-workspace #agent-status { display: flex; flex-wrap: wrap; max-width: 420px; gap: 6px; }
-.workspace-controlbar { padding: 10px 24px; border-bottom: 1px solid var(--border); background: var(--bg-input); }
 .modern-workspace .runtime-controls { margin: 0; gap: 8px; }
 .modern-workspace .runtime-controls > strong { display: none; }
 .modern-workspace .runtime-controls button, .workspace-page-heading > button, .workspace-welcome button, .workspace-help button { border: 1px solid var(--border-control); padding: 7px 12px; background: var(--bg-elevated); color: var(--text); font-size: 13px; }
@@ -62,17 +50,9 @@ body.modern-workspace {
 .workspace-approvals { padding: 0 24px; max-height: 32vh; overflow: auto; background: var(--warning-surface); flex-shrink: 0; }
 .workspace-approvals button { color: var(--text); background: var(--bg-msg-hover); border: 1px solid var(--border-emphasis); padding: 8px 16px; }
 .workspace-approvals input { color: var(--text); background: var(--bg-input); padding: 8px; border: 1px solid var(--border-emphasis); }
-.workspace-welcome { display: flex; align-items: center; gap: 12px; padding: 12px 24px; background: var(--bg-input); border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text-muted); flex-shrink: 0; }
-.workspace-welcome > span { flex: 1; }
-.workspace-welcome strong { color: var(--text); margin-right: 5px; }
-.workspace-welcome button { flex-shrink: 0; background: transparent; }
 .workspace-content { flex: 1; min-height: 0; min-width: 0; overflow: hidden; position: relative; }
 .workspace-chat, .workspace-chat-slot { height: 100%; min-height: 0; }
 .modern-workspace #app { height: 100%; min-height: 0; }
-.modern-workspace #channel-bar { background: var(--bg-header); border-bottom: 1px solid var(--border); min-height: 46px; padding: 5px 18px; }
-.modern-workspace .channel-main { justify-content: flex-start; }
-.modern-workspace .channel-bar-left-spacer { display: none; }
-.modern-workspace .channel-tab { font-size: 13px; padding: 7px 12px; }
 .modern-workspace #content-area { min-height: 0; }
 .modern-workspace #timeline { min-width: 0; }
 .modern-workspace #messages { padding: 24px clamp(14px, 3vw, 52px); }
@@ -117,40 +97,8 @@ body.modern-workspace {
 .workspace-help-footer small { display: block; margin-top: 3px; }
 .workspace-skip { position: fixed; top: -80px; left: 220px; background: var(--text); color: var(--bg); padding: 12px; z-index: 10000; }
 .workspace-skip:focus { top: 8px; }
-@media (min-width: 1600px) { .workspace-shell { grid-template-columns: 216px minmax(0, 1fr); } }
-@media (max-width: 1100px) {
-  .workspace-shell { grid-template-columns: 78px minmax(0, 1fr); }
-  .workspace-nav { padding: 24px 10px 16px; }
-  .workspace-brand { justify-content: center; padding: 0; }
-  .workspace-brand > span, .workspace-nav-bottom > span { display: none; }
-  .workspace-nav :where(.workspace-nav-items, .workspace-nav-bottom) button { flex-direction: column; gap: 5px; padding: 10px 2px; font-size: 10px; }
-  .workspace-toolbar .workspace-tool-label { display: none; }
-  .modern-workspace #agent-status { max-width: 310px; }
-}
 @media (max-width: 700px) {
-  .workspace-shell { display: flex; flex-direction: column; }
-  .workspace-nav { flex: 0 0 auto; flex-direction: row; align-items: center; padding: 7px 10px; border-right: 0; border-bottom: 1px solid var(--border); gap: 12px; }
-  .workspace-brand img { width: 26px; height: 26px; }
-  .workspace-nav-items { display: flex; flex: 1; justify-content: space-around; gap: 4px; }
-  .workspace-nav-items button { width: auto; flex: 1; padding: 6px 8px; font-size: 11px; }
-  .workspace-nav-bottom { margin: 0; }
-  .workspace-nav-bottom button { padding: 6px; }
-  .workspace-nav-bottom button span { display: none; }
-  .workspace-main { flex: 1; }
-  .modern-workspace .workspace-toolbar header { padding: 8px 12px; min-height: 46px; }
-  .modern-workspace .header-left { display: none; }
-  .modern-workspace .header-right { width: 100%; justify-content: flex-end; }
-  .modern-workspace #agent-status { margin-right: auto; max-width: 100%; }
-  .workspace-controlbar { padding: 8px 12px; }
-  .modern-workspace .runtime-controls { gap: 6px; }
-  .modern-workspace .runtime-controls button { font-size: 11px; padding: 7px 9px; }
-  .modern-workspace #room-mode { flex-basis: 100%; text-align: left; font-size: 11px; }
-  .workspace-welcome { padding: 10px 12px; flex-wrap: wrap; gap: 8px; }
-  .workspace-welcome > span { flex-basis: calc(100% - 40px); font-size: 12px; }
-  .workspace-welcome button { padding: 4px 8px; font-size: 12px; }
-  .workspace-welcome button:last-child { position: absolute; right: 10px; align-self: flex-start; }
   .workspace-approvals { padding: 0 12px; }
-  .modern-workspace #channel-bar { padding: 4px 8px; }
   .modern-workspace #messages { padding: 16px 10px; }
   .modern-workspace .chat-bubble { padding: 11px 13px; font-size: 14px; max-width: 96%; }
   .modern-workspace #app > footer { padding: 8px 10px; }
@@ -160,7 +108,6 @@ body.modern-workspace {
   .modern-workspace #input-row #input { grid-column: 1 / -1; grid-row: 1; width: 100%; min-height: 56px; }
   .modern-workspace #input-row .sender-label { grid-row: 2; }
   .modern-workspace #input-row #mic, .modern-workspace #input-row .send-group { grid-row: 2; }
-  .modern-workspace #channel-sidebar { max-width: 150px; }
   .workspace-help-grid { grid-template-columns: 1fr; gap: 18px; }
   .workspace-page-heading { flex-wrap: wrap; gap: 12px; }
   .workspace-skip { left: 10px; }
@@ -168,16 +115,11 @@ body.modern-workspace {
 @media (prefers-reduced-motion: reduce) { .modern-workspace *, .modern-workspace *::before, .modern-workspace *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
 
 /* Shared outcome controls and the message-to-task form. */
-.workspace-goalbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 24px; border-bottom:1px solid var(--border); background:var(--bg-header); font-size:12px; }
-.workspace-goalbar > span { flex:1; min-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.workspace-goalbar small { color:var(--text-dim); }
-.workspace-goalbar button { padding:4px 8px; border:1px solid var(--border); border-radius:5px; background:var(--bg-input); color:var(--text); }
 .workspace-work-dialog { width:min(560px,calc(100vw - 32px)); max-width:90vw; max-height:85dvh; overflow:auto; padding:24px; border:1px solid var(--border); border-radius:10px; background:var(--bg-header); color:var(--text); }
 .workspace-work-dialog form, .workspace-work-dialog label { display:flex; flex-direction:column; gap:8px; margin:12px 0; }
 .workspace-work-dialog input, .workspace-work-dialog textarea, .workspace-work-dialog select { padding:10px; border:1px solid var(--border); border-radius:5px; color:var(--text); background:var(--bg-input); font:inherit; }
 .workspace-work-dialog p { font-size:13px; line-height:1.5; margin:8px 0; }
 .workspace-work-dialog::backdrop { background:var(--backdrop); }
-@media(max-width:700px) { .workspace-goalbar { padding:8px 12px; } }
 
 /* Session titles are buttons beside a separate rename action. */
 .channel-tab > button.channel-tab-label { border: 0; background: transparent; color: inherit; font: inherit; padding: 3px 0; cursor: pointer; }

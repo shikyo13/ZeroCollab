@@ -14,13 +14,18 @@ export const legacy = {
   runtime: required('#runtime-panel'),
   controls: required('.runtime-controls'),
   approvals: required('#room-approvals'),
+  // channels.js renders the project's chats (rename, close, unread, closed & older) into this list.
+  chatList: required('#channel-sidebar'),
 };
 
 /** Put every moved node back where index.html and runtime.js created it
  * (#app > header, then #runtime-panel holding controls and approvals), so the
  * plain chat page keeps working if the React shell is unmounted. */
 export function restoreLegacyLayout() {
-  const { chat, header, runtime, controls, approvals } = legacy;
+  const { chat, header, runtime, controls, approvals, chatList } = legacy;
+  window.__chatsInShellSidebar = false;
+  const contentArea = document.getElementById('content-area');
+  if (contentArea && !contentArea.contains(chatList)) contentArea.prepend(chatList);
   if (!runtime.contains(approvals)) runtime.prepend(approvals);
   if (!runtime.contains(controls)) runtime.prepend(controls);
   if (!chat.contains(header)) chat.prepend(header);
@@ -33,6 +38,9 @@ export function restoreLegacyLayout() {
 }
 
 export function prepareLegacy() {
+  // Chats are listed in the workspace sidebar; the chat's own top tab bar is hidden.
+  window.__chatsInShellSidebar = true;
+  window.setChannelSidebarMode?.('sidebar', false);
   const settings = document.getElementById('settings-toggle');
   if (settings) {
     settings.setAttribute('aria-label', 'Settings');

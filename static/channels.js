@@ -39,6 +39,7 @@ function _openSessions() {
 function _syncSessions() {
     window.channelList = _sessions.map(s => s.id);
     Store.set('chatSessions', [..._sessions]);
+    Store.set('chatArchive', { closed: [..._closed], history: [..._history] });
 }
 function _getTopVisibleMsgId() {
     const scroll = document.getElementById('timeline');
@@ -297,7 +298,8 @@ function setChannelSidebarMode(mode, persist = true) {
     const sidebar = document.getElementById('channel-sidebar');
     if (!sidebar) return;
 
-    const on = mode === 'sidebar';
+    // The workspace shell lists chats in its own sidebar, so the top tab bar never returns there.
+    const on = mode === 'sidebar' || !!window.__chatsInShellSidebar;
     document.body.classList.toggle('channels-in-sidebar', on);
     sidebar.classList.toggle('hidden', !on);
 
@@ -394,4 +396,7 @@ window.switchChannel = switchChannel;
 window.filterMessagesByChannel = filterMessagesByChannel;
 window.renderChannelTabs = renderChannelTabs;
 window.setChannelSidebarMode = setChannelSidebarMode;
+// Chat search (workspace shell) opens closed and pre-project chats the same way the menu does.
+window.reopenChatSession = id => _reopenSession(id);
+window.viewChatHistory = id => _viewHistory(id);
 window.Channels = { init: _channelsInit };

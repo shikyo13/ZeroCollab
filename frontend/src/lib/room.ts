@@ -34,6 +34,14 @@ declare global {
     chatSessionReadonly?: (id: string) => boolean;
     ws?: WebSocket | null;
     username?: string;
+    /** channels.js: keep chats in the sidebar list while the workspace shell owns the page. */
+    __chatsInShellSidebar?: boolean;
+    setChannelSidebarMode?: (mode: 'top' | 'sidebar', persist?: boolean) => void;
+    showChannelCreateDialog?: () => void;
+    switchChannel?: (id: string) => void;
+    reopenChatSession?: (id: string) => void;
+    viewChatHistory?: (id: string) => void;
+    toggleSettings?: () => void;
   }
 }
 
@@ -89,6 +97,22 @@ function readChannel(): string {
 /** The chat channel currently selected in the legacy chat client. */
 export function useActiveChannel(): string {
   return useSyncExternalStore(subscribeChannel, readChannel, () => 'general');
+}
+
+/** A value the legacy scripts publish with Store.set (for example 'chatSessions'). */
+export function useStoreValue<T>(key: string, fallback: T): T {
+  const subscribe = useCallback((notify: () => void) => {
+    let watching = false;
+    const cancel = whenLegacyReady(() => {
+      if (!window.Store) return;
+      window.Store.watch(key, notify);
+      watching = true;
+      notify();
+    });
+    return () => { cancel(); if (watching) window.Store?.unwatch(key, notify); };
+  }, [key]);
+  const read = useCallback(() => (window.Store?.get(key) as T | undefined) ?? fallback, [key, fallback]);
+  return useSyncExternalStore(subscribe, read, () => fallback);
 }
 
 /** Post a chat message as the human user through the legacy socket. */
