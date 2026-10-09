@@ -227,10 +227,12 @@ class CoordinationRecords:
     def inbox(self, actor):
         reviews = self.room.state.get('reviews', [])
         return {
-            'transfers': [t for t in self.room.state['tasks'] if t.get('transfer', {}).get('to') == actor],
-            'ready_tasks': [self.room.task_view(t) for t in sorted(self.room.state['tasks'], key=lambda t: (t.get('priority', 3), t['updated']))
-                            if t.get('owner') == actor and t.get('status') != 'done'
-                            and self.room.task_view(t)['execution_state'] in ('idle', 'needs_attention')],
+            # Task entries are summaries; room_task get returns history, details and attachments.
+            'transfers': [self.room.task_summary(t, check_in=True) for t in self.room.state['tasks'] if t.get('transfer', {}).get('to') == actor],
+            'ready_tasks': [summary for summary in (self.room.task_summary(t, check_in=True)
+                            for t in sorted(self.room.state['tasks'], key=lambda t: (t.get('priority', 3), t['updated']))
+                            if t.get('owner') == actor and t.get('status') != 'done')
+                            if summary['execution_state'] in ('idle', 'needs_attention')],
             'review_requests': [r for r in reviews if r['reviewer'] == actor and r['status'] == 'pending'],
             'review_findings': [r for r in reviews if self.task(r['task_id'])['owner'] == actor and r['status'] == 'changes_requested'],
             'followups': [f for f in self.room.state.get('followups', []) if f['assigned_to'] == actor and f['status'] == 'open'],

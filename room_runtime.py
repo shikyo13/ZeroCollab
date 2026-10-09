@@ -1239,6 +1239,9 @@ class RoomRuntime:
                 if ready:
                     result = {**result, 'dependents_notified': ready}
             text = f"Task {result['id']}: {result['title']} | owner {result['owner'] or 'unclaimed'} | {result['status']}"
+            # The agent wrote the change itself; echoing the whole record back cost ~10-25k characters per call.
+            result = {**self.project_room.task_summary(result),
+                      **{key: result[key] for key in ('delivery', 'dependents_notified') if key in result}}
         elif tool == 'room_update':
             result = self.project_room.note(run.name, **arguments)
             text = f"{result['kind']}: {result['text']}"

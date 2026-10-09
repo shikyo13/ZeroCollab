@@ -176,6 +176,23 @@ class ProjectRoom:
                 'observed_at': time.time(),
                 'stale': stale(task, time.time()) and not pending_human_wait(task, self.state)}
 
+    def task_summary(self, task, check_in=False):
+        """An agent's receipt or inbox entry: state and next step without the history, details and
+        attachments, which can run to tens of thousands of characters. room_task get returns the full record."""
+        view = self.task_view(task)
+        # repository_key qualifies the bare reserved paths, which are pinned to the repository primary when claimed.
+        summary = {key: view[key] for key in ('id', 'title', 'owner', 'status', 'execution_state', 'stale', 'updated', 'repository_key')}
+        summary.update({key: view[key] for key in ('priority', 'next_action', 'wait', 'transfer', 'depends_on', 'paths', 'labels')
+                        if view.get(key)})
+        summary['history_entries'] = len(task['updates'])
+        if task.get('attachments'):
+            summary['images'] = len(task['attachments'])
+        if check_in:
+            latest = next((u for u in reversed(task['updates']) if not u.get('auto')), None)
+            if latest:
+                summary['last_check_in'] = {'by': latest['by'], 'time': latest['time'], 'text': clipped(latest['text'], 400)}
+        return summary
+
     def save(self):
         write_json(self.path, self.state)
 
@@ -558,7 +575,8 @@ class ProjectRoom:
                 and (not owner or x.get('reviewer', x.get('assigned_to')) == owner)
                 and (not status or x['status'] == status)], ensure_ascii=False)
         elif section == 'inbox':
-            text = json.dumps(self.records.inbox(run.name), ensure_ascii=False)
+            inbox = self.records.inbox(run.name)
+            text = json.dumps(inbox, ensure_ascii=False)
         elif section == 'participants':
             text = json.dumps({'paused': self.runtime.paused, 'participants': {
                 name: {**{k: s.get(k) for k in ('label', 'handle', 'provider', 'state', 'paused', 'detail', 'worktree', 'archived')},
@@ -602,6 +620,12 @@ class ProjectRoom:
                     if json.dumps(item, ensure_ascii=False) in page:
                         run.receipts.add(receipt_key({'ref': {'collection': collection,
                             'id': item['id'], 'updated': item['updated']}}))
+            if section == 'inbox':
+                # Inbox tasks are summaries, so they never match a raw record above.
+                for summary in inbox['transfers'] + inbox['ready_tasks']:
+                    if json.dumps(summary, ensure_ascii=False) in page:
+                        run.receipts.add(receipt_key({'ref': {'collection': 'tasks',
+                            'id': summary['id'], 'updated': summary['updated']}}))
         return {'text': page, 'offset': offset, 'next_offset': offset+limit if offset+limit < len(text) else None,
                 'total_chars': len(text)}
 
@@ -846,7 +870,7 @@ def coordination_tools():
     return [
         definition('room_read', 'Read shared project state or your pending review/follow-up inbox. Filter tasks/reviews/followups by task_id, owner or status. limit/offset are characters; paginate with next_offset. Messages include attachments.',
                    {'section': {'type': 'string', 'enum': ['overview', 'spec', 'tasks', 'memory', 'messages', 'patches', 'participants', 'inbox', 'reviews', 'followups', 'review_artifact']}, 'offset': {'type': 'integer'}, 'limit': {'type': 'integer'}, 'query': string, 'after_id': {'type': 'integer'}, 'task_id': string, 'owner': string, 'status': string}),
-        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. get includes reviews/followups. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls, up to 8; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override.',
+        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls, up to 8; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override.',
                    {'action': {'type': 'string', 'enum': ['get', 'create', 'claim', 'update', 'delegate', 'accept', 'release']}, 'task_id': string, 'title': string, 'details': string, 'owner': string, 'status': string,
                     'paths': {'type': 'array', 'items': string}, 'depends_on': {'type': 'array', 'items': string}, 'labels': {'type': 'array', 'items': string},
                     'attachments': {'type': 'array', 'items': {'type': 'object', 'properties': {'url': string, 'name': string, 'note': string, 'source': string}, 'required': ['url']}},
