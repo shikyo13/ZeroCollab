@@ -368,6 +368,12 @@ header h1 {
     gap: 8px;
 }
 
+/* Section headings and help lines are for the workspace Settings dialog; the inline bar stays compact. */
+.settings-section,
+.settings-help {
+    display: none;
+}
+
 .settings-field label {
     font-size: 12px;
     color: var(--text-dim);

@@ -96,6 +96,22 @@ body.modern-workspace {
 .workspace-help-footer { display: flex; gap: 20px; align-items: center; justify-content: space-between; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
 .workspace-help-footer > span { color: var(--text-dim); font-size: 12px; text-align: right; }
 .workspace-help-footer small { display: block; margin-top: 3px; }
+/* Settings dialog: settings.js's #settings-bar laid out as labelled rows in sections. */
+.modern-workspace .workspace-settings { width: min(640px, 92vw); }
+.workspace-settings .workspace-page-heading p { margin: 0; font-size: 13px; }
+.modern-workspace .workspace-settings #settings-bar, .modern-workspace .workspace-settings #settings-bar.hidden { display: block; max-height: none; opacity: 1; padding: 0; border: 0; background: transparent; overflow: visible; pointer-events: auto; transition: none; }
+.workspace-settings .settings-divider { display: none; }
+.workspace-settings .settings-section { display: block; margin: 20px 0 6px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent-text); }
+.workspace-settings .settings-section:first-child { margin-top: 4px; }
+.workspace-settings .settings-field, .workspace-settings .sound-row { display: grid; grid-template-columns: 190px minmax(0, 1fr); align-items: center; gap: 14px; margin: 10px 0; }
+.workspace-settings .settings-field label, .workspace-settings .sound-label { font-size: 14px; color: var(--text); white-space: normal; min-width: 0; }
+.workspace-settings .settings-help { display: block; margin-top: 2px; font-size: 12px; color: var(--text-dim); }
+.workspace-settings #sound-settings { display: block; }
+.workspace-settings .settings-field input, .workspace-settings .settings-field select, .workspace-settings .sound-select, .workspace-settings .settings-btn { height: 36px; padding: 0 10px; border: 1px solid var(--border-control); border-radius: 7px; background: var(--bg-input); color: var(--text); font: inherit; font-size: 14px; }
+.workspace-settings .settings-field input { width: 100%; }
+.workspace-settings .settings-field select, .workspace-settings .sound-select { width: min(240px, 100%); }
+.workspace-settings .settings-history-btns { gap: 10px; }
+.workspace-settings .settings-btn { padding: 0 14px; background: var(--bg-elevated); cursor: pointer; }
 .workspace-skip { position: fixed; top: -80px; left: 220px; background: var(--text); color: var(--bg); padding: 12px; z-index: 10000; }
 .workspace-skip:focus { top: 8px; }
 @media (max-width: 700px) {

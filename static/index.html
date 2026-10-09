@@ -32,30 +32,21 @@
         </header>
 
         <div id="settings-bar" class="hidden">
+            <h3 class="settings-section">Profile</h3>
             <div class="settings-field">
-                <label for="setting-username">Name</label>
+                <label for="setting-username">Your name<small class="settings-help">Shown on your messages</small></label>
                 <input type="text" id="setting-username" placeholder="your name" maxlength="20">
             </div>
             <div class="settings-field">
-                <label for="setting-subtitle">This server</label>
-                <input type="text" id="setting-subtitle" placeholder="e.g. frontend project" maxlength="40" title="Shown next to ZeroCollab, to tell this server apart from others">
+                <label for="setting-subtitle">Tab label<small class="settings-help">Optional, tells rooms apart in the browser tab</small></label>
+                <input type="text" id="setting-subtitle" placeholder="e.g. Frontend work" maxlength="40" title="Added to the browser tab title, to tell this server apart from others">
             </div>
+            <h3 class="settings-section">Appearance</h3>
             <div class="settings-field">
                 <label for="setting-font">Font</label>
                 <select id="setting-font">
                     <option value="mono">Monospace</option>
                     <option value="sans">Sans</option>
-                </select>
-            </div>
-            <div class="settings-field">
-                <label for="setting-history">History</label>
-                <select id="setting-history">
-                    <option value="all">All</option>
-                    <option value="25">25</option>
-                    <option value="50">50</option>
-                    <option value="100">100</option>
-                    <option value="200">200</option>
-                    <option value="500">500</option>
                 </select>
             </div>
             <div class="settings-field">
@@ -66,6 +57,17 @@
                 </select>
             </div>
             <div class="settings-field">
+                <label for="setting-history">Messages loaded<small class="settings-help">Per chat, when the room loads</small></label>
+                <select id="setting-history">
+                    <option value="all">All</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                </select>
+            </div>
+            <div class="settings-field">
                 <label for="setting-channel-sidebar">Chat tabs</label>
                 <select id="setting-channel-sidebar" title="Show chat sessions in a sidebar instead of a top bar">
                     <option value="top">Top bar</option>
@@ -73,15 +75,15 @@
                 </select>
             </div>
             <div class="settings-divider"></div>
-            <div class="settings-field">
-                <div id="sound-settings"></div>
-            </div>
+            <h3 class="settings-section">Sounds</h3>
+            <div id="sound-settings"></div>
             <div class="settings-divider"></div>
+            <h3 class="settings-section">Project history</h3>
             <div class="settings-field">
-                <label>Project History</label>
+                <label>History backup<small class="settings-help">This project's chats as a .zip</small></label>
                 <div class="settings-history-btns">
-                    <button class="settings-btn" onclick="exportHistory()">Export History</button>
-                    <button class="settings-btn" id="import-history-btn" onclick="document.getElementById('import-file').click()">Import History</button>
+                    <button class="settings-btn" onclick="exportHistory()">Export history</button>
+                    <button class="settings-btn" id="import-history-btn" onclick="document.getElementById('import-file').click()">Import history…</button>
                     <input type="file" id="import-file" accept=".zip" hidden onchange="importHistory(this)">
                 </div>
             </div>

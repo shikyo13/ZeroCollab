@@ -3,6 +3,7 @@ import Board from './board/Board';
 import Team from './team/Team';
 import { LegacySlot } from './components/LegacySlot';
 import { Help } from './components/Help';
+import { SettingsDialog } from './components/SettingsDialog';
 import { legacy } from './legacy';
 import { WorkControls } from './components/WorkControls';
 import { HeaderBar } from './components/HeaderBar';
@@ -46,5 +47,6 @@ export default function App() {
     </div>
     <ChatSearch open={search} setOpen={setSearch} projects={projects.projects} navigate={navigate} onOpenProject={openProject} />
     <Help open={help} onClose={() => setHelp(false)} />
+    <SettingsDialog />
   </div>;
 }

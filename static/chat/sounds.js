@@ -47,7 +47,7 @@ function buildSoundSettings() {
         const label = document.createElement('span');
         label.className = 'sound-label';
         label.textContent = name === 'default' ? 'Default sound'
-            : name === 'cross-channel' ? 'Background alerts'
+            : name === 'cross-channel' ? 'Other chats'
             : (agentConfig[name]?.label || name);
         const select = document.createElement('select');
         select.className = 'sound-select';
