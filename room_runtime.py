@@ -1350,7 +1350,9 @@ class RoomRuntime:
 
     async def coordination_record(self, actor, tool, arguments, channel, chain):
         arguments = self.profiles.recipient_arguments(arguments)
-        notify = arguments.pop('notify', True)
+        # A review verdict or a follow-up result is what its recipient is waiting on, so it always
+        # wakes them (or joins their running turn); notify=False only quiets new requests.
+        notify = arguments.pop('notify', True) or arguments.get('action') in ('respond', 'resolve')
         method = self.project_room.records.review if tool == 'room_review' else self.project_room.records.followup
         result = method(actor, **arguments)
         if not result['changed']:
