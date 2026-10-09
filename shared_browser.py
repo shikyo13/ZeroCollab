@@ -290,7 +290,10 @@ class Browser:
             for _ in range(80):
                 if marker.exists():
                     break
-                if self.proc.returncode is not None:
+                exit_code = self.proc.returncode
+                # Edge's Windows launcher can exit successfully before its child
+                # writes the readiness marker. Keep the job alive for that handoff.
+                if exit_code is not None and not (isinstance(self.proc, WindowsBrowserProcess) and exit_code == 0):
                     raise ValueError('Chromium exited during startup')
                 await asyncio.sleep(.1)
             if not marker.exists():
@@ -360,7 +363,10 @@ class Browser:
 
     def status(self):
         self.expire()
-        return {'running': bool(self.proc and self.proc.returncode is None and self.ws and self.reader and not self.reader.done()),
+        # The connected reader tracks the browser child after a successful Windows launcher exit.
+        process_ready = self.proc and (self.proc.returncode is None or
+                                      isinstance(self.proc, WindowsBrowserProcess) and self.proc.returncode == 0)
+        return {'running': bool(process_ready and self.ws and self.reader and not self.reader.done()),
                 'project': self.runtime.identity, 'url': self.url, 'title': self.title,
                 'owner': self.owner, 'owner_label': self.owner_label,
                 'lease_seconds': max(0, int(self.expires - time.monotonic())) if self.owner != 'user' else None,
