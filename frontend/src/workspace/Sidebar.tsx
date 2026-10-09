@@ -57,7 +57,8 @@ export function Sidebar({ view, navigate, projects, active, onOpenProject, onSea
           <Icon name={chatsOpen ? 'chevron-down' : 'chevron-right'} size={14} /><span>{active.name}</span><i className="ws-live" aria-label="Active project" />
         </button>
         {/* Kept mounted while collapsed: channels.js renders into this node by id. */}
-        <div hidden={!chatsOpen} onClick={e => { if ((e.target as HTMLElement).closest('.channel-sidebar-row-label, .channel-more-item')) navigate('chat'); }}>
+        {/* Capture before channels.js rebuilds the clicked row and detaches the event target. */}
+        <div hidden={!chatsOpen} onClickCapture={e => { if ((e.target as HTMLElement).closest('.channel-sidebar-row-label, .channel-more-item')) navigate('chat'); }}>
           <LegacySlot node={legacy.chatList} className="ws-chats" />
         </div>
       </div>}
