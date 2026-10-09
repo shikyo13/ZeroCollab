@@ -11,13 +11,13 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
     <div className="workspace-page-heading"><div><span className="workspace-eyebrow">A QUICK ORIENTATION</span><h2 id="workspace-help-title">Your room, at a glance</h2></div><button onClick={onClose} aria-label="Close help">✕</button></div>
     <p>Start with a conversation. Add structure whenever your work needs it.</p>
     <div className="workspace-help-grid">
-      <section><h3>Pick a project</h3><p>Each project keeps its own board, team, goal and agent worktrees. Use the project picker or Projects to see them all and switch. Choose New project to start without a repository; add one later if needed.</p></section>
-      <section><h3>Chat together</h3><p>Chat tabs organize conversations within the active project. Use + New chat to start another. Mention an agent with @name, or use Address team. Drop or paste images into the composer.</p></section>
-      <section><h3>Keep work visible</h3><p>The Board tracks owners, reserved files, dependencies, check-ins, reviews and follow-ups. A project spec is optional.</p></section>
-      <section><h3>Build your team</h3><p>Open Team to create named agents with their own prompt, color, model and reasoning effort. Archive agents without losing their history.</p></section>
-      <section><h3>Stay in control</h3><p>Stop all is always available. Team contains individual stop controls and model settings; Activity shows approvals and tool calls. Send a new chat message to steer ongoing work.</p></section>
+      <section><h3>Projects and chats</h3><p>Each project keeps its own chats, board, team and goal. The sidebar lists the active project's chats under its name; select another project or All projects to switch. New project starts without a repository, and you can add one later.</p></section>
+      <section><h3>Chat together</h3><p>New chat at the top of the sidebar starts a conversation in the active project. Mention an agent with @handle, or use Address team to reach everyone. Paste or drop images into the composer.</p></section>
+      <section><h3>Keep work visible</h3><p>The Board tracks owners, reserved files, dependencies, check-ins, reviews and follow-ups. Hover a chat message and choose Create task to put it on the Board.</p></section>
+      <section><h3>Build your team</h3><p>Team is where you create agents and set each one's handle, prompt, color, model and reasoning effort. Archive an agent without losing its history.</p></section>
+      <section><h3>Stay in control</h3><p>The header shows who is working, with Stop all and Resume beside it. Send a chat message to steer work in progress. Activity holds agent requests, tool calls and deployments, and Server at the bottom left starts or restarts the room.</p></section>
     </div>
-    <details><summary>More tools & shortcuts</summary><p>Hover a chat message and choose create task to put it on the Board. Configure agent expertise in Team. Use /goal to set a shared outcome; goal pause and cancellation controls stay above every view. Settings holds your name, font, contrast, history and sounds. The composer supports voice input and the /goal and /clear commands. Enter sends; Shift+Enter adds a line. Open a chat menu to rename it.</p></details>
+    <details><summary>More tools & shortcuts</summary><p>Ctrl K searches chats and projects. The panel button at the top right opens the shared browser and file viewer. Type /goal to set a shared outcome; while a goal runs, its chip in the header shows progress and controls. /clear clears the current chat. Enter sends and Shift+Enter adds a line. Hover a chat in the sidebar to rename or close it. Settings holds your name, font, contrast, sounds and history.</p></details>
     <div className="workspace-help-footer"><button className="workspace-primary" onClick={onClose}>Got it</button><span>{brand.name} · {brand.attribution}</span></div>
   </dialog>;
 }

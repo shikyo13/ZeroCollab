@@ -43,8 +43,8 @@ body.modern-workspace {
 .modern-workspace .runtime-controls { margin: 0; gap: 8px; }
 .modern-workspace .runtime-controls > strong { display: none; }
 .modern-workspace .runtime-controls button, .workspace-page-heading > button, .workspace-welcome button, .workspace-help button { border: 1px solid var(--border-control); padding: 7px 12px; background: var(--bg-elevated); color: var(--text); font-size: 13px; }
-.modern-workspace #room-stop { background: var(--danger-surface); color: var(--danger-text); border: 1px solid var(--danger-border); font-weight: 650; }
-.modern-workspace #room-resume { color: var(--success-text); border-color: var(--success-border); }
+/* Stop all and Resume live in the header on every page; Activity keeps Changes and the room status. */
+.modern-workspace #room-stop, .modern-workspace #room-resume { display: none; }
 .modern-workspace #room-mode { color: var(--text-dim); font-size: 12px; flex: 1 1 280px; text-align: right; }
 .workspace-approvals:has(#room-approvals:empty) { display: none; }
 .workspace-approvals { padding: 0 24px; max-height: 32vh; overflow: auto; background: var(--warning-surface); flex-shrink: 0; }
@@ -64,7 +64,8 @@ body.modern-workspace {
 .modern-workspace #app > footer { background: var(--bg-input); border-top: 1px solid var(--border); padding: 12px 24px 10px; }
 .modern-workspace #input { font-size: 15px; line-height: 1.5; min-height: 44px; background: var(--bg-msg); border-color: var(--border-strong); color: var(--text-bright); }
 .modern-workspace #input::placeholder { color: var(--text-dim); }
-.modern-workspace .input-hint { color: var(--text-dim); font-size: 11px; margin-top: 8px; }
+/* The shortcut hint and sender name repeat the Guide and Settings; the placeholder carries the essentials. */
+.modern-workspace .input-hint, .modern-workspace #sender-label { display: none; }
 .modern-workspace #send { background: var(--accent); color: var(--text-on-accent); min-height: 42px; font-weight: 650; }
 .modern-workspace .chat-bubble { background: var(--bg-msg); border-left: 2px solid color-mix(in srgb, var(--bubble-color) 65%, var(--border)); }
 .modern-workspace .avatar, .modern-workspace .channel-tab, .modern-workspace #channel-bar, .modern-workspace .bd-header { box-shadow: none; }
@@ -102,12 +103,11 @@ body.modern-workspace {
   .modern-workspace #messages { padding: 16px 10px; }
   .modern-workspace .chat-bubble { padding: 11px 13px; font-size: 14px; max-width: 96%; }
   .modern-workspace #app > footer { padding: 8px 10px; }
-  .modern-workspace .input-hint { display: none; }
   .modern-workspace #input { font-size: 16px; }
-  .modern-workspace #input-row { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; }
+  .modern-workspace #input-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; }
   .modern-workspace #input-row #input { grid-column: 1 / -1; grid-row: 1; width: 100%; min-height: 56px; }
-  .modern-workspace #input-row .sender-label { grid-row: 2; }
-  .modern-workspace #input-row #mic, .modern-workspace #input-row .send-group { grid-row: 2; }
+  .modern-workspace #input-row #mic { grid-row: 2; grid-column: 2; }
+  .modern-workspace #input-row .send-group { grid-row: 2; grid-column: 3; }
   .workspace-help-grid { grid-template-columns: 1fr; gap: 18px; }
   .workspace-page-heading { flex-wrap: wrap; gap: 12px; }
   .workspace-skip { left: 10px; }

@@ -504,7 +504,7 @@ class RoomRuntime:
                 "approvals": [a["display"] for a in self.approvals.values()],
                 "runs": [{"id": r.id, "agent": r.name, "channel": r.channel, "text": r.text,
                           "message": r.message_id, "phase": r.message_phase,
-                          "steering": [{'message_id': q.get('message_id'), 'status': q.get('_steering')}
+                          "steering": [{'message_id': q.get('message_id'), 'ref': q.get('ref'), 'status': q.get('_steering')}
                                        for q in r.steering.pending[-8:]],
                           "settings": r.settings, "reported_settings": r.reported_settings,
                           "reported_tokens": r.reported_tokens, "input_chars": r.input_chars} for r in self.running.values()]}
@@ -871,7 +871,7 @@ class RoomRuntime:
                         if not auth.get("loggedIn"):
                             state.update(state="login_required", detail='Run claude auth login in your own terminal, then click Refresh connections.')
                             continue
-                    state.update(state="ready", detail="Official CLI detected · live session checked when mentioned")
+                    state.update(state="ready", detail="Ready to start")
             except Exception as exc:
                 state.update(state="blocked", detail=str(exc)[:600])
         # One catalog lookup per configured provider connection, shared by its profiles.
@@ -1125,7 +1125,7 @@ class RoomRuntime:
             if not run.published_messages:
                 raise RuntimeError("Provider completed without a response")
             self.project_room.complete(run)
-            self.states[name].update(state="ready", detail="Live turn completed")
+            self.states[name].update(state="ready", detail="Last turn completed")
             self.check_room_tools(run)
         except asyncio.CancelledError:
             outcome = "cancelled"

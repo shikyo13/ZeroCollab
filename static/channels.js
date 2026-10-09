@@ -55,7 +55,7 @@ function _getTopVisibleMsgId() {
 function _sessionComposer() {
     const readonly = window.chatSessionReadonly(window.activeChannel);
     const input = document.getElementById('input');
-    if (input) { input.disabled = readonly; input.placeholder = readonly ? 'History from before projects is read-only. Open a project chat to reply.' : 'Message the team…'; }
+    if (input) { input.disabled = readonly; input.placeholder = readonly ? 'History from before projects is read-only. Open a project chat to reply.' : 'Message the team. Type @ to mention, / for commands'; }
     for (const id of ['send', 'clear-chat-btn', 'mic']) {
         const control = document.getElementById(id);
         if (control) control.disabled = readonly;

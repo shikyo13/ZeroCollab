@@ -3,7 +3,7 @@
 (() => {
     const panel = document.createElement('section');
     panel.id = 'runtime-panel';
-    panel.innerHTML = '<div class="runtime-controls"><strong>Project room</strong><button id="room-stop">Stop all</button><button id="room-resume">Resume</button><button id="room-changes">Changes</button><span id="room-mode"></span></div><div id="room-approvals"></div><details><summary>Tool activity</summary><pre id="room-tools">No tool activity yet.</pre></details>';
+    panel.innerHTML = '<div class="runtime-controls"><strong>Project room</strong><button id="room-stop">Stop all</button><button id="room-resume">Resume</button><button id="room-changes">Changes</button><span id="room-mode"></span></div><div id="room-approvals"></div><details><summary>Tool activity</summary><pre id="room-tools">No tool calls since this page was opened.</pre></details>';
     document.querySelector('#app header').after(panel);
     const addressTeam = document.createElement('button');
     addressTeam.type = 'button'; addressTeam.textContent = 'Address team';
@@ -24,20 +24,40 @@
     steeringNotice.id = 'steering-delivery';
     steeringNotice.setAttribute('role', 'status');
     document.querySelector('#app footer')?.prepend(steeringNotice);
-    const deliveryLabels = {queued: 'Update queued', sending: 'Sending update', sent: 'Update sent; awaiting provider',
-        accepted: 'Provider accepted update', queued_for_next_turn: 'Update queued for next turn',
-        cancelled: 'Update cancelled by Stop', not_delivered_failed: 'Update not delivered; agent failed',
-        superseded: 'Update superseded'};
+    // Steering messages sent to a running turn, tracked per request (run + message or ref), so
+    // runtime_state replaying a run's recent requests never restarts an older notice. Each agent
+    // shows its most recently changed request; settled states fade after the ms below, while
+    // queued and sending states stay until they change.
+    const deliveryLabels = {queued: 'Message queued for {a}', sending: 'Sending to {a}…', sent: 'Sending to {a}…',
+        accepted: '{a} received your message', queued_for_next_turn: '{a} will see your message next turn',
+        cancelled: 'Message to {a} cancelled by Stop', not_delivered_failed: 'Message to {a} not delivered: the turn failed'};
+    const deliveryFade = {accepted: 4000, cancelled: 8000, superseded: 0, queued_for_next_turn: 20000, not_delivered_failed: 20000};
+    const DELIVERIES_KEPT = 200;  // settled requests are remembered so a replay cannot revive them
     const deliveries = new Map();
+    let deliverySeq = 0;
+    const agentLabel = id => window.agentConfig?.[id]?.label || id;
+    const faded = (d, now) => d.status in deliveryFade && now - d.since >= deliveryFade[d.status];
     function refreshDelivery() {
-        steeringNotice.textContent = [...deliveries.values()].filter(d => d.channel === window.activeChannel)
-            .map(d => d.agent + ': ' + (deliveryLabels[d.status] || d.status)).join(' · ');
+        const now = Date.now();
+        const latest = new Map();  // agent -> its most recently changed request in this chat
+        for (const d of deliveries.values()) {
+            if (d.channel !== window.activeChannel) continue;
+            if (!latest.has(d.agent) || d.seq > latest.get(d.agent).seq) latest.set(d.agent, d);
+        }
+        steeringNotice.textContent = [...latest.values()].filter(d => deliveryLabels[d.status] && !faded(d, now))
+            .map(d => deliveryLabels[d.status].replace('{a}', agentLabel(d.agent))).join(' · ');
         steeringNotice.hidden = !steeringNotice.textContent;
-        steeringNotice.title = 'Provider acceptance confirms delivery, not that the agent has acted on the instruction.';
+        steeringNotice.title = 'Received means the agent has your message; it may not have acted on it yet.';
     }
     function showDelivery(d) {
-        deliveries.set(d.channel + ':' + d.agent, d);
+        const key = [d.run, d.message_id ?? '', d.ref ?? ''].join(':');
+        const previous = deliveries.get(key);
+        if (previous && previous.status === d.status) return;  // a replay of what is already shown
+        deliveries.delete(key);
+        deliveries.set(key, {run: d.run, agent: d.agent, channel: d.channel, status: d.status, since: Date.now(), seq: ++deliverySeq});
+        while (deliveries.size > DELIVERIES_KEPT) deliveries.delete(deliveries.keys().next().value);
         refreshDelivery();
+        if (d.status in deliveryFade) setTimeout(refreshDelivery, deliveryFade[d.status] + 50);
     }
     const api = async (path, body) => {
         const response = await fetch('/api/runtime' + path, {method: body === undefined ? 'GET' : 'POST',
@@ -51,9 +71,9 @@
     function render(s) {
         state = s;
         for (const run of s.runs || []) for (const update of run.steering || [])
-            showDelivery({...update, agent: run.agent, channel: run.channel});
+            showDelivery({...update, run: run.id, agent: run.agent, channel: run.channel});
         const capacity = s.limits.parallel_agents_effective ?? (s.limits.parallel_agents || Object.keys(s.agents).length);
-        document.getElementById('room-mode').textContent = (s.paused ? 'Stopped' : 'Ready') + ' - ' + capacity + ' agents can run together' + (s.limits.parallel_agents ? '' : ' (whole team)') + ', ' + (s.limits.chat_handoffs ? s.limits.chat_handoffs + ' chat handoffs' : 'no handoff limit') + (s.automatic_tool_approvals ? ' - automatic tool approvals' : '');
+        document.getElementById('room-mode').textContent = (s.paused ? 'Stopped' : 'Ready') + ' - ' + capacity + (capacity === 1 ? ' agent can run' : ' agents can run together') + (s.limits.parallel_agents ? '' : ' (whole team)') + ', ' + (s.limits.chat_handoffs ? s.limits.chat_handoffs + ' chat handoffs' : 'no handoff limit') + (s.automatic_tool_approvals ? ' - automatic tool approvals' : '');
         document.getElementById('room-stop').disabled = s.paused;
         document.getElementById('room-resume').disabled = !s.paused;
         for (const pending of s.approvals || []) approval(pending);

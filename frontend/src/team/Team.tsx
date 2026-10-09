@@ -161,7 +161,6 @@ export default function Team() {
   }
 
   const providerLabel = (template: string) => data.providers.find(p => p.id === template)?.label || template;
-  const project = data.project ? data.project.replaceAll('\\', '/').split('/').pop() : '';
   const active = data.profiles.filter(p => !p.archived).length;
 
   return (
@@ -171,7 +170,6 @@ export default function Team() {
           <h1 className="bd-title">Team</h1>
           <p className="bd-muted">
             {active} active {active === 1 ? 'agent' : 'agents'}
-            {project ? ` · ${project}` : ''}
             {data.paused ? ' · room stopped' : ''}. Each agent has its own prompt, model, inbox, task ownership and working tree.
           </p>
         </div>

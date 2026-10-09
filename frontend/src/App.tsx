@@ -41,7 +41,7 @@ export default function App() {
         <section className="workspace-chat" hidden={view !== 'chat'} aria-label="Shared chat"><LegacySlot node={legacy.chat} className="workspace-chat-slot" /></section>
         <section className="workspace-board" hidden={view !== 'board'} aria-label="Task board"><Board /></section>
         <section className="workspace-team" hidden={view !== 'team'} aria-label="Team"><Team /></section>
-        <section className="workspace-activity" hidden={view !== 'activity'} aria-labelledby="activity-title"><ActivityPage deployments={deployments} onManageTeam={() => navigate('team')} /></section>
+        <section className="workspace-activity" hidden={view !== 'activity'} aria-labelledby="activity-title"><ActivityPage deployments={deployments} /></section>
       </main></SidePanel>
     </div>
     <ChatSearch open={search} setOpen={setSearch} projects={projects.projects} navigate={navigate} onOpenProject={openProject} />

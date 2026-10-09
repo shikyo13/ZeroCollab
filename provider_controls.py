@@ -109,7 +109,7 @@ class ProviderControls:
             if provider != 'api':
                 models = await cli_catalog(provider, state['worktree'])
                 source = 'Official CLI model catalog'
-                note = 'Choose a model to set effort.' if provider == 'codex' else 'Effort options follow the selected model.'
+                note = 'Effort options follow the selected model.'
                 if provider == 'antigravity':
                     note = 'Effort selects the matching preset in this Gemini model family. Provider default uses the preset shown in the model name.'
             else:

@@ -112,7 +112,7 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
     finally { setBusy(false); }
   }
   return <section className="deploy-panel bd-panel" aria-labelledby="deploy-title">
-    <div className="deploy-heading"><div><span className="workspace-eyebrow">APP OPERATIONS</span><h2 id="deploy-title">Deployments</h2></div><span className="bd-pill">{online ? label(supervisor?.state) : 'Supervisor offline'}</span></div>
+    <div className="deploy-heading"><div><h2 id="deploy-title">Deployments</h2></div><span className="bd-pill">{online ? label(supervisor?.state) : 'Supervisor offline'}</span></div>
     <p className="bd-muted">Review a release and approve it here. The supervisor handles the restart and saves the result.</p>
     {error && <p role="status" className="deploy-warning">{feed.reload ? 'The room restarted; reload to reconnect.' : 'Cannot refresh deployment status. Controls are disabled until the connection returns.'} <button className="bd-btn" onClick={() => feed.reload ? window.location.reload() : void refresh()}>{feed.reload ? 'Reload room' : 'Retry'}</button></p>}
     {!data && !error && <p role="status">Loading deployments…</p>}
@@ -129,7 +129,7 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
         <p className="deploy-warning">Approval waits up to 10 minutes for current turns to finish, then briefly takes the room offline. If turns cannot finish in time, deployment is cancelled.</p>
         <button className="bd-btn bd-btn-primary" disabled={blocked || !candidate.rehearsal_passed} onClick={() => void approve(candidate)}>{busy ? 'Submitting approval…' : 'Approve deployment when idle'}</button>
         <p className="bd-muted">Applies only to this exact release. Current turns will not be forcibly interrupted.</p>
-      </article> : <p className="bd-muted">No newer release is staged. Running {releaseName(data.current)}. The team prepares a reviewed package before approval is available.</p>}
+      </article> : <p className="bd-muted">No newer release is staged. The team prepares and reviews a package before you can approve it.</p>}
       {rollbackTarget && <details className="deploy-rollback">
         <summary>Earlier releases (rollback) · {earlier.length}</summary>
         {earlier.length > 1 && <label className="deploy-select">Earlier release<select value={rollbackTarget.id} onChange={e => { setRollbackId(e.target.value); setConfirmedKey(''); setActionError(''); }}>{earlier.map(r => <option key={r.id} value={r.id}>{r.title || r.version || r.id}</option>)}</select></label>}

@@ -52,7 +52,7 @@ function _clearClearChatConfirm() {
     const confirmEl = document.getElementById('clear-chat-confirm');
     if (confirmEl) confirmEl.remove();
     if (btn) {
-        btn.textContent = 'Clear Chat';
+        btn.textContent = 'Clear chat';
         btn.classList.remove('confirming');
     }
     document.removeEventListener('click', _clearChatOutsideClick, true);
@@ -86,7 +86,7 @@ function clearChat() {
         return;
     }
 
-    btn.textContent = 'Clear Chat?';
+    btn.textContent = 'Clear chat?';
     btn.classList.add('confirming');
 
     const confirmWrap = document.createElement('span');
