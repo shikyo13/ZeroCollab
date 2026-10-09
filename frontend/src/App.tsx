@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { BackendControls } from './components/BackendControls';
 import Board from './board/Board';
 import Team from './team/Team';
 import { LegacySlot } from './components/LegacySlot';
@@ -44,7 +45,7 @@ export default function App() {
           </button>
         ))}
       </div>
-      <div className="workspace-nav-bottom"><button onClick={openHelp}><Icon name="help" /><span>Quick guide</span></button></div>
+      <div className="workspace-nav-bottom"><BackendControls /><button onClick={openHelp}><Icon name="help" /><span>Quick guide</span></button></div>
     </nav>
     <div className="workspace-main">
       <LegacySlot node={legacy.header} className="workspace-toolbar" />
@@ -64,3 +65,4 @@ export default function App() {
     <Help open={help} onClose={() => setHelp(false)} />
   </div>;
 }
+
