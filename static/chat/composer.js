@@ -126,11 +126,16 @@ function sendMessage() {
         }
     }
     if (activeMentions.size > 0 && text && !skipMentions) {
-        // Only prepend if user didn't already @mention these agents
+        // activeMentions holds agent ids. Prefix the public handle, and skip agents the
+        // text already mentions by id, current handle or any previous handle.
         const lower = text.toLowerCase();
-        const missing = [...activeMentions].filter(n => !lower.includes(`@${n}`));
+        const mentioned = n => n && new RegExp(`@${n.replace(/[-]/g, '\\-')}(?![\\w-])`).test(lower);
+        const missing = [...activeMentions].filter(id => {
+            const cfg = window.agentConfig?.[id] || {};
+            return ![id, cfg.handle, ...(cfg.previous_handles || [])].some(mentioned);
+        });
         if (missing.length > 0) {
-            text = missing.map(n => `@${n}`).join(' ') + ' ' + text;
+            text = missing.map(id => `@${window.agentConfig?.[id]?.handle || id}`).join(' ') + ' ' + text;
         }
     }
 
