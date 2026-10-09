@@ -639,7 +639,7 @@ def _on_registry_change():
         # Only include active instances in routing (pending ones are inert)
         instance_names = registry.get_active_names()
         all_names = list(set(base_names + instance_names))
-        router.update_agents(all_names)
+        router.update_agents(all_names, aliases=registry.get_mention_aliases())
     # Broadcast to WebSocket clients
     if _event_loop:
         asyncio.run_coroutine_threadsafe(broadcast_agents(), _event_loop)

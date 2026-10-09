@@ -561,7 +561,7 @@ class ProjectRoom:
             text = json.dumps(self.records.inbox(run.name), ensure_ascii=False)
         elif section == 'participants':
             text = json.dumps({'paused': self.runtime.paused, 'participants': {
-                name: {**{k: s.get(k) for k in ('label', 'provider', 'state', 'paused', 'detail', 'worktree', 'archived')},
+                name: {**{k: s.get(k) for k in ('label', 'handle', 'provider', 'state', 'paused', 'detail', 'worktree', 'archived')},
                        'background': self.runtime.profiles.items.get(name, {}).get('background', '')}
                 for name, s in self.runtime.states.items()}}, ensure_ascii=False)
         elif section == 'memory':
@@ -705,7 +705,7 @@ class ProjectRoom:
             if run.previous_session and previous.get(name) == fingerprints[name]:
                 return '[Unchanged; already in your native session. Pull details with room_read if needed.]'
             return clipped(values[name], limit)
-        participants = ', '.join('@' + name + ' (' + state.get('label', name) + ')'
+        participants = ', '.join('@' + state.get('handle', name) + ' (' + state.get('label', name) + ')'
                                  for name, state in self.runtime.states.items() if not state.get('archived'))
         prompt = f"Participants: {participants}\n"
         workspace = delivery('workspace', 2400)

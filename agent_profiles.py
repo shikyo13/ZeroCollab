@@ -30,10 +30,31 @@ class AgentProfiles:
     def save(self):
         write_json(self.path, self.items)
 
+    def resolve(self, value):
+        """Public handles are aliases; records, processes and worktrees keep their IDs."""
+        if not isinstance(value, str):
+            return value
+        key = value.removeprefix('@').lower()
+        if key in self.items:
+            return key
+        for identifier, profile in self.items.items():
+            if key in [profile.get('handle', identifier), *profile.get('previous_handles', [])]:
+                return identifier
+        return value
+
+    def recipient_arguments(self, arguments):
+        result = dict(arguments)
+        for key in ('owner', 'reviewer', 'assigned_to'):
+            if result.get(key):
+                result[key] = self.resolve(result[key])
+        return result
+
     def config(self, profile):
         cfg = copy.deepcopy(self.templates[profile['template']])
         cfg.update(label=profile['name'], color=profile['color'], model=profile['model'],
-                   effort=profile['effort'], background=profile['background'], profile=True)
+                   effort=profile['effort'], background=profile['background'], profile=True,
+                   handle=profile.get('handle', profile['id']),
+                   previous_handles=list(profile.get('previous_handles', [])))
         return cfg
 
     def describe(self):
@@ -45,7 +66,9 @@ class AgentProfiles:
             providers.append({'id': template, 'provider': cfg.get('provider', template),
                               'label': cfg.get('label', template), 'color': cfg.get('color', '#8b5cf6'),
                               'controls': catalog})
-        return {'project': str(self.runtime.project or ''), 'profiles': list(self.items.values()), 'providers': providers,
+        return {'project': str(self.runtime.project or ''), 'profiles': [
+                    {**p, 'handle': p.get('handle', p['id']), 'previous_handles': list(p.get('previous_handles', []))}
+                    for p in self.items.values()], 'providers': providers,
                 'paused': self.runtime.paused}
 
     def prepare(self, body, identifier=''):
@@ -67,8 +90,22 @@ class AgentProfiles:
             identifier = body.get('id') or stem
             if not re.fullmatch(r'[a-z][a-z0-9-]{0,39}', identifier) or identifier in ('all', 'both', 'user', 'system', 'everyone'):
                 raise ValueError('Mention handle must start with a letter and contain only lowercase letters, digits or hyphens')
-            if identifier in self.items or self.runtime.host.registry.get_instance(identifier):
+            if self.resolve(identifier) != identifier or identifier in self.items or self.runtime.host.registry.get_instance(identifier):
                 raise ValueError('That mention handle is already in use; choose another')
+        handle = body.get('handle', old.get('handle', identifier) if old else identifier)
+        if not isinstance(handle, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,39}', handle) or handle in ('all', 'both', 'user', 'system', 'everyone'):
+            raise ValueError('Mention handle must start with a letter and contain only lowercase letters, digits or hyphens')
+        for other_id, other in self.items.items():
+            if other_id != identifier and handle in [other_id, other.get('handle', other_id), *other.get('previous_handles', [])]:
+                raise ValueError('That mention handle belongs to another agent, including its previous handles')
+        if handle != identifier and self.runtime.host.registry.get_instance(handle):
+            raise ValueError('That mention handle is already in use; choose another')
+        previous_handles = list(old.get('previous_handles', [])) if old else []
+        if old:
+            previous = old.get('handle', identifier)
+            if previous != handle and previous not in previous_handles:
+                previous_handles.append(previous)
+        previous_handles = [value for value in previous_handles if value != handle]
         color = body.get('color', old['color'] if old else self.templates[template].get('color', '#8b5cf6'))
         if not isinstance(color, str) or not re.fullmatch(r'#[0-9a-fA-F]{6}', color):
             raise ValueError('Choose a six-digit hex color')
@@ -84,7 +121,8 @@ class AgentProfiles:
             if source is None:
                 raise ValueError('Refresh provider choices before choosing a model')
             self.runtime.controls.validate(source, model, effort)
-        return {'id': identifier, 'template': template, 'name': label, 'color': color.lower(),
+        return {'id': identifier, 'handle': handle, 'previous_handles': previous_handles,
+                'template': template, 'name': label, 'color': color.lower(),
                 'background': background.strip(), 'model': model, 'effort': effort,
                 'archived': old.get('archived', False) if old else False}
 

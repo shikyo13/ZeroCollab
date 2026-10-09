@@ -323,7 +323,9 @@ class Run:
             + (ROOT / 'COLLABORATION.md').read_text('utf-8').strip()
         )
         profile = manager.profiles.items.get(name, {})
-        self.instructions += f"\n\nYour project identity is {profile.get('name', name)} (@{name})."
+        self.instructions += (f"\n\nYour project identity is {profile.get('name', name)} "
+                              f"(@{profile.get('handle', name)}). Your permanent internal ID is {name}; "
+                              "public handle changes do not change your history, tasks or working tree.")
         if profile.get('background'):
             self.instructions += '\nPersonal background and expert perspective supplied by the user:\n' + profile['background']
         self.instructions += '\nApply this perspective while collaborating with the team and following the current user request and room rules.'
@@ -715,7 +717,8 @@ class RoomRuntime:
         cfg['avatar_base'] = profile['template']
         self.cfg['agents'][name] = cfg
         self.states[name] = {'provider': cfg.get('provider', profile['template']), 'template': profile['template'],
-            'label': profile['name'], 'color': profile['color'], 'archived': profile.get('archived', False),
+            'label': profile['name'], 'handle': profile.get('handle', name),
+            'color': profile['color'], 'archived': profile.get('archived', False),
             'state': 'ready', 'detail': '', 'paused': profile.get('paused', False) or profile.get('archived', False), **workspace}
         self.controls.register(name, cfg, restore_saved=False)
         peer = next((n for n, p in self.profiles.items.items() if n != name and p['template'] == profile['template']
@@ -769,7 +772,7 @@ class RoomRuntime:
                 self.profiles.items[name] = {**self.profiles.items[name], **profile}
                 cfg = self.profiles.config(profile); cfg['avatar_base'] = profile['template']
                 self.cfg['agents'][name] = cfg
-                self.states[name].update(label=profile['name'], color=profile['color'])
+                self.states[name].update(label=profile['name'], handle=profile.get('handle', name), color=profile['color'])
                 self.controls.values[name] = {'model': profile['model'], 'effort': profile['effort']}
                 if not profile.get('archived'):
                     self.host.registry.register_managed(name, cfg)
@@ -1170,6 +1173,7 @@ class RoomRuntime:
             return {'ok': True}
         run.touch()
         run.coordination_calls += 1
+        arguments = self.profiles.recipient_arguments(arguments)
         if tool == 'room_browser':
             action = arguments.get('action', 'status')
             if action == 'status':
@@ -1338,7 +1342,7 @@ class RoomRuntime:
         return {'status': 'queued', 'queued': True, 'reason': f'A turn for {name} starts {wait}.'}
 
     async def coordination_record(self, actor, tool, arguments, channel, chain):
-        arguments = dict(arguments)
+        arguments = self.profiles.recipient_arguments(arguments)
         notify = arguments.pop('notify', True)
         method = self.project_room.records.review if tool == 'room_review' else self.project_room.records.followup
         result = method(actor, **arguments)
@@ -1758,7 +1762,7 @@ def install(host):
     @host.app.post('/api/runtime/goal')
     async def goal_change(request: Request):
         try:
-            body = await request.json()
+            body = runtime.profiles.recipient_arguments(await request.json())
             result = runtime.goals.change('user', **body)
             runtime.goals.schedule()
             await runtime.publish_status()
@@ -1769,7 +1773,7 @@ def install(host):
     @host.app.post('/api/runtime/tasks')
     async def tasks(request: Request):
         try:
-            body = await request.json()
+            body = runtime.profiles.recipient_arguments(await request.json())
             start = body.pop('start', False)
             channel = body.pop('channel', '') or runtime.default_channel()
             if start and not runtime.owns_channel(channel):

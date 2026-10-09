@@ -558,9 +558,17 @@ class RuntimeRegistry:
             return {
                 n: {"color": i.color, "label": i.label,
                     "base": self._bases.get(i.base, {}).get('avatar_base', i.base), "state": i.state,
-                    "managed_profile": self._bases.get(i.base, {}).get('profile', False)}
+                    "managed_profile": self._bases.get(i.base, {}).get('profile', False),
+                    "handle": self._bases.get(i.base, {}).get('handle', n),
+                    "previous_handles": list(self._bases.get(i.base, {}).get('previous_handles', []))}
                 for n, i in self._instances.items()
             }
+
+    def get_mention_aliases(self) -> dict[str, str]:
+        with self._lock:
+            return {alias: name for name, instance in self._instances.items() if instance.state == 'active'
+                    for alias in [self._bases.get(instance.base, {}).get('handle', name),
+                                  *self._bases.get(instance.base, {}).get('previous_handles', [])]}
 
     def get_all_names(self) -> list[str]:
         with self._lock:
