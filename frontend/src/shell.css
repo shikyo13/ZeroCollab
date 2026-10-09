@@ -43,11 +43,8 @@
 .modern-workspace .ws-chats .channel-inline-create { padding: 4px 4px 4px 30px; }
 .modern-workspace #channel-bar, .modern-workspace .settings-field:has(#setting-channel-sidebar) { display: none; }
 .workspace-nav-bottom { margin-top: auto; display: grid; gap: 2px; padding-top: 8px; border-top: 1px solid var(--border); }
-.workspace-nav .backend-trigger { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 6px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); font-size: 14px; }
-.workspace-nav .backend-trigger:hover { background: var(--bg-elevated); color: var(--text-strong); }
-.workspace-nav .backend-trigger > span:last-child { flex: 1; flex-direction: row; align-items: baseline; justify-content: space-between; }
-.workspace-nav .backend-trigger .backend-dot { margin: 0 2px; }
-.ws-footer-row { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
+.workspace-nav-bottom > .ws-nav-item, .workspace-nav-bottom .backend-trigger { font-family: var(--font-ui); line-height: 20px; }
+.workspace-nav-bottom .ws-nav-item > svg { flex: none; }
 
 /* Header: context left; roster, stop/resume and the side-panel toggle right. */
 .modern-workspace .workspace-toolbar header { min-height: 52px; padding: 6px 12px 6px 20px; gap: 12px; box-shadow: none; border-bottom: 1px solid var(--border); background: var(--bg-header); flex-wrap: nowrap; }
@@ -112,11 +109,10 @@
   .workspace-nav .workspace-brand { justify-content: center; padding: 0; }
   .workspace-nav .workspace-brand span, .ws-nav-item kbd, .ws-projects { display: none; }
   /* Rail labels are hidden visually but stay in the accessibility tree, so icon-only buttons keep their names. */
-  .ws-nav-item > span, .ws-count, .backend-trigger > span:last-child {
+  .ws-nav-item > span, .ws-count, .backend-status {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
   .ws-nav-item { justify-content: center; padding: 8px; position: relative; }
   .ws-badge { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; padding: 0; font-size: 0; }
-  .ws-footer-row { grid-template-columns: 1fr; }
   .ws-crumb, .ws-roster-text, .ws-goal-chip span, .ws-goal-chip small { display: none; }
 }
