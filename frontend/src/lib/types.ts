@@ -164,6 +164,8 @@ export interface AgentState {
   provider: string;
   template: string;
   label: string;
+  /** Public @handle (defaults to the id the state is keyed by). */
+  handle?: string;
   color: string;
   archived: boolean;
   state: string;

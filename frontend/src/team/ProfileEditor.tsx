@@ -7,7 +7,11 @@ import { ErrorText, Field, useAction } from '../board/shared';
 import { HANDLE_PATTERN, LIMITS, RESERVED_HANDLES } from '../lib/constants';
 
 export interface Profile {
+  /** Permanent internal id: tasks, history, worktree and sessions key on it. */
   id: string;
+  /** Public @handle; defaults to id. Earlier handles keep routing to this agent. */
+  handle?: string;
+  previous_handles?: string[];
   template: string;
   name: string;
   color: string;
@@ -47,12 +51,28 @@ export interface ProfilesData {
 
 const SWATCHES = ['#8b5cf6', '#3b82f6', '#14b8a6', '#22c55e', '#f59e0b', '#f97316', '#ec4899'];
 
+/** Every name that routes to a profile: its id, current handle and previous handles. */
+function namesOf(p: Profile): string[] {
+  return [p.id, p.handle || p.id, ...(p.previous_handles ?? [])];
+}
+
 function availableHandle(name: string, profiles: Profile[]): string {
   let stem = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'expert';
   if (!/^[a-z]/.test(stem) || RESERVED_HANDLES.includes(stem)) stem = 'agent-' + stem;
   let handle = stem;
-  for (let i = 2; profiles.some(p => p.id === handle); i++) handle = `${stem}-${i}`;
+  for (let i = 2; profiles.some(p => namesOf(p).includes(handle)); i++) handle = `${stem}-${i}`;
   return handle;
+}
+
+/** Mirrors the server's checks so the problem shows while typing; the server stays authoritative. */
+function handleProblem(handle: string, selfId: string, profiles: Profile[]): string {
+  if (!handle) return '';
+  if (!new RegExp(`^${HANDLE_PATTERN}$`).test(handle)) return 'Start with a letter; use lowercase letters, digits and hyphens.';
+  if (RESERVED_HANDLES.includes(handle)) return `@${handle} is reserved.`;
+  const holder = profiles.find(p => p.id !== selfId && namesOf(p).includes(handle));
+  if (!holder) return '';
+  const current = (holder.handle || holder.id) === handle || holder.id === handle;
+  return `@${handle} ${current ? 'is used by' : 'is a previous handle of'} ${holder.name}${holder.archived ? ' (archived)' : ''}.`;
 }
 
 function effortLabel(value: string): string {
@@ -62,6 +82,7 @@ function effortLabel(value: string): string {
 interface Draft {
   name: string;
   id: string;
+  handle: string;
   template: string;
   color: string;
   model: string;
@@ -72,9 +93,11 @@ interface Draft {
 function initialDraft(data: ProfilesData, profile: Profile | null, duplicate: boolean): Draft {
   if (profile) {
     const name = duplicate ? profile.name + ' copy' : profile.name;
+    const id = duplicate ? availableHandle(name, data.profiles) : profile.id;
     return {
       name,
-      id: duplicate ? availableHandle(name, data.profiles) : profile.id,
+      id,
+      handle: duplicate ? id : profile.handle || profile.id,
       template: profile.template,
       color: profile.color,
       model: profile.model,
@@ -86,6 +109,7 @@ function initialDraft(data: ProfilesData, profile: Profile | null, duplicate: bo
   return {
     name: '',
     id: '',
+    handle: '',
     template: provider?.id ?? '',
     color: provider?.color || '#8b5cf6',
     model: provider?.controls.selected?.model ?? provider?.controls.models[0]?.value ?? '',
@@ -142,6 +166,8 @@ export function ProfileEditor({
     const ok = await save.run(async () => {
       saved = await runtime<Profile>(editing ? `/profiles/${encodeURIComponent(profile!.id)}` : '/profiles', {
         ...draft,
+        // A new agent's handle is its id; an existing agent keeps its id and changes only the handle.
+        handle: editing ? draft.handle : draft.id,
         // Without a catalog (provider offline) keep the saved effort so cosmetic edits still save.
         effort: !catalog?.models.length || efforts.includes(draft.effort) ? draft.effort : '',
       });
@@ -150,7 +176,7 @@ export function ProfileEditor({
       setDirty(false);
       await onSaved(
         (saved as Profile).id,
-        editing ? 'Saved. Changes apply on the next turn.' : data.paused ? 'Agent added. The room remains stopped.' : 'Agent added. It will respond when addressed.',
+        editing ? 'Saved. Name and handle are updated; model and effort apply from the next turn.' : data.paused ? 'Agent added. The room remains stopped.' : 'Agent added. It will respond when addressed.',
       );
     }
   };
@@ -170,7 +196,17 @@ export function ProfileEditor({
       );
   };
 
-  const saveDisabled = save.busy || (!editing && !!catalog?.error);
+  const handleValue = editing ? draft.handle : draft.id;
+  const savedHandle = profile ? profile.handle || profile.id : '';
+  const problem = handleProblem(handleValue, editing ? profile!.id : '', data.profiles);
+  const handleHint = problem
+    ? ''
+    : !editing
+      ? 'Lowercase letters, digits and hyphens.'
+      : handleValue !== savedHandle
+        ? `@${savedHandle} keeps working for earlier messages and tasks.`
+        : 'Rename any time; earlier handles keep working.';
+  const saveDisabled = save.busy || !!problem || (!editing && !!catalog?.error);
   const initials = (draft.name.trim() || 'Expert').slice(0, 2).toUpperCase();
 
   return (
@@ -182,7 +218,7 @@ export function ProfileEditor({
         <div>
           <h2>{editing ? `Edit ${profile!.name}` : duplicate ? 'Duplicate agent' : 'Add an agent'}</h2>
           <p className="bd-muted">
-            {editing ? 'Changes apply on the next turn. The mention handle stays stable.' : 'Give them a perspective. The team works together.'}
+            {editing ? 'Name and handle update everywhere when you save. Model and effort apply from the next turn.' : 'Give them a perspective. The team works together.'}
           </p>
         </div>
       </div>
@@ -201,23 +237,25 @@ export function ProfileEditor({
             }}
           />
         </Field>
-        <Field label="Mention handle" hint={editing ? 'Handles stay stable so history and tasks keep working.' : 'Lowercase letters, digits and hyphens.'}>
+        <Field label="Mention handle" hint={handleHint}>
           <div className="tm-handle">
             <span aria-hidden="true">@</span>
             <input
-              value={draft.id}
+              value={handleValue}
               required
-              readOnly={editing}
               pattern={HANDLE_PATTERN}
               maxLength={LIMITS.handle}
               autoComplete="off"
               placeholder="maya-ux"
+              aria-invalid={!!problem}
               onChange={e => {
+                const value = e.target.value.toLowerCase();
                 setHandleEdited(true);
-                update({ id: e.target.value });
+                update(editing ? { handle: value } : { id: value });
               }}
             />
           </div>
+          {problem && <span className="bd-error tm-handle-problem" role="alert">{problem}</span>}
         </Field>
       </div>
 
@@ -311,8 +349,10 @@ export function ProfileEditor({
       )}
 
       <ErrorText message={save.error || archive.error} />
-      <div className="bd-actions tm-form-actions">
-        {editing && (
+      {/* Sticks to the bottom of the view while there are unsaved changes, so Save is never below the fold. */}
+      <div className={`bd-actions tm-form-actions${dirty ? ' tm-form-dirty' : ''}`}>
+        {dirty && editing && <span className="tm-unsaved" role="status">Unsaved changes</span>}
+        {editing && !dirty && (
           <>
             <button type="button" className="bd-btn" onClick={onDuplicate} disabled={dirty} title={dirty ? 'Save or cancel first' : undefined}>
               Duplicate

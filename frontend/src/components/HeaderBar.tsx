@@ -54,7 +54,7 @@ function Roster({ state, onTeam }: { state: RuntimeState; onTeam: () => void }) 
       <ul>
         {agents.map(([id, a]) => <li key={id}>
           <span className={`ws-avatar${a.state === 'working' ? ' is-working' : ''}`} style={{ '--agent-color': a.color || 'var(--accent)' } as React.CSSProperties} aria-hidden="true">{(a.label || id).charAt(0).toUpperCase()}</span>
-          <span className="ws-roster-name">{a.label || id}<small>@{id}</small></span>
+          <span className="ws-roster-name">{a.label || id}<small>@{a.handle || id}</small></span>
           <small className="ws-roster-state">{a.paused ? 'stopped' : a.state}{a.queued ? ` · ${a.queued} queued` : ''}</small>
         </li>)}
       </ul>

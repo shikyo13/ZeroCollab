@@ -36,6 +36,14 @@
 .tm-swatch[aria-pressed='true'] { border-color: var(--bd-text); }
 .tm-worktree code { overflow-wrap: anywhere; }
 .tm-form-actions { border-top: 1px solid var(--bd-border); padding-top: 14px; }
+/* While there are unsaved changes the action row sticks to the bottom of the scrolling view. */
+/* The negative offset cancels .bd-root's bottom padding (32px, 24px under 720px) so the bar meets the window edge. */
+.tm-form-dirty { position: sticky; bottom: -32px; z-index: 2; margin: 0 -16px -16px; padding: 12px 16px; background: var(--bd-surface);
+  border-radius: 0 0 var(--bd-radius) var(--bd-radius); box-shadow: 0 -10px 18px rgba(0, 0, 0, .28); }
+.tm-unsaved { color: var(--bd-warn); font-weight: 600; font-size: 13.5px; }
+.tm-handle-problem { display: block; }
+@media (max-width: 720px) { .tm-form-dirty { bottom: -24px; } }
+.tm-handle:has(input[aria-invalid="true"]) { border-color: var(--bd-danger); }
 .tm-spacer { flex: 1 1 auto; }
 .tm-notice { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--bd-success); color: var(--bd-text); background: rgba(52, 211, 153, 0.08); }
 @media (max-width: 900px) {

@@ -554,6 +554,10 @@ function getSenderClass(sender) {
 function resolveAgent(name) {
     const s = name.toLowerCase();
     if (s in agentConfig) return s;
+    // A renamed agent answers to its current and previous handles; messages keep its permanent id.
+    for (const [key, cfg] of Object.entries(agentConfig)) {
+        if (cfg.handle === s || cfg.previous_handles?.includes(s)) return key;
+    }
     // Try prefix match: "gemini-cli" → "gemini"
     for (const key of Object.keys(agentConfig)) {
         if (!agentConfig[key].managed_profile && s.startsWith(key)) return key;
@@ -671,7 +675,7 @@ function applySender(el) {
     el.style.setProperty('--sender-color', getColor(name));
     const label = el.querySelector('.msg-sender, .join-text strong');
     label.textContent = getAgentDisplayName(name);
-    label.title = '@' + name;
+    label.title = '@' + (agentConfig[resolveAgent(name)]?.handle || name);
 }
 
 function recolorMessages() {
@@ -694,7 +698,7 @@ function buildStatusPills() {
         pill.className = 'status-pill';
         if (cfg.state === 'pending') pill.classList.add('pending');
         pill.id = `status-${name}`;
-        pill.title = `@${name}`;  // Tooltip: canonical name for manual @-typing
+        pill.title = `@${cfg.handle || name}`;  // Tooltip: the handle for manual @-typing
         pill.style.setProperty('--agent-color', colorOverrides[name] || cfg.color || 'var(--online)');
         pill.innerHTML = `<span class="status-dot"></span><span class="status-label">${escapeHtml(cfg.label || name)}</span>`;
         // Agent names, colors and instructions are managed in Team.
@@ -868,8 +872,9 @@ function buildMentionToggles() {
         const btn = document.createElement('button');
         btn.className = 'mention-toggle';
         btn.dataset.agent = name;
-        btn.textContent = `@${cfg.label || name}`;
-        btn.title = `@${name}`;  // Tooltip: canonical name
+        // The chip shows what you would type; the display name is the tooltip.
+        btn.textContent = `@${cfg.handle || name}`;
+        btn.title = cfg.label || name;
         btn.style.setProperty('--agent-color', colorOverrides[name] || cfg.color);
         // Restore active state for mentions that survived the rebuild
         if (activeMentions.has(name)) {

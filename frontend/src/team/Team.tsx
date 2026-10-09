@@ -41,6 +41,7 @@ function AgentRow({
   providerLabel,
   selected,
   onSelect,
+  guarded,
 }: {
   profile: Profile;
   agent?: AgentState;
@@ -48,11 +49,15 @@ function AgentRow({
   providerLabel: string;
   selected: boolean;
   onSelect: () => void;
+  /** True when an unsaved edit must be saved or cancelled first (it warns instead). */
+  guarded: () => boolean;
 }) {
   const { run: act, busy, error } = useAction();
   const status = statusOf(agent, profile, !!run);
-  const toggle = () =>
-    act(() => runtime(`/agent/${encodeURIComponent(profile.id)}/${agent?.paused ? 'resume' : 'stop'}`, {}));
+  const toggle = () => {
+    if (guarded()) return;
+    void act(() => runtime(`/agent/${encodeURIComponent(profile.id)}/${agent?.paused ? 'resume' : 'stop'}`, {}));
+  };
   return (
     <li className={`tm-agent${selected ? ' tm-agent-selected' : ''}${profile.archived ? ' tm-agent-archived' : ''}`}>
       <button type="button" className="tm-agent-open" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
@@ -62,7 +67,7 @@ function AgentRow({
         <span className="tm-agent-text">
           <strong>{profile.name}</strong>
           <small>
-            @{profile.id} · {providerLabel}
+            @{profile.handle || profile.id} · {providerLabel}
           </small>
         </span>
       </button>
@@ -70,7 +75,7 @@ function AgentRow({
         <span className={`tm-state tm-tone-${status.tone}`}>{status.label}</span>
         {!!agent?.queued && <span className="bd-muted">{agent.queued} queued</span>}
         {!profile.archived && agent && (
-          <button type="button" className={`bd-btn ${agent.paused ? '' : 'bd-btn-danger'} tm-stop`} disabled={busy} onClick={() => void toggle()}>
+          <button type="button" className={`bd-btn ${agent.paused ? '' : 'bd-btn-danger'} tm-stop`} disabled={busy} onClick={toggle}>
             {agent.paused ? 'Resume' : 'Stop'}
           </button>
         )}
@@ -125,11 +130,14 @@ export default function Team() {
   const archivedCount = (data?.profiles ?? []).filter(p => p.archived).length;
   const runs = runtimeState?.runs ?? [];
 
+  // Actions that would leave an edit behind warn instead, so a draft is never silently dropped.
+  const guarded = (message = 'Save or cancel your changes first.') => {
+    if (dirty) setGuard(message);
+    return dirty;
+  };
+
   const choose = (id: string | null, nextMode: 'edit' | 'add' | 'duplicate') => {
-    if (dirty) {
-      setGuard('Save or cancel your changes before switching.');
-      return;
-    }
+    if (guarded('Save or cancel your changes before switching.')) return;
     setGuard('');
     setNotice('');
     setSelected(id);
@@ -173,7 +181,7 @@ export default function Team() {
             className="bd-btn"
             disabled={refreshAction.busy}
             title="Re-check provider sign-in and reload model catalogs"
-            onClick={() => void refreshAction.run(async () => {
+            onClick={() => guarded() || void refreshAction.run(async () => {
               await runtime('/refresh', {});
               await load();
             })}
@@ -209,6 +217,7 @@ export default function Team() {
                   providerLabel={providerLabel(p.template)}
                   selected={mode === 'edit' && p.id === selected}
                   onSelect={() => choose(p.id, 'edit')}
+                  guarded={() => guarded()}
                 />
               ))}
             </ul>

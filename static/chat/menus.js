@@ -69,7 +69,8 @@ function getMentionCandidates() {
     const candidates = [];
     for (const [name, cfg] of Object.entries(agentConfig)) {
         if (cfg.state === 'pending') continue;
-        candidates.push({ name, label: cfg.label || name, color: cfg.color });
+        // Insert the public handle; the router maps it (and old handles) to the agent's id.
+        candidates.push({ name: cfg.handle || name, label: cfg.label || name, color: cfg.color });
     }
     candidates.push({ name: 'all agents', label: 'all agents', color: 'var(--accent)' });
     return candidates;
