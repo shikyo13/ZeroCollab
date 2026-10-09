@@ -8,3 +8,6 @@
 
 # Force LF for Unix-specific Python wrapper
 wrapper_unix.py text eol=lf
+
+# Vendored third-party files ship byte-for-byte as published (no line-ending conversion)
+static/vendor/** -text

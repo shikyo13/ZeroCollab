@@ -127,10 +127,10 @@ The workspace has no client router or state library. Its seams with the rest of 
 
 ## Chat client script order (`static/index.html`)
 
-Classic scripts sharing globals, so order matters. `marked` comes from a CDN without a pinned version or integrity hash (an open finding).
+Classic scripts sharing globals, so order matters. `marked` 15.0.12 is vendored at `static/vendor/marked.min.js`, byte-identical to the npm package file, with its upstream license at `static/vendor/marked.LICENSE.md`. `.gitattributes` marks `static/vendor/**` as `-text`, so releases (which ship checkout bytes) never convert their line endings. `chat.js` `init()` calls `marked.setOptions` first, so the page must not depend on a CDN being reachable. To upgrade, replace the file from the npm tarball and bump the `?v=` tag.
 
 <!-- generated:scripts -->
-1. `https://cdn.jsdelivr.net/npm/marked/marked.min.js`
+1. `/static/vendor/marked.min.js`
 2. `/static/core.js`
 3. `/static/store.js`
 4. `/static/prefs.js`

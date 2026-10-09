@@ -40,6 +40,5 @@ The UI has two layers on one page:
 ## Status and known gaps (as of 2026-10-07)
 
 - Multi-repository projects are merged. Open items are listed in [repositories.md](repositories.md).
-- `marked` is loaded from a CDN with no pinned version and no integrity hash.
 - Import cycles exist between `project_registry`, `project_room`, `room_runtime` and `coordination_records`. They are resolved by function-level imports. See [dependency-map.md](dependency-map.md).
 - `room_runtime.py` (about 1800 lines), `app.py` (about 1300) and `supervisor.py` (about 850) are the largest modules.

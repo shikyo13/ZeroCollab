@@ -62,7 +62,7 @@ Every source file, with its line count and the purpose its own header states. Th
 | `login_gemini.py` | 12 | Open the official Gemini sign-in UI without inheriting API-key billing settings. |
 | `mcp_bridge.py` | 618 | MCP server for agent chat tools - runs alongside the web server. |
 | `mcp_proxy.py` | 336 | Per-instance MCP identity proxy. |
-| `native_adapters.py` | 582 | Official, locally authenticated CLI protocols. No credential handling. |
+| `native_adapters.py` | 586 | Official, locally authenticated CLI protocols. No credential handling. |
 | `project_registry.py` | 790 | Index of every project this room has worked in: board, team, goal, chats and repository. |
 | `project_room.py` | 873 | Durable project coordination and bounded room context, without model calls. |
 | `provider_controls.py` | 166 | Room-local model/effort preferences and official, read-only provider catalogs. |
@@ -161,7 +161,7 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 Loaded by `static/index.html` in this order (see [dependency-map.md](dependency-map.md)):
 
 <!-- generated:scripts -->
-1. `https://cdn.jsdelivr.net/npm/marked/marked.min.js`
+1. `/static/vendor/marked.min.js`
 2. `/static/core.js`
 3. `/static/store.js`
 4. `/static/prefs.js`

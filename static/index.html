@@ -157,7 +157,8 @@
         <div class="dropzone-inner">Drop image here</div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- marked 15.0.12, served locally: chat.js init needs it, so a CDN outage would stop the whole page. -->
+    <script src="/static/vendor/marked.min.js?v=15.0.12"></script>
     <script src="/static/core.js?v=zerocollab-repo-1"></script>
     <script src="/static/store.js?v=zerocollab-repo-1"></script>
     <script src="/static/prefs.js?v=zerocollab-fixes-2"></script>
