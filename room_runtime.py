@@ -1149,7 +1149,9 @@ class RoomRuntime:
             await run.finish_message(partial=True)
         finally:
             await run.steering.close(outcome)
-            await native.terminate(run)
+            # Completed and stopped (already interrupted) CLIs are idle and may exit on their own;
+            # a failed run can still be mid-turn, so it is killed at once to enforce its limits.
+            await native.terminate(run, 0 if outcome == "failed" else native.EXIT_GRACE)
             native.restore_room_server(run)
             for identifier, approval in list(self.approvals.items()):
                 if approval["display"]["run"] == run.id:

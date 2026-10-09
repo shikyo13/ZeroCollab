@@ -79,7 +79,7 @@ async def cli_catalog(provider, cwd):
     finally:
         if rpc:
             await rpc.close()
-        await native.terminate(run)
+        await native.terminate(run, native.EXIT_GRACE)
 
 
 class ProviderControls:

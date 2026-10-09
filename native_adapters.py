@@ -117,8 +117,30 @@ def restore_room_server(run):
         run.room_mcp_backup = None
 
 
-async def terminate(run):
+# Seconds an idle CLI gets to exit on stdin EOF before it is force-killed. Claude Code needs about
+# half a second to shut down; killing it during an OAuth refresh loses the rotated refresh token
+# and signs every Claude Code client on the machine out.
+EXIT_GRACE = 10
+
+
+async def _discard(stream):
+    with contextlib.suppress(Exception):
+        while await stream.read(65536):
+            pass
+
+
+async def terminate(run, grace=0):
+    """Ends a run's CLI. grace > 0 first closes stdin so the CLI can exit on its own and finish
+    pending writes such as rotated credentials; use it only when the CLI is idle or interrupted."""
     proc = run.process
+    if proc and proc.returncode is None and grace:
+        with contextlib.suppress(Exception):
+            proc.stdin.close()
+        # Keep stdout drained so a final write cannot block the exit on a full pipe.
+        drain = asyncio.create_task(_discard(proc.stdout))
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(proc.wait(), grace)
+        drain.cancel()
     if proc and proc.returncode is None:
         if os.name == "nt":
             # Only a child that this run owns; never the shared model server.

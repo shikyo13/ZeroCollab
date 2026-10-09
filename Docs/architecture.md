@@ -102,7 +102,10 @@ Agents post back through the MCP `chat_send` tool or the room tools; that is ano
         - same-channel human input while running -> steering_delivery
         |
         v
- finish: collect_diffs() (one string per agent, "[Repository key]" sections),
+ finish: native.terminate(run, grace): completed or stopped CLIs get stdin EOF and up to
+         EXIT_GRACE seconds to exit (a hard kill mid OAuth refresh signs Claude Code out);
+         failed runs are killed at once.
+         collect_diffs() (one string per agent, "[Repository key]" sections),
          runtime_end event, goal scheduling (room_goals), publish_status()
 ```
 
