@@ -93,17 +93,21 @@ function TransitionStatus({ project, transition, state }: { project: ProjectSumm
   </div>;
 }
 
-function RequestCard({ project, request, state, onReview, onChanged }: { project: ProjectSummary; request: RepositoryRequest; state: RuntimeState | null; onReview: (() => void) | null; onChanged: () => void }) {
+/** review replaces the Review request button where the request cannot be applied here yet:
+ * an inactive project shows its switch control instead, since only the active project attaches.
+ * team names the requester when the runtime state belongs to another (the active) project. */
+export function RequestCard({ project, request, state, onReview, review, team, onChanged }: { project: ProjectSummary; request: RepositoryRequest; state: RuntimeState | null; onReview: (() => void) | null; review?: ReactNode; team?: ProjectMember[]; onChanged: () => void }) {
   const dismiss = useAction();
   const add = requestAction(request, project) === 'add';
   const replace = !add && (request.replace ?? !!project.path);
   return <div className="pj-notice">
-    <strong className="bd-attention">{agentName(state, request.by)} requested {add ? 'an additional repository' : replace ? 'a repository change' : 'a repository'}</strong>
+    <strong className="bd-attention">{team?.find(m => m.id === request.by)?.name ?? agentName(state, request.by)} requested {add ? 'an additional repository' : replace ? 'a repository change' : 'a repository'}</strong>
     <p>{request.reason}</p>
     {replace && request.current && <code className="pj-path pj-path-full">From {request.current}</code>}
     <code className="pj-path pj-path-full">{replace ? 'To ' : ''}{request.path}{request.create ? ' (new repository)' : ''}</code>
     <div className="pj-actions">
       {onReview && <button className="bd-btn bd-btn-primary" onClick={onReview}>Review request</button>}
+      {review}
       <button className="bd-btn" disabled={dismiss.busy} onClick={async () => { if (await dismiss.run(() => runtime(`/projects/${project.id}/repository/dismiss`, {}))) onChanged(); }}>Dismiss request</button>
     </div>
     <ErrorText message={dismiss.error} />

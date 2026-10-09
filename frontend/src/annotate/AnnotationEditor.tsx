@@ -78,7 +78,7 @@ function drawMarks(ctx: CanvasRenderingContext2D, width: number, height: number,
 
 /** Compose the text agents read alongside the annotated image. */
 export function annotationNote(summary: string, marks: Mark[]): string {
-  const lines = marks.map((m, i) => `#${i + 1} ${m.kind}: ${m.note.trim() || '(no note)'}`);
+  const lines = marks.map((m, i) => `#${i + 1} ${m.kind}: ${m.note.trim() || '(no note)'} [color=${m.color}]`);
   return [summary.trim(), ...lines].filter(Boolean).join('\n').slice(0, LIMITS.attachmentNote);
 }
 

@@ -224,6 +224,27 @@ def _install_security_middleware(token: str, cfg: dict):
             return await call_next(request)
 
     app.add_middleware(SecurityMiddleware)
+    # Added last, so it runs first, for HTTP and WebSocket alike. A DNS-rebinding page reaches this
+    # server under its own domain name. GETs from it carry no Origin header, and '/' embeds the
+    # session token, so only the Host header tells it apart from the user's own browser tab; the
+    # Origin and token checks above cannot protect '/'.
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+    server = cfg.get("server", {})
+    bracket = lambda name: f"[{name}]" if ":" in name else name  # Starlette compares IPv6 hosts with their brackets
+    bind = str(server.get("host", "127.0.0.1")).strip("[]")
+    extra = server.get("allowed_hosts", [])
+    if not isinstance(extra, list) or not all(isinstance(h, str) and h and "*" not in h for h in extra):
+        raise ValueError('server.allowed_hosts must be a list of host names or addresses, without wildcards')
+    hosts = ["127.0.0.1", "localhost", "[::1]", *(bracket(h.strip("[]")) for h in extra)]
+    if bind in ("0.0.0.0", "::"):
+        # Every interface: the names other computers use cannot be inferred, and accepting any Host
+        # would reopen DNS rebinding, so only loopback and the listed names are served.
+        if not extra:
+            log.warning('server.host is %s but server.allowed_hosts is empty, so only this computer can open the room. '
+                        'List the names or addresses other computers use, e.g. allowed_hosts = ["192.168.1.20", "studio.local"]', bind)
+    elif bracket(bind) not in hosts:
+        hosts.append(bracket(bind))
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False)
 
 
 def configure(cfg: dict, session_token: str = ""):

@@ -29,7 +29,7 @@ CLI discovery (`native_adapters.command`): `PATH`, then known install paths (`~/
    - No `Authorization` header, so keyed OpenAI-compatible servers (vLLM, LiteLLM, OpenRouter) cannot be used.
    - No context-window awareness: the room prompt budget (`input_chars`, 16000 chars) is the same for a 4k-token local model as for a frontier model.
    - No check that the server returns structured `tool_calls` (llama.cpp needs `--jinja`; Ollama only for tool-capable models). Failure shows at turn time as "returned tool markup as text".
-   - No detection of Ollama (11434), LM Studio (1234) or llama.cpp (8080).
+   - No detection of Ollama (11434), LM Studio (1234) or llama.cpp (8080). (S1 added detection, and MLX LM and mlx-serve were added later; see Local model plan.)
 6. The CLIs are installed separately by the user; the installer neither bundles nor checks them.
 
 ## Auth options
@@ -47,6 +47,11 @@ Recommendation: A for every provider. B as an explicit per-provider opt-in with 
 ## Local model plan
 
 - Detection: probe `127.0.0.1:11434` (Ollama `/api/tags`, `/v1/models`), `:1234` (LM Studio `/v1/models`), `:8080` (llama.cpp `/v1/models`, `/props`). Offer "Add local provider" with the found models; show "not running" with the start command when installed but stopped (`ollama serve`, `lms server start`).
+- MLX (macOS on Apple silicon only; other platforms do not list these rows), as built in `provider_setup.LOCAL_SERVERS`:
+  - MLX LM (`pip install mlx-lm`, `mlx_lm.server --model <mlx-community/...>`) listens on `127.0.0.1:8080`, the same default as llama.cpp. Its `/v1/models` lists the local Hugging Face cache, and each entry is only `id`/`object`/`created`. Chat completions accept `tools` and return structured `tool_calls` for models whose chat template supports them. Its `--max-tokens` default is 512, but `local_turn` always sends `max_tokens`.
+  - mlx-serve (`brew install mlx-serve`, `mlx-serve serve`, needs macOS 26.2+) listens on `127.0.0.1:11234` and serves `/v1/models` and `/v1/chat/completions`.
+  - One shared port means one probe, and the port is credited only on positive evidence. `served_by()` recognizes llama.cpp from `owned_by: "llamacpp"`. MLX LM has no marker, and a Python `Server` header or an installed app is not evidence. An identified server shows Running, and the other row shows "<server> is using this port". An answer that names no server becomes a single "Running, not identified" row for that address ("llama.cpp or MLX LM"). Only the identified owner, or that single row, counts as the configured provider at the address.
+  - Listing and probing both require Apple silicon (`apple_silicon()`: `platform.machine()`, or `sysctl hw.optional.arm64` for a Python running under Rosetta). Intel Macs, Windows and Linux never probe 11234. Manually configured `api` providers that point at an MLX server elsewhere keep working on any platform.
 - Capability check on add: one tiny `/chat/completions` request with a single tool; pass only if the reply carries structured `tool_calls`. Read the context length (Ollama `/api/show` `num_ctx`/model info, llama.cpp `/props` `n_ctx`) and store it.
 - Config per local provider: base URL, optional key (credential store), output token limit (raise the 2048 cap; default from context size), context window used to bound the prompt budget for that agent.
 
@@ -67,7 +72,7 @@ S2 as built (`provider_setup.py`, `Providers.tsx`): `POST /api/runtime/providers
 
 1. Auth modes: subscription sign-in only, or also opt-in API keys per provider (paid usage).
 2. CLIs: bundle them in the installer, or detect and link to the official installers.
-3. First local servers to support: Ollama, LM Studio, llama.cpp (all three are OpenAI-compatible).
+3. First local servers to support: Ollama, LM Studio, llama.cpp, plus MLX LM and mlx-serve on Macs (user #4891). All are OpenAI-compatible.
 
 ## Verification limits
 

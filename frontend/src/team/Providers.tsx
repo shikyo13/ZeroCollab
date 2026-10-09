@@ -17,7 +17,10 @@ type ProviderRow = {
   models: { loading: boolean; count: number; error: string };
   cli?: Cli; server?: Server;
 };
-type LocalServer = Server & { id: string; name: string; start_command: string; installed: boolean; configured: boolean };
+/** Where servers share a default address (MLX LM and llama.cpp on 8080): port_taken_by names the one that
+ * identified itself there; identity_unconfirmed marks one row for an answer that named no server. */
+type LocalServer = Server & { id: string; name: string; start_command: string; installed: boolean; configured: boolean;
+  port_taken_by?: string; identity_unconfirmed?: boolean };
 export type ProviderStatus = { platform: string; providers: ProviderRow[]; local_servers: LocalServer[] };
 
 type Line = { label: string; tone: 'ok' | 'warn' | 'danger' | 'muted'; details: React.ReactNode[]; action?: { label: string; primary?: boolean } };
@@ -76,7 +79,15 @@ function serverLine(server: Server, start?: string): Line {
 }
 
 function localLine(local: LocalServer): Line {
+  if (local.reachable && local.identity_unconfirmed) {
+    return { label: 'Running, not identified', tone: 'warn', details: [`${local.base_url} · ${local.model_count ?? 0} models served`,
+      `A compatible server answered but did not say whether it is ${local.name}`] };
+  }
   if (local.reachable) return { label: 'Running', tone: 'ok', details: [`${local.base_url} · ${local.model_count ?? 0} models served`, 'Not added as a provider yet'] };
+  if (local.port_taken_by) {
+    return { label: local.installed ? 'Installed, port in use' : 'Not installed', tone: 'muted',
+             details: [`${local.base_url} · ${local.port_taken_by} is using this port`, ...(local.installed ? [`Only one server can use this address; stop ${local.port_taken_by} to use ${local.name} here`] : [])] };
+  }
   if (local.installed) return { label: 'Installed, not running', tone: 'muted', details: [local.base_url, startHint(local.start_command)] };
   return { label: 'Not installed', tone: 'muted', details: [local.base_url] };
 }
@@ -188,7 +199,8 @@ export function Providers({ reload }: { reload: number }) {
 
   const subscriptions = status.providers.filter(p => p.cli);
   const configured = status.providers.filter(p => p.server);
-  const localByBase = new Map(status.local_servers.map(s => [s.base_url.replace(/\/$/, ''), s]));
+  // Servers can share a default address (MLX LM and llama.cpp on 8080); only one is the configured one.
+  const localByBase = new Map(status.local_servers.filter(s => s.configured).map(s => [s.base_url.replace(/\/$/, ''), s]));
   const unconfigured = status.local_servers.filter(s => !s.configured);
   const when = checking ? 'Checking…' : checked ? `Checked at ${checked.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
 

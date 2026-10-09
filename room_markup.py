@@ -87,7 +87,7 @@ def render_markup(source, marks=None, summary=''):
         position = f"({mark['x1']:.3f},{mark['y1']:.3f})"
         if mark['kind'] != 'pin':
             position += f" to ({mark['x2']:.3f},{mark['y2']:.3f})"
-        notes.append(f"#{index} {mark['kind']} {position}: {mark['note'] or '(no note)'}")
+        notes.append(f"#{index} {mark['kind']} {position}: {mark['note'] or '(no note)'} [color={color}]")
     output = io.BytesIO()
     image.save(output, format='PNG')
     data = output.getvalue()

@@ -9,7 +9,7 @@ import { ErrorText, STATUS_LABELS, useAction } from '../board/shared';
 import '../board/board.css';
 import './projects.css';
 import { NewProject } from './NewProject';
-import { Repository } from './Repository';
+import { Repository, RequestCard } from './Repository';
 import { openChannel, PROJECT_REFRESH_MS, projectLabel, roomIsBusy, switchProject, teamSignature, type ProjectDetail, type ProjectMember, type ProjectSummary } from './projectData';
 import { EVENTS, LIMITS } from '../lib/constants';
 
@@ -74,7 +74,7 @@ function Rename({ project, onDone }: { project: ProjectSummary; onDone: () => vo
   </form>;
 }
 
-function SwitchButton({ project, onSwitched }: { project: ProjectSummary; onSwitched: () => void }) {
+function SwitchButton({ project, onSwitched, label = 'Switch to this project' }: { project: ProjectSummary; onSwitched: () => void; label?: string }) {
   const { data: state } = useRuntimeState();
   const [confirming, setConfirming] = useState(false);
   const { run, busy, error } = useAction();
@@ -89,12 +89,13 @@ function SwitchButton({ project, onSwitched }: { project: ProjectSummary; onSwit
         <button className="bd-btn bd-btn-primary" disabled={busy} onClick={() => void go()}>{busy ? 'Switching…' : 'Stop agents and switch'}</button>
         <button className="bd-btn bd-btn-quiet" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
       </>
-      : <button className="bd-btn bd-btn-primary" disabled={busy} onClick={() => busyRoom ? setConfirming(true) : void go()}>{busy ? 'Switching…' : 'Switch to this project'}</button>}
+      : <button className="bd-btn bd-btn-primary" disabled={busy} onClick={() => busyRoom ? setConfirming(true) : void go()}>{busy ? 'Switching…' : label}</button>}
     <ErrorText message={error} />
   </div>;
 }
 
 function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void; navigate: ProjectNav }) {
+  const { data: state } = useRuntimeState();
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [error, setError] = useState('');
   const load = useCallback(async () => {
@@ -178,9 +179,16 @@ function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void
         {detail.conversation && <p className="bd-muted">No repository. Agents work in private scratch folders; the board still works.</p>}
         {detail.active
           ? <Repository project={detail} team={team} onChanged={() => { void load(); onRenamed(); }} />
-          : !detail.conversation && <>
-            <code className="pj-path pj-path-full">{detail.path || 'Unknown'}</code>
-            <small className="bd-muted">Each agent gets its own branch and worktree when this project is attached.</small>
+          : <>
+            {/* Attaching needs the active project (the server refuses otherwise), so an inactive project's
+              * request offers the switch; once switched, this panel shows the usual Review request form. */}
+            {detail.repo_request && <RequestCard project={detail} request={detail.repo_request} state={state} onReview={null} team={detail.team}
+              review={<SwitchButton project={detail} label="Switch to review" onSwitched={() => { void load(); onRenamed(); }} />}
+              onChanged={() => { void load(); onRenamed(); }} />}
+            {!detail.conversation && <>
+              <code className="pj-path pj-path-full">{detail.path || 'Unknown'}</code>
+              <small className="bd-muted">Each agent gets its own branch and worktree when this project is attached.</small>
+            </>}
           </>}
       </div>
     </div>

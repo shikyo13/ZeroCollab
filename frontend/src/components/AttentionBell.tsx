@@ -59,7 +59,8 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
     if (!request) continue;
     items.push({
       key: `repo:${project.id}`,
-      title: `${name(state, request.by)} requested ${request.replace ? 'a repository change' : 'a repository'}`,
+      // The runtime state names only the active project's team; another project's requester is in its own.
+      title: `${project.team.find(m => m.id === request.by)?.name ?? name(state, request.by)} requested ${request.replace ? 'a repository change' : 'a repository'}`,
       detail: `${project.name}: ${request.path}`,
       action: 'Review in Projects',
       open: () => { openProject(project.id); reveal('#pj-repository'); },

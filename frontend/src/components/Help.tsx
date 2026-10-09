@@ -12,7 +12,7 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
     <p>Start with a conversation. Add structure whenever your work needs it.</p>
     <div className="workspace-help-grid">
       <section><h3>Projects and chats</h3><p>Each project keeps its own chats, board, team and goal. The sidebar lists the active project's chats under its name; select another project or All projects to switch. New project starts without a repository, and you can add one later.</p></section>
-      <section><h3>Chat together</h3><p>New chat at the top of the sidebar starts a conversation in the active project. Mention an agent with @handle, or use Address team to reach everyone. Paste or drop images into the composer.</p></section>
+      <section><h3>Chat together</h3><p>New chat at the top of the sidebar starts a conversation in the active project. Mention an agent with @handle, or select @all above the message box to reach everyone. Paste or drop images into the composer.</p></section>
       <section><h3>Keep work visible</h3><p>The Board tracks owners, reserved files, dependencies, check-ins, reviews and follow-ups. Hover a chat message and choose Create task to put it on the Board.</p></section>
       <section><h3>Build your team</h3><p>Team is where you create agents and set each one's handle, prompt, color, model and reasoning effort. Archive an agent without losing its history.</p></section>
       <section><h3>Stay in control</h3><p>The header shows who is working, with Stop all and Resume beside it. Send a chat message to steer work in progress. Activity holds agent requests, tool calls and deployments, and Server at the bottom left starts or restarts the room.</p></section>

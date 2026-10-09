@@ -1,8 +1,10 @@
 /* Task images: thumbnails on cards, a gallery in task detail with upload by
  * picker, paste or drop, and annotation into a new derived image. The task's
  * list is replaced as a whole through POST /api/runtime/tasks. */
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type ReactNode } from 'react';
+import { useRef, useState, type ClipboardEvent, type DragEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { annotateImage } from '../annotate';
+import { imageNotes, ImageViewer, uploadSource } from '../annotate/ImageViewer';
 import { RASTER_IMAGE_TYPES, runtime, uploadImage } from '../lib/api';
 import type { Task, TaskAttachment } from '../lib/types';
 import { ErrorText, useAction } from './shared';
@@ -109,8 +111,6 @@ export function ImageDropZone({
 
 export function TaskAttachments({ task, channel }: { task: Task; channel: string }) {
   const [expanded, setExpanded] = useState<TaskAttachment | null>(null);
-  const viewer = useRef<HTMLDialogElement>(null);
-  useEffect(() => { if (expanded) viewer.current?.showModal(); }, [expanded]);
   const { run, busy, error, setError } = useAction();
   const attachments = task.attachments ?? [];
   const room = MAX_ATTACHMENTS - attachments.length;
@@ -136,7 +136,7 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
       setError(`A task holds up to ${MAX_ATTACHMENTS} images; remove one before saving an annotated copy.`);
       return;
     }
-    const annotated = await annotateImage(attachment.url, attachment.name);
+    const annotated = await annotateImage(uploadSource(attachment.source) || attachment.url, attachment.name);
     if (annotated) await run(() => save([...latest.current, annotated]));
   };
 
@@ -158,8 +158,11 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
                 </span>
                 {a.note && <details className="bd-image-notes"><summary>Annotation notes</summary><p className="bd-gallery-note">{a.note}</p></details>}
                 <div className="bd-actions">
-                  <button type="button" className="bd-btn bd-btn-quiet" disabled={busy} onClick={() => void annotate(a)}>
-                    Annotate
+                  <button type="button" className="bd-btn bd-btn-quiet" disabled={busy} onClick={() => {
+                    if (!uploadSource(a.source) && imageNotes(a.note).marks.length && !window.confirm('No original is recorded. New marks will be drawn over this image. Continue?')) return;
+                    void annotate(a);
+                  }}>
+                    {uploadSource(a.source) ? 'Annotate original' : 'Annotate'}
                   </button>
                   <button type="button" className="bd-btn bd-btn-quiet" disabled={busy} onClick={() => remove(a.url)}>
                     Remove
@@ -174,10 +177,8 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
       )}
       {busy && <p className="bd-muted" role="status">Saving images...</p>}
       <ErrorText message={error} />
-      {expanded && <dialog ref={viewer} className="bd-image-viewer" onKeyDown={e => e.stopPropagation()} onClose={() => setExpanded(null)}>
-        <header><h2>{expanded.name}</h2><button type="button" onClick={() => viewer.current?.close()} aria-label="Close expanded image">Close ✕</button></header>
-        <div className="bd-image-viewer-content"><div className="bd-image-canvas"><img src={expanded.url} alt={expanded.name} /></div><aside><h3>Annotation notes</h3><p>{expanded.note || 'No annotation notes for this image.'}</p><a href={expanded.url} target="_blank" rel="noopener">Open original size ↗</a><button type="button" onClick={() => { viewer.current?.close(); void annotate(expanded); }}>Annotate a copy</button></aside></div>
-      </dialog>}
+      {expanded && attachments.length > 0 && createPortal(<ImageViewer images={attachments} initial={Math.max(0, attachments.findIndex(a => a.url === expanded.url))}
+        onClose={() => setExpanded(null)} onAnnotate={attachment => void annotate(attachment)} />, document.body)}
     </ImageDropZone>
   );
 }

@@ -455,10 +455,50 @@ class ProjectRoom:
             raise ValueError(f'Upload not found: {url}')
         if not isinstance(post, bool):
             raise ValueError('post must be true or false')
+        requested_url = url
         if marks:
+            # Prefer a clean original, retaining an explicit account of any change of source.
+            # Existing task metadata also recovers originals for older chat posts that lost source.
+            known, invalid_sources = {}, set()
+            records = [*self.state.get('tasks', []), *self.runtime.host.store.get_recent(500, channel=channel)]
+            for record in records:
+                for item in record.get('attachments', []):
+                    if not isinstance(item, dict) or not item.get('source'):
+                        continue
+                    try:
+                        derived = upload_url(item.get('url', ''))
+                    except ValueError:
+                        continue
+                    try:
+                        original = upload_url(item['source'])
+                    except ValueError:
+                        invalid_sources.add(derived)
+                        continue  # Unchecked chat metadata must not replace a valid source link.
+                    known[derived] = original
+            seen = set()
+            fallback = ''
+            while url in known:
+                if url in seen or len(seen) >= 16:
+                    raise ValueError('Image source chain is invalid; share the unmarked original.')
+                seen.add(url)
+                next_url = known[url]
+                next_source = upload_dir / next_url[len('/uploads/'):]
+                if not next_source.is_file():
+                    fallback = 'a saved original is missing'
+                    break
+                url, source = next_url, next_source
+            if not fallback and url in invalid_sources and url not in known:
+                fallback = 'the saved original reference is invalid'
             # Imported on use so the room still starts if Pillow is missing; only markup fails.
             from room_markup import render_markup
             data, note = render_markup(source.read_bytes(), marks, summary)
+            provenance = []
+            if url != requested_url:
+                base = 'available source' if fallback else 'original'
+                provenance.append(f'Marked on the {base} of {requested_url}; earlier marks remain in {requested_url}.')
+            if fallback:
+                provenance.append(f'Original unavailable: {fallback}. Marked on the last available image {url}; existing marks in it remain.')
+            note = '\n'.join([*provenance, note])
             filename = f'{uuid.uuid4().hex[:8]}.png'
             (upload_dir / filename).write_bytes(data)
             attachment = {'url': '/uploads/' + filename, 'name': f'{source.stem}-markup.png', 'note': note, 'source': url}
@@ -467,6 +507,8 @@ class ProjectRoom:
             note = str(summary or '').strip()
             attachment = {'url': url, 'name': source.name, **({'note': note} if note else {})}
         result = {'attachment': attachment}
+        if url != requested_url:
+            result['based_on'] = requested_url
         if task_id:
             task = next((t for t in self.state['tasks'] if t['id'] == task_id), None)
             if not task:
@@ -476,8 +518,10 @@ class ProjectRoom:
             result['task_id'] = task_id
         if post:
             text = attachment.get('note') or f"Shared {attachment['name']}"
+            # Color metadata belongs to the attachment viewer, not the chat prose.
+            text = re.sub(r' \[color=#[0-9a-fA-F]{6}\](?=\n|$)', '', text)
             message = self.runtime.host.store.add(actor, text[:2000], channel=channel,
-                attachments=[{'name': attachment['name'], 'url': attachment['url']}],
+                attachments=[dict(attachment)],
                 metadata={'no_route': True, 'chain': chain})
             result['message_id'] = message['id']
         return result

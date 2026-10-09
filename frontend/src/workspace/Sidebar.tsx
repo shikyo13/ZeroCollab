@@ -69,7 +69,7 @@ export function Sidebar({ view, navigate, projects, active, onOpenProject, onSea
     </div>
     <div className="workspace-nav-bottom">
       <BackendControls />
-      <button className="ws-nav-item" onClick={() => { navigate('chat'); window.toggleSettings?.(); }} title="Settings"><Icon name="settings" size={18} /><span>Settings</span></button>
+      <button className="ws-nav-item" onClick={() => window.toggleSettings?.()} title="Settings"><Icon name="settings" size={18} /><span>Settings</span></button>
       <button className="ws-nav-item" onClick={onHelp} title="Guide"><Icon name="help" size={18} /><span>Guide</span></button>
     </div>
   </nav>;

@@ -533,13 +533,14 @@ ZeroCollab is designed for **localhost use only** and includes several protectio
 
 - **Session token** - a random token is generated on each server start and injected into the web UI. All API and WebSocket requests must present this token.
 - **Loopback-only registration** - agent registration, deregistration, and heartbeat endpoints only accept connections from localhost, preventing remote agent impersonation.
-- **Origin checking** - the server rejects requests from origins that don't match `localhost` / `127.0.0.1`, preventing cross-origin and DNS rebinding attacks.
+- **Host checking** - every HTTP and WebSocket request must name `127.0.0.1`, `localhost` or `[::1]` (or the configured `server.host`) in its Host header. A DNS-rebinding page uses its own domain name, so it cannot load the page that carries the session token.
+- **Origin checking** - the server rejects API requests from origins that don't match `localhost` / `127.0.0.1`, preventing cross-origin requests.
 - **No `shell=True`** - subprocess calls avoid shell injection by passing argument lists directly.
 - **Network binding warning** - if the server is configured to bind to a non-localhost address, it refuses to start unless you explicitly pass `--allow-network`.
 
 The session token is displayed in the terminal on startup and is only accessible to processes on the same machine.
 
-> **`--allow-network` warning:** Network mode binds to a LAN IP, which exposes the server to your local network over unencrypted HTTP. Anyone on the same network can sniff the session token and gain full access - including the ability to @mention agents and trigger tool execution. If agents are running with auto-approve flags, this effectively grants remote code execution on your machine. **Only use `--allow-network` on a trusted home network. Never on public or shared WiFi.**
+> **`--allow-network` warning:** Network mode binds to a LAN IP, which exposes the server to your local network over unencrypted HTTP. Anyone on the same network can sniff the session token and gain full access - including the ability to @mention agents and trigger tool execution. If agents are running with auto-approve flags, this effectively grants remote code execution on your machine. **Only use `--allow-network` on a trusted home network. Never on public or shared WiFi.** When binding to every interface (`host = "0.0.0.0"`), also list the names or addresses other computers use, for example `allowed_hosts = ["192.168.1.20", "studio.local"]` under `[server]`. Without that list only this computer can open the room. Wildcards are refused.
 
 ## License
 

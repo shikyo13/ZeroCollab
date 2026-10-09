@@ -12,6 +12,20 @@ function getAllChatImages() {
 }
 
 function openImageModal(url) {
+    if (window.ZeroImageReview) {
+        const nodes = [...document.querySelectorAll('.msg-attachments img')];
+        let images = nodes.map(img => ({ url: img.src, name: img.alt || 'Shared image',
+            note: img.dataset.note || img.closest('.message')?.querySelector('.msg-text')?.textContent || '',
+            source: img.dataset.source || undefined }));
+        const href = new URL(url, location.href).href;
+        let index = images.findIndex(image => image.url === href);
+        if (index < 0) { images = [pendingAttachments.find(a => new URL(a.url, location.href).href === href) || { url, name: 'Image preview' }]; index = 0; }
+        window.ZeroImageReview(images, index, attachment => {
+            pendingAttachments.push(attachment);
+            renderAttachments(); updateSendButton(); document.getElementById('input').focus();
+        });
+        return;
+    }
     modalImages = getAllChatImages();
     // Match by endsWith since onclick passes relative URL but img.src is absolute
     modalIndex = modalImages.findIndex(src => src.endsWith(url) || src === url);

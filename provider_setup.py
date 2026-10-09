@@ -8,8 +8,10 @@ Sign-in (S2) opens a visible console where the user runs the provider's own offi
 ZeroCollab never sees the password or token. Run as `python provider_setup.py sign-in <provider>`
 inside that console. It never signs out."""
 import asyncio
+import functools
 import json
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -22,12 +24,17 @@ from fastapi.responses import JSONResponse
 
 import native_adapters as native
 
-# Default ports of the local servers users run most; all three speak the OpenAI /v1 API.
+# Default ports of the local servers users run most; all of them speak the OpenAI /v1 API.
+# Apple's MLX LM server defaults to llama.cpp's port 8080; local_rows() credits that port only on evidence.
 LOCAL_SERVERS = (
     ('ollama', 'Ollama', 'http://127.0.0.1:11434/v1', 'ollama serve'),
     ('lmstudio', 'LM Studio', 'http://127.0.0.1:1234/v1', 'lms server start'),
     ('llamacpp', 'llama.cpp', 'http://127.0.0.1:8080/v1', 'llama-server --jinja -m <model.gguf>'),
+    ('mlx', 'MLX LM', 'http://127.0.0.1:8080/v1', 'mlx_lm.server --model <mlx-community/model>'),
+    ('mlxserve', 'mlx-serve', 'http://127.0.0.1:11234/v1', 'mlx-serve serve'),
 )
+# MLX runs only on Apple silicon Macs, so other computers neither list nor probe these servers.
+MAC_ONLY = {'mlx', 'mlxserve'}
 # The official sign-in command per provider; the words after the program name are its arguments.
 SIGN_IN = {'claude': 'claude auth login', 'codex': 'codex login', 'antigravity': 'agy'}
 LABELS = {'claude': 'Claude', 'codex': 'Codex', 'antigravity': 'Antigravity'}
@@ -137,6 +144,10 @@ def local_installed(key):
         return bool(shutil.which('lms')) or (home / '.lmstudio/bin').is_dir() or Path('/Applications/LM Studio.app').exists()
     if key == 'llamacpp':
         return bool(shutil.which('llama-server'))
+    if key == 'mlx':  # pip install mlx-lm; newer releases also ship the `mlx_lm` command
+        return bool(shutil.which('mlx_lm.server') or shutil.which('mlx_lm'))
+    if key == 'mlxserve':
+        return bool(shutil.which('mlx-serve')) or Path('/Applications/MLX-Serve.app').exists()
     return False
 
 
@@ -155,7 +166,62 @@ async def probe_server(client, base_url):
     if not isinstance(data, list):
         return {'reachable': False, 'detail': 'Not an OpenAI-compatible /models endpoint (no data list)'}
     ids = [m['id'] for m in data if isinstance(m, dict) and isinstance(m.get('id'), str) and m['id']]
-    return {'reachable': True, 'models': ids[:MODEL_LIMIT], 'model_count': len(ids)}
+    return {'reachable': True, 'models': ids[:MODEL_LIMIT], 'model_count': len(ids),
+            'served_by': served_by(response, data)}
+
+
+def served_by(response, data):
+    """Which local server answered, on positive evidence only: llama.cpp marks its models owned_by
+    'llamacpp'. MLX LM has no such marker (its entries are only id/object/created), so it stays unknown."""
+    if any(isinstance(m, dict) and m.get('owned_by') == 'llamacpp' for m in data):
+        return 'llamacpp'
+    return ''
+
+
+@functools.cache
+def apple_silicon():
+    """MLX needs Apple silicon; a Python running under Rosetta reports x86_64, so ask the kernel too."""
+    if sys.platform != 'darwin':
+        return False
+    if platform.machine() == 'arm64':
+        return True
+    try:
+        return subprocess.run(['sysctl', '-n', 'hw.optional.arm64'], capture_output=True, text=True, timeout=2).stdout.strip() == '1'
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def listed_servers():
+    """The local servers this computer can run: MLX servers only on Apple silicon Macs."""
+    return [s for s in LOCAL_SERVERS if s[0] not in MAC_ONLY or apple_silicon()]
+
+
+def local_rows(listed, probes, configured_bases):
+    """One row per local server this computer can run. Servers sharing a port share one probe and
+    only claim it on evidence: an identified server is Running and the others say it holds the port;
+    an unidentified answer becomes one row for the address that names no server. A port only one
+    listed server uses is credited to it, as before."""
+    installed = {key: local_installed(key) for key, _, _, _ in listed}
+    names = {key: label for key, label, _, _ in listed}
+    rows, merged = [], set()
+    for key, label, base, start in listed:
+        result = dict(probes[base])
+        found = result.pop('served_by', '')
+        sharing = [k for k, _, b, _ in listed if b == base]
+        owner = sharing[0] if len(sharing) == 1 else found if found in sharing else ''
+        if result.get('reachable') and not owner:
+            if base in merged:
+                continue
+            merged.add(base)
+            rows.append({'id': 'shared:' + base, 'name': ' or '.join(names[k] for k in sharing), 'base_url': base, 'start_command': '',
+                         'installed': any(installed[k] for k in sharing), 'identity_unconfirmed': True,
+                         'configured': base.rstrip('/') in configured_bases, **result})
+            continue
+        if result.get('reachable') and key != owner:
+            result = {'reachable': False, 'port_taken_by': names[owner], 'detail': f'{names[owner]} is using this port'}
+        rows.append({'id': key, 'name': label, 'base_url': base, 'start_command': start, 'installed': installed[key],
+                     'configured': key == owner and base.rstrip('/') in configured_bases, **result})
+    return rows
 
 
 async def status(runtime):
@@ -163,10 +229,12 @@ async def status(runtime):
     providers = sorted({cfg.get('provider', name) for name, cfg in templates.items()} - {'api'})
     async with httpx.AsyncClient(timeout=httpx.Timeout(2, connect=1), trust_env=False) as client:
         configured = {name: cfg for name, cfg in templates.items() if cfg.get('provider') == 'api' and cfg.get('base_url')}
+        listed = listed_servers()
+        bases = list(dict.fromkeys(base for _, _, base, _ in listed))
         cli_results, configured_results, local_results = await asyncio.gather(
             asyncio.gather(*(cli_status(p) for p in providers)),
             asyncio.gather(*(probe_server(client, cfg['base_url']) for cfg in configured.values())),
-            asyncio.gather(*(probe_server(client, base) for _, _, base, _ in LOCAL_SERVERS)))
+            asyncio.gather(*(probe_server(client, base) for base in bases)))
     by_provider = dict(zip(providers, cli_results))
     by_template = dict(zip(configured, configured_results))
     rows = []
@@ -181,9 +249,7 @@ async def status(runtime):
             row['cli'] = by_provider[provider]
         rows.append(row)
     configured_bases = {cfg['base_url'].rstrip('/') for cfg in configured.values()}
-    local = [{'id': key, 'name': label, 'base_url': base, 'start_command': start, 'installed': local_installed(key),
-              'configured': base.rstrip('/') in configured_bases, **result}
-             for (key, label, base, start), result in zip(LOCAL_SERVERS, local_results)]
+    local = local_rows(listed, dict(zip(bases, local_results)), configured_bases)
     return {'platform': sys.platform, 'providers': rows, 'local_servers': local}
 
 

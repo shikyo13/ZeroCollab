@@ -5,10 +5,12 @@ import { createRoot } from 'react-dom/client';
 import { uploadImage } from '../lib/api';
 import type { TaskAttachment } from '../lib/types';
 import { AnnotationEditor } from './AnnotationEditor';
+import { ImageViewer } from './ImageViewer';
 
 declare global {
   interface Window {
     ZeroAnnotate?: (src: string, onSaved: (attachment: TaskAttachment) => void, title?: string) => void;
+    ZeroImageReview?: (images: TaskAttachment[], initial: number, onSaved: (attachment: TaskAttachment) => void) => void;
   }
 }
 
@@ -48,6 +50,16 @@ export function annotateImage(src: string, title = baseName(src)): Promise<TaskA
 }
 
 export function installAnnotateHook() {
+  window.ZeroImageReview = (images, initial, onSaved) => {
+    if (!images.length) return;
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    const previousFocus = document.activeElement as HTMLElement | null;
+    root.render(<ImageViewer images={images} initial={Math.max(0, Math.min(initial, images.length - 1))}
+      onClose={() => setTimeout(() => { root.unmount(); host.remove(); previousFocus?.focus(); })}
+      onAnnotate={attachment => { void annotateImage(attachment.url, attachment.name).then(saved => saved && onSaved(saved)); }} />);
+  };
   window.ZeroAnnotate = (src, onSaved, title) => {
     void annotateImage(src, title).then(attachment => attachment && onSaved(attachment));
   };
