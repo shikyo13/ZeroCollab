@@ -65,7 +65,12 @@
 .ws-icon-button:hover { background: var(--bg-elevated); color: var(--text-strong); }
 .ws-stop-button { color: var(--error-color, #f87171); }
 .ws-resume { color: var(--success-text); }
-.ws-roster, .ws-stop { position: relative; }
+.ws-roster, .ws-stop, .ws-chat-menu { position: relative; }
+.ws-chat-menu .ws-icon-button { width: 28px; height: 28px; }
+.ws-chat-menu .ws-popover { left: 0; right: auto; }
+.ws-menu { display: grid; min-width: 160px; padding: 4px; }
+.ws-popover.ws-menu button { padding: 7px 10px; border: 0; border-radius: 6px; background: transparent; text-align: left; }
+.ws-popover.ws-menu button:hover, .ws-popover.ws-menu button:focus-visible { background: var(--bg-elevated); }
 .ws-roster-button { display: flex; align-items: center; gap: 8px; padding: 3px 10px 3px 5px; border: 1px solid var(--border); border-radius: 18px; background: transparent; color: var(--text-dim); font-size: 12.5px; }
 .ws-roster-button:hover { border-color: var(--border-strong); color: var(--text); }
 .ws-avatars { display: flex; }

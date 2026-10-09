@@ -1712,9 +1712,8 @@ footer {
 }
 #mention-toggles::-webkit-scrollbar { display: none; }
 
-/* Hide the whole row only when BOTH the mention toggles are empty AND the
-   clear button is absent — otherwise keep the row so clear chat is reachable. */
-#mention-toggles-row:has(#mention-toggles:empty):not(:has(#clear-chat-btn)) {
+/* No chips (no agents yet): hide the row. */
+#mention-toggles-row:has(#mention-toggles:empty) {
     display: none;
 }
 
@@ -1920,58 +1919,6 @@ footer {
     border-color: var(--bubble-color, rgba(255, 255, 255, 0.3));
     background: color-mix(in srgb, var(--bubble-color, #888) 15%, transparent);
 }
-
-#clear-chat-btn.ghost-btn {
-    background: var(--bg-subtle);
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-    border-radius: var(--radius-md);
-    padding: 3px 14px;
-    font-size: 12px;
-    font-weight: 600;
-    font-family: inherit;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-    flex-shrink: 0;
-    white-space: nowrap;
-}
-#clear-chat-btn.ghost-btn:hover {
-    background: var(--white-06);
-    color: var(--text);
-    border-color: var(--accent);
-}
-
-#clear-chat-btn.ghost-btn.confirming {
-    background: var(--error-soft);
-    border-color: var(--error-color);
-    color: var(--error-color);
-}
-
-/* Inline yes/no confirmation (clear chat) */
-.inline-confirm {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    margin-right: 6px;
-}
-
-.inline-confirm button {
-    background: none;
-    border: none;
-    appearance: none;
-    cursor: pointer;
-    padding: 2px;
-    border-radius: var(--radius-sm);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: inherit;
-    line-height: 1;
-}
-
-.inline-confirm button:hover { background: var(--white-08); }
-.inline-confirm-yes { color: var(--error-color); }
-.inline-confirm-no { color: var(--text-dim); }
 
 #send:hover { opacity: 0.85; }
 #send:active { opacity: 0.7; }

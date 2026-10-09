@@ -5,15 +5,6 @@
     panel.id = 'runtime-panel';
     panel.innerHTML = '<div class="runtime-controls"><strong>Project room</strong><button id="room-stop">Stop all</button><button id="room-resume">Resume</button><button id="room-changes">Changes</button><span id="room-mode"></span></div><div id="room-approvals"></div><details><summary>Tool activity</summary><pre id="room-tools">No tool calls since this page was opened.</pre></details>';
     document.querySelector('#app header').after(panel);
-    const addressTeam = document.createElement('button');
-    addressTeam.type = 'button'; addressTeam.textContent = 'Address team';
-    addressTeam.className = 'ghost-btn'; addressTeam.title = 'Add @all to address the available agents';
-    document.getElementById('mention-toggles-row').insertBefore(addressTeam, document.getElementById('clear-chat-btn'));
-    addressTeam.onclick = () => {
-        const input = document.getElementById('input');
-        if (!/@all(?![\w-])/i.test(input.value)) input.value = '@all ' + input.value;
-        input.dispatchEvent(new Event('input', {bubbles: true})); input.focus();
-    };
     let state = null;
     const active = new Map();
     const approvalCards = new Map();

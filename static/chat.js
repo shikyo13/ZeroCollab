@@ -12,6 +12,7 @@ let username = 'user';
 let agentConfig = {};  // { name: { color, label } } — registered instances (used for pills)
 let baseColors = {};   // { name: { color, label } } — base agent colors (for message coloring)
 let activeMentions = new Set();  // agent names with pre-@ toggled on (for the active channel)
+const MENTION_ALL = 'all';  // the @all chip's key in activeMentions
 let _channelMentions = {};  // channel -> array of toggled agent names (per-channel memory of activeMentions)
 let replyingTo = null;  // { id, sender, text, mention } or null; mention is the '@handle ' Reply inserted
 let unreadCount = 0;    // messages received while scrolled up
@@ -864,18 +865,20 @@ function buildMentionToggles() {
 
     // Prune stale mentions for agents no longer in config
     for (const name of activeMentions) {
-        if (!(name in agentConfig)) activeMentions.delete(name);
+        if (name !== MENTION_ALL && !(name in agentConfig)) activeMentions.delete(name);
     }
 
-    for (const [name, cfg] of Object.entries(agentConfig)) {
-        if (cfg.state === 'pending') continue;  // skip pending instances
+    // @all comes first; on send it is prefixed like an agent chip and addresses the available agents.
+    const chips = [[MENTION_ALL, { handle: MENTION_ALL, label: 'Address the available agents' }],
+        ...Object.entries(agentConfig).filter(([, cfg]) => cfg.state !== 'pending')];  // skip pending instances
+    for (const [name, cfg] of chips) {
         const btn = document.createElement('button');
-        btn.className = 'mention-toggle';
+        btn.className = 'mention-toggle' + (name === MENTION_ALL ? ' mention-all' : '');
         btn.dataset.agent = name;
         // The chip shows what you would type; the display name is the tooltip.
         btn.textContent = `@${cfg.handle || name}`;
         btn.title = cfg.label || name;
-        btn.style.setProperty('--agent-color', colorOverrides[name] || cfg.color);
+        if (name !== MENTION_ALL) btn.style.setProperty('--agent-color', colorOverrides[name] || cfg.color);
         // Restore active state for mentions that survived the rebuild
         if (activeMentions.has(name)) {
             btn.classList.add('active');

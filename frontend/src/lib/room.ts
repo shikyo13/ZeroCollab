@@ -41,6 +41,10 @@ declare global {
     switchChannel?: (id: string) => void;
     reopenChatSession?: (id: string) => void;
     viewChatHistory?: (id: string) => void;
+    /** channels.js and settings.js: the header chat menu's actions on the open chat. */
+    renameChatSession?: (id: string) => void;
+    closeChatSession?: (id: string) => void;
+    clearChat?: (id: string) => void;
     toggleSettings?: () => void;
   }
 }

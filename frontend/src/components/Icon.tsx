@@ -1,5 +1,5 @@
 export type IconName = 'projects' | 'chat' | 'board' | 'team' | 'activity' | 'help' | 'compose' | 'search' | 'settings'
-  | 'stop' | 'play' | 'panel' | 'chevron-right' | 'chevron-down' | 'plus';
+  | 'stop' | 'play' | 'panel' | 'chevron-right' | 'chevron-down' | 'plus' | 'more';
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
   const paths = {
@@ -18,6 +18,7 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
     'chevron-right': <path d="m9 6 6 6-6 6" />,
     'chevron-down': <path d="m6 9 6 6 6-6" />,
     plus: <path d="M12 5v14M5 12h14" />,
+    more: <path d="M5.5 12h.01M12 12h.01M18.5 12h.01" strokeWidth="3" />,
   };
   return <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }

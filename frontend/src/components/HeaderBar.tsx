@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { runtime, errorMessage } from '../lib/api';
-import { sessionTitle, useActiveChannel, useRuntimeState } from '../lib/room';
+import { sessionTitle, useActiveChannel, useRuntimeState, useStoreValue } from '../lib/room';
 import type { RuntimeState } from '../lib/types';
 import { legacy } from '../legacy';
 import type { View } from '../workspace/useWorkspaceRoute';
@@ -13,6 +13,7 @@ import { GoalChip } from './WorkControls';
 
 const VIEW_TITLES: Record<View, string> = { projects: 'Projects', chat: 'Chat', board: 'Board', team: 'Team', activity: 'Activity' };
 const STACK_SHOWN = 6;
+const NO_SESSIONS: { id: string; title: string; readonly?: boolean }[] = [];
 
 /** Same wording as runtime.js's mode line, which now lives on the Activity page. */
 function roomMode(s: RuntimeState): string {
@@ -64,6 +65,38 @@ function Roster({ state, onTeam }: { state: RuntimeState; onTeam: () => void }) 
   </div>;
 }
 
+/** The open chat's actions beside its title: rename, clear (after a confirmation) and close.
+ * They run the same channels.js and settings.js code as the sidebar row and /clear. */
+function ChatMenu({ channel }: { channel: string }) {
+  const { open, setOpen, root } = usePopover();
+  const [confirming, setConfirming] = useState(false);
+  const session = useStoreValue('chatSessions', NO_SESSIONS).find(s => s.id === channel);
+  useEffect(() => { if (!open) setConfirming(false); }, [open]);
+  if (!session) return null;
+  const run = (action: () => void) => { setOpen(false); action(); };
+  return <div className="ws-chat-menu" ref={root}>
+    <button className="ws-icon-button" aria-haspopup="menu" aria-expanded={open} aria-label={`Chat options for ${session.title}`}
+      title="Chat options" onClick={() => setOpen(!open)}>
+      <Icon name="more" size={18} />
+    </button>
+    {open && (confirming
+      ? <div className="ws-popover" role="alertdialog" aria-label="Clear chat">
+        <p>Delete every message in {session.title} for everyone? This cannot be undone. Tasks and files are kept.</p>
+        <div className="ws-popover-actions">
+          <button className="ws-danger" onClick={() => run(() => window.clearChat?.(channel))}>Clear chat</button>
+          <button onClick={() => setConfirming(false)}>Cancel</button>
+        </div>
+      </div>
+      : <div className="ws-popover ws-menu" role="menu" aria-label={`${session.title} options`}>
+        {!session.readonly && <>
+          <button role="menuitem" onClick={() => run(() => window.renameChatSession?.(channel))}>Rename</button>
+          <button role="menuitem" onClick={() => setConfirming(true)}>Clear chat…</button>
+        </>}
+        <button role="menuitem" onClick={() => run(() => window.closeChatSession?.(channel))}>{session.readonly ? 'Stop viewing' : 'Close chat'}</button>
+      </div>)}
+  </div>;
+}
+
 function StopResume({ paused, refresh }: { paused: boolean; refresh: () => void }) {
   const { open, setOpen, root } = usePopover();
   const [busy, setBusy] = useState(false);
@@ -104,6 +137,8 @@ export function HeaderBar({ view, projectName, onTeam }: { view: View; projectNa
   return <>
     {left && createPortal(<div className="ws-context">
       <h1 className="ws-title">{title}</h1>
+      {/* Keyed so switching chats (also by keyboard, with no outside click) drops an open menu or Clear confirmation. */}
+      {view === 'chat' && <ChatMenu key={channel} channel={channel} />}
       {projectName && <span className="ws-crumb">{projectName}</span>}
       <GoalChip />
     </div>, left)}

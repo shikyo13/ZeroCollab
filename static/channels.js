@@ -56,7 +56,7 @@ function _sessionComposer() {
     const readonly = window.chatSessionReadonly(window.activeChannel);
     const input = document.getElementById('input');
     if (input) { input.disabled = readonly; input.placeholder = readonly ? 'History from before projects is read-only. Open a project chat to reply.' : 'Message the team. Type @ to mention, / for commands'; }
-    for (const id of ['send', 'clear-chat-btn', 'mic']) {
+    for (const id of ['send', 'mic']) {
         const control = document.getElementById(id);
         if (control) control.disabled = readonly;
     }
@@ -363,17 +363,6 @@ function _restoreSidebarState() {
 // Init
 // ---------------------------------------------------------------------------
 
-// Keep Clear Chat the same pixel width as the send-group so its left edge
-// aligns with the Send button's left edge. Pure CSS can't match another
-// element's measured width, so we sync via JS on load + resize.
-function _syncClearChatWidth() {
-    const clearBtn = document.getElementById('clear-chat-btn');
-    const sendGroup = document.querySelector('#input-row .send-group');
-    if (!clearBtn || !sendGroup) return;
-    const w = sendGroup.offsetWidth;
-    if (w > 0) clearBtn.style.width = w + 'px';
-}
-
 function _channelsInit() {
     setupChannelSidebarGrip();
     _restoreSidebarState();
@@ -382,9 +371,6 @@ function _channelsInit() {
     if (setting) {
         setting.addEventListener('change', () => setChannelSidebarMode(setting.value));
     }
-
-    requestAnimationFrame(_syncClearChatWidth);
-    window.addEventListener('resize', _syncClearChatWidth);
 }
 
 // ---------------------------------------------------------------------------
@@ -399,4 +385,7 @@ window.setChannelSidebarMode = setChannelSidebarMode;
 // Chat search (workspace shell) opens closed and pre-project chats the same way the menu does.
 window.reopenChatSession = id => _reopenSession(id);
 window.viewChatHistory = id => _viewHistory(id);
+// The workspace header's chat menu acts on the open chat with the same controls as its sidebar row.
+window.renameChatSession = id => _sessionEditor(id, document.body.classList.contains('channels-in-sidebar'));
+window.closeChatSession = id => window.chatSessionReadonly(id) ? (id === _viewing && _stopViewing()) : _closeSession(id, null);
 window.Channels = { init: _channelsInit };

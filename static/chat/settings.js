@@ -47,71 +47,11 @@ function toggleSettings() {
     }
 }
 
-function _clearClearChatConfirm() {
-    const btn = document.getElementById('clear-chat-btn');
-    const confirmEl = document.getElementById('clear-chat-confirm');
-    if (confirmEl) confirmEl.remove();
-    if (btn) {
-        btn.textContent = 'Clear chat';
-        btn.classList.remove('confirming');
-    }
-    document.removeEventListener('click', _clearChatOutsideClick, true);
-}
-
-function _clearChatOutsideClick(e) {
-    const btn = document.getElementById('clear-chat-btn');
-    const confirmEl = document.getElementById('clear-chat-confirm');
-    if (!btn || !confirmEl) return;
-    if (!btn.contains(e.target) && !confirmEl.contains(e.target)) {
-        _clearClearChatConfirm();
-    }
-}
-
-// Confirmed (second click or the inline check): clear the active session and close the bar.
-function _confirmClearChat() {
-    sendServerEvent({ type: 'message', text: '/clear', sender: username, channel: activeChannel });
-    _clearClearChatConfirm();
-    document.getElementById('settings-bar').classList.add('hidden');
-}
-
-function clearChat() {
-    if (window.chatSessionReadonly?.(activeChannel)) return;
-    const btn = document.getElementById('clear-chat-btn');
-    if (!btn) return;
-
-    // Second click -> execute. First click -> inline confirm, matching the
-    // End Session pattern elsewhere.
-    if (btn.classList.contains('confirming')) {
-        _confirmClearChat();
-        return;
-    }
-
-    btn.textContent = 'Clear chat?';
-    btn.classList.add('confirming');
-
-    const confirmWrap = document.createElement('span');
-    confirmWrap.id = 'clear-chat-confirm';
-    confirmWrap.className = 'inline-confirm';
-    confirmWrap.innerHTML = `
-        <button class="inline-confirm-yes ch-confirm-yes" title="Confirm clear chat">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 8.5l3.5 3.5 6.5-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <button class="inline-confirm-no ch-confirm-no" title="Cancel">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        </button>
-    `;
-    btn.parentElement.insertBefore(confirmWrap, btn);
-
-    confirmWrap.querySelector('.ch-confirm-yes').onclick = (e) => {
-        e.stopPropagation();
-        _confirmClearChat();
-    };
-    confirmWrap.querySelector('.ch-confirm-no').onclick = (e) => {
-        e.stopPropagation();
-        _clearClearChatConfirm();
-    };
-
-    setTimeout(() => document.addEventListener('click', _clearChatOutsideClick, true), 0);
+// Clears a chat for everyone, the same as typing /clear. The workspace header's chat menu
+// asks for confirmation first.
+function clearChat(channel = activeChannel) {
+    if (!channel || window.chatSessionReadonly?.(channel)) return;
+    sendServerEvent({ type: 'message', text: '/clear', sender: username, channel });
 }
 
 function saveSettings() {
