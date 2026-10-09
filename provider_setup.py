@@ -1,0 +1,267 @@
+"""Provider setup for Team > Providers (Docs/providers.md, slices S1 and S2).
+
+Status (S1) asks each official CLI for its version and sign-in status and probes local
+OpenAI-compatible servers. It never reads credential files and returns no account identity
+(email, organization) - only whether the CLI is signed in and how.
+
+Sign-in (S2) opens a visible console where the user runs the provider's own official login;
+ZeroCollab never sees the password or token. Run as `python provider_setup.py sign-in <provider>`
+inside that console. It never signs out."""
+import asyncio
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+import httpx
+from fastapi.responses import JSONResponse
+
+import native_adapters as native
+
+# Default ports of the local servers users run most; all three speak the OpenAI /v1 API.
+LOCAL_SERVERS = (
+    ('ollama', 'Ollama', 'http://127.0.0.1:11434/v1', 'ollama serve'),
+    ('lmstudio', 'LM Studio', 'http://127.0.0.1:1234/v1', 'lms server start'),
+    ('llamacpp', 'llama.cpp', 'http://127.0.0.1:8080/v1', 'llama-server --jinja -m <model.gguf>'),
+)
+# The official sign-in command per provider; the words after the program name are its arguments.
+SIGN_IN = {'claude': 'claude auth login', 'codex': 'codex login', 'antigravity': 'agy'}
+LABELS = {'claude': 'Claude', 'codex': 'Codex', 'antigravity': 'Antigravity'}
+CLI_TIMEOUT = 15
+# Providers whose CLI has a sign-in status command, so the page can wait for it to report signed in.
+REPORTS_SIGN_IN = {'claude', 'codex'}
+# Sign-in consoles this server opened, so a second click does not stack windows. Only tracked where the
+# launched process lives as long as the window (Windows console, xterm); macOS Terminal and terminal
+# wrappers that hand off to a server return at once, so repeated clicks there can open another window.
+SIGN_IN_WINDOWS = {}
+SIGN_IN_LOCK = threading.Lock()  # launches run in worker threads: check and create as one step
+MODEL_LIMIT = 50
+
+
+async def run_cli(args, timeout=CLI_TIMEOUT):
+    """(exit code, stdout, stderr) of a short CLI query, or raises TimeoutError."""
+    proc = await asyncio.create_subprocess_exec(*args, env=native.subscription_env(), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        **({'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}))
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+    return proc.returncode, out.decode('utf-8', 'replace').strip(), err.decode('utf-8', 'replace').strip()
+
+
+def unknown(detail):
+    return {'state': 'unknown', 'detail': detail[:300]}
+
+
+def claude_sign_in(code, out, err):
+    """Parses `claude auth status --json`, which exits non-zero when signed out but still prints JSON."""
+    try:
+        data = json.loads(out)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get('loggedIn'), bool):
+        return unknown(f'Claude did not report its sign-in status (exit {code}){": " + err if err else ""}')
+    if not data['loggedIn']:
+        return {'state': 'signed_out', 'detail': 'Not signed in'}
+    method = data.get('authMethod') or ''
+    plan = data.get('subscriptionType') or ''
+    if method == 'claude.ai':
+        return {'state': 'signed_in', 'billing': 'subscription', 'method': 'Claude subscription' + (f' ({plan})' if plan else '')}
+    if method == 'console':
+        return {'state': 'signed_in', 'billing': 'api', 'method': 'Anthropic Console (API billing)'}
+    return {'state': 'signed_in', 'billing': 'unknown', 'method': f'Signed in ({method or "method not reported"})'}
+
+
+def codex_sign_in(code, out, err):
+    """Parses `codex login status`. Its signed-in line can include a masked API key, so signed-in
+    output is never echoed; only unrecognized failures quote the CLI's first line."""
+    line = next((ln.strip() for ln in (out + '\n' + err).splitlines() if ln.strip()), '')
+    lower = line.lower()
+    if lower.startswith('not logged in'):
+        return {'state': 'signed_out', 'detail': 'Not signed in'}
+    if code == 0 and lower.startswith('logged in'):
+        if 'chatgpt' in lower:
+            return {'state': 'signed_in', 'billing': 'subscription', 'method': 'ChatGPT subscription'}
+        if 'api key' in lower:
+            return {'state': 'signed_in', 'billing': 'api', 'method': 'OpenAI API key (API billing)'}
+        return {'state': 'signed_in', 'billing': 'unknown', 'method': 'Signed in (method not reported)'}
+    quoted = line if line and not lower.startswith('logged in') else ''
+    return unknown(f'Codex did not report its sign-in status (exit {code}){": " + quoted if quoted else ""}')
+
+
+async def sign_in_status(provider, executable):
+    """state is signed_in, signed_out or unknown. When signed in, billing is what the CLI reports
+    (subscription, api or unknown); a stored API login still bills that API account."""
+    if provider == 'claude':
+        return claude_sign_in(*await run_cli([*executable, 'auth', 'status', '--json']))
+    if provider == 'codex':
+        return codex_sign_in(*await run_cli([*executable, 'login', 'status']))
+    # Antigravity and Gemini have no status command; their model-list check is the only evidence.
+    return unknown(f'{provider.capitalize()} has no sign-in status command; see its model list')
+
+
+async def cli_status(provider):
+    try:
+        executable = native.command(provider)
+    except RuntimeError as exc:
+        return {'installed': False, 'detail': str(exc)}
+    result = {'installed': True, 'path': executable[-1]}
+    try:
+        code, out, err = await run_cli([*executable, '--version'])
+        result['version'] = (out or err).splitlines()[0][:80] if code == 0 and (out or err) else ''
+        result['sign_in'] = {**await sign_in_status(provider, executable), 'command': SIGN_IN.get(provider, ''),
+                             'reports': provider in REPORTS_SIGN_IN}
+    except Exception as exc:  # timeouts, missing executables, odd output: this provider's row says why
+        result['sign_in'] = {'state': 'unknown', 'detail': f'{type(exc).__name__}: {exc}'[:300], 'command': SIGN_IN.get(provider, ''),
+                             'reports': provider in REPORTS_SIGN_IN}
+    return result
+
+
+def local_installed(key):
+    """Whether a local server app is installed, so a closed port can say 'start it' rather than 'install it'."""
+    try:
+        home = Path.home()
+    except RuntimeError:  # no HOME/USERPROFILE (service accounts, stripped environments)
+        home = Path('/nonexistent')
+    if key == 'ollama':
+        return bool(shutil.which('ollama')) or (Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs/Ollama/ollama.exe').is_file() \
+            or Path('/Applications/Ollama.app').exists()
+    if key == 'lmstudio':
+        return bool(shutil.which('lms')) or (home / '.lmstudio/bin').is_dir() or Path('/Applications/LM Studio.app').exists()
+    if key == 'llamacpp':
+        return bool(shutil.which('llama-server'))
+    return False
+
+
+async def probe_server(client, base_url):
+    try:
+        response = await client.get(base_url.rstrip('/') + '/models')
+        response.raise_for_status()
+        body = response.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        return {'reachable': False, 'detail': 'Not running'}
+    except (httpx.HTTPError, ValueError) as exc:
+        return {'reachable': False, 'detail': f'Not an OpenAI-compatible /models endpoint ({type(exc).__name__})'}
+    except Exception as exc:  # e.g. httpx.InvalidURL from a bad base_url: fail this row, not the whole status call
+        return {'reachable': False, 'detail': f'Could not check this server ({type(exc).__name__}: {exc})'[:300]}
+    data = body.get('data') if isinstance(body, dict) else None
+    if not isinstance(data, list):
+        return {'reachable': False, 'detail': 'Not an OpenAI-compatible /models endpoint (no data list)'}
+    ids = [m['id'] for m in data if isinstance(m, dict) and isinstance(m.get('id'), str) and m['id']]
+    return {'reachable': True, 'models': ids[:MODEL_LIMIT], 'model_count': len(ids)}
+
+
+async def status(runtime):
+    templates = runtime.profiles.templates
+    providers = sorted({cfg.get('provider', name) for name, cfg in templates.items()} - {'api'})
+    async with httpx.AsyncClient(timeout=httpx.Timeout(2, connect=1), trust_env=False) as client:
+        configured = {name: cfg for name, cfg in templates.items() if cfg.get('provider') == 'api' and cfg.get('base_url')}
+        cli_results, configured_results, local_results = await asyncio.gather(
+            asyncio.gather(*(cli_status(p) for p in providers)),
+            asyncio.gather(*(probe_server(client, cfg['base_url']) for cfg in configured.values())),
+            asyncio.gather(*(probe_server(client, base) for _, _, base, _ in LOCAL_SERVERS)))
+    by_provider = dict(zip(providers, cli_results))
+    by_template = dict(zip(configured, configured_results))
+    rows = []
+    for name, cfg in templates.items():
+        provider = cfg.get('provider', name)
+        catalog = runtime.controls.catalogs.get(next((p for p, prof in runtime.profiles.items.items() if prof['template'] == name), ''), {})
+        row = {'template': name, 'provider': provider, 'label': cfg.get('label', name),
+               'models': {'loading': bool(catalog.get('loading')), 'count': len(catalog.get('models', [])), 'error': catalog.get('error', '')}}
+        if provider == 'api':
+            row['server'] = {'base_url': cfg['base_url'], **by_template.get(name, {'reachable': False, 'detail': 'No base_url'})}
+        else:
+            row['cli'] = by_provider[provider]
+        rows.append(row)
+    configured_bases = {cfg['base_url'].rstrip('/') for cfg in configured.values()}
+    local = [{'id': key, 'name': label, 'base_url': base, 'start_command': start, 'installed': local_installed(key),
+              'configured': base.rstrip('/') in configured_bases, **result}
+             for (key, label, base, start), result in zip(LOCAL_SERVERS, local_results)]
+    return {'platform': sys.platform, 'providers': rows, 'local_servers': local}
+
+
+def launch_sign_in(provider):
+    with SIGN_IN_LOCK:
+        return _launch_sign_in(provider)
+
+
+def _launch_sign_in(provider):
+    """Open a console running this file's sign-in helper. Returns launched=False with the command
+    when no terminal can be opened (headless Linux), so the page can tell the user what to run."""
+    native.command(provider)  # RuntimeError when the CLI is missing: nothing to open
+    previous = SIGN_IN_WINDOWS.get(provider)
+    if previous is not None and previous.poll() is None:
+        return {'launched': False, 'already_open': True, 'command': SIGN_IN[provider]}
+    argv = [sys.executable, str(Path(__file__).resolve()), 'sign-in', provider]
+    here = str(Path(__file__).resolve().parent)
+    if os.name == 'nt':
+        SIGN_IN_WINDOWS[provider] = subprocess.Popen(argv, cwd=here, env=native.subscription_env(),
+                                                     creationflags=subprocess.CREATE_NEW_CONSOLE)
+        return {'launched': True, 'command': SIGN_IN[provider]}
+    if sys.platform == 'darwin':
+        # Terminal starts its own shell; the helper strips API-key variables itself.
+        line = 'cd ' + shlex.quote(here) + ' && ' + shlex.join(argv)
+        script = 'tell application "Terminal" to do script ' + json.dumps(line) + '\ntell application "Terminal" to activate'
+        subprocess.Popen(['osascript', '-e', script], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {'launched': True, 'command': SIGN_IN[provider]}
+    for terminal in ('x-terminal-emulator', 'xterm'):
+        if shutil.which(terminal):
+            SIGN_IN_WINDOWS[provider] = subprocess.Popen([terminal, '-e', *argv], cwd=here, env=native.subscription_env(),
+                                                         stdin=subprocess.DEVNULL, start_new_session=True)
+            return {'launched': True, 'command': SIGN_IN[provider]}
+    return {'launched': False, 'command': SIGN_IN[provider]}
+
+
+def run_sign_in(provider):
+    """Console side: run the official login interactively, then keep the window open to read the result."""
+    label = LABELS.get(provider, provider)
+    print(f'Signing in to {label} with its official command: {SIGN_IN[provider]}')
+    print('Your password and token stay with the provider; ZeroCollab never sees them.')
+    print('API keys set in your environment are ignored here.\n')
+    if provider == 'antigravity':
+        print('Antigravity signs in on first start. When its prompt appears you are signed in; close it to finish.\n')
+    try:
+        code = subprocess.call([*native.command(provider), *SIGN_IN[provider].split()[1:]], env=native.subscription_env())
+    except (OSError, RuntimeError) as exc:
+        print(f'Could not start {label}: {exc}')
+        code = 1
+    except KeyboardInterrupt:
+        code = 130
+    print('\nFinished. ZeroCollab is checking the sign-in now.' if code == 0 else f'\n{label} sign-in ended with exit code {code}.')
+    try:
+        input('Press Enter to close this window.')
+    except (EOFError, KeyboardInterrupt):
+        pass
+    return code
+
+
+def install(host, runtime):
+    @host.app.get('/api/runtime/providers/status')
+    async def providers_status():
+        try:
+            return await status(runtime)
+        except Exception as exc:  # the Setup page shows the reason instead of a blank panel
+            return JSONResponse({'error': f'{type(exc).__name__}: {exc}'[:400]}, 500)
+
+    @host.app.post('/api/runtime/providers/{provider}/sign-in')
+    async def providers_sign_in(provider: str):
+        if runtime.deployment and runtime.deployment.rehearsal:
+            return JSONResponse({'error': 'Sign-in is disabled in a rehearsal preview'}, 409)
+        configured = {cfg.get('provider', name) for name, cfg in runtime.profiles.templates.items()}
+        if provider not in SIGN_IN or provider not in configured:
+            return JSONResponse({'error': f'No in-app sign-in for {provider}'}, 404)
+        try:
+            return await asyncio.to_thread(launch_sign_in, provider)
+        except (OSError, RuntimeError) as exc:
+            return JSONResponse({'error': str(exc)[:400]}, 400)
+
+
+if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == 'sign-in' and sys.argv[2] in SIGN_IN:
+    raise SystemExit(run_sign_in(sys.argv[2]))

@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 
 from git_preview import preview as git_preview
 import native_adapters as native
+import provider_setup
 from provider_controls import ProviderControls
 from coordination_state import pending_human_wait
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
@@ -857,19 +858,11 @@ class RoomRuntime:
                     state.update(state="ready", detail=f"Local model {model} · scoped file tools · shell disabled")
                 else:
                     executable = native.command(provider)
-                    if provider == "claude":
-                        proc = await asyncio.create_subprocess_exec(*executable, "auth", "status", env=native.subscription_env(),
-                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                            **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
-                        try:
-                            raw, _ = await asyncio.wait_for(proc.communicate(), 10)
-                        finally:
-                            if proc.returncode is None:
-                                proc.kill()
-                                await proc.wait()
-                        auth = json.loads(raw)
-                        if not auth.get("loggedIn"):
-                            state.update(state="login_required", detail='Run claude auth login in your own terminal, then click Refresh connections.')
+                    if provider in ("claude", "codex"):
+                        # Same check as Team > Providers; only an explicit signed-out answer blocks the agent.
+                        sign_in = await provider_setup.sign_in_status(provider, executable)
+                        if sign_in['state'] == 'signed_out':
+                            state.update(state="login_required", detail='Signed out. Use Sign in on Team > Providers, then click Refresh connections.')
                             continue
                     state.update(state="ready", detail="Ready to start")
             except Exception as exc:
@@ -1588,6 +1581,7 @@ def install(host):
     team_builder.install(host, runtime)
     import shared_browser
     shared_browser.install(host, runtime)
+    provider_setup.install(host, runtime)
     import mcp_bridge
     mcp_bridge.channel_guard = runtime.owns_channel
 

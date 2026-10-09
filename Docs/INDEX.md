@@ -10,6 +10,7 @@ Start here. Each document covers one subject; read the one that matches the ques
 | [architecture.md](architecture.md) | Architecture | Process and browser layout (ASCII), and four flows: chat message, managed agent turn, repository change, deployment |
 | [dependency-map.md](dependency-map.md) | Dependencies | Third-party packages and who uses them, the internal Python import graph and its cycles, frontend packages, chat script load order |
 | [file-index.md](file-index.md) | Files and data | Every root file, Python module, frontend file and test with its purpose; the `data/` directory layout and which module writes each record |
+| [providers.md](providers.md) | Feature design | Provider templates, sign-in and local models today (with gaps), auth options, local model plan, release build slices and open decisions |
 | [repositories.md](repositories.md) | Feature design | Repositories per project as built: data model, worktrees, `key:path` scopes, the replace/add/primary/remove actions, agent requests, open items |
 
 ## Elsewhere in the repository

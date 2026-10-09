@@ -49,3 +49,19 @@
 @media (max-width: 900px) {
   .tm-layout { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Team sections and the Providers view (Providers.tsx). */
+.tm-sections { width: max-content; margin-bottom: 16px; }
+.pv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; align-items: start; }
+.pv-panel h2 { margin: 0; font-size: 15px; }
+.pv-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.pv-note { margin: 0; color: var(--bd-muted); font-size: 12.5px; line-height: 1.5; }
+.pv-list { list-style: none; margin: 0; padding: 0; }
+.pv-row { display: grid; gap: 4px; padding: 12px 0; border-top: 1px solid var(--bd-border); }
+.pv-row:first-child { border-top: 0; padding-top: 4px; }
+.pv-name { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.pv-name strong { font-size: 14px; }
+.pv-row .bd-muted { margin: 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.pv-action { margin-left: auto; min-height: 28px; padding: 2px 12px; font-size: 12.5px; }
+.pv-pending { margin: 2px 0 0; color: var(--bd-accent); font-size: 12.5px; }
+.pv-row code { padding: 1px 6px; border-radius: 4px; background: var(--bd-surface-2); font-size: 12px; }

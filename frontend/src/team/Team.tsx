@@ -9,6 +9,7 @@ import type { AgentState, RunInfo } from '../lib/types';
 import { ErrorText, useAction } from '../board/shared';
 import '../board/board.css';
 import { ProfileEditor, type Profile, type ProfilesData } from './ProfileEditor';
+import { Providers } from './Providers';
 import { TeamBuilder } from './TeamBuilder';
 import './team.css';
 
@@ -99,6 +100,8 @@ export default function Team() {
   const [notice, setNotice] = useState('');
   const [resetKey, setResetKey] = useState(0);
   const [building, setBuilding] = useState(false);
+  const [section, setSection] = useState<'agents' | 'providers'>('agents');
+  const [checks, setChecks] = useState(0);
   const refreshAction = useAction();
   const onDirty = useCallback((value: boolean) => {
     setDirty(value);
@@ -182,6 +185,7 @@ export default function Team() {
             onClick={() => guarded() || void refreshAction.run(async () => {
               await runtime('/refresh', {});
               await load();
+              setChecks(n => n + 1);
             })}
           >
             {refreshAction.busy ? 'Refreshing...' : 'Refresh connections'}
@@ -201,8 +205,14 @@ export default function Team() {
         </div>
       </header>
       <ErrorText message={loadError || runtimeError || refreshAction.error} />
+      <nav className="bd-tabs tm-sections" aria-label="Team sections">
+        <button type="button" className="bd-tab" aria-current={section === 'agents' ? 'page' : undefined}
+          onClick={() => guarded('Save or cancel your changes first.') || setSection('agents')}>Agents ({active})</button>
+        <button type="button" className="bd-tab" aria-current={section === 'providers' ? 'page' : undefined}
+          onClick={() => guarded('Save or cancel your changes first.') || setSection('providers')}>Providers</button>
+      </nav>
 
-      <div className="tm-layout">
+      {section === 'providers' ? <Providers reload={checks} /> : <div className="tm-layout">
         <section className="tm-roster" aria-label="Agents">
           {visible.length ? (
             <ul className="tm-agents">
@@ -266,7 +276,7 @@ export default function Team() {
             }}
           />
         </section>
-      </div>
+      </div>}
     </div>
   );
 }
