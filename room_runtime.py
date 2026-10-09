@@ -1107,7 +1107,8 @@ class RoomRuntime:
         self.deploy_held.pop(name, None)
         run = Run(self, name, entry)
         self.running[name] = run
-        self.states[name]["state"] = "working"
+        # The idle detail ("Ready to start", "Last turn completed") would contradict Working; the run line describes the turn.
+        self.states[name].update(state="working", detail="")
         outcome = "completed"
         await self.emit("runtime_start", {"run": run.id, "agent": name, "channel": run.channel, "settings": run.settings}, persist=True)
         await self.publish_status()

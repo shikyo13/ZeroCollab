@@ -101,8 +101,6 @@ export default function Board() {
     (project.followups ?? []).filter(f => f.assigned_to === USER && f.status === 'open').length;
   const owners = [...new Set(project.tasks.map(t => t.owner).filter(Boolean))];
   const knownLabels = [...new Set(project.tasks.flatMap(t => t.labels ?? []))].sort();
-  const projectPath = runtimeState?.project ?? '';
-  const projectName = projectPath.split(/[\\/]/).filter(Boolean).at(-1) ?? projectPath;
   const side = selectedTask ? 'detail' : feedOpen ? 'feed' : '';
 
   const tabs: [Tab, string, string?][] = [
@@ -118,17 +116,6 @@ export default function Board() {
       <header className="bd-header">
         <div>
           <h1 className="bd-title">Board</h1>
-          {runtimeState && (
-            <p className="bd-project" title="Each attached repository keeps its own board, tasks and history.">
-              {projectPath ? (
-                <>
-                  Repository <strong title={projectPath}>{projectName}</strong>
-                </>
-              ) : (
-                <>Workspace board - no repository attached</>
-              )}
-            </p>
-          )}
           <p className="bd-muted">
             {active} active {active === 1 ? 'task' : 'tasks'} · {openCoordination} open reviews and follow-ups · {sessionTitle(channel)}
             {waitingOnUser > 0 && (

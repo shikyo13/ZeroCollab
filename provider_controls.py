@@ -96,7 +96,8 @@ class ProviderControls:
         if isinstance(saved, dict):
             initial.update({k: v for k, v in saved.items() if k in initial and isinstance(v, str)})
         self.values[name] = initial
-        self.catalogs[name] = {'models': [], 'error': 'Loading provider choices', 'source': '', 'effort_note': ''}
+        # Loading is a state, not a failure: the UI shows it quietly and save stays blocked until choices arrive.
+        self.catalogs[name] = {'models': [], 'error': '', 'loading': True, 'source': '', 'effort_note': ''}
 
     def describe(self, name):
         return {**self.catalogs[name], 'selected': dict(self.values[name])}
@@ -136,17 +137,19 @@ class ProviderControls:
                 note += ' Effort is supported by its chat template.' if efforts else ' This endpoint has not advertised reasoning-effort support.'
             if not models:
                 raise RuntimeError('Provider returned no model choices')
-            self.catalogs[name] = {'models': models, 'error': '', 'source': source, 'effort_note': note}
+            self.catalogs[name] = {'models': models, 'error': '', 'loading': False, 'source': source, 'effort_note': note}
             return True
         except Exception as exc:
             detail = str(exc) or type(exc).__name__
-            self.catalogs[name]['error'] = detail[:500]
+            self.catalogs[name].update(error=detail[:500], loading=False)
             return False
 
     def validate(self, name, model, effort):
         if name not in self.values or not isinstance(model, str) or not isinstance(effort, str):
             raise ValueError('Choose a registered provider, model and effort')
         catalog = self.catalogs[name]
+        if catalog.get('loading'):
+            raise ValueError('Provider choices are still loading; try again in a moment')
         if catalog['error']:
             raise ValueError(catalog['error'])
         option = next((m for m in catalog['models'] if m['value'] == model), None)

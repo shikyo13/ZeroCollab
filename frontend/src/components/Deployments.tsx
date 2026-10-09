@@ -5,9 +5,10 @@ import './deployments.css';
 
 type Release = { id: string; commit: string; version?: string; title?: string; subject?: string; notes?: string; created: string | number; manifest_sha: string; files: { path: string; sha256: string }[]; deletions: string[]; rehearsal?: string; rehearsal_passed?: boolean; rollback?: string; relation?: 'newer' | 'older' | 'current'; reviews?: BoardReview[] };
 type BoardReview = { id: string; status: string; reviewer?: string; revision?: string; task_id?: string; task_title?: string };
-type Receipt = { id: string; release_id: string; previous_release_id?: string; status: string; error?: string; steps?: unknown[]; backup?: string };
+// The supervisor writes the outcome sentence (including a refusal's reason) to detail.
+type Receipt = { id: string; release_id: string; previous_release_id?: string; status: string; detail?: string; error?: string; started?: string; steps?: { time?: string; step?: string }[]; backup?: string };
 type State = { current: Partial<Release>; releases: Release[]; receipts: Receipt[]; pending: { id: string; release_id: string }[]; supervisor: { state?: string; step?: string; updated?: number; deployment_id?: string }; maintenance: { admission: string; writes: string; reason?: string } };
-const labels: Record<string, string> = { deployed: 'Deployed', aborted: 'Cancelled before deployment', rolled_back: 'Previous release restored', rollback_failed: 'Recovery needed', recovery_required: 'Recovery needed', conflict: 'File conflict — recovery needed', rejected: 'Release refused', draining: 'Finishing current turns', deploying: 'Deploying', verifying: 'Checking the new release', running: 'Ready', ready: 'Ready', idle: 'Ready', restarting: 'Restarting' };
+const labels: Record<string, string> = { deployed: 'Deployed', aborted: 'Cancelled before deployment', rolled_back: 'Previous release restored', rollback_failed: 'Recovery needed', recovery_required: 'Recovery needed', conflict: 'File conflict, recovery needed', rejected: 'Release refused', draining: 'Finishing current turns', deploying: 'Deploying', verifying: 'Checking the new release', running: 'Ready', ready: 'Ready', idle: 'Ready', restarting: 'Restarting' };
 const label = (value = '') => labels[value] || value.replaceAll('_', ' ') || 'Unknown';
 const reviewStates: Record<string, string> = { approved: 'Approved', changes_requested: 'Changes requested', pending: 'Waiting for review', superseded: 'Superseded', cancelled: 'Cancelled' };
 const releaseName = (r?: Partial<Release>) => r?.version || r?.id || 'this release';
@@ -91,6 +92,9 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
   const earlier = (data?.releases ?? []).filter(r => r.relation === 'older');
   const [rollbackId, setRollbackId] = useState('');
   const rollbackTarget = earlier.find(r => r.id === rollbackId) ?? earlier[0];
+  // Receipts name releases by id; show the version when the release is still known.
+  const versions = new Map([...(data?.releases ?? []), data?.current ?? {}].map(r => [r.id, r.version]));
+  const receiptRelease = (id: string) => versions.get(id) ? <>{versions.get(id)} <code className="bd-muted">{id}</code></> : <code>{id}</code>;
   // The tick confirms one exact rollback; if the target or running release changes on refresh, it no longer counts.
   const rollbackKey = rollbackTarget ? `${data?.current.id}:${rollbackTarget.id}:${rollbackTarget.manifest_sha}` : '';
   const [confirmedKey, setConfirmedKey] = useState('');
@@ -142,7 +146,20 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
       {waiting && <p role="status" className="deploy-warning">Approval recorded for <code>{waiting.release_id}</code>. {label(supervisor?.step || supervisor?.state)}. You can leave this page; the supervisor saves the result.</p>}
       <h3>Recent results</h3>
       {!data.receipts?.length && <p className="bd-muted">No deployment receipts yet.</p>}
-      {data.receipts?.map(r => <details className="deploy-receipt" key={r.id}><summary><strong>{label(r.status)}</strong> · <code>{r.release_id}</code></summary>{r.error && <p role="status" className="bd-error">{r.error}</p>}<p>Previous release: <code>{r.previous_release_id || 'Not recorded'}</code></p><pre>{JSON.stringify(r, null, 2)}</pre></details>)}
+      {!!data.receipts?.length && <div className="deploy-receipts">{data.receipts.map(r => {
+        const reason = r.error || r.detail;
+        const failed = r.status !== 'deployed';
+        return <details className="deploy-receipt" key={r.id}>
+          <summary>
+            <span className="deploy-receipt-line"><strong className={failed ? 'deploy-receipt-failed' : undefined}>{label(r.status)}</strong> · {receiptRelease(r.release_id)}{r.started && <span className="bd-muted"> · {r.started}</span>}</span>
+            {failed && reason && <span className="deploy-receipt-reason">{reason}</span>}
+          </summary>
+          {!failed && reason && <p>{reason}</p>}
+          <p>Previous release: {r.previous_release_id ? receiptRelease(r.previous_release_id) : 'Not recorded'}</p>
+          {failed && r.backup && <p>Backup: <code>{r.backup}</code></p>}
+          {!!r.steps?.length && <ol className="deploy-receipt-steps">{r.steps.map((s, i) => <li key={i}><span className="bd-muted">{s.time}</span> {s.step}</li>)}</ol>}
+        </details>;
+      })}</div>}
     </>}
   </section>;
 }

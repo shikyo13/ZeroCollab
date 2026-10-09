@@ -42,8 +42,6 @@
 .bd-header > * { min-width: 0; max-width: 100%; }
 .bd-title { font-size: 22px; font-weight: 700; color: var(--bd-text); }
 .bd-muted { color: var(--bd-muted); }
-.bd-project { margin: 2px 0 2px; font-size: 13.5px; color: var(--bd-muted); }
-.bd-project strong { color: var(--bd-text); font-family: var(--bd-mono); font-size: 13px; font-weight: 600; }
 .bd-tabs { display: flex; flex-wrap: wrap; gap: 4px; background: var(--bd-surface); border: 1px solid var(--bd-border); border-radius: var(--bd-radius); padding: 4px; }
 .bd-tab { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--bd-muted); font-weight: 600; font-size: 13.5px; }
 .bd-tab:hover { color: var(--bd-text); background: var(--bd-surface-2); }

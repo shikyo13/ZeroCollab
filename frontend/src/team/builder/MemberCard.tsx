@@ -90,7 +90,8 @@ function MemberEdit({
           </select>
         </Field>
       </div>
-      {catalog?.error && <p className="bd-error">{catalog.error}</p>}
+      {catalog?.loading ? <p className="bd-muted">Loading model choices…</p>
+        : catalog?.error && <p className="bd-error">{catalog.error}</p>}
       <Field label="Working background" hint={`${draft.background.length.toLocaleString()} / ${LIMITS.profileText.toLocaleString()} characters`}>
         <textarea value={draft.background} rows={6} maxLength={LIMITS.profileText} onChange={e => update({ background: e.target.value })} />
       </Field>

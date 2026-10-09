@@ -37,6 +37,7 @@ export interface ProviderInfo {
     models: ModelOption[];
     selected?: { model: string; effort: string };
     error?: string;
+    loading?: boolean;
     effort_note?: string;
   };
 }
@@ -206,7 +207,8 @@ export function ProfileEditor({
       : handleValue !== savedHandle
         ? `@${savedHandle} keeps working for earlier messages and tasks.`
         : 'Rename any time; earlier handles keep working.';
-  const saveDisabled = save.busy || !!problem || (!editing && !!catalog?.error);
+  // Edits keep saving without a catalog (the server only checks model/effort when they change).
+  const saveDisabled = save.busy || !!problem || (!editing && (!!catalog?.error || !!catalog?.loading));
   const initials = (draft.name.trim() || 'Expert').slice(0, 2).toUpperCase();
 
   return (
@@ -324,7 +326,8 @@ export function ProfileEditor({
           </select>
         </Field>
       </div>
-      {(catalog?.error || catalog?.effort_note) && <p className={catalog?.error ? 'bd-error' : 'bd-muted'}>{catalog?.error || catalog?.effort_note}</p>}
+      {catalog?.loading ? <p className="bd-muted">Loading model choices…</p>
+        : (catalog?.error || catalog?.effort_note) && <p className={catalog?.error ? 'bd-error' : 'bd-muted'}>{catalog?.error || catalog?.effort_note}</p>}
 
       <Field label="Background and personal prompt" hint={`${draft.background.length.toLocaleString()} / ${LIMITS.profileText.toLocaleString()} characters · added to this agent's instructions alongside the shared collaboration rules.`}>
         <textarea
