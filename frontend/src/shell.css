@@ -62,6 +62,11 @@
   .modern-workspace .workspace-toolbar header:has(> .fl-ticker) .header-left { flex: 1; max-width: none; }
   .modern-workspace .workspace-toolbar header > .fl-ticker { order: 3; flex-basis: 100%; }
 }
+/* Keep the single panel toggle reachable in the narrow overlay layout. */
+@media (max-width: 900px) {
+  .modern-workspace .workspace-toolbar header { flex-wrap: wrap; }
+  .modern-workspace .workspace-toolbar header > .header-right { max-width: 100%; min-width: 0; flex-wrap: wrap; }
+}
 .modern-workspace .header-right .ws-roster { order: 1; }
 .modern-workspace .header-right .ws-stop { order: 2; }
 .modern-workspace .header-right .companion-toggle { order: 3; }
