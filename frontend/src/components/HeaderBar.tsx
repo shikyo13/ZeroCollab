@@ -128,7 +128,9 @@ function StopResume({ paused, refresh }: { paused: boolean; refresh: () => void 
   </div>;
 }
 
-export function HeaderBar({ view, projectName, onTeam, bell }: { view: View; projectName: string; onTeam: () => void; bell?: React.ReactNode }) {
+export function HeaderBar({ view, projectName, onTeam, bell, follow }: {
+  view: View; projectName: string; onTeam: () => void; bell?: React.ReactNode; follow?: React.ReactNode;
+}) {
   const { data, refresh } = useRuntimeState();
   const channel = useActiveChannel();
   const left = legacy.header.querySelector<HTMLElement>('.header-left');
@@ -143,6 +145,7 @@ export function HeaderBar({ view, projectName, onTeam, bell }: { view: View; pro
       <GoalChip />
     </div>, left)}
     {right && data && createPortal(<>
+      {follow}
       {bell}
       <Roster state={data} onTeam={onTeam} />
       <StopResume paused={data.paused} refresh={() => void refresh()} />

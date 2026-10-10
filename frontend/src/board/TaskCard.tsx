@@ -1,4 +1,6 @@
+import { useEffect, useRef } from 'react';
 import type { Followup, ProjectState, Review, Task } from '../lib/types';
+import { CardFollowLayer, type CardFollow } from '../follow/Follow';
 import { CardThumbnails } from './Attachments';
 import { AgentChip, LabelChips, RelativeTime, displayName, type Agents } from './shared';
 import { USER } from '../lib/constants';
@@ -93,6 +95,7 @@ export function TaskCard({
   now,
   selected,
   onOpen,
+  follow,
 }: {
   task: Task;
   facts: TaskFacts;
@@ -100,16 +103,28 @@ export function TaskCard({
   now: number;
   selected: boolean;
   onOpen: (id: string) => void;
+  /** Follow mode's live agent and recent move for this card, when following. */
+  follow?: CardFollow;
 }) {
   const latest = lastCheckin(task);
   const changes = facts.openReviews.filter(r => r.status === 'changes_requested').length;
   const pending = facts.openReviews.length - changes;
   const execution = task.status === 'done' ? null : executionLine(task, facts.wait);
   const waiting = task.execution_state === 'waiting_on_human';
+  const liveAgent = follow?.live?.agent;
+  const liveRun = follow?.live?.run;
+  const cardRef = useRef<HTMLElement>(null);
+  // Following: bring a card into view when an agent starts executing it (a known task, never a guess).
+  useEffect(() => {
+    if (liveRun) cardRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+  }, [liveRun]);
   return (
     <article
-      className={`bd-card${facts.stale ? ' bd-card-stale' : ''}${waiting ? ' bd-card-you' : ''}${selected ? ' bd-card-selected' : ''}${facts.changed ? ' bd-card-changed' : ''}`}
+      ref={cardRef}
+      className={`bd-card${facts.stale ? ' bd-card-stale' : ''}${waiting ? ' bd-card-you' : ''}${selected ? ' bd-card-selected' : ''}${facts.changed ? ' bd-card-changed' : ''}${liveAgent ? ' fl-card-live' : ''}${follow?.move ? ' fl-card-moved' : ''}`}
+      style={liveAgent ? ({ '--agent-color': agents[liveAgent]?.color || 'var(--accent)' } as React.CSSProperties) : undefined}
     >
+      {follow && <CardFollowLayer follow={follow} agents={agents} part="bubble" />}
       <button
         type="button"
         className="bd-card-open"
@@ -136,6 +151,7 @@ export function TaskCard({
           {execution.text}
         </p>
       )}
+      {follow && <CardFollowLayer follow={follow} agents={agents} part="body" />}
       {task.next_action && task.status !== 'done' && (
         <p className="bd-next">
           <span className="bd-muted">{waiting ? 'Then:' : 'Next:'}</span> {task.next_action}

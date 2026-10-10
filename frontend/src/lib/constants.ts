@@ -40,4 +40,5 @@ export const STORAGE_KEYS = {
   boardSort: 'zerocollab-board-sort',
   boardFeed: 'zerocollab-board-feed',
   welcomeDismissed: 'zerocollab-welcome-dismissed',
+  follow: 'zerocollab-follow',
 } as const;

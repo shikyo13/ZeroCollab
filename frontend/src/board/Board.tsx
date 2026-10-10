@@ -18,6 +18,8 @@ import { isStale, waitInfo, type TaskFacts } from './TaskCard';
 import { TaskDetail } from './TaskDetail';
 import { useBoardPrefs, type Tab } from './useBoardPrefs';
 import { useChangeHighlights } from './useChangeHighlights';
+import { FollowBanner, FollowTicker, placeFollow, useFollowKeys, useReconcileRuns } from '../follow/Follow';
+import { useFollow } from '../follow/followStore';
 import './board.css';
 
 // The legacy chat lightbox can open the same annotation tool through window.ZeroAnnotate.
@@ -60,7 +62,10 @@ export default function Board() {
       const field = (e.target as HTMLElement | null)?.closest?.('input, textarea, select');
       // The shell keeps the Board mounted while hidden; ignore Esc unless the task list is on screen.
       const visible = tab === 'tasks' && !!rootRef.current?.offsetParent;
-      if (e.key === 'Escape' && !e.defaultPrevented && !field && visible) setSelected(null);
+      if (e.key === 'Escape' && !e.defaultPrevented && !field && visible) {
+        e.preventDefault();  // used: follow mode's Esc stays on
+        setSelected(null);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -68,6 +73,11 @@ export default function Board() {
 
   const agents: Agents = useMemo(() => runtimeState?.agents ?? {}, [runtimeState]);
   const runs = useMemo(() => runtimeState?.runs ?? [], [runtimeState]);
+  const follow = useFollow();
+  // The shell keeps the Board mounted while hidden; its shortcuts only apply while it is on screen.
+  useFollowKeys(follow.following, follow.paused, () => !!rootRef.current?.offsetParent);
+  useReconcileRuns(runs);
+  const placement = useMemo(() => placeFollow(follow, project?.tasks ?? []), [follow, project]);
 
   const facts = useMemo(() => {
     const map = new Map<string, TaskFacts>();
@@ -158,6 +168,7 @@ export default function Board() {
           check-in and review drafts survive tab switches, as they did in project.js. */}
       <div className={`bd-tasks${side ? ' bd-tasks-with-detail' : ''}`} hidden={tab !== 'tasks'}>
         <div className="bd-tasks-main">
+          <FollowBanner unplaced={placement.unplaced} agents={agents} />
           <BoardToolbar
             filters={filters}
             onFilters={setFilters}
@@ -224,8 +235,10 @@ export default function Board() {
                 onOpen={id => setSelected(cur => (cur === id ? null : id))}
                 showAllDone={showAllDone}
                 onToggleDone={() => setShowAllDone(v => !v)}
+                follows={follow.following ? placement.cards : undefined}
               />
             ))}
+          <FollowTicker tasks={project.tasks} agents={agents} onOpenTask={openTask} />
         </div>
         {selectedTask && (
           <TaskDetail

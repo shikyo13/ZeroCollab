@@ -17,6 +17,7 @@ import { useProjects } from './workspace/projectData';
 import { useWorkspaceRoute } from './workspace/useWorkspaceRoute';
 import { DeploymentNotice, useDeploymentState } from './components/Deployments';
 import { ActivityPage } from './components/ActivityPage';
+import { FollowToggle } from './follow/Follow';
 import './shell.css';
 
 export default function App() {
@@ -35,7 +36,8 @@ export default function App() {
           (inside legacy.runtime); the goal is a header chip while one is open. */}
       <LegacySlot node={legacy.header} className="workspace-toolbar" />
       <HeaderBar view={view} projectName={projects.active?.name ?? ''} onTeam={() => navigate('team')}
-        bell={<AttentionBell projects={projects.projects} deployments={deployments} navigate={navigate} openProject={openProject} />} />
+        bell={<AttentionBell projects={projects.projects} deployments={deployments} navigate={navigate} openProject={openProject} />}
+        follow={<FollowToggle onStart={() => navigate('board')} />} />
       <LegacySlot node={legacy.approvals} className="workspace-approvals" />
       <WorkControls navigate={navigate} />
       <DeploymentNotice feed={deployments} onOpen={() => navigate('activity')} />
