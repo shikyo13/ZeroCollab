@@ -16,7 +16,9 @@ from coordination_state import update_execution, execution_state, pending_human_
 DEFAULT_LIMITS = {'input_chars': 16000, 'agent_turns': 0,
                   'turn_seconds': 0, 'turn_max_seconds': 0, 'parallel_agents': 0, 'local_tool_rounds': 3,
                   'native_tool_calls': 0,
-                  'reported_token_budget': 0}
+                  'reported_token_budget': 0,
+                  # Ready-task wakes (ready_wakes.py): 0 = off (default), 1 = on. Opt-in only.
+                  'ready_task_wakes': 0}
 # Retired limits: still accepted from stored settings and older clients, then ignored. The chat
 # @mention handoff cap was removed at the user's direction; agent turns per chain (agent_turns)
 # and the reported token budget remain the guards against runaway conversations.
@@ -25,7 +27,12 @@ LIMIT_RANGES = {'input_chars': (4000, 48000), 'agent_turns': (0, 32),
                 'turn_seconds': (0, 3600), 'turn_max_seconds': (0, 14400), 'parallel_agents': (0, 64),
                 'local_tool_rounds': (0, 4), 'reported_token_budget': (0, 200000)}
 LIMIT_RANGES['native_tool_calls'] = (0, 64)
+LIMIT_RANGES['ready_task_wakes'] = (0, 1)
 TASK_STATES = {'open', 'working', 'blocked', 'review', 'done'}
+# Owner-set readiness for ready-task wakes; never inferred from text, status or labels ('' clears it).
+NEXT_ACTION_STATES = {'ready', 'deferred', 'waiting', ''}
+# Changes to these fields by anyone other than the owner are new work for the owner (work_rev).
+SEMANTIC_FIELDS = ('status', 'owner', 'transfer', 'depends_on', 'wait', 'next_action', 'next_action_state', 'paths')
 # Owned work without a check-in for this long is flagged as stale in context and on the board.
 # This is visibility only; turn cutoffs stay governed by the optional limits (0 = off).
 STALE_SECONDS = 600
@@ -394,7 +401,7 @@ class ProjectRoom:
         self.save()
 
     def task(self, actor, action, task_id='', title='', details='', paths=None, owner='', status='', update='', depends_on=None, labels=None, attachments=None,
-             next_action=None, priority=None, wait=None, evidence=None):
+             next_action=None, priority=None, wait=None, evidence=None, next_action_state=None):
         tasks = self.state['tasks']
         task = next((t for t in tasks if t['id'] == task_id), None)
         previous = task
@@ -463,6 +470,18 @@ class ProjectRoom:
             else:
                 raise ValueError('Choose get, create, claim, delegate, accept, release, or update')
         task = update_execution(task, self.state, next_action=next_action, priority=priority, wait=wait)
+        if previous and task['owner'] != previous['owner']:
+            # A new owner opts in to ready-task wakes for themselves; readiness never transfers.
+            task.pop('next_action_state', None)
+        if next_action_state is not None:
+            if next_action_state not in NEXT_ACTION_STATES:
+                raise ValueError('next_action_state must be ready, deferred, waiting, or empty to clear')
+            if not human and actor != task['owner']:
+                raise ValueError("Only the task's owner or the user can set next_action_state")
+            if next_action_state:
+                task['next_action_state'] = next_action_state
+            else:
+                task.pop('next_action_state', None)
         if evidence is not None:
             if not isinstance(evidence, dict) or set(evidence) - {'implementation', 'review', 'installation', 'acceptance'}:
                 raise ValueError('Evidence keys: implementation, review, installation, acceptance')
@@ -553,10 +572,16 @@ class ProjectRoom:
             task['updates'].append(entry)
             task['updates'] = task['updates'][-TASK_HISTORY:]
         task['updated'] = time.time()
+        self.track_work(task, previous, actor)
         if action == 'create':
             tasks.append(task)
         else:
             tasks[tasks.index(next(t for t in tasks if t['id'] == task['id']))] = task
+        if previous and task['status'] == 'done' and previous['status'] != 'done':
+            # A finished dependency is new work for each waiting dependent's owner.
+            for other in tasks:
+                if task['id'] in other.get('depends_on', []) and other['status'] != 'done':
+                    self.bump_work(other, actor, f"dependency {task['id']} finished")
         self.save()
         view = self.task_view(task)
         if moved_images:
@@ -564,6 +589,32 @@ class ProjectRoom:
             view['moved_to_earlier'] = [{'url': a['url'], 'reason': a['reason'],
                                          **({'superseded_by': a['superseded_by']} if a.get('superseded_by') else {})} for a in moved_images]
         return view
+
+    def track_work(self, task, previous, actor):
+        """work_rev counts semantic changes made by anyone other than the owner (ready-task wake r2.1 point 3).
+        The owner's own edits never advance it, so an owner cannot re-arm its own consumed wake."""
+        task['work_rev'] = (previous or {}).get('work_rev', 0)
+        if previous is None:
+            return
+        changed = [f for f in SEMANTIC_FIELDS if task.get(f) != previous.get(f)]
+        if not changed:
+            return
+        # External means neither the previous nor the new owner (security 5a6ba981): an owner that releases
+        # and re-claims its own task, or a recipient accepting a transfer, is not new work from someone else.
+        if actor not in {previous.get('owner'), task.get('owner')}:
+            self.bump_work(task, actor, f"external change by {actor}: {', '.join(changed)}")
+        elif task.get('next_action_state') == 'ready' and previous.get('next_action_state') != 'ready':
+            task['work_cause'] = 'initial readiness'
+
+    def bump_work(self, task, actor, cause):
+        """New work for the task's owner from someone else. Accepts a task record or a task id; callers save."""
+        if isinstance(task, str):
+            task = next((t for t in self.state['tasks'] if t['id'] == task), None)
+        if not task or task['status'] == 'done' or not actor or actor == task.get('owner'):
+            return False
+        task['work_rev'] = task.get('work_rev', 0) + 1
+        task['work_cause'] = cause
+        return True
 
     def markup(self, actor, channel, chain, image, marks=None, summary='', task_id='', post=True):
         """Share an uploaded image, optionally with numbered marks drawn onto a new PNG."""
@@ -1106,7 +1157,8 @@ def coordination_tools():
                    {'action': {'type': 'string', 'enum': ['get', 'create', 'claim', 'update', 'delegate', 'accept', 'release']}, 'task_id': string, 'title': string, 'details': string, 'owner': string, 'status': string,
                     'paths': {'type': 'array', 'items': string}, 'depends_on': {'type': 'array', 'items': string}, 'labels': {'type': 'array', 'items': string},
                     'attachments': {'type': 'array', 'items': {'type': 'object', 'properties': {'url': string, 'name': string, 'note': string, 'source': string}, 'required': ['url']}},
-                    'next_action': string, 'priority': {'type': 'integer', 'minimum': 1, 'maximum': 5},
+                    'next_action': string, 'next_action_state': {'type': 'string', 'enum': sorted(NEXT_ACTION_STATES)},
+                    'priority': {'type': 'integer', 'minimum': 1, 'maximum': 5},
                     'wait': {'type': 'object'}, 'evidence': {'type': 'object'}, 'update': string}, ['action']),
         definition('room_markup', 'Show instead of describe: share an uploaded image with the team, optionally marked up with numbered boxes, arrows and pins (x/y are fractions 0..1 of width/height; a pin uses x1,y1). Draws a new PNG whose note lists each mark. Posts it to this channel unless post is false; task_id adds it to a task you own.',
                    {'image': {'type': 'string', 'description': '/uploads/<file> url from chat or a task'},

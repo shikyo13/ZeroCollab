@@ -30,6 +30,7 @@ from provider_controls import ProviderControls
 from coordination_state import pending_human_wait
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
 from room_goals import RoomGoals
+from ready_wakes import ReadyWakes
 import project_registry
 from agent_profiles import AgentProfiles
 from team_builder import TeamBuilder
@@ -582,6 +583,7 @@ class RoomRuntime:
         self.controls = ProviderControls(self)
         self.project_room = ProjectRoom(self)
         self.goals = RoomGoals(self)
+        self.ready_wakes = ReadyWakes(self)
         self.profiles = AgentProfiles(self)
         self.team_builder = TeamBuilder(self)
         self.decisions = DecisionFlow(self)
@@ -1175,6 +1177,7 @@ class RoomRuntime:
                     # closed. The worker holds it and the deployment checkpoint preserves it.
                     if not self.deployment or self.deployment.reload()['writes'] == 'open':
                         self.goals.schedule()
+                        self.ready_wakes.schedule()
                     await self.publish_status()
                 except Exception:
                     LOGGER.exception('Goal scheduling/status failed; worker remains available')
@@ -1199,17 +1202,20 @@ class RoomRuntime:
             self.queues[name].merge_waiting(entry)
             receipts = self.project_room.state.get('receipts', {}).get(name + ':' + entry['channel'], [])
             requests = [r for r in entry['requests'] if not r.get('_steer_delivered') and current_request(r, name, self.project_room.state, receipts)
-                        and self.goals.accepts(r) and self.team_builder.accepts(r) and self.decisions.accepts(r)]
+                        and self.goals.accepts(r) and self.team_builder.accepts(r) and self.decisions.accepts(r)
+                        and self.ready_wakes.accepts(r)]
             if not requests:
                 await self.emit('runtime_queue_pruned', {'agent': name, 'channel': entry['channel'],
                     'reason': 'Resolved, superseded or already delivered requests'}, persist=True)
                 return
+            self.ready_wakes.cover(name, requests)
             humans = [r for r in requests if r.get('human')]
             # Agent chat @mentions are counted for usage only; there is no handoff limit (user #6302).
             # Reviews, follow-ups and delegations carry a tracked record (ref); goals and team-builder
             # runs carry their own token and controls.
             handoffs = [r for r in requests if not r.get('human') and not r.get('ref')
-                        and not r.get('goal_token') and not r.get('team_builder') and not r.get('decision')]
+                        and not r.get('goal_token') and not r.get('team_builder') and not r.get('decision')
+                        and not r.get('ready_wake')]
             entry['chain'] = (humans or requests)[-1]['chain']
             entry['requests'] = requests
             entry['prompt'] = '\n\n'.join(r['prompt'] for r in requests)
@@ -1387,6 +1393,8 @@ class RoomRuntime:
                 return result
             if result.get('owner') == run.name or (result.get('transfer') or {}).get('to') == run.name:
                 run.task_ids.add(result['id'])
+            # The conversation whose budget a later ready-task wake for this task would use.
+            self.ready_wakes.record_chain(result['id'], run.entry['chain'])
             if arguments.get('action') == 'delegate':
                 # A delegation stays with the current owner until the recipient accepts the transfer.
                 transfer = result.get('transfer') or {}
@@ -1413,6 +1421,8 @@ class RoomRuntime:
         else:
             raise ValueError('Unknown coordination tool')
         self.host.store.add(run.name, text, channel=run.channel, metadata={'no_route': True, 'chain': run.entry['chain']})
+        if tool == 'room_task':
+            self.ready_wakes.schedule()  # An arming event: a task changed.
         await self.emit('project_state', self.project_room.snapshot())
         return result
 
@@ -1621,6 +1631,10 @@ class RoomRuntime:
             return {'record': result['item'], 'changed': False, 'deliveries': {}}
         item = result['item']
         item.setdefault('channel', channel)
+        if item.get('task_id') and arguments.get('action') in ('respond', 'resolve'):
+            # A review verdict or a follow-up resolved by someone else is new work for the task's owner.
+            kind = 'review verdict' if tool == 'room_review' else 'follow-up resolved'
+            self.project_room.bump_work(item['task_id'], actor, f"{kind} by {actor}")
         self.project_room.save()
         text = result['summary']
         ref = {'collection': 'reviews' if tool == 'room_review' else 'followups',
@@ -1632,6 +1646,7 @@ class RoomRuntime:
                 if recipient != actor:
                     deliveries[recipient] = self.notify_participant(recipient, channel, chain,
                         text + '\nRead room_read(section="inbox") for the full request/findings and coordinate with the team.', ref)
+        self.ready_wakes.schedule()
         await self.emit('project_state', self.project_room.snapshot())
         return {'record': item, 'changed': True, 'deliveries': deliveries}
 
@@ -2063,6 +2078,7 @@ def install(host):
     async def limits(request: Request):
         try:
             selected = runtime.project_room.change_limits(await request.json())
+            runtime.ready_wakes.schedule()  # Turning ready_task_wakes on is an arming event.
             await runtime.publish_status()
             await runtime.emit('project_state', runtime.project_room.snapshot())
             return {'ok': True, 'limits': selected}
@@ -2100,8 +2116,10 @@ def install(host):
                 if not task['owner']:
                     raise ValueError('Assign an owner before starting a task')
                 chain = runtime.project_room.new_chain(channel)
+                runtime.ready_wakes.record_chain(task['id'], chain)
                 runtime.enqueue(task['owner'], channel, prompt=f"Task {task['id']}: {task['title']}\n{task['details']}\nReserved paths: {', '.join(task['paths'])}",
                                 chain=chain, routing={'task_id': task['id']})
+            runtime.ready_wakes.schedule()
             await runtime.emit('project_state', runtime.project_room.snapshot())
             return task
         except (ValueError, TypeError) as exc:
