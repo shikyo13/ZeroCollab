@@ -29,12 +29,14 @@ export function TeamBuilder({ onClose, onAdded, target }: { onClose: () => void;
   const mounted = useRef(true);
   const heading = useRef<HTMLHeadingElement>(null);
   const { data: running } = useRuntimeState();
+  const [activeProject, setActiveProject] = useState(window.activeProjectId || '');
+  const runningProject = activeProject || running?.project_id || running?.project || '';
   const { projects } = useProjects();
   const targetProject = target?.project;
   const targetProposal = target?.proposal;
-  const readOnly = !!target && (proposal?.read_only !== false || running?.project_id !== target.project);
+  const readOnly = !!target && (proposal?.read_only !== false || runningProject !== target.project);
   const viewedName = projects.find(p => p.id === targetProject)?.name || targetProject;
-  const runningName = projects.find(p => p.id === running?.project_id)?.name || running?.project_id || 'unknown';
+  const runningName = projects.find(p => p.id === runningProject)?.name || runningProject || 'unknown';
   useEffect(() => { mounted.current = true; if (target) heading.current?.focus(); return () => { mounted.current = false; generation.current++; }; }, []);
 
   const reload = useCallback(async () => {
@@ -74,8 +76,11 @@ export function TeamBuilder({ onClose, onAdded, target }: { onClose: () => void;
   useRoomEvent<{ proposal?: string; id?: string }>('team_builder', () => {
     if (proposal) refreshProposal(proposal.id);
   });
-  useRoomEvent('settings', () => { if (target) void reload(); });
-  useEffect(() => { if (target) void reload(); }, [running?.project_id]);
+  useRoomEvent<{project_id?: string}>('settings', event => {
+    if (event.data.project_id) setActiveProject(event.data.project_id);
+    if (target) void reload();
+  });
+  useEffect(() => { if (target) void reload(); }, [runningProject]);
   const retry = useAction();
 
   // Drafting and challenging run on the server; polling also notices a stalled or stopped drafter.
