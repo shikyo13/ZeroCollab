@@ -867,17 +867,19 @@ class RoomRuntime:
                     state.update(state="ready", detail="Ready to start")
             except Exception as exc:
                 state.update(state="blocked", detail=str(exc)[:600])
-        # One catalog lookup per configured provider connection, shared by its profiles.
+        # One catalog lookup per configured provider connection, shared by its profiles. Agents
+        # mid-turn are included: setup_project() resets every catalog to loading, and a lookup only
+        # runs the CLI's model list (no turn or session). An idle member does the lookup when one exists.
         groups = {}
         for name, state in self.states.items():
-            if name not in self.running:
-                groups.setdefault(state['template'], []).append(name)
-        names = [group[0] for group in groups.values()]
+            groups.setdefault(state['template'], []).append(name)
+        names = [next((n for n in group if n not in self.running), group[0]) for group in groups.values()]
         results = await asyncio.gather(*(self.controls.refresh(name) for name in names))
         for name, connected in zip(names, results):
             for peer in groups[self.states[name]['template']]:
                 self.controls.catalogs[peer] = dict(self.controls.catalogs[name])
-                if not connected and self.states[peer]['provider'] == 'antigravity':
+                # A running agent keeps its working state; its next refresh reports the failure.
+                if not connected and self.states[peer]['provider'] == 'antigravity' and peer not in self.running:
                     self.states[peer].update(state='blocked', detail=self.controls.catalogs[name]['error'])
         self.deploy_refresh_pending = False
         # Team's provider catalog is loaded with profiles, not runtime_state.
