@@ -251,6 +251,11 @@ def visible_files(root):
             yield path
 
 
+def file_uses_crlf(text):
+    """Only a file whose every newline is CRLF counts; mixed files are edited byte for byte as they are."""
+    return '\r\n' in text and text.count('\n') == text.count('\r\n')
+
+
 def execute_file_tool(root, name, params):
     """No shell execution; confinement is enforced for every file operation."""
     if name not in FILE_TOOLS:
@@ -272,15 +277,30 @@ def execute_file_tool(root, name, params):
         path.parent.mkdir(parents=True, exist_ok=True)
         # Revalidate after directory creation and before the actual write.
         scoped_path(root, str(path))
-        path.write_text(content, "utf-8")
+        # Bytes, not write_text: on Windows text mode turns every LF into CRLF. A file that already
+        # uses CRLF keeps it; new files and LF files get exactly the newlines supplied.
+        if path.is_file() and file_uses_crlf(path.read_bytes().decode("utf-8")):
+            content = content.replace("\r\n", "\n").replace("\n", "\r\n")
+        path.write_bytes(content.encode("utf-8"))
         return f"Wrote {path.relative_to(root)} ({len(content)} characters)"
     if name == "edit_file":
         if path.stat().st_size > 262144:
             raise ValueError("File exceeds 256 KiB limit")
-        original = path.read_text("utf-8")
+        # Exact bytes: everything outside the edited spans, including newline style and the final
+        # newline, is written back unchanged. Edit text follows the file's style when it is all CRLF.
+        original = path.read_bytes().decode("utf-8")
+        crlf = file_uses_crlf(original)
+        native = (lambda s: s.replace("\r\n", "\n").replace("\n", "\r\n")) if crlf else (lambda s: s)
         replacements = []
         for edit in params.get("edits", []):
             old, new = edit.get("old_text"), edit.get("new_text")
+            if isinstance(old, str) and isinstance(new, str):
+                old, new = native(old), native(new)
+                if not crlf and "\n" in old and original.count(old) == 0:
+                    # Mixed file: read_file shows LF, but this span may use CRLF. Match it as written.
+                    as_crlf = old.replace("\r\n", "\n").replace("\n", "\r\n")
+                    if original.count(as_crlf) == 1:
+                        old, new = as_crlf, new.replace("\r\n", "\n").replace("\n", "\r\n")
             if not isinstance(old, str) or not old or not isinstance(new, str) or original.count(old) != 1:
                 raise ValueError("Each old_text must occur exactly once; new_text must be a string")
             begin = original.index(old)
@@ -294,7 +314,7 @@ def execute_file_tool(root, name, params):
         if len(updated.encode()) > 262144:
             raise ValueError("Edited file exceeds 256 KiB limit")
         scoped_path(root, str(path))
-        path.write_text(updated, "utf-8")
+        path.write_bytes(updated.encode("utf-8"))
         return f"Edited {path.relative_to(root)}"
     if not path.is_dir():
         raise ValueError("Search path must be a directory")
@@ -1232,8 +1252,9 @@ class RoomRuntime:
             await run.finish_message(phase=run.message_phase or 'final_answer')
             silent = not run.published_messages
             self.project_room.complete(run)
-            self.states[name].update(state="ready", detail="Last turn completed")
-            if silent:
+            stop_note = getattr(run, 'stop_note', '')
+            self.states[name].update(state="ready", detail=stop_note or "Last turn completed")
+            if silent and not stop_note:
                 try:
                     await self.silent_turn(run)
                 except Exception:
@@ -1369,7 +1390,7 @@ class RoomRuntime:
                           if transfer else '')
                 delivery = self.notify_participant(recipient, run.channel, run.entry['chain'],
                     f"Own task {result['id']}: {result['title']}\n{result['details']}\nReserved paths: {', '.join(result['paths'])}{accept}\nRead your inbox and report progress via room tools.",
-                    {'collection': 'tasks', 'id': result['id'], 'updated': result['updated'], 'action': 'delegate'})
+                    {'collection': 'tasks', 'id': result['id'], 'updated': result['updated'], 'action': 'delegate', 'by': run.name})
                 result = {**result, 'delivery': delivery}
             if result['status'] == 'done' and before not in (None, 'done'):
                 ready = self.dependency_ready(result['id'], run.channel, run.entry['chain'], actor=run.name)
@@ -1407,6 +1428,49 @@ class RoomRuntime:
         self.states[run.name].update(state='ready', detail=f'Last turn failed to start; retrying once: {detail[:300]}')
         self.queues[run.name].retry(entry)
         return True
+
+    def requesters(self, run):
+        """Agents who asked for this turn's work: senders of the waking chat messages, and creators of
+        the follow-up, review or delegation that woke it. The user is told through the chat line."""
+        state, found = self.project_room.state, []
+        for request in run.entry['requests']:
+            ref, who = request.get('ref') or {}, None
+            if ref.get('by'):
+                who = ref['by']  # Recorded at wake time; task records lose their transfer once accepted.
+            elif request.get('message_id') is not None:
+                who = (self.host.store.get_by_id(request['message_id']) or {}).get('sender')
+            elif ref.get('collection') in ('followups', 'reviews', 'tasks'):
+                item = next((x for x in state.get(ref['collection'], []) if x['id'] == ref.get('id')), {})
+                who = item.get('created_by') or item.get('requested_by') or (item.get('transfer') or {}).get('from')
+            if who in self.states and who != run.name and who not in found:
+                found.append(who)
+        return found
+
+    async def tool_budget_stop(self, run, rounds, executed, too_many=False, reason=None):
+        """A local agent stopped before finishing: it used its tool rounds, or a reply hit its output limit.
+        The turn ends honestly, nothing is marked done, and each agent that asked is woken once to decide
+        what happens next; there is no retry."""
+        counts = {}
+        for tool in executed:
+            counts[tool] = counts.get(tool, 0) + 1
+        ran = ', '.join(f'{tool} x{n}' if n > 1 else tool for tool, n in counts.items()) or 'no tools'
+        reason = reason or ('asked for more than 6 tool calls at once' if too_many else f'used all {rounds} local tool rounds')
+        asked = self.requesters(run)[:3]
+        prompt = (f"{run.name} stopped before finishing the work you gave it: it {reason}. It ran: {ran}. "
+                  "Its tasks were left as they were, and it will not retry by itself. Check its changes, then "
+                  "continue the work yourself, hand it a smaller next step, or record the blocker.")
+        # enqueue refuses paused or blocked leads (and says so in chat); only accepted wakes are named.
+        notified = [lead for lead in asked
+                    if self.enqueue(lead, run.channel, prompt=prompt, chain=run.entry['chain'], routing={'human': False})]
+        note = (f"{run.name} stopped before finishing: it {reason}. It ran: {ran}. "
+                "Nothing was marked done; its tasks stay as they were. ")
+        note += (f"Notified {', '.join(notified)}." if notified else
+                 f"Could not wake {', '.join(asked)}; check its work." if asked else
+                 "No requesting agent was found; check its work.")
+        self.host.store.add('system', note, channel=run.channel, metadata={'no_route': True})
+        await self.emit('runtime_tool_budget', {'run': run.id, 'agent': run.name, 'channel': run.channel, 'reason': reason,
+                                                'rounds': rounds, 'executed': executed, 'notified': notified}, persist=True)
+        return f'Last turn stopped: {reason}'
 
     async def silent_turn(self, run):
         """Adapters return only after the provider's explicit normal completion (Codex turn/completed,
@@ -1484,7 +1548,7 @@ class RoomRuntime:
             deliveries[task['id']] = {'owner': owner, **self.notify_participant(owner, channel, chain,
                 f"All dependencies of your task {task['id']} ({task['title']}) are done; {finished} just finished.\n"
                 f"Next action on record: {task.get('next_action') or 'none recorded'}.\n" + ask,
-                {'collection': 'tasks', 'id': task['id'], 'updated': task['updated'], 'action': 'ready'})}
+                {'collection': 'tasks', 'id': task['id'], 'updated': task['updated'], 'action': 'ready', **({'by': actor} if actor else {})})}
         return deliveries
 
     def activity(self, name):
@@ -1614,6 +1678,7 @@ class RoomRuntime:
                 used = len(json.dumps(messages, ensure_ascii=False)) + tool_chars + pending
                 return int((window - output_tokens - provider_store.SAFETY_TOKENS) * ratio) - used
 
+            executed = []  # Tools that actually ran this turn, for the budget stop report.
             for turn in range(rounds + 1):
                 # Checked on every request, not once per turn: a key switched off mid-turn stops the next
                 # round, and an address changed outside the app never receives the key. Set only after the
@@ -1656,17 +1721,27 @@ class RoomRuntime:
                     # Bounded: a server counting only uncached prompt tokens would otherwise inflate it and reopen overflow.
                     ratio = min(4.0, max(1.5, sent_chars / usage['prompt_tokens']))
                 clean = visible_text(text)
-                if finish_reason == 'length' and calls:
-                    raise RuntimeError('Local tool call was truncated; no incomplete call was executed')
                 if tools and clean:
                     # Hold tool-enabled content until classified, so malformed protocol
                     # and reasoning are never streamed into ordinary chat.
                     await run.delta(clean + ('\n' if calls else ''))
+                if finish_reason == 'length':
+                    # The reply hit its output limit: a cut-off tool call is never run, and a reply cut off
+                    # with no call (often all reasoning) is not a finished answer. Either way the turn ends
+                    # like a round-budget stop, so whoever asked is woken instead of the work stalling.
+                    await run.finish_message(phase='commentary')
+                    what = 'while writing a tool call (that call was not run)' if calls else 'before finishing its reply'
+                    run.stop_note = await self.tool_budget_stop(
+                        run, rounds, executed, reason=f"hit its {payload.get('max_tokens')}-token reply limit {what}")
+                    return
                 if not calls:
                     return
                 await run.finish_message(phase='commentary')
                 if turn == rounds or len(calls) > 6:
-                    raise RuntimeError("Local tool budget exceeded")
+                    # Not a failure of the agent: the turn ends here, these calls are not run, and the
+                    # agent stays ready. Whoever asked is told, so the work is not left stranded.
+                    run.stop_note = await self.tool_budget_stop(run, rounds, executed, len(calls) > 6)
+                    return
                 structured = list(calls.values())
                 for call in structured:
                     call['id'] = call.get('id') or 'call_' + uuid.uuid4().hex
@@ -1680,6 +1755,7 @@ class RoomRuntime:
                         if name in {t['function']['name'] for t in coordination_tools()}:
                             result = json.dumps(await self.coordination(run, name, params), ensure_ascii=False)
                             await run.tool_event(name, {'result': result[:4000]}, 'completed')
+                            executed.append(name)
                         else:
                             if name not in FILE_TOOLS:
                                 raise ValueError("Tool is disabled")
@@ -1687,6 +1763,7 @@ class RoomRuntime:
                             if await run.approval(name, params, f"Bonsai file action · applies only to {root}"):
                                 result = execute_file_tool(root, name, file_params)
                                 await run.tool_event(name, {"result": result[:4000]}, "completed")
+                                executed.append(name)
                     except (ValueError, OSError) as exc:
                         result = "Tool refused: " + str(exc)
                         await run.tool_event(name, {"error": result}, "refused")

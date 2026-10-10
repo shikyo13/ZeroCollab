@@ -212,7 +212,7 @@ class DependencyReadyTests(unittest.TestCase):
         self.assertIn('Next action on record: install.', calls[0][3])
         self.assertIn('Continue it now', calls[0][3])
         self.assertIn('It is marked blocked: check whether these dependencies were the block', calls[1][3])
-        self.assertEqual(calls[0][4], {'collection': 'tasks', 'id': 'c', 'updated': 2, 'action': 'ready'})
+        self.assertEqual(calls[0][4], {'collection': 'tasks', 'id': 'c', 'updated': 2, 'action': 'ready', 'by': 'opus'})
         # The wake is re-checked at delivery: if an upstream reopened meanwhile, it is no longer current.
         from coordination_queue import current_request
         ref = {'ref': calls[0][4]}
