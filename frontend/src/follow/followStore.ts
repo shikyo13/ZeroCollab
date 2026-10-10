@@ -78,11 +78,12 @@ let shown: FollowSnapshot = snapshot();
 const listeners = new Set<() => void>();
 let attached = false;
 
+/** Copies of the tracked entries: onDelta and onTool mutate them, and a paused view must not change. */
 function snapshot(): FollowSnapshot {
   return {
     following,
     paused,
-    live: Object.fromEntries(live),
+    live: Object.fromEntries([...live].map(([agent, entry]) => [agent, { ...entry, tool: entry.tool && { ...entry.tool } }])),
     ticker: ticker.slice(),
     moves: Object.fromEntries(moves),
   };
@@ -207,7 +208,9 @@ function onProjectState(event: RoomEvent) {
   if (lastReviews) {
     for (const [id, review] of reviews) {
       const before = lastReviews.get(id);
-      if (!before && review.status === 'pending' && tasks.has(review.task_id)) {
+      // Only a task already on the last board counts: after a project switch, that project's
+      // existing pending reviews are not new.
+      if (!before && review.status === 'pending' && lastTasks?.has(review.task_id)) {
         tick(review.requested_by, `asked ${review.reviewer} to review`, review.task_id, time);
       } else if (before && before.status !== review.status && (review.status === 'approved' || review.status === 'changes_requested')) {
         tick(review.reviewer, review.status === 'approved' ? 'approved' : 'requested changes on', review.task_id, time);
