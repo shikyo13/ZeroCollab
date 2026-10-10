@@ -10,6 +10,31 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from project_room import write_json
 
+# A proposal file larger than this is treated as corrupt rather than read (security d4cdc9a4).
+PROPOSAL_BYTES = 1_000_000
+
+
+
+def inert(value):
+    """Agent-written text for a system chat line (security a09e47f4). The chat renderer turns a literal
+    backslash-n into a newline before it protects code, so backslashes and backticks are replaced and
+    whitespace collapsed; the caller shows the result as inline code, which renders it literally."""
+    return ' '.join(str(value).replace('\\', '/').replace('`', "'").split()) or '-'
+
+
+CHALLENGE_FEEDBACK = ('The user asked you to challenge this agent-suggested member. Check that the role is really '
+                      'missing from the team, that the instructions (background) are right and complete, and that the '
+                      'connection, model and effort fit. Return exactly one revised member; you cannot withdraw the '
+                      'suggestion. Coverage may be empty. Put your critique in summary.')
+
+
+class Gone(ValueError):
+    """The named proposal is no longer this project's proposal; never fall back to the current one."""
+
+
+class OpenProject(ValueError):
+    """Only the open project's proposal can be acted on: Add creates agents in the running room."""
+
 
 def text(value, label, maximum=16000, required=True):
     if not isinstance(value, str) or len(value) > maximum or (required and not value.strip()):
@@ -37,7 +62,7 @@ class TeamBuilder:
 
     def get(self, identifier=''):
         if not self.proposal or (identifier and identifier != self.proposal['id']):
-            raise ValueError('Proposal changed; reload the team builder')
+            raise Gone('This suggestion or proposal is no longer available; reload the team builder')
         if self.proposal['status'] in ('drafting', 'challenging'):
             actor = self.proposal['drafter'] if self.proposal['status'] == 'drafting' else self.proposal['challenger']
             if self.runtime.paused or actor not in {a['id'] for a in self.agents()}:
@@ -74,6 +99,9 @@ class TeamBuilder:
         p = self.proposal
         actor = p['drafter'] if p['status'] == 'drafting' else p['challenger']
         if actor not in {a['id'] for a in self.agents()}:
+            if p.get('source') == 'suggestion':
+                self.challenge_ended('failed', 'The reviewing agent is unavailable')
+                return
             p.update(status='failed', error='Selected drafter or challenger is unavailable. Resume the agent and retry.')
             self.save()
             return
@@ -105,6 +133,9 @@ class TeamBuilder:
         queued = self.runtime.enqueue(actor, p['channel'], prompt=prompt, chain=p['chain'],
                     routing={'human': False, 'team_builder': self.token()})
         if not queued:
+            if p.get('source') == 'suggestion':
+                self.challenge_ended('failed', 'The review could not be queued')
+                return
             p.update(status='failed', error='Draft could not be queued. Resume the room/agent or clear its queue, then retry.')
             self.save()
 
@@ -161,6 +192,9 @@ class TeamBuilder:
         if len(json.dumps(payload)) > 256000:
             raise ValueError('Proposal is too large; shorten member backgrounds')
         members = [self.normalize_member(m) for m in payload['members']]
+        if p.get('source') == 'suggestion':
+            for member in members:
+                self.refuse_keyed(member)  # Security C1 also covers a requested challenge's revision.
         if p['revision_member']:
             if len(members) != 1:
                 raise ValueError('Return exactly the one member requested for revision')
@@ -171,7 +205,10 @@ class TeamBuilder:
             raise ValueError('Proposed handles must be distinct')
         allowed = set(handles) | {n for n, m in self.runtime.profiles.items.items() if not m.get('archived')}
         coverage = payload.get('coverage')
-        if not isinstance(coverage, list) or not coverage:
+        suggestion = p.get('source') == 'suggestion'
+        if suggestion and len(payload['members']) != 1:
+            raise ValueError('Return exactly the one revised member; a suggestion cannot be withdrawn')
+        if not isinstance(coverage, list) or (not coverage and not suggestion):
             raise ValueError('Provide expertise coverage for the brief')
         normalized = []
         for row in coverage:
@@ -196,11 +233,19 @@ class TeamBuilder:
             self.queue()
         else:
             p.update(status='ready', revision_member='', feedback='')
+            if suggestion and p.get('challenge'):
+                p['challenge'].update(status='done', summary=summary)
+                self.announce_challenge(f'{self.label(actor)} reviewed {self.label(p["suggested_by"])}\'s suggestion of '
+                                        f'`{inert(members[0]["name"])}`. Its summary: `{inert(summary)}` '
+                                        'Both versions are on Team.')
             self.save()
         return self.get()
 
     def turn_finished(self, entry):
         if self.proposal and any(r.get('team_builder') == self.token() for r in entry.get('requests', [])):
+            if self.proposal.get('source') == 'suggestion':
+                self.challenge_ended('failed', "The reviewing agent's turn ended without a revision")
+                return
             self.proposal.update(status='failed', error='Agent turn ended without an accepted proposal. Retry drafting.')
             self.save()
 
@@ -209,8 +254,139 @@ class TeamBuilder:
         if p and p['status'] in ('drafting', 'challenging'):
             expected = p['drafter'] if p['status'] == 'drafting' else p['challenger']
             if not actor or actor == expected:
+                if p.get('source') == 'suggestion':
+                    self.challenge_ended('paused', 'The review was stopped or the agent is unavailable')
+                    return
                 p.update(status='failed', error='Draft stopped. Resume the room/agent, then retry when ready.')
                 self.save()
+
+    def label(self, name):
+        return self.runtime.states.get(name, {}).get('label') or name
+
+    def announce_challenge(self, text):
+        p = self.proposal
+        self.runtime.host.store.add('system', text, channel=p['channel'], metadata={'no_route': True, 'team_suggestion': {
+            'project_id': self.runtime.identity, 'proposal_id': p['id'], 'status': p['status']}})
+
+    def challenge_ended(self, status, reason):
+        """The suggestion returns to the user's review exactly as it was; there is no automatic retry."""
+        p = self.proposal
+        member = next((m for m in p['members'] if m['member_id'] == p.get('revision_member')), None)
+        if member and member['status'] == 'revision_requested':
+            member['status'] = 'proposed'
+        p.update(status='ready', revision_member='', feedback='', error='')
+        p.setdefault('challenge', {}).update(status=status, reason=reason)
+        self.save()
+        self.announce_challenge(f'The requested review of {self.label(p["suggested_by"])}\'s suggestion did not finish: '
+                                f'{reason}. The suggestion is unchanged; retry the review or decide on Team.')
+
+    def challenge(self, identifier, body):
+        """The user asks a named agent to review a suggestion. It returns one revised member; the original is
+        kept beside it, and the user still decides."""
+        self.check_open(body)
+        self.get(identifier)
+        p = self.proposal
+        if p.get('source') != 'suggestion' or p['status'] != 'ready':
+            raise ValueError('Only a suggestion waiting for review can be challenged')
+        member = p['members'][0]
+        if member['status'] not in ('proposed', 'approved'):
+            raise ValueError('A suggestion can be challenged only before it is added or declined')
+        agent = (body or {}).get('agent')
+        if agent == p['suggested_by'] or agent not in {a['id'] for a in self.agents()}:
+            raise ValueError('Choose an available agent other than the one who suggested it')
+        p.setdefault('original_member', copy.deepcopy(member))
+        member['status'] = 'revision_requested'
+        p.update(status='challenging', challenger=agent, revision=p['revision'] + 1, revision_member=member['member_id'],
+                 feedback=CHALLENGE_FEEDBACK, error='', chain=self.runtime.project_room.new_chain(p['channel']))
+        p['challenge'] = {'agent': agent, 'status': 'running', 'reason': '', 'summary': ''}
+        self.save()
+        self.queue()
+        return self.get()
+
+    def refuse_keyed(self, member):
+        """Security C1: on a suggestion, an agent never puts a member on a billed API-key connection;
+        only the user chooses one, in Edit."""
+        if self.runtime.profiles.templates.get(member['template'], {}).get('key_target'):
+            raise ValueError('Use a signed-in connection; the user chooses API-key connections')
+
+    def finished(self):
+        """No proposal, or one whose every member was added or declined: nothing of the user's is open."""
+        p = self.proposal
+        return not p or (p['status'] == 'ready' and all(m['status'] in ('added', 'declined') for m in p['members']))
+
+    def suggest(self, actor, channel, member, reason):
+        """An agent proposes one new member. It goes straight to the user's review: no agent turn runs,
+        nothing is added, and the user approves, edits, declines and adds as with any proposal."""
+        if not self.finished():
+            raise ValueError('A team proposal is still open for review. Mention the missing skill in chat instead.')
+        reason = text(reason, 'Reason', 1000)
+        if not isinstance(member, dict):
+            raise ValueError('Suggest one member as an object')
+        normalized = self.normalize_member(member)
+        self.refuse_keyed(normalized)
+        handle = normalized['id']
+        previous = self.proposal or {}
+        declined = list(previous.get('declined_suggestions', []))
+        if previous.get('source') == 'suggestion':
+            declined += [{'by': previous['suggested_by'], 'handle': m['id']}
+                         for m in previous['members'] if m['status'] == 'declined']
+        if handle in self.runtime.profiles.items or self.runtime.host.registry.get_instance(handle):
+            raise ValueError(f'@{handle} is already a team member')
+        if {'by': actor, 'handle': handle} in declined:
+            raise ValueError(f'The user already declined your suggestion of @{handle}')
+        if not self.runtime.owns_channel(channel):
+            channel = self.runtime.default_channel()
+        self.proposal = dict(id=uuid.uuid4().hex[:16], revision=1, source='suggestion', suggested_by=actor,
+            brief=reason, channel=channel, chain=self.runtime.project_room.new_chain(channel),
+            drafter=actor, challenger='', status='ready', members=[normalized], coverage=[],
+            summary=reason, history=[{'actor': actor, 'stage': 'suggestion', 'summary': reason}], error='',
+            revision_member='', feedback='', created=time.time(), declined_suggestions=declined[-50:])
+        self.save()
+        p = self.proposal
+        label = self.runtime.states.get(actor, {}).get('label') or actor
+        providers = {x['id']: x for x in self.runtime.profiles.describe()['providers']}
+        connection = providers.get(normalized['template'], {}).get('label', normalized['template'])
+        # Security C3: the name and reason are the agent's words, shown inert and attributed, so they can
+        # never read as a room instruction. The full reason stays as written in the proposal.
+        self.runtime.host.store.add(
+            'system',
+            f'{label} suggests adding `{inert(normalized["name"])}` (@{handle}, {connection}). '
+            f'Its reason: `{inert(reason)}` Review it on Team.',
+            channel=channel, metadata={'no_route': True, 'team_suggestion': {
+                'project_id': self.runtime.identity, 'proposal_id': p['id'], 'status': 'ready'}})
+        return self.get()
+
+    def read(self, project_id, proposal_id):
+        """Read-only view of a named proposal, also in a project that is not open (design 7097f58).
+        Nothing is switched, loaded or started; a different proposal is refused, never substituted."""
+        if project_id == self.runtime.identity:
+            return {**self.get(proposal_id), 'project_id': project_id, 'read_only': False}
+        import project_registry
+        if not isinstance(project_id, str) or not project_registry.IDENTITY.fullmatch(project_id):
+            raise ValueError('Choose a listed project')
+        root = (self.runtime.data / 'projects').resolve()
+        path = (root / project_id / 'team-builder.json').resolve()
+        if not path.is_relative_to(root) or not path.parent.is_dir():
+            raise ValueError('Choose a listed project')
+        try:
+            if path.stat().st_size > PROPOSAL_BYTES:
+                raise Gone('This suggestion is no longer available')
+            proposal = json.loads(path.read_text('utf-8'))
+        except FileNotFoundError:
+            raise Gone('This suggestion is no longer available') from None
+        except Gone:
+            raise
+        except (OSError, ValueError):
+            raise Gone('This suggestion is no longer available; its saved record could not be read') from None
+        if not isinstance(proposal, dict) or proposal.get('id') != proposal_id:
+            raise Gone('This suggestion is no longer available')
+        return {**proposal, 'project_id': project_id, 'read_only': True}
+
+    def check_open(self, body):
+        """Actions may name the project they act in; another project's proposal is read-only (409)."""
+        project = (body or {}).get('project_id')
+        if project is not None and project != self.runtime.identity:
+            raise OpenProject('Open this project to act on its suggestion')
 
     def retry(self, identifier):
         self.get(identifier)
@@ -223,6 +399,7 @@ class TeamBuilder:
         return self.get()
 
     def member_action(self, identifier, member_id, body):
+        self.check_open(body)
         self.get(identifier)
         p = self.proposal
         if p['status'] != 'ready':
@@ -244,21 +421,31 @@ class TeamBuilder:
             for row in p['coverage']:
                 for key in ('lead', 'support'):
                     row[key] = [member['id'] if handle == old_handle else handle for handle in row[key]]
+        elif action == 'use_original':
+            original = p.get('original_member')
+            if p.get('source') != 'suggestion' or not original:
+                raise ValueError('Only a challenged suggestion has an original to return to')
+            member.update({**copy.deepcopy(original), 'member_id': member_id, 'status': 'proposed', 'error': ''})
         elif action in ('approve', 'decline'):
             member.update(status='approved' if action == 'approve' else 'declined', error='')
         elif action == 'request_revision':
+            if p.get('source') == 'suggestion':
+                # The drafting stage would queue the suggester with no challenger; a suggestion is
+                # reviewed only by a named agent the user picks.
+                raise ValueError('Ask a named agent to challenge this suggestion instead')
             feedback = text(body.get('feedback'), 'Revision feedback', 4000)
             member['status'] = 'revision_requested'
             p.update(revision_member=member_id, feedback=feedback, status='drafting',
                      revision=p['revision'] + 1, chain=self.runtime.project_room.new_chain(p['channel']))
         else:
-            raise ValueError('Choose approve, edit, request_revision or decline')
+            raise ValueError('Choose approve, edit, request_revision, use_original or decline')
         self.save()
         if action == 'request_revision':
             self.queue()
         return self.get()
 
-    async def add(self, identifier):
+    async def add(self, identifier, body=None):
+        self.check_open(body)
         self.get(identifier)
         p, path, identity = self.proposal, self.path, self.runtime.identity
         if p['status'] != 'ready':
@@ -290,8 +477,20 @@ def install(host, runtime):
     async def proposal(identifier: str):
         try:
             return builder.get(identifier)
+        except Gone as exc:
+            return JSONResponse({'error': str(exc)}, 409)
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, 400)
+
+    @host.app.get('/api/runtime/team-builder/projects/{project_id}/proposals/{identifier}')
+    async def project_proposal(project_id: str, identifier: str):
+        # UI session only (run tokens reach just coordination and upload); read-only for other projects.
+        try:
+            return builder.read(project_id, identifier)
+        except Gone as exc:
+            return JSONResponse({'error': str(exc)}, 409)
+        except ValueError as exc:
+            return JSONResponse({'error': str(exc)}, 404)
 
     async def change(operation, request=None, **kwargs):
         try:
@@ -299,10 +498,12 @@ def install(host, runtime):
             if body is not None and not isinstance(body, dict):
                 raise ValueError('Expected a JSON object')
             async with builder.lock:
-                result = await builder.add(**kwargs) if operation == 'add' else getattr(builder, operation)(
+                result = await builder.add(**kwargs, body=body) if operation == 'add' else getattr(builder, operation)(
                     **kwargs, **({'body': body} if body is not None else {}))
             await runtime.emit('team_builder', result)
             return result
+        except (Gone, OpenProject) as exc:
+            return JSONResponse({'error': str(exc)}, 409)
         except (ValueError, TypeError, KeyError) as exc:
             return JSONResponse({'error': str(exc)}, 400)
 
@@ -315,8 +516,14 @@ def install(host, runtime):
         return await change('member_action', request, identifier=identifier, member_id=member_id)
 
     @host.app.post('/api/runtime/team-builder/proposals/{identifier}/add')
-    async def add(identifier: str):
-        return await change('add', identifier=identifier)
+    async def add(identifier: str, request: Request):
+        # An optional {project_id} body pins the exact project; older clients send no body.
+        has_body = bool(await request.body())
+        return await change('add', request if has_body else None, identifier=identifier)
+
+    @host.app.post('/api/runtime/team-builder/proposals/{identifier}/challenge')
+    async def challenge(identifier: str, request: Request):
+        return await change('challenge', request, identifier=identifier)
 
     @host.app.post('/api/runtime/team-builder/proposals/{identifier}/retry')
     async def retry(identifier: str):

@@ -1404,12 +1404,28 @@ async def file_view_open(body: dict):
 
 
 # Serve uploaded images
+UPLOAD_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+                      '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml'}
+# Uploads come from agents and users but are served from the room's own origin, where the page holds the
+# session token. An SVG opened as a page could otherwise run script with that token. The sandbox gives any
+# upload opened as a document a unique origin with scripts off; <img> previews and downloads are unaffected.
+UPLOAD_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
 @app.get("/uploads/{filename}")
 async def serve_upload(filename: str):
     upload_dir = Path(config.get("images", {}).get("upload_dir", "./uploads"))
     filepath = (upload_dir / filename).resolve()
     if not filepath.is_relative_to(upload_dir.resolve()):
         return JSONResponse({"error": "invalid path"}, status_code=400)
-    if filepath.exists():
-        return FileResponse(filepath)
-    return JSONResponse({"error": "not found"}, status_code=404)
+    if not filepath.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    media_type = UPLOAD_MEDIA_TYPES.get(filepath.suffix.lower())
+    if media_type is None:
+        # Not an image this room accepts as an upload: never rendered, only saved.
+        return FileResponse(filepath, media_type="application/octet-stream", headers=UPLOAD_HEADERS,
+                            content_disposition_type="attachment", filename=filepath.name)
+    return FileResponse(filepath, media_type=media_type, headers=UPLOAD_HEADERS)

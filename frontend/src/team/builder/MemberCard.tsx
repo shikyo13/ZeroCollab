@@ -1,5 +1,6 @@
 /* Step 2: one proposed member, with approve / edit / revise / decline decisions. */
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
+import { ApiError } from '../../lib/api';
 import { actOnMember, type MemberChanges, type Proposal, type ProposedMember } from '../../lib/teamBuilder';
 import { ErrorText, Field, useAction } from '../../board/shared';
 import { HANDLE_PATTERN, LIMITS } from '../../lib/constants';
@@ -45,7 +46,7 @@ function MemberEdit({
     <form className="bd-form tb-edit" onSubmit={submit}>
       <div className="bd-form-row">
         <Field label="Name">
-          <input value={draft.name} required maxLength={LIMITS.name} onChange={e => update({ name: e.target.value })} />
+          <input autoFocus value={draft.name} required maxLength={LIMITS.name} onChange={e => update({ name: e.target.value })} />
         </Field>
         <Field label="Mention handle" hint="Lowercase letters, digits and hyphens.">
           <div className="tm-handle">
@@ -114,26 +115,36 @@ export function MemberCard({
   member,
   providers,
   locked,
+  readOnly = false,
+  project,
+  onRefusal,
   onChange,
 }: {
   proposal: Proposal;
   member: ProposedMember;
   providers: ProviderInfo[];
   locked: boolean;
+  readOnly?: boolean;
+  project?: string;
+  onRefusal?: () => void;
   onChange: (next: Proposal) => void;
 }) {
   const [mode, setMode] = useState<'view' | 'edit' | 'revise'>('view');
   const [feedback, setFeedback] = useState('');
   const act = useAction();
+  const editButton = useRef<HTMLButtonElement>(null);
+  const suggestion = proposal.source === 'suggestion';
+  const finishEdit = () => { setMode('view'); window.setTimeout(() => editButton.current?.focus(), 0); };
   const tag = STATUS_TAGS[member.status];
   const send = async (body: Parameters<typeof actOnMember>[2]) => {
     let next: Proposal | null = null;
     const ok = await act.run(async () => {
-      next = await actOnMember(proposal.id, member.member_id, body);
+      try { next = await actOnMember(proposal.id, member.member_id, { ...body, ...(project ? { project_id: project } : {}) }); }
+      catch (e) { if (e instanceof ApiError && e.status === 409) onRefusal?.(); throw e; }
     });
     if (ok && next) {
       onChange(next);
-      setMode('view');
+      finishEdit();
       setFeedback('');
     }
   };
@@ -148,8 +159,8 @@ export function MemberCard({
         <span className={`tb-tag tb-tone-${tag.tone}`}>{tag.label}</span>
       </div>
       {!added && (
-        <p className={`tb-handle-state${member.handle_available ? '' : ' tb-handle-taken'}`}>
-          {member.handle_available ? 'Handle available at last check' : `@${member.id} is already taken. Edit the handle before approving.`}
+        <p className={`tb-handle-state${!readOnly && !member.handle_available ? ' tb-handle-taken' : ''}`}>
+          {readOnly ? 'Handle availability is checked when this project is open.' : member.handle_available ? 'Handle available at last check' : `@${member.id} is already taken. Edit the handle before approving.`}
         </p>
       )}
       {member.error && (
@@ -158,22 +169,31 @@ export function MemberCard({
           {member.error}
         </p>
       )}
-      {mode === 'edit' ? (
-        <MemberEdit member={member} providers={providers} busy={act.busy} onSave={changes => void send({ action: 'edit', changes })} onCancel={() => setMode('view')} />
+      {mode === 'edit' && !readOnly ? (
+        <MemberEdit member={member} providers={providers} busy={act.busy} onSave={changes => void send({ action: 'edit', changes })} onCancel={finishEdit} />
       ) : (
         <>
           <div className="tb-detail">
             <b>Why this member</b>
             <p>{member.rationale || 'No rationale given.'}</p>
           </div>
-          <details className="tb-detail">
+          {suggestion ? <section className="tb-detail tb-instructions" aria-label="Complete member instructions">
+            <b>Working background · complete member instructions</b>
+            <p className="bd-muted">These are the instructions this member would receive. Suggested by @{proposal.suggested_by || proposal.drafter}.</p>
+            <dl className="tb-configuration">
+              <div><dt>Provider connection</dt><dd>{providers.find(p => p.id === member.template)?.label || member.template}</dd></div>
+              <div><dt>Model</dt><dd>{member.model || 'Connection default'}</dd></div>
+              <div><dt>Reasoning effort</dt><dd>{member.effort || 'Connection default'}</dd></div>
+            </dl>
+            <pre>{member.background || 'No background written yet.'}</pre>
+          </section> : <details className="tb-detail">
             <summary>Working background · {plural(member.background.length, 'character')}</summary>
             <p className="tb-background">{member.background || 'No background written yet.'}</p>
-          </details>
-          <small className="bd-muted">{providerSummary(member, providers)}</small>
+          </details>}
+          {!suggestion && <small className="bd-muted">{providerSummary(member, providers)}</small>}
         </>
       )}
-      {mode === 'revise' && (
+      {mode === 'revise' && !readOnly && !suggestion && (
         <form
           className="bd-form tb-revise"
           onSubmit={e => {
@@ -196,7 +216,7 @@ export function MemberCard({
         </form>
       )}
       <ErrorText message={act.error} />
-      {mode === 'view' && !added && (
+      {mode === 'view' && !added && !readOnly && (
         <div className="tb-actions">
           {member.status !== 'approved' && (
             <button
@@ -209,14 +229,14 @@ export function MemberCard({
               {member.status === 'declined' ? 'Approve after all' : 'Approve member'}
             </button>
           )}
-          <button type="button" className="bd-btn" disabled={disabled} onClick={() => setMode('edit')}>
+          <button ref={editButton} type="button" className="bd-btn" disabled={disabled} onClick={() => setMode('edit')}>
             Edit profile
           </button>
           {member.status !== 'declined' && (
             <>
-              <button type="button" className="bd-btn" disabled={disabled} onClick={() => setMode('revise')}>
+              {!suggestion && <button type="button" className="bd-btn" disabled={disabled} onClick={() => setMode('revise')}>
                 Ask for revision
-              </button>
+              </button>}
               <button type="button" className="bd-btn bd-btn-quiet" disabled={disabled} onClick={() => void send({ action: 'decline' })}>
                 Decline
               </button>

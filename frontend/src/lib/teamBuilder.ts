@@ -36,7 +36,10 @@ export interface CoverageRow {
 export interface Proposal {
   id: string;
   status: ProposalStatus;
-  source?: BriefSource;
+  source?: BriefSource | 'suggestion';
+  suggested_by?: string;
+  project_id?: string;
+  read_only?: boolean;
   brief: string;
   members: ProposedMember[];
   coverage: CoverageRow[];
@@ -80,17 +83,37 @@ export interface MemberChanges {
 
 const BASE = '/team-builder';
 
+export interface SuggestionTarget { project: string; proposal: string }
+
+export function suggestionTarget(): SuggestionTarget | null {
+  const params = new URL(location.href).searchParams;
+  const project = params.get('team_project'), proposal = params.get('team_proposal');
+  return project && proposal ? { project, proposal } : null;
+}
+
+/** View a saved suggestion without switching the running project or sending a turn. */
+export function leaveSuggestion(project?: string): void {
+  const url = new URL(location.href);
+  url.searchParams.delete('team_project');
+  url.searchParams.delete('team_proposal');
+  if (project) { url.searchParams.set('view', 'projects'); url.searchParams.set('project', project); }
+  history.pushState({}, '', url);
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
 export const loadContext = () => runtime<BuilderContext>(BASE);
 
 export const createProposal = (body: { source: BriefSource; brief: string; drafter?: string; challenger?: string; channel?: string }) =>
   runtime<Proposal>(`${BASE}/proposals`, body);
 
-export const loadProposal = (id: string) => runtime<Proposal>(`${BASE}/proposals/${encodeURIComponent(id)}`);
+export const loadProposal = (id: string, project?: string) => runtime<Proposal>(project
+  ? `${BASE}/projects/${encodeURIComponent(project)}/proposals/${encodeURIComponent(id)}`
+  : `${BASE}/proposals/${encodeURIComponent(id)}`);
 
-export const actOnMember = (proposal: string, member: string, body: { action: MemberAction; changes?: MemberChanges; feedback?: string }) =>
+export const actOnMember = (proposal: string, member: string, body: { action: MemberAction; changes?: MemberChanges; feedback?: string; project_id?: string }) =>
   runtime<Proposal>(`${BASE}/proposals/${encodeURIComponent(proposal)}/members/${encodeURIComponent(member)}`, body);
 
-export const addApproved = (proposal: string) => runtime<Proposal>(`${BASE}/proposals/${encodeURIComponent(proposal)}/add`, {});
+export const addApproved = (proposal: string, project?: string) => runtime<Proposal>(`${BASE}/proposals/${encodeURIComponent(proposal)}/add`, project ? { project_id: project } : {});
 
 /** Re-run drafting for a failed proposal with the same brief and agents. */
 export const retryProposal = (proposal: string) => runtime<Proposal>(`${BASE}/proposals/${encodeURIComponent(proposal)}/retry`, {});

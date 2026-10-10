@@ -16,7 +16,7 @@ export function BriefStep({
   onCancel: () => void;
 }) {
   const agents = agentList(context.agents).filter(a => a.available);
-  const initialSource: BriefSource = previous?.source ?? (context.spec.trim() ? 'spec' : context.goal.trim() ? 'goal' : 'text');
+  const initialSource: BriefSource = previous?.source === 'suggestion' ? 'text' : previous?.source ?? (context.spec.trim() ? 'spec' : context.goal.trim() ? 'goal' : 'text');
   const textFor = (source: BriefSource) => (source === 'spec' ? context.spec : source === 'goal' ? context.goal : '');
   const [source, setSource] = useState<BriefSource>(initialSource);
   const [brief, setBrief] = useState(previous?.brief ?? textFor(initialSource));

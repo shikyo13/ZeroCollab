@@ -542,6 +542,24 @@ function appendMessage(msg, options = {}) {
     } else if (msg.type === 'system' || msg.sender === 'system') {
         el.classList.add('system-msg');
         el.innerHTML = `<span class="msg-text">${escapeHtml(msg.text)}</span>`;
+        const suggestion = msg.metadata?.team_suggestion;
+        if (typeof suggestion?.project_id === 'string' && typeof suggestion?.proposal_id === 'string') {
+            const link = document.createElement('a');
+            link.className = 'team-suggestion-link';
+            link.textContent = 'Review suggestion on Team';
+            const target = new URL(location.href);
+            target.searchParams.set('view', 'team');
+            target.searchParams.set('team_project', suggestion.project_id);
+            target.searchParams.set('team_proposal', suggestion.proposal_id);
+            link.href = target.href;
+            link.addEventListener('click', event => {
+                if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                history.pushState({}, '', target);
+                window.dispatchEvent(new PopStateEvent('popstate'));
+            });
+            el.appendChild(link);
+        }
     } else {
         const isError = msg.text.startsWith('[') && msg.text.includes('error');
         if (isError) el.classList.add('error-msg');

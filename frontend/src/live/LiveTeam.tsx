@@ -61,9 +61,9 @@ export default function LiveTeam({ active, navigate }: { active: boolean; naviga
   const stateLabel = !model.connected ? 'Connection interrupted' : !model.ready ? 'Syncing current state' : running ? `${running} running ${running === 1 ? 'turn' : 'turns'}` : 'Between actions';
   const focusLabel = pinned ? 'Pinned evidence' : !model.connected ? 'Last received' : 'Following latest';
 
-  return <div ref={root} role={focus ? 'dialog' : undefined} aria-modal={focus || undefined} aria-label={focus ? 'Live team focus view' : undefined} className={`live-team${focus ? ' lt-focus' : ''}${animate ? ' lt-motion' : ''}`}>
+  return <div ref={root} role={focus ? 'dialog' : undefined} aria-modal={focus || undefined} aria-label={focus ? 'Live view focus mode' : undefined} className={`live-team${focus ? ' lt-focus' : ''}${animate ? ' lt-motion' : ''}`}>
     <div className="lt-heading">
-      <div><span className="workspace-eyebrow">A SHARED VIEW OF THE WORK</span><h1>Live team</h1><p>Replies, handoffs and finished artifacts, as they happen.</p></div>
+      <div><span className="workspace-eyebrow">A SHARED VIEW OF THE WORK</span><h1>Live view</h1><p>Replies, handoffs and finished artifacts, as they happen.</p></div>
       <div className="lt-controls">
         <button aria-pressed={paused} onClick={() => setPaused(v => !v)}>{paused ? 'Resume motion' : 'Pause motion'}</button>
         <label className="lt-motion-control">Motion <select aria-label="Motion preference" value={motion} onChange={e => setMotion(e.target.value as typeof motion)}><option value="system">System preference</option><option value="reduced">Reduced motion</option></select></label>

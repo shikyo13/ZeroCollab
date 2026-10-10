@@ -146,14 +146,21 @@ def room_goal(action: str = 'status', goal_id: str = '', evidence: str = '') -> 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
 def room_team_builder(action: str = 'get', proposal_id: str = '', revision: int = 0,
-                      payload: dict | None = None) -> dict:
+                      payload: dict | None = None, member: dict | None = None, reason: str = '') -> dict:
     """Read the current team proposal/context (get) or submit an assigned draft/challenge (submit).
     Submit the exact proposal_id and revision from your request, with payload containing members,
     coverage and summary. Only the assigned agent can submit the current stage. This tool never
     approves or creates members; the user does that in Team builder.
+    suggest: when the team lacks a skill the work needs, propose ONE new member for the user's review.
+    member = {name, id (lowercase handle), template (a signed-in native connection from get), model,
+    effort, background (the new agent's full instructions), rationale}; reason = the missing
+    capability and the expected deliverable (up to 1000 characters). Refused while another proposal
+    is open, for an existing handle, or for one the user already declined. Suggest only for a real gap.
     """
-    return call('room_team_builder', dict(action=action, proposal_id=proposal_id,
-                                         revision=revision, payload=payload))
+    arguments = dict(action=action, proposal_id=proposal_id, revision=revision, payload=payload)
+    if action == 'suggest':
+        arguments.update(member=member, reason=reason)
+    return call('room_team_builder', arguments)
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})

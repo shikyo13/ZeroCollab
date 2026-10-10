@@ -11,6 +11,7 @@ import '../board/board.css';
 import { ProfileEditor, type Profile, type ProfilesData } from './ProfileEditor';
 import { Providers } from './Providers';
 import { TeamBuilder } from './TeamBuilder';
+import { leaveSuggestion, suggestionTarget } from '../lib/teamBuilder';
 import './team.css';
 
 const STATE_LABELS: Record<string, string> = {
@@ -53,7 +54,7 @@ function AgentRow({
   onSelect: () => void;
   /** True when an unsaved edit must be saved or cancelled first (it warns instead). */
   guarded: () => boolean;
-  /** Opens Team > Providers, offered when the agent's detail says the fix is there (sign-in, API key). */
+  /** Opens the existing provider recovery page without abandoning an edit. */
   onProviders: () => void;
 }) {
   const { run: act, busy, error } = useAction();
@@ -96,6 +97,23 @@ function AgentRow({
 }
 
 export default function Team() {
+  const [target, setTarget] = useState(suggestionTarget);
+  useEffect(() => {
+    const read = () => setTarget(suggestionTarget());
+    window.addEventListener('popstate', read);
+    return () => window.removeEventListener('popstate', read);
+  }, []);
+  return <>
+    <div hidden={!!target}><TeamHome /></div>
+    {target && <div className="bd-root tm-root"><TeamBuilder
+      key={`${target.project}:${target.proposal}`} target={target}
+      onClose={() => { leaveSuggestion(); window.setTimeout(() => document.querySelector<HTMLElement>('.tm-root h1')?.focus(), 0); }}
+      onAdded={() => undefined}
+    /></div>}
+  </>;
+}
+
+function TeamHome() {
   const { data: runtimeState, error: runtimeError } = useRuntimeState();
   const [data, setData] = useState<ProfilesData | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -177,7 +195,7 @@ export default function Team() {
     <div className="bd-root tm-root">
       <header className="bd-header">
         <div>
-          <h1 className="bd-title">Team</h1>
+          <h1 className="bd-title" tabIndex={-1}>Team</h1>
           <p className="bd-muted">
             {active} active {active === 1 ? 'agent' : 'agents'}
             {data.paused ? ' · room stopped' : ''}. Each agent has its own prompt, model, inbox, task ownership and working tree.

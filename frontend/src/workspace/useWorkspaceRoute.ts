@@ -30,8 +30,11 @@ export function useWorkspaceRoute() {
     const url = new URL(location.href);
     url.searchParams.set('view', next);
     url.searchParams.delete('history');
+    url.searchParams.delete('team_project');
+    url.searchParams.delete('team_proposal');
     setHistorySession('');
     history.pushState({}, '', url);
+    window.dispatchEvent(new PopStateEvent('popstate'));
   }, []);
 
   // Focusing a project replaces the history entry: it refines the page rather than leaving it.

@@ -89,3 +89,18 @@
   .tb-brief { flex-direction: column; }
 }
 .tb-history { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+
+/* Exact saved suggestions reuse member cards without hiding their instructions. */
+.tb-root [tabindex="-1"]:focus { outline: 2px solid var(--bd-accent); outline-offset: 4px; }
+.tb-suggestion-brief p { max-height: none; overflow: visible; }
+.tb-instructions pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 12px 0 0; padding: 14px; border: 1px solid var(--bd-border); border-radius: var(--bd-radius); }
+.tb-configuration { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+.tb-configuration dt { color: var(--bd-muted); font-size: 12px; }
+.tb-configuration dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+.team-suggestion-link { display: inline-block; margin-left: 10px; color: var(--bd-accent); text-decoration: underline; }
+.team-suggestion-link:focus-visible { outline: 2px solid var(--bd-accent); outline-offset: 3px; }
+@media (max-width: 600px) {
+  .tb-card { padding: 12px; min-width: 0; }
+  .tb-card-head { align-items: flex-start; flex-wrap: wrap; }
+  .tb-configuration { grid-template-columns: minmax(0, 1fr); }
+}

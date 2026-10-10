@@ -1336,11 +1336,16 @@ class RoomRuntime:
             action = arguments.get('action', 'get')
             if action == 'get':
                 return self.team_builder.context()
-            if action != 'submit':
-                raise ValueError('Agents may only get or submit team proposals; users approve and add members')
+            if action not in ('submit', 'suggest'):
+                raise ValueError('Agents may only get, submit or suggest team proposals; users approve and add members')
             async with self.team_builder.lock:
-                result = self.team_builder.submit(run.name, arguments.get('proposal_id'),
-                    arguments.get('revision'), arguments.get('payload'))
+                if action == 'suggest':
+                    # One suggested member for the user's review; agents never approve, edit or add.
+                    result = self.team_builder.suggest(run.name, run.channel, arguments.get('member'),
+                                                       arguments.get('reason'))
+                else:
+                    result = self.team_builder.submit(run.name, arguments.get('proposal_id'),
+                        arguments.get('revision'), arguments.get('payload'))
             await self.emit('team_builder', result)
             return result
         if tool == 'room_decision':

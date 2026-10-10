@@ -1,0 +1,181 @@
+{
+  "baseline": "d4721cb7bb006692eea4ad62c509c85099f337cc",
+  "inputs": [
+    {
+      "kind": "frontend",
+      "name": "team-suggestion-r2.patch",
+      "sha256": "9dba12b7dbbc1253728612a993164077e1ee20b3c044cf7ffe7655739e37fe2e",
+      "receipt": "8c1c1b90cf979b159c38e55d09811a09485860b911960ba554e31124b49d01e3",
+      "files": [
+        {
+          "path": "frontend/src/lib/teamBuilder.ts",
+          "base_lf_sha256": "3468619ecedac90b72c38b0c18a96d6e027379f3cf67ff1a89ca5528fc69c12a",
+          "source_sha256": "4fb38e90236c9f5cddb81eb15241e269f46b39b4ca5badaf93c31896b4966fee",
+          "source_lf_sha256": "8a3e16cf907030831e512bf600b9f7a541c03a6cfe6c53e8d8a0a59ad1be4f3f"
+        },
+        {
+          "path": "frontend/src/team/builder/BriefStep.tsx",
+          "base_lf_sha256": "54acf12eb0d5fe223b7dc3a8aebf20772b1f4d343ac0217b9766f4b47227293c",
+          "source_sha256": "0cab8d1a8def9b577b3e5e93a313336c9c25e46250c4b590e39b79e184e4161f",
+          "source_lf_sha256": "72bbd9d133dd3cb8dde522bf6a8d61bf0e4f73814b0478a1c63c8a6f4d6b98b8"
+        },
+        {
+          "path": "frontend/src/team/builder/MemberCard.tsx",
+          "base_lf_sha256": "8d3edc0322e59fdec500238f627c7b3fb4b1cece01fe294149d7cf7ad0ea8075",
+          "source_sha256": "d08126f5c7acdc789ad85052af9b47ce1c0a9a363b10d934eeb456e8a538375f",
+          "source_lf_sha256": "83504237bd38fc772e22eff3ebd43f472c9e1e278479677a1eeac0753723a63f"
+        },
+        {
+          "path": "frontend/src/team/builder/Summary.tsx",
+          "base_lf_sha256": "5d66b34a8e74cf6fd27b045e720abc583dee4e2ba9316955472ac4d2c02e2d73",
+          "source_sha256": "9921a1f7646b0735a128d3ed21bb893a5a1988ff33f91b94b24ecbbdf475aeb8",
+          "source_lf_sha256": "d08fac376f2f3f817dfe0cbf7822b5d022d4aeb75939a704037df845faed2cfe"
+        },
+        {
+          "path": "frontend/src/team/Team.tsx",
+          "base_lf_sha256": "1df6e170611d685ba7db3c3f3e816a759652d455f4878f3a11e5cfa31f5a2810",
+          "source_sha256": "061e667e0be4aed6ca4a5a0e1c46e6ac3726344bfba71c0b751244241c469547",
+          "source_lf_sha256": "edfbe90ee9567272586df9e2a67aa65cfcb4431a24f8122c6db2e1f0eb8a8639"
+        },
+        {
+          "path": "frontend/src/team/teamBuilder.css",
+          "base_lf_sha256": "d0663baf97bf505b2a899dd5fbb17e669752762f820fc062d37b1ac9bce71eff",
+          "source_sha256": "70e41a2a2179457a748df4b39c3ace279008b0484a8f97b591ccc3a73fbaf8a1",
+          "source_lf_sha256": "91da83bec23e503bebb21e3a49321f487bf4e7107ff504d56c7efc5e9b653dbc"
+        },
+        {
+          "path": "frontend/src/team/TeamBuilder.tsx",
+          "base_lf_sha256": "acdb23b7914d8753d54365c7d57c88bed444315e8298f79fd9c018eeeacf7077",
+          "source_sha256": "2b5343852d2369c4b050d8593411527606c6e39bb33bbc5c0f523b7af6e3239b",
+          "source_lf_sha256": "82976fa11932b2f21ca16275ed184621bc110df702b5e6467fea79a0b048577b"
+        },
+        {
+          "path": "frontend/src/workspace/useWorkspaceRoute.ts",
+          "base_lf_sha256": "0793dbee33280ad7fe0b708574a8b88f81e3d4fa6c0867ed8f6b78c79670f622",
+          "source_sha256": "cac647ca96e517383c289500b83d8072e5bded3c215813f19b7d9fa64afeebb5",
+          "source_lf_sha256": "cac647ca96e517383c289500b83d8072e5bded3c215813f19b7d9fa64afeebb5"
+        },
+        {
+          "path": "static/chat.js",
+          "base_lf_sha256": "0d1199a8dbdab5ae9bb1261e48a2857f09b68368fc0e62a0c73dffb56f4a41a6",
+          "source_sha256": "45fa516e9e816f983cac78572e1653877d94ecf3c63e6c29f523ea3360cd4b96",
+          "source_lf_sha256": "7fe31583605747c5a30df65147e6ecb9ebb57a8a40e2a927afc3a31281c0a0dc"
+        }
+      ]
+    },
+    {
+      "kind": "frontend",
+      "name": "live-view-label-r1.patch",
+      "sha256": "e8df92ad83932a9882dd7a871ddde005572bc98c8e4ecbfad3d8698ac8ba217e",
+      "receipt": "e6e4f7d570480d0cbcc9241a2710efc831f68ad4154bf39433f413261ef615a1",
+      "files": [
+        {
+          "path": "frontend/src/App.tsx",
+          "base_lf_sha256": "379f6c08ba80c80be5844eae4dcb8583b417a2aecdd735b451ac14b50fef7fc5",
+          "source_sha256": "54c1618fedbd9fd273e70d844906f0f8aa7852c47cd0b90ca51c3b060e1d6f85",
+          "source_lf_sha256": "bc9480bafb35617dc83f95ae498b3c5437b096761e532c26f0cf96efc4895619"
+        },
+        {
+          "path": "frontend/src/components/HeaderBar.tsx",
+          "base_lf_sha256": "a317eecce6fde3a7d1b1d9f6fe9ad5024c847ad55bf8db4092acf06ccf4155b3",
+          "source_sha256": "4ce35a0584ad8313c7b7a282542b69f8f28d641eeb0b92d94e4a48ec0db51b5e",
+          "source_lf_sha256": "01d6c89219d893c47616897395b372390f2c2c6cdefc3fb01404d3c67df6508a"
+        },
+        {
+          "path": "frontend/src/live/LiveTeam.tsx",
+          "base_lf_sha256": "4c296c64749dfa147c28eaad4600465d5650b9d2765ef7cea4aff96ad4908098",
+          "source_sha256": "ee88bd78dc560d3402b3d459b424a1d96f6c7739a59187791f9adff1e53f89e9",
+          "source_lf_sha256": "ee88bd78dc560d3402b3d459b424a1d96f6c7739a59187791f9adff1e53f89e9"
+        },
+        {
+          "path": "frontend/src/workspace/Sidebar.tsx",
+          "base_lf_sha256": "9c2a8c80e6483c1d778af0e83b589dfec45f8462011457a3c5503a896c24715b",
+          "source_sha256": "5ab28e708b5da8c024f3692e7221b2794e83f5d9d73f10fd6990933993989612",
+          "source_lf_sha256": "6264f7417c82c0b4b2abb2cf697c24eade4e805b9d488430277a968b5dba3e9a"
+        }
+      ]
+    },
+    {
+      "kind": "backend",
+      "commit": "8cfbf74581848cf088b9143b6c6307e133b9b39c",
+      "sha256": "f62151d0a52ff25733b5d93332f78e3105303a9d87f397400b65593efb66510d",
+      "files": [
+        "room_mcp.py",
+        "room_runtime.py",
+        "team_builder.py"
+      ]
+    },
+    {
+      "kind": "backend",
+      "commit": "a6ed36c0b2302bf10241060f860c5bc2ff2b8948",
+      "sha256": "65216de706e46cb3325b5099b4e08cf050644dfe784ed6df2757db0eaae966cb",
+      "files": [
+        "team_builder.py"
+      ]
+    },
+    {
+      "kind": "backend",
+      "commit": "76269c647e0287c19deea8e7fb15bd1b2c678deb",
+      "sha256": "d05a1de429e8343e007e2b60dd110e2a51671fe9f6f97943ede59e089384d625",
+      "files": [
+        "team_builder.py"
+      ]
+    },
+    {
+      "kind": "backend",
+      "commit": "b45e58a47c4c86df46621c3f07ea1c25e9fdd600",
+      "sha256": "7cf4d71c2e41f0b9cb64a25889aa1d7daeee4ceefaaea3224500582af7b11049",
+      "files": [
+        "team_builder.py"
+      ]
+    },
+    {
+      "kind": "backend",
+      "commit": "0b1c0a3a79b4f605a680dc049dfa230d864ff59f",
+      "sha256": "ce79ff3881c4cfddec31297219b3b2cbcab63a624020a58530e5b7433e3d973b",
+      "files": [
+        "team_builder.py"
+      ]
+    },
+    {
+      "kind": "backend",
+      "commit": "37806f5e4c702468f21b665aae38760cd3011ae5",
+      "sha256": "827befcfd71d5b3b8cf94d3fac585cfa7f79939f5aa4b159e67e0bd4d0832a7f",
+      "files": [
+        "team_builder.py"
+      ]
+    },
+    {
+      "kind": "guide",
+      "patch_sha256": "2ac24e727302c6ee8eb6276180aeb4aecceca2b8f2dd9277922fae418f34c64f",
+      "source_lf_sha256": "e0a22a59f690b208c7cf3fb413b3c6cb0c3b1e3ca4614adcf485b0dfec740e51",
+      "review": "4662a18c",
+      "files": [
+        "frontend/src/components/Help.tsx"
+      ]
+    }
+  ],
+  "excluded": [
+    "challenge UI",
+    "local-worker recovery",
+    "provider changes",
+    "portable packaging",
+    "fixtures",
+    "runtime data"
+  ],
+  "config": "normal shipped config unchanged",
+  "validation": {
+    "typescript_vite": "pass: tsc --noEmit + Vite126 modules; JS554.52KB size warning",
+    "backend": "AST parse; exact reviewed team_builder blob",
+    "visual": "shared Browser, reused synthetic API fixture; not real paired backend/native acceptance",
+    "captures": {
+      "team": "/uploads/c9420228.jpg",
+      "live": "/uploads/a269e5f1.jpg",
+      "guide": "/uploads/6bc8737e.jpg"
+    }
+  },
+  "bundles": {
+    "static/modern/workspace.css": "0e12d12851fe016b396c1544161a79c667ea7b0ff34ac115ab4521a52dc3a668",
+    "static/modern/workspace.js": "8d38298278da3c2ac26eab0d4f0df3ecb0dd2f83dee2dfc315bb948e30eed445"
+  }
+}

@@ -1,6 +1,7 @@
 """Entry point — starts MCP server (port 8200) + web UI (port 8300)."""
 
 import argparse
+import hashlib
 import os
 import asyncio
 import secrets
@@ -24,6 +25,44 @@ class SessionLogFilter(logging.Filter):
         if isinstance(record.args, tuple):
             record.args = tuple(redact(value) for value in record.args)
         return True
+
+
+# Every same-origin /static link in index.html, with its optional query string.
+# Only root-relative links: the path must start right after a quote, '(', '=' or whitespace,
+# so an external URL that merely contains /static/ is left alone.
+STATIC_LINK = re.compile(r"(?<=[\"'(=\s])(?P<path>/static/[^\"'\s?#)]+)(?:\?(?P<query>[^\"'\s#)]*))?")
+
+
+def versioned_assets(html, build_id):
+    """Stamp every /static link with ?v=<build id>: hand-written tags (zerocollab-product-1, -sweep-1,
+    ...) are replaced, untagged links gain one, and any other query parameter is kept."""
+    def stamp(match):
+        kept = [p for p in (match['query'] or '').split('&') if p and not p.startswith('v=')]
+        return match['path'] + '?' + '&'.join(kept + [f'v={build_id}'])
+    return STATIC_LINK.sub(stamp, html)
+
+
+def static_build_id(static_dir):
+    """A short fingerprint of the static files, taken once at startup. Installing a release restarts
+    the room, so each release gets new asset URLs and a browser can't keep running an old copy."""
+    digest = hashlib.sha256()
+    for path in sorted(p for p in Path(static_dir).rglob('*') if p.is_file()):
+        digest.update(path.relative_to(static_dir).as_posix().encode() + b'\0')
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+def revalidated_static_files():
+    """StaticFiles that tell the browser to check back (ETag / Last-Modified, usually a 304) before
+    reusing a stored copy, instead of serving it from cache by heuristic freshness."""
+    from fastapi.staticfiles import StaticFiles
+
+    class RevalidatedStaticFiles(StaticFiles):
+        async def get_response(self, path, scope):
+            response = await super().get_response(path, scope)
+            response.headers['Cache-Control'] = 'no-cache'
+            return response
+    return RevalidatedStaticFiles
 
 
 def _parse_args():
@@ -106,10 +145,10 @@ def main():
     logging.getLogger(__name__).info("MCP streamable-http on port %d, SSE on port %d", http_port, sse_port)
 
     # Mount static files
-    from fastapi.staticfiles import StaticFiles
     from fastapi.responses import HTMLResponse
 
     static_dir = ROOT / "static"
+    build_id = static_build_id(static_dir)
 
     @app.get("/")
     async def index():
@@ -117,14 +156,14 @@ def main():
         # Inject the session token into the HTML so the browser client can use it.
         # This is safe: same-origin policy prevents cross-origin pages from reading
         # the response body, so only the user's own browser tab gets the token.
-        html = (static_dir / "index.html").read_text("utf-8")
+        html = versioned_assets((static_dir / "index.html").read_text("utf-8"), build_id)
         injected = html.replace(
             "</head>",
             f'<script>window.__SESSION_TOKEN__="{session_token}";</script>\n</head>',
         )
         return HTMLResponse(injected, headers={"Cache-Control": "no-store"})
 
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    app.mount("/static", revalidated_static_files()(directory=str(static_dir)), name="static")
 
     # Capture the event loop for the store→WebSocket bridge
     @app.on_event("startup")

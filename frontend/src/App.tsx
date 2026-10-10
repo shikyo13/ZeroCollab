@@ -49,7 +49,7 @@ export default function App() {
           historySession={historySession} browseHistory={browseHistory} /></section>
         <section className="workspace-chat" hidden={view !== 'chat'} aria-label="Shared chat"><LegacySlot node={legacy.chat} className="workspace-chat-slot" /></section>
         <section className="workspace-board" hidden={view !== 'board'} aria-label="Task board"><Board /></section>
-        <section className="workspace-live" hidden={view !== 'live'} aria-label="Live team"><LiveTeam active={view === 'live'} navigate={navigate} /></section>
+        <section className="workspace-live" hidden={view !== 'live'} aria-label="Live view"><LiveTeam active={view === 'live'} navigate={navigate} /></section>
         <section className="workspace-team" hidden={view !== 'team'} aria-label="Team"><Team /></section>
         <section className="workspace-activity" hidden={view !== 'activity'} aria-labelledby="activity-title"><ActivityPage deployments={deployments} /></section>
         <section className="workspace-server" hidden={view !== 'server'} aria-labelledby="server-title"><ServerPage deployments={deployments} /></section>
