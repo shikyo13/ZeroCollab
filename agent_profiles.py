@@ -4,12 +4,18 @@ import json
 import re
 
 from project_room import write_json
+from provider_controls import ProviderControls
+from provider_store import ProviderStore
 
 
 class AgentProfiles:
     def __init__(self, runtime):
         self.runtime = runtime
-        self.templates = {name: copy.deepcopy(cfg) for name, cfg in runtime.cfg['agents'].items() if cfg.get('managed')}
+        # config.toml templates with Team > Providers additions and edits layered over them.
+        self.store = ProviderStore(runtime)
+        self.templates = self.store.templates()
+        # Model lists for connections no agent uses yet, so Add agent can offer them.
+        self.template_catalogs = {}
         self.items = {}
         self.path = None
 
@@ -60,9 +66,11 @@ class AgentProfiles:
     def describe(self):
         providers = []
         for template, cfg in self.templates.items():
+            unused = self.template_catalogs.get(template)
+            fallback = ({**unused, 'selected': {'model': cfg.get('model', ''), 'effort': ''}} if unused else
+                        {'models': [], 'selected': {'model': '', 'effort': ''}, 'error': 'Refresh connections to load models'})
             catalog = next((self.runtime.controls.describe(name) for name, profile in self.items.items()
-                            if profile['template'] == template and name in self.runtime.controls.catalogs),
-                           {'models': [], 'selected': {'model': '', 'effort': ''}, 'error': 'Refresh connections to load models'})
+                            if profile['template'] == template and name in self.runtime.controls.catalogs), fallback)
             providers.append({'id': template, 'provider': cfg.get('provider', template),
                               'label': cfg.get('label', template), 'color': cfg.get('color', '#8b5cf6'),
                               'controls': catalog})
@@ -118,9 +126,13 @@ class AgentProfiles:
         if not old or (model, effort) != (old['model'], old['effort']):
             source = next((n for n, p in self.items.items() if p['template'] == template
                            and self.runtime.controls.catalogs.get(n, {}).get('models')), None)
-            if source is None:
+            if source is not None:
+                self.runtime.controls.validate(source, model, effort)
+            elif self.template_catalogs.get(template, {}).get('models'):
+                # The first agent on a connection: check against the connection's own model list.
+                ProviderControls.check(self.template_catalogs[template], model, effort)
+            else:
                 raise ValueError('Refresh provider choices before choosing a model')
-            self.runtime.controls.validate(source, model, effort)
         return {'id': identifier, 'handle': handle, 'previous_handles': previous_handles,
                 'template': template, 'name': label, 'color': color.lower(),
                 'background': background.strip(), 'model': model, 'effort': effort,

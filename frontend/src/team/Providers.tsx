@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { errorMessage, runtime } from '../lib/api';
 import { ErrorText } from '../board/shared';
+import { ProviderForm, type FormRequest, type ProviderDef, type ProviderDefs } from './ProviderForm';
 
 type SignIn = {
   state: 'signed_in' | 'signed_out' | 'unknown';
@@ -92,19 +93,23 @@ function localLine(local: LocalServer): Line {
   return { label: 'Not installed', tone: 'muted', details: [local.base_url] };
 }
 
-type RowProps = { name: string; line: Line; note?: string; busy?: boolean; onAction?: () => void };
+/** manage: the connection's own controls (source, Edit, Remove, Reset), after the row's action. */
+type RowProps = { name: string; line: Line; note?: string; busy?: boolean; onAction?: () => void; manage?: React.ReactNode };
 
-function Row({ name, line, note, busy, onAction }: RowProps) {
+function Row({ name, line, note, busy, onAction, manage }: RowProps) {
   return (
     <li className="pv-row">
       <div className="pv-name">
         <strong>{name}</strong>
         <span className={`tm-state tm-tone-${line.tone}`}>{line.label}</span>
-        {line.action && onAction && (
-          <button type="button" className={`bd-btn pv-action${line.action.primary ? ' bd-btn-primary' : ''}`} disabled={busy} onClick={onAction}>
-            {busy ? 'Waiting for sign-in…' : line.action.label}
-          </button>
-        )}
+        <span className="pv-manage">
+          {line.action && onAction && (
+            <button type="button" className={`bd-btn pv-action${line.action.primary ? ' bd-btn-primary' : ''}`} disabled={busy} onClick={onAction}>
+              {busy ? 'Waiting for sign-in…' : line.action.label}
+            </button>
+          )}
+          {manage}
+        </span>
       </div>
       {line.details.map((detail, i) => <p key={i} className="bd-muted">{detail}</p>)}
       {note && <p className="pv-pending" role="status">{note}</p>}
@@ -122,6 +127,18 @@ export function Providers({ reload }: { reload: number }) {
   const [pending, setPending] = useState<Record<string, Pending>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const inFlight = useRef(false);
+  // Connections as configured (provider_store.py); the status check above says how each is doing.
+  const [defs, setDefs] = useState<ProviderDefs | null>(null);
+  const [form, setForm] = useState<FormRequest | null>(null);
+  const [confirming, setConfirming] = useState('');
+  const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
+  const [changing, setChanging] = useState(false);
+
+  const loadDefs = useCallback(async () => {
+    try { setDefs(await runtime<ProviderDefs>('/providers')); }
+    catch (e) { setNotice({ text: `Could not load connections: ${errorMessage(e)}`, error: true }); }
+  }, []);
+  useEffect(() => { void loadDefs(); }, [loadDefs, reload]);
 
   const check = useCallback(async () => {
     if (inFlight.current) return;  // a status check runs CLIs and can take several seconds; never stack them
@@ -195,6 +212,22 @@ export function Providers({ reload }: { reload: number }) {
     }
   }, []);
 
+  /** Remove or reset a connection, then show the result and re-check. */
+  const change = async (path: string, done: string) => {
+    setChanging(true);
+    try {
+      await runtime(path, {});
+      setNotice({ text: done });
+      setConfirming('');
+      void loadDefs();
+      void check();
+    } catch (e) {
+      setNotice({ text: errorMessage(e), error: true });
+    } finally {
+      setChanging(false);
+    }
+  };
+
   if (!status) return error ? <ErrorText message={`Could not check providers: ${error}`} /> : <p className="bd-empty">Checking providers…</p>;
 
   const subscriptions = status.providers.filter(p => p.cli);
@@ -203,9 +236,32 @@ export function Providers({ reload }: { reload: number }) {
   const localByBase = new Map(status.local_servers.filter(s => s.configured).map(s => [s.base_url.replace(/\/$/, ''), s]));
   const unconfigured = status.local_servers.filter(s => !s.configured);
   const when = checking ? 'Checking…' : checked ? `Checked at ${checked.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
+  const defById = new Map((defs?.providers ?? []).map(d => [d.id, d]));
+  const editable = !defs?.error;
+
+  const manage = (def: ProviderDef | undefined) => def && <>
+    {def.source !== 'app' && <span className="bd-label" title={def.source === 'config' ? 'Defined in config.toml' : 'config.toml values changed here'}>
+      {def.source === 'config' ? 'config.toml' : 'edited'}</span>}
+    {editable && <button type="button" className="bd-btn pv-small" disabled={changing} onClick={() => { setConfirming(''); setForm({ mode: 'edit', def }); }}>Edit</button>}
+    {editable && def.source === 'edited' && (
+      <button type="button" className="bd-btn bd-btn-quiet pv-small" disabled={changing}
+        onClick={() => void change(`/providers/${encodeURIComponent(def.id)}/reset`, `Restored ${def.label} from config.toml.`)}>Reset</button>
+    )}
+    {editable && (confirming === def.id
+      ? <>
+        <button type="button" className="bd-btn bd-btn-danger pv-small" disabled={changing}
+          onClick={() => void change(`/providers/${encodeURIComponent(def.id)}/remove`, `Removed ${def.label}.`)}>Confirm remove</button>
+        <button type="button" className="bd-btn bd-btn-quiet pv-small" onClick={() => setConfirming('')}>Keep</button>
+      </>
+      : <button type="button" className="bd-btn bd-btn-quiet pv-small" disabled={changing} onClick={() => setConfirming(def.id)}>Remove</button>)}
+  </>;
 
   return (<>
     <ErrorText message={error && `Last check failed: ${error}`} />
+    <ErrorText message={defs?.error ?? ''} />
+    {notice && <p className={notice.error ? 'bd-error' : 'tm-notice'} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
+    {form && <ProviderForm request={form} onClose={() => setForm(null)}
+      onSaved={note => { setForm(null); setNotice({ text: note }); void loadDefs(); void check(); }} />}
     <div className="pv-grid">
       <section className="bd-panel pv-panel" aria-labelledby="pv-subscriptions">
         <div className="pv-head"><h2 id="pv-subscriptions">Subscriptions</h2><span className="pv-note" role="status">{when}</span></div>
@@ -216,11 +272,21 @@ export function Providers({ reload }: { reload: number }) {
         </p>
         <ul className="pv-list">
           {subscriptions.map(row => (
-            <Row key={row.template} name={row.label} line={cliLine(row)} busy={row.provider in pending}
+            <Row key={row.template} name={row.label} line={cliLine(row)} busy={row.provider in pending} manage={manage(defById.get(row.template))}
                  note={pending[row.provider]?.message || notes[row.provider]} onAction={() => void signIn(row.provider, row.cli?.sign_in?.state === 'signed_in' ? row.cli.sign_in.method || '' : null,
                    row.cli?.sign_in?.reports === true)} />
           ))}
         </ul>
+        {editable && !!defs?.available.length && (
+          <div className="pv-add">
+            {defs.available.map(a => (
+              <button key={a.provider} type="button" className="bd-btn" onClick={() => setForm({ mode: 'create', provider: a.provider, label: a.label })}>
+                Connect {a.label}
+              </button>
+            ))}
+            <span className="pv-note">Uses that provider's official CLI and its own sign-in</span>
+          </div>
+        )}
       </section>
       <section className="bd-panel pv-panel" aria-labelledby="pv-local">
         <div className="pv-head"><h2 id="pv-local">Local models</h2></div>
@@ -229,11 +295,42 @@ export function Providers({ reload }: { reload: number }) {
           {configured.map(row => {
             const server = row.server!;
             const local = localByBase.get(server.base_url.replace(/\/$/, ''));
-            return <Row key={row.template} name={local ? `${row.label} (${local.name})` : row.label} line={serverLine(server, local?.start_command)} />;
+            return <Row key={row.template} name={local ? `${row.label} (${local.name})` : row.label} line={serverLine(server, local?.start_command)}
+                        manage={manage(defById.get(row.template))} />;
           })}
-          {unconfigured.map(local => <Row key={local.id} name={local.name} line={localLine(local)} />)}
+          {unconfigured.map(local => (
+            <Row key={local.id} name={local.name} line={localLine(local)}
+                 manage={editable && local.reachable && (
+                   <button type="button" className="bd-btn bd-btn-primary pv-small"
+                     onClick={() => setForm({ mode: 'create', provider: 'api', label: local.identity_unconfirmed ? 'Local model' : local.name, base_url: local.base_url })}>
+                     Add as provider
+                   </button>
+                 )} />
+          ))}
         </ul>
+        {editable && (
+          <div className="pv-add">
+            <button type="button" className="bd-btn" onClick={() => setForm({ mode: 'create', provider: 'api', label: '' })}>Add another server…</button>
+            <span className="pv-note">Any OpenAI-compatible address, on this computer or your network</span>
+          </div>
+        )}
       </section>
+      {!!defs?.removed.length && (
+        <section className="bd-panel pv-panel" aria-labelledby="pv-removed">
+          <div className="pv-head"><h2 id="pv-removed">Removed from this room</h2></div>
+          <p className="pv-note">These connections are in config.toml but hidden here. Restore brings back their config.toml values.</p>
+          <ul className="pv-list">
+            {defs.removed.map(r => (
+              <li key={r.id} className="pv-row"><div className="pv-name"><strong>{r.label}</strong>
+                <span className="pv-manage">
+                  <button type="button" className="bd-btn pv-small" disabled={changing || !editable}
+                    onClick={() => void change(`/providers/${encodeURIComponent(r.id)}/reset`, `Restored ${r.label}.`)}>Restore</button>
+                </span>
+              </div></li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   </>);
 }

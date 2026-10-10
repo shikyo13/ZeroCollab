@@ -47,35 +47,39 @@ Every source file, with its line count and the purpose its own header states. Th
 <!-- generated:python-files -->
 | Module | Lines | Purpose (module docstring) |
 |-|-|-|
-| `agent_profiles.py` | 94 | Project-local expert identities, independent of provider subscriptions. |
+| `agent_profiles.py` | 144 | Project-local expert identities, independent of provider subscriptions. |
 | `agents.py` | 70 | Agent trigger - writes to queue files picked up by visible worker terminals. |
-| `app.py` | 1304 | ZeroCollab - FastAPI web UI + agent auto-trigger. |
-| `archive.py` | 294 | Export/import archive for project history (chat messages). |
+| `app.py` | 1372 | ZeroCollab - FastAPI web UI + agent auto-trigger. |
+| `archive.py` | 331 | Export/import archive for project history (chat messages). |
 | `build_release.py` | 16 | Retired ZIP entrypoint; use release_pack.py for managed release packages. |
 | `config_loader.py` | 137 | Shared config loader - merges config.toml + config.local.toml. |
 | `coordination_queue.py` | 110 | Coalesce pending wake-ups; resolve record references immediately before delivery. |
-| `coordination_records.py` | 238 | Durable peer reviews and follow-ups shared by the board and agent tools. |
+| `coordination_records.py` | 240 | Durable peer reviews and follow-ups shared by the board and agent tools. |
 | `coordination_state.py` | 70 | Task execution facts. Waiting is derived from records, never from elapsed time. |
 | `durable.py` | 24 | Atomic app-side text persistence; callers own transaction ordering and locks. |
+| `file_preview.py` | 264 | Read-only views of files referenced in chat messages. |
 | `git_preview.py` | 82 | Bounded retained output for read-only Git previews (called off the event loop). |
 | `local_protocol.py` | 40 | Classify local model output and validate structured calls before execution. |
 | `login_gemini.py` | 12 | Open the official Gemini sign-in UI without inheriting API-key billing settings. |
 | `mcp_bridge.py` | 618 | MCP server for agent chat tools - runs alongside the web server. |
 | `mcp_proxy.py` | 336 | Per-instance MCP identity proxy. |
-| `native_adapters.py` | 586 | Official, locally authenticated CLI protocols. No credential handling. |
+| `native_adapters.py` | 608 | Official, locally authenticated CLI protocols. No credential handling. |
 | `project_registry.py` | 790 | Index of every project this room has worked in: board, team, goal, chats and repository. |
-| `project_room.py` | 873 | Durable project coordination and bounded room context, without model calls. |
-| `provider_controls.py` | 166 | Room-local model/effort preferences and official, read-only provider catalogs. |
+| `project_room.py` | 941 | Durable project coordination and bounded room context, without model calls. |
+| `provider_controls.py` | 180 | Room-local model/effort preferences and official, read-only provider catalogs. |
+| `provider_setup.py` | 337 | Provider setup for Team > Providers (Docs/providers.md, slices S1 and S2). |
+| `provider_store.py` | 323 | In-app provider connections (Docs/providers.md, slice S3). |
 | `queue_file.py` | 75 | Coordinate JSONL queue producers, consumers and explicit clears across processes. |
-| `registry.py` | 816 | Runtime Registry - single source of truth for all live agent state. |
+| `registry.py` | 824 | Runtime Registry - single source of truth for all live agent state. |
 | `release_pack.py` | 218 | Package a committed revision as a release the supervisor can deploy. |
 | `room_deploy.py` | 256 | App side of the supervisor protocol. This module never stops or replaces the server. |
 | `room_goals.py` | 134 | Explicit shared goals. Event-driven continuation, never a background model poll. |
 | `room_markup.py` | 96 | Bounded raster markup shared by agent tools; no network or chat side effects. |
-| `room_mcp.py` | 158 | Run-scoped local coordination tools for official native CLIs. |
-| `room_runtime.py` | 1784 | Managed agents for the ZeroCollab persistent workspace. |
-| `router.py` | 105 | Message routing based on @mentions with per-channel loop guard. |
+| `room_mcp.py` | 189 | Run-scoped local coordination tools for official native CLIs. |
+| `room_runtime.py` | 1823 | Managed agents for the ZeroCollab persistent workspace. |
+| `router.py` | 108 | Message routing based on @mentions with per-channel loop guard. |
 | `run.py` | 182 | Entry point - starts MCP server (port 8200) + web UI (port 8300). |
+| `shared_browser.py` | 567 | One disposable, project-scoped Chromium page shared by the user and room agents. |
 | `steering_delivery.py` | 90 | Forward same-channel input once; provider acknowledgment owns delivery. |
 | `store.py` | 239 | JSONL message persistence for the chat room with observer callbacks. |
 | `supervisor.py` | 848 | Room supervisor: owns the room server process and executes approved deployments. |
@@ -95,12 +99,14 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 |-|-|-|
 | `annotate/annotate.css` | 49 | Annotation dialog. Uses the shared palette tokens; --font-ui keeps a fallback for pages without the shell. |
 | `annotate/AnnotationEditor.tsx` | 310 | Image annotation: numbered boxes, arrows and pins with a note per mark. |
-| `annotate/index.tsx` | 54 | Open the annotation dialog for any same-origin image and upload the result. Used by Board attachments and exposed as window.ZeroAnnotate so the legacy chat lightbox can offer the same tool without importing React code. |
-| `App.tsx` | 64 | - |
+| `annotate/ImageViewer.tsx` | 78 | - |
+| `annotate/index.tsx` | 66 | Open the annotation dialog for any same-origin image and upload the result. Used by Board attachments and exposed as window.ZeroAnnotate so the legacy chat lightbox can offer the same tool without importing React code. |
+| `annotate/viewer.css` | 24 | - |
+| `App.tsx` | 56 | - |
 | `board/ActivityFeed.tsx` | 134 | Live team activity: who is running right now, then the newest board events (check-ins, ownership/status moves, notes, unlinked reviews and follow-ups). |
-| `board/Attachments.tsx` | 183 | Task images: thumbnails on cards, a gallery in task detail with upload by picker, paste or drop, and annotation into a new derived image. The task's list is replaced as a whole through POST /api/runtime/tasks. |
-| `board/board.css` | 296 | Board styles. Scoped to .bd- and built on the shared palette tokens (static/style.css :root, overridden by the workspace shell). Every token used here is defined at :root; only --font-ui keeps a fallback for pages without the shell. |
-| `board/Board.tsx` | 263 | Project board: kanban of owned tasks plus reviews/follow-ups, spec, memory and execution controls. Replaces the legacy static/project.js panel and uses the same /api/runtime endpoints and project_state/runtime_state events. |
+| `board/Attachments.tsx` | 184 | Task images: thumbnails on cards, a gallery in task detail with upload by picker, paste or drop, and annotation into a new derived image. The task's list is replaced as a whole through POST /api/runtime/tasks. |
+| `board/board.css` | 295 | Board styles. Scoped to .bd- and built on the shared palette tokens (static/style.css :root, overridden by the workspace shell). Every token used here is defined at :root; only --font-ui keeps a fallback for pages without the shell. |
+| `board/Board.tsx` | 272 | Project board: kanban of owned tasks plus reviews/follow-ups, spec, memory and execution controls. Replaces the legacy static/project.js panel and uses the same /api/runtime endpoints and project_state/runtime_state events. |
 | `board/BoardToolbar.tsx` | 88 | Task list toolbar: text, owner and area filters, grouping, ordering, the feed toggle and New task. |
 | `board/Coordination.tsx` | 447 | Peer reviews and follow-ups (POST /api/runtime/reviews/followups). The human acts as "user": may request/cancel any review, respond when assigned as reviewer, and create/resolve/cancel any follow-up. |
 | `board/detail/EditTask.tsx` | 88 | Task editor: title, details, areas, reserved paths and dependencies. |
@@ -109,50 +115,68 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 | `board/detail/TaskProgress.tsx` | 59 | Check-in form and the task's update history, newest first. |
 | `board/detail/TaskRecords.tsx` | 59 | Evidence, reviews and follow-ups attached to one task. |
 | `board/detail/useResizablePanel.ts` | 36 | Width of the task detail panel, resizable by pointer drag or arrow keys. The width is published as --detail-width on the enclosing .bd-tasks grid. |
-| `board/Lane.tsx` | 65 | One swimlane: a status column per task state, with the done column trimmed to recent cards. |
+| `board/Lane.tsx` | 69 | One swimlane: a status column per task state, with the done column trimmed to recent cards. |
 | `board/lanes.ts` | 54 | Filtering, swimlane grouping and column ordering for the task board. |
 | `board/NewTaskForm.tsx` | 139 | - |
 | `board/ProjectPanels.tsx` | 278 | Optional spec, project memory, execution limits and conversation budgets. Same endpoints and limit ranges as the legacy static/project.js panel. |
 | `board/shared.tsx` | 206 | - |
-| `board/TaskCard.tsx` | 194 | - |
+| `board/TaskCard.tsx` | 210 | - |
 | `board/TaskDetail.tsx` | 205 | Task detail panel: status, ownership, reservations, dependencies, check-ins, reviews and follow-ups. All writes go through POST /api/runtime/tasks. The sections live in ./detail; this component owns status and ownership. |
 | `board/useBoardPrefs.ts` | 50 | Board view preferences remembered in localStorage: section tab, swimlane grouping, card order and whether the activity feed is open. |
 | `board/useChangeHighlights.ts` | 33 | Ids of tasks that changed while the board is open, each kept for a short highlight. |
-| `components/ActivityPage.tsx` | 22 | Activity & controls page: deployments, then the legacy runtime panel (agent requests, tool activity and the Changes view). |
+| `components/ActivityPage.tsx` | 20 | Activity page: deployments, then the legacy runtime panel (agent requests, tool activity and the Changes view). |
+| `components/AttentionBell.tsx` | 131 | Header bell: everything waiting on the user, with a count and a link to the exact place to act. |
+| `components/backend-controls.css` | 15 | - |
+| `components/BackendControls.tsx` | 105 | - |
 | `components/brand.ts` | 9 | - |
-| `components/deployments.css` | 29 | - |
-| `components/Deployments.tsx` | 148 | - |
+| `components/ChatSearch.tsx` | 73 | Ctrl+K quick switcher: jump to any chat (open, closed or pre-project history), project or view by title. It searches titles, not message text. Opening a chat goes through channels.js. |
+| `components/deployments.css` | 36 | - |
+| `components/Deployments.tsx` | 165 | - |
 | `components/ErrorBoundary.tsx` | 32 | - |
+| `components/HeaderBar.tsx` | 154 | The single header row: where you are (chat or view, then project) on the left; the team roster and the room's stop/resume on the right. |
 | `components/Help.tsx` | 23 | - |
-| `components/Icon.tsx` | 11 | - |
+| `components/Icon.tsx` | 25 | - |
 | `components/LegacySlot.tsx` | 10 | - |
-| `components/WelcomeBar.tsx` | 20 | One-line orientation shown until the user dismisses it (remembered in localStorage). |
-| `components/WorkControls.tsx` | 77 | - |
-| `legacy.ts` | 49 | - |
+| `components/SettingsDialog.tsx` | 32 | Settings as a dialog. The fields are settings.js's own #settings-bar, moved here rather than re-implemented, so auto-save (blur/Enter for text, change for selects) and the sound rows keep working. |
+| `components/WorkControls.tsx` | 78 | - |
+| `follow/follow.css` | 76 | Follow mode. Built on the shared palette tokens; motion is dropped under reduced motion. |
+| `follow/Follow.tsx` | 168 | Follow mode UI: the header toggle, the Board's banner and LIVE ticker, the per-card overlay, and the Space/Esc shortcuts. |
+| `follow/followStore.ts` | 314 | Follow mode: a live view of what the team is doing, built only from events the room already emits (runtime_start/delta/tool/end, project_state, browser_activity). |
+| `legacy.ts` | 65 | - |
 | `lib/api.ts` | 65 | Fetch helpers for the existing FastAPI routes. The server injects window.__SESSION_TOKEN__ into the page; every /api call must carry it. |
-| `lib/constants.ts` | 42 | Values shared across the workspace. Field limits mirror the server's caps (named alongside), so the browser stops typing where the server would truncate or reject the text. Change both sides together. |
-| `lib/room.ts` | 258 | Bridge between React views and the legacy room client (static/core.js, static/store.js, static/chat.js). |
+| `lib/constants.ts` | 44 | Values shared across the workspace. Field limits mirror the server's caps (named alongside), so the browser stops typing where the server would truncate or reject the text. Change both sides together. |
+| `lib/room.ts` | 286 | Bridge between React views and the legacy room client (static/core.js, static/store.js, static/chat.js). |
 | `lib/storage.ts` | 18 | localStorage throws when storage is disabled or full (private windows, policy); view preferences are optional, so reads fall back and writes are dropped. |
 | `lib/teamBuilder.ts` | 122 | Team builder API (/api/runtime/team-builder), contract agreed with the backend owner in follow-up 65ef16f7. Proposals are drafted and challenged by connected agents, saved server-side, and only "Add approved members" changes the roster. |
-| `lib/types.ts` | 234 | Contract types for the existing backend (room_runtime.py, project_room.py, coordination_records.py). These mirror server payloads; they are not a new API. |
+| `lib/types.ts` | 236 | Contract types for the existing backend (room_runtime.py, project_room.py, coordination_records.py). These mirror server payloads; they are not a new API. |
 | `main.tsx` | 15 | - |
-| `styles.css` | 208 | Shared workspace tokens; legacy feature styles consume the same palette. |
+| `shell.css` | 138 | Shell: Codex/Claude-style sidebar (Sidebar.tsx), one header row (HeaderBar.tsx) and the Ctrl+K switcher (ChatSearch.tsx). Loaded after styles.css. |
+| `sidepanel/fileview.css` | 26 | - |
+| `sidepanel/FileView.tsx` | 192 | File tab of the workspace side panel: a read-only view of a file referenced in chat, with the copy of the code and Git state it came from. |
+| `sidepanel/sidepanel.css` | 26 | - |
+| `sidepanel/SidePanel.tsx` | 101 | - |
+| `styles.css` | 166 | Shared workspace tokens; legacy feature styles consume the same palette. |
 | `team/builder/BriefStep.tsx` | 118 | Step 1: the brief, and which connected agents draft and challenge it. |
 | `team/builder/Coverage.tsx` | 103 | Step 2: read-only matrix of which member leads or supports each need in the brief. |
 | `team/builder/labels.ts` | 19 | Display labels and small formatters shared by the team builder steps. |
-| `team/builder/MemberCard.tsx` | 228 | Step 2: one proposed member, with approve / edit / revise / decline decisions. |
+| `team/builder/MemberCard.tsx` | 229 | Step 2: one proposed member, with approve / edit / revise / decline decisions. |
 | `team/builder/Summary.tsx` | 101 | Step 3: the proposed team at a glance, and adding the approved members. |
-| `team/ProfileEditor.tsx` | 337 | Agent profile form, ported from static/profiles.js with the same validation hints, handle generation, model/effort catalogs and archive semantics. |
-| `team/team.css` | 43 | Team page. Reuses the board primitives (.bd-btn, .bd-field, .bd-panel, tokens). |
-| `team/Team.tsx` | 265 | Team page: named agent profiles (static/profiles.js) and their live runtime controls (static/runtime.js provider cards) in one place. |
+| `team/ProfileEditor.tsx` | 380 | Agent profile form, ported from static/profiles.js with the same validation hints, handle generation, model/effort catalogs and archive semantics. |
+| `team/ProviderForm.tsx` | 141 | Add or edit a provider connection (Team > Providers, provider_store.py). Subscription connections have a name and color; a local OpenAI-compatible server also has its address, model and maximum response length. |
+| `team/Providers.tsx` | 336 | Team > Providers: which provider apps are installed and signed in, and which local model servers are running (GET /api/runtime/providers/status, provider_setup.py). |
+| `team/team.css` | 79 | Team page. Reuses the board primitives (.bd-btn, .bd-field, .bd-panel, tokens). |
+| `team/Team.tsx` | 282 | Team page: named agent profiles (static/profiles.js) and their live runtime controls (static/runtime.js provider cards) in one place. |
 | `team/teamBuilder.css` | 91 | Team builder (approved mockup final.html). Reuses board tokens and buttons. |
 | `team/TeamBuilder.tsx` | 184 | Team builder: Brief > Review team > Add approved members. Implements the user-approved design (task ccc5fbdb, mockup final.html 5783b87f5e0f1949). |
+| `workspace/browser.css` | 25 | - |
+| `workspace/Browser.tsx` | 166 | - |
 | `workspace/NewProject.tsx` | 37 | - |
 | `workspace/projectData.ts` | 144 | Project index (project_registry.py): every repository or conversation this room has worked in, with its board counts, team, goal and channels. |
 | `workspace/projects.css` | 95 | Projects page and sidebar switcher. Built on the board tokens (.bd-root). |
-| `workspace/Projects.tsx` | 216 | Projects page: every repository or conversation the room has worked in, side by side. |
+| `workspace/Projects.tsx` | 224 | Projects page: every repository or conversation the room has worked in, side by side. |
 | `workspace/ProjectSwitcher.tsx` | 36 | Sidebar project picker: always shows which project is attached and jumps to any other. |
-| `workspace/Repository.tsx` | 237 | Repository controls for the active project: the attached repositories (the primary one is each agent's working folder; additional ones get their own worktrees), changing, adding, promoting and removing them, a change in progress, an agent's room_repository request, and the repositories used before. Every change keeps the board, chats, team, goal and queued work; running turns finish first unless interrupted, and new turns wait for the worktrees. |
+| `workspace/Repository.tsx` | 241 | Repository controls for the active project: the attached repositories (the primary one is each agent's working folder; additional ones get their own worktrees), changing, adding, promoting and removing them, a change in progress, an agent's room_repository request, and the repositories used before. Every change keeps the board, chats, team, goal and queued work; running turns finish first unless interrupted, and new turns wait for the worktrees. |
+| `workspace/Sidebar.tsx` | 76 | Workspace sidebar, organized like the Codex and Claude desktop apps: new chat and search first, the views, then projects with the active project's chats nested under it. |
 | `workspace/useWorkspaceRoute.ts` | 63 | The workspace view and focused project, kept in the URL (?view=, ?project=) so reloads, links and the browser Back button land on the same page. |
 <!-- /generated -->
 
@@ -186,6 +210,7 @@ Loaded by `static/index.html` in this order (see [dependency-map.md](dependency-
 
 <!-- generated:tests -->
 - `tests/browser/voice_typing.py`
+- `tests/test_agent_identity.py`
 - `tests/test_archive_feature.py`
 - `tests/test_broadcast_delivery.py`
 - `tests/test_channel_fallback.py`

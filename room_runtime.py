@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 from git_preview import preview as git_preview
 import native_adapters as native
 import provider_setup
+import provider_store
 from provider_controls import ProviderControls
 from coordination_state import pending_human_wait
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
@@ -881,6 +882,14 @@ class RoomRuntime:
                 # A running agent keeps its working state; its next refresh reports the failure.
                 if not connected and self.states[peer]['provider'] == 'antigravity' and peer not in self.running:
                     self.states[peer].update(state='blocked', detail=self.controls.catalogs[name]['error'])
+        # Connections no agent uses yet (added in Team > Providers) still offer their models in Add agent.
+        templates = self.profiles.templates
+        unused = [t for t in templates if t not in groups]
+        found = await asyncio.gather(*(self.controls.lookup(templates[t].get('provider', t), templates[t], self.data) for t in unused),
+                                     return_exceptions=True)
+        self.profiles.template_catalogs = {t: catalog if isinstance(catalog, dict) else
+                                           {'models': [], 'error': (str(catalog) or type(catalog).__name__)[:500], 'loading': False,
+                                            'source': '', 'effort_note': ''} for t, catalog in zip(unused, found)}
         self.deploy_refresh_pending = False
         # Team's provider catalog is loaded with profiles, not runtime_state.
         # Notify open editors after automatic refresh too; their draft stays mounted.
@@ -1407,7 +1416,9 @@ class RoomRuntime:
             for turn in range(rounds + 1):
                 payload = {"model": run.settings['model'], "messages": messages, "stream": True,
                            'stream_options': {'include_usage': True},
-                           "max_tokens": min(2048, int(cfg.get("max_tokens", 1024))), "temperature": 0.4}
+                           # The connection's maximum response length (Team > Providers), within provider_store's range.
+                           "max_tokens": max(provider_store.OUTPUT_TOKENS[0], min(provider_store.OUTPUT_TOKENS[1], int(cfg.get("max_tokens", 1024)))),
+                           "temperature": 0.4}
                 if tools:
                     payload["tools"] = tools
                     # Keep the server's structured tool parser active on every round.

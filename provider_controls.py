@@ -104,50 +104,61 @@ class ProviderControls:
 
     async def refresh(self, name):
         state = self.runtime.states[name]
-        cfg = self.runtime.cfg['agents'][name]
-        provider = state['provider']
         try:
-            if provider != 'api':
-                models = await cli_catalog(provider, state['worktree'])
-                source = 'Official CLI model catalog'
-                note = 'Effort options follow the selected model.'
-                if provider == 'antigravity':
-                    note = 'Effort selects the matching preset in this Gemini model family. Provider default uses the preset shown in the model name.'
-            else:
-                base = cfg['base_url'].rstrip('/')
-                efforts = cfg.get('effort_options', [])
-                async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
-                    response = await client.get(base + '/models')
-                    response.raise_for_status()
-                    ids = [m['id'] for m in response.json().get('data', [])]
-                    if not efforts:
-                        try:
-                            response = await client.get(base.removesuffix('/v1') + '/props')
-                            if response.status_code == 200 and response.json().get('chat_template_caps', {}).get('supports_reasoning_effort'):
-                                template = response.json().get('chat_template', '')
-                                match = re.search(r'(?:resolved_)?reasoning_effort\s+not\s+in\s+(\([^()]+\))', template)
-                                if match:
-                                    accepted = ast.literal_eval(match[1])
-                                    efforts = [level for level in EFFORT_ORDER if level in accepted]
-                        except (httpx.HTTPError, SyntaxError, ValueError):
-                            pass
-                models = [{'value': value, 'label': value, 'efforts': efforts} for value in ids]
-                source = 'Connected endpoint /models'
-                note = 'The server exposes one loaded model.' if len(models) == 1 else 'Only models served by this endpoint are shown.'
-                note += ' Effort is supported by its chat template.' if efforts else ' This endpoint has not advertised reasoning-effort support.'
-            if not models:
-                raise RuntimeError('Provider returned no model choices')
-            self.catalogs[name] = {'models': models, 'error': '', 'loading': False, 'source': source, 'effort_note': note}
+            self.catalogs[name] = await self.lookup(state['provider'], self.runtime.cfg['agents'][name], state['worktree'])
             return True
         except Exception as exc:
             detail = str(exc) or type(exc).__name__
             self.catalogs[name].update(error=detail[:500], loading=False)
             return False
 
+    @staticmethod
+    async def lookup(provider, cfg, cwd):
+        """One provider connection's catalog; raises when the provider cannot list models.
+        cwd is where an official CLI runs its model listing (an agent's worktree, or the room data
+        folder for a provider no agent uses yet)."""
+        if provider != 'api':
+            models = await cli_catalog(provider, cwd)
+            source = 'Official CLI model catalog'
+            note = 'Effort options follow the selected model.'
+            if provider == 'antigravity':
+                note = 'Effort selects the matching preset in this Gemini model family. Provider default uses the preset shown in the model name.'
+        else:
+            base = cfg['base_url'].rstrip('/')
+            efforts = cfg.get('effort_options', [])
+            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                response = await client.get(base + '/models')
+                response.raise_for_status()
+                ids = [m['id'] for m in response.json().get('data', [])]
+                if not efforts:
+                    try:
+                        response = await client.get(base.removesuffix('/v1') + '/props')
+                        if response.status_code == 200 and response.json().get('chat_template_caps', {}).get('supports_reasoning_effort'):
+                            template = response.json().get('chat_template', '')
+                            match = re.search(r'(?:resolved_)?reasoning_effort\s+not\s+in\s+(\([^()]+\))', template)
+                            if match:
+                                accepted = ast.literal_eval(match[1])
+                                efforts = [level for level in EFFORT_ORDER if level in accepted]
+                    except (httpx.HTTPError, SyntaxError, ValueError):
+                        pass
+            models = [{'value': value, 'label': value, 'efforts': efforts} for value in ids]
+            source = 'Connected endpoint /models'
+            note = 'The server exposes one loaded model.' if len(models) == 1 else 'Only models served by this endpoint are shown.'
+            note += ' Effort is supported by its chat template.' if efforts else ' This endpoint has not advertised reasoning-effort support.'
+        if not models:
+            raise RuntimeError('Provider returned no model choices')
+        return {'models': models, 'error': '', 'loading': False, 'source': source, 'effort_note': note}
+
     def validate(self, name, model, effort):
         if name not in self.values or not isinstance(model, str) or not isinstance(effort, str):
             raise ValueError('Choose a registered provider, model and effort')
-        catalog = self.catalogs[name]
+        return self.check(self.catalogs[name], model, effort)
+
+    @staticmethod
+    def check(catalog, model, effort):
+        """The model and effort must be in this catalog; also used for a provider no agent uses yet."""
+        if not isinstance(model, str) or not isinstance(effort, str):
+            raise ValueError('Choose a registered provider, model and effort')
         if catalog.get('loading'):
             raise ValueError('Provider choices are still loading; try again in a moment')
         if catalog['error']:

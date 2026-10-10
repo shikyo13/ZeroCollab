@@ -328,6 +328,10 @@ def install(host, runtime):
         except (OSError, RuntimeError) as exc:
             return JSONResponse({'error': str(exc)[:400]}, 400)
 
+    # Add, edit, remove and reset connections (S3, provider_store.py).
+    import provider_store
+    provider_store.install(host, runtime)
+
 
 if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == 'sign-in' and sys.argv[2] in SIGN_IN:
     raise SystemExit(run_sign_in(sys.argv[2]))

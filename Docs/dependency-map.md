@@ -10,12 +10,13 @@ What depends on what: third-party packages, the internal Python import graph, th
 | Package | Used by |
 |-|-|
 | `PIL` | room_markup |
-| `fastapi` | app, project_registry, room_deploy, room_runtime, run, team_builder |
-| `httpx` | provider_controls, room_mcp, room_runtime, supervisor |
+| `fastapi` | app, project_registry, provider_setup, provider_store, room_deploy, room_runtime, run, shared_browser, team_builder |
+| `httpx` | provider_controls, provider_setup, provider_store, room_mcp, room_runtime, shared_browser, supervisor |
 | `jsonschema` | local_protocol, native_adapters |
 | `mcp` | mcp_bridge, room_mcp |
 | `starlette` | app |
 | `uvicorn` | run |
+| `websockets` | shared_browser |
 <!-- /generated -->
 
 ## Internal Python imports
@@ -33,9 +34,9 @@ Change these modules with the cycle in mind: a new top-level import between them
 <!-- generated:python-imports -->
 | Module | Imports (internal) | Third-party |
 |-|-|-|
-| `agent_profiles` | project_room | - |
+| `agent_profiles` | project_room, provider_controls, provider_store | - |
 | `agents` | mcp_bridge, queue_file | - |
-| `app` | agents, archive, durable, mcp_bridge, project_registry, registry, router, store | fastapi, starlette |
+| `app` | agents, archive, durable, file_preview, mcp_bridge, project_registry, registry, router, store | fastapi, starlette |
 | `archive` | - | - |
 | `build_release` | - | - |
 | `config_loader` | - | - |
@@ -43,6 +44,7 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `coordination_records` | project_registry | - |
 | `coordination_state` | - | - |
 | `durable` | - | - |
+| `file_preview` | git_preview, room_runtime | - |
 | `git_preview` | - | - |
 | `local_protocol` | - | jsonschema |
 | `login_gemini` | native_adapters | - |
@@ -52,6 +54,8 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `project_registry` | project_room, room_runtime | fastapi |
 | `project_room` | coordination_queue, coordination_records, coordination_state, durable, project_registry, room_markup | - |
 | `provider_controls` | durable, native_adapters | httpx |
+| `provider_setup` | native_adapters, provider_store | fastapi, httpx |
+| `provider_store` | project_room, provider_setup | fastapi, httpx |
 | `queue_file` | - | - |
 | `registry` | durable | - |
 | `release_pack` | - | - |
@@ -59,9 +63,10 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `room_goals` | durable | - |
 | `room_markup` | - | PIL |
 | `room_mcp` | - | httpx, mcp |
-| `room_runtime` | agent_profiles, coordination_queue, coordination_state, durable, git_preview, local_protocol, mcp_bridge, native_adapters, project_registry, project_room, provider_controls, queue_file, room_deploy, room_goals, steering_delivery, team_builder | fastapi, httpx |
+| `room_runtime` | agent_profiles, coordination_queue, coordination_state, durable, git_preview, local_protocol, mcp_bridge, native_adapters, project_registry, project_room, provider_controls, provider_setup, provider_store, queue_file, room_deploy, room_goals, shared_browser, steering_delivery, team_builder | fastapi, httpx |
 | `router` | - | - |
 | `run` | app, config_loader, mcp_bridge, room_runtime | fastapi, uvicorn |
+| `shared_browser` | - | fastapi, httpx, websockets |
 | `steering_delivery` | coordination_queue | - |
 | `store` | durable | - |
 | `supervisor` | release_pack | httpx |
@@ -86,22 +91,26 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `coordination_records` | project_room |
 | `coordination_state` | project_room, room_runtime |
 | `durable` | app, mcp_bridge, project_room, provider_controls, registry, room_deploy, room_goals, room_runtime, store |
-| `git_preview` | room_runtime |
+| `file_preview` | app |
+| `git_preview` | file_preview, room_runtime |
 | `local_protocol` | room_runtime |
 | `mcp_bridge` | agents, app, room_deploy, room_runtime, run |
 | `mcp_proxy` | wrapper |
-| `native_adapters` | login_gemini, provider_controls, room_runtime |
+| `native_adapters` | login_gemini, provider_controls, provider_setup, room_runtime |
 | `project_registry` | app, coordination_records, project_room, room_runtime |
-| `project_room` | agent_profiles, project_registry, room_runtime, team_builder |
-| `provider_controls` | room_runtime |
+| `project_room` | agent_profiles, project_registry, provider_store, room_runtime, team_builder |
+| `provider_controls` | agent_profiles, room_runtime |
+| `provider_setup` | provider_store, room_runtime |
+| `provider_store` | agent_profiles, provider_setup, room_runtime |
 | `queue_file` | agents, room_runtime, wrapper, wrapper_api |
 | `registry` | app |
 | `release_pack` | supervisor |
 | `room_deploy` | room_runtime |
 | `room_goals` | room_runtime |
 | `room_markup` | project_room |
-| `room_runtime` | project_registry, run |
+| `room_runtime` | file_preview, project_registry, run |
 | `router` | app |
+| `shared_browser` | room_runtime |
 | `steering_delivery` | room_runtime |
 | `store` | app |
 | `team_builder` | room_runtime |

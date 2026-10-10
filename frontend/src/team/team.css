@@ -62,6 +62,18 @@
 .pv-name { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
 .pv-name strong { font-size: 14px; }
 .pv-row .bd-muted { margin: 0; font-size: 12.5px; overflow-wrap: anywhere; }
-.pv-action { margin-left: auto; min-height: 28px; padding: 2px 12px; font-size: 12.5px; }
+.pv-action, .pv-small { min-height: 28px; padding: 2px 12px; font-size: 12.5px; }
+.pv-manage { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.pv-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--bd-border); }
+/* Add/edit connection (ProviderForm.tsx); a native dialog keeps focus, Esc and the backdrop. */
+.pv-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--bd-border);
+  border-radius: var(--bd-radius); background: var(--bd-surface); color: var(--bd-text); }
+.pv-dialog::backdrop { background: var(--backdrop); }
+.pv-form { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
+.pv-form h2 { margin: 0; font-size: 18px; }
+.pv-inline { display: flex; gap: 8px; }
+.pv-inline input { flex: 1 1 auto; min-width: 0; }
+.pv-inline .bd-btn { flex: 0 0 auto; white-space: nowrap; }
+.pv-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
 .pv-pending { margin: 2px 0 0; color: var(--bd-accent); font-size: 12.5px; }
 .pv-row code { padding: 1px 6px; border-radius: 4px; background: var(--bd-surface-2); font-size: 12px; }
