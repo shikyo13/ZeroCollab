@@ -212,8 +212,13 @@ function onTool(event: RoomEvent) {
   publish();
 }
 
+// Runs that ended here, so a snapshot that lags their runtime_end never seeds them again.
+const ended = new Set<string>();
+
 function onEnd(event: RoomEvent) {
   const d = event.data as RuntimeData;
+  ended.add(d.run);
+  if (ended.size > 200) ended.delete(ended.values().next().value as string);
   const entry = live.get(d.agent);
   if (entry && entry.run === d.run) live.delete(d.agent);
   streams.delete(d.run);
@@ -297,12 +302,20 @@ function onBrowser(event: RoomEvent) {
   if (!a?.action || !a.time || a.time <= lastBrowserTime) return;
   lastBrowserTime = a.time;
   const words = BROWSER_WORDS[a.action];
-  if (!words || a.phase === 'started') return;
+  // Agent actions report actor = run id and label = agent name (room_runtime); the user's are actor 'user'.
+  const who = a.actor === 'user' ? 'user' : a.label || a.actor || '';
+  // Phases are working, failed and done: only a finished action is told as done, a failure as a failure.
+  if (!words || !who || (a.phase !== 'done' && a.phase !== 'failed')) return;
+  if (a.phase === 'failed') {
+    tick(who, `browser action failed: ${a.action}`, undefined, a.time);
+    publish();
+    return;
+  }
   const where = a.action === 'open' && d.url ? ` · ${d.url.replace(/^https?:\/\/(127\.0\.0\.1|localhost)/, '')}` : '';
-  tick(a.actor ?? '', words + where, undefined, a.time);
+  tick(who, words + where, undefined, a.time);
   // An agent acting in the shared preview: show the page as it is now. The user's own actions are not echoed.
-  if (a.actor && a.actor !== 'user' && a.action !== 'release' && d.project) {
-    showPip({ kind: 'browser', actor: a.actor, time: a.time, url: d.url ?? '', project: d.project, action: words });
+  if (who !== 'user' && a.action !== 'release' && d.project) {
+    showPip({ kind: 'browser', actor: who, time: a.time, url: d.url ?? '', project: d.project, action: words });
   }
   publish();
 }
@@ -361,11 +374,25 @@ function attach() {
 }
 
 /** Drop runs the server no longer reports (a missed runtime_end after a reconnect). */
-export function reconcileRuns(running: { id: string; agent: string }[]) {
+export function reconcileRuns(running: { id: string; agent: string; channel?: string }[]) {
   const ids = new Set(running.map(r => r.id));
   let changed = false;
-  // A snapshot fetched just before a turn started can lag its events; only drop quiet entries.
+  // Turns already running when the page loads or reconnects have sent their runtime_start before we
+  // listened: seed them from the snapshot so the live stage shows them from the start. A snapshot can
+  // lag the events (a run that ended while disconnected), so it fills only an agent with no live entry,
+  // or replaces one that has gone quiet; a run with fresh events is never overwritten by it.
   const quietSince = now() - RECONCILE_QUIET_SECONDS;
+  for (const r of running) {
+    const current = live.get(r.agent);
+    if (ended.has(r.id) || current?.run === r.id || (current && current.updated >= quietSince)) continue;
+    if (current) {
+      live.delete(r.agent);
+      streams.delete(current.run);
+    }
+    ensure(r.agent, r.id, r.channel ?? '');
+    changed = true;
+  }
+  // The same lag the other way: a snapshot fetched just before a turn started; only drop quiet entries.
   for (const [agent, entry] of live) {
     if (!ids.has(entry.run) && entry.updated < quietSince) {
       live.delete(agent);
