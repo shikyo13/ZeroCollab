@@ -65,10 +65,10 @@ Every source file, with its line count and the purpose its own header states. Th
 | `mcp_proxy.py` | 336 | Per-instance MCP identity proxy. |
 | `native_adapters.py` | 608 | Official, locally authenticated CLI protocols. No credential handling. |
 | `project_registry.py` | 790 | Index of every project this room has worked in: board, team, goal, chats and repository. |
-| `project_room.py` | 941 | Durable project coordination and bounded room context, without model calls. |
+| `project_room.py` | 1028 | Durable project coordination and bounded room context, without model calls. |
 | `provider_controls.py` | 180 | Room-local model/effort preferences and official, read-only provider catalogs. |
-| `provider_setup.py` | 337 | Provider setup for Team > Providers (Docs/providers.md, slices S1 and S2). |
-| `provider_store.py` | 323 | In-app provider connections (Docs/providers.md, slice S3). |
+| `provider_setup.py` | 433 | Provider setup for Team > Providers (Docs/providers.md, slices S1 and S2). |
+| `provider_store.py` | 451 | In-app provider connections (Docs/providers.md, slice S3). |
 | `queue_file.py` | 75 | Coordinate JSONL queue producers, consumers and explicit clears across processes. |
 | `registry.py` | 824 | Runtime Registry - single source of truth for all live agent state. |
 | `release_pack.py` | 218 | Package a committed revision as a release the supervisor can deploy. |
@@ -76,7 +76,7 @@ Every source file, with its line count and the purpose its own header states. Th
 | `room_goals.py` | 134 | Explicit shared goals. Event-driven continuation, never a background model poll. |
 | `room_markup.py` | 96 | Bounded raster markup shared by agent tools; no network or chat side effects. |
 | `room_mcp.py` | 189 | Run-scoped local coordination tools for official native CLIs. |
-| `room_runtime.py` | 1823 | Managed agents for the ZeroCollab persistent workspace. |
+| `room_runtime.py` | 1897 | Managed agents for the ZeroCollab persistent workspace. |
 | `router.py` | 108 | Message routing based on @mentions with per-channel loop guard. |
 | `run.py` | 182 | Entry point - starts MCP server (port 8200) + web UI (port 8300). |
 | `shared_browser.py` | 567 | One disposable, project-scoped Chromium page shared by the user and room agents. |
@@ -104,8 +104,8 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 | `annotate/viewer.css` | 24 | - |
 | `App.tsx` | 56 | - |
 | `board/ActivityFeed.tsx` | 134 | Live team activity: who is running right now, then the newest board events (check-ins, ownership/status moves, notes, unlinked reviews and follow-ups). |
-| `board/Attachments.tsx` | 184 | Task images: thumbnails on cards, a gallery in task detail with upload by picker, paste or drop, and annotation into a new derived image. The task's list is replaced as a whole through POST /api/runtime/tasks. |
-| `board/board.css` | 295 | Board styles. Scoped to .bd- and built on the shared palette tokens (static/style.css :root, overridden by the workspace shell). Every token used here is defined at :root; only --font-ui keeps a fallback for pages without the shell. |
+| `board/Attachments.tsx` | 240 | Task images: thumbnails on cards, a gallery in task detail with upload by picker, paste or drop, and annotation into a new derived image. The task's list is replaced as a whole through POST /api/runtime/tasks. |
+| `board/board.css` | 303 | Board styles. Scoped to .bd- and built on the shared palette tokens (static/style.css :root, overridden by the workspace shell). Every token used here is defined at :root; only --font-ui keeps a fallback for pages without the shell. |
 | `board/Board.tsx` | 272 | Project board: kanban of owned tasks plus reviews/follow-ups, spec, memory and execution controls. Replaces the legacy static/project.js panel and uses the same /api/runtime endpoints and project_state/runtime_state events. |
 | `board/BoardToolbar.tsx` | 88 | Task list toolbar: text, owner and area filters, grouping, ordering, the feed toggle and New task. |
 | `board/Coordination.tsx` | 447 | Peer reviews and follow-ups (POST /api/runtime/reviews/followups). The human acts as "user": may request/cancel any review, respond when assigned as reviewer, and create/resolve/cancel any follow-up. |
@@ -117,7 +117,7 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 | `board/detail/useResizablePanel.ts` | 36 | Width of the task detail panel, resizable by pointer drag or arrow keys. The width is published as --detail-width on the enclosing .bd-tasks grid. |
 | `board/Lane.tsx` | 69 | One swimlane: a status column per task state, with the done column trimmed to recent cards. |
 | `board/lanes.ts` | 54 | Filtering, swimlane grouping and column ordering for the task board. |
-| `board/NewTaskForm.tsx` | 139 | - |
+| `board/NewTaskForm.tsx` | 152 | - |
 | `board/ProjectPanels.tsx` | 278 | Optional spec, project memory, execution limits and conversation budgets. Same endpoints and limit ranges as the legacy static/project.js panel. |
 | `board/shared.tsx` | 206 | - |
 | `board/TaskCard.tsx` | 210 | - |
@@ -141,14 +141,14 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 | `components/WorkControls.tsx` | 78 | - |
 | `follow/follow.css` | 76 | Follow mode. Built on the shared palette tokens; motion is dropped under reduced motion. |
 | `follow/Follow.tsx` | 168 | Follow mode UI: the header toggle, the Board's banner and LIVE ticker, the per-card overlay, and the Space/Esc shortcuts. |
-| `follow/followStore.ts` | 314 | Follow mode: a live view of what the team is doing, built only from events the room already emits (runtime_start/delta/tool/end, project_state, browser_activity). |
+| `follow/followStore.ts` | 386 | Follow mode: a live view of what the team is doing, built only from events the room already emits (runtime_start/delta/tool/end, project_state, browser_activity). |
 | `legacy.ts` | 65 | - |
 | `lib/api.ts` | 65 | Fetch helpers for the existing FastAPI routes. The server injects window.__SESSION_TOKEN__ into the page; every /api call must carry it. |
 | `lib/constants.ts` | 44 | Values shared across the workspace. Field limits mirror the server's caps (named alongside), so the browser stops typing where the server would truncate or reject the text. Change both sides together. |
 | `lib/room.ts` | 286 | Bridge between React views and the legacy room client (static/core.js, static/store.js, static/chat.js). |
 | `lib/storage.ts` | 18 | localStorage throws when storage is disabled or full (private windows, policy); view preferences are optional, so reads fall back and writes are dropped. |
 | `lib/teamBuilder.ts` | 122 | Team builder API (/api/runtime/team-builder), contract agreed with the backend owner in follow-up 65ef16f7. Proposals are drafted and challenged by connected agents, saved server-side, and only "Add approved members" changes the roster. |
-| `lib/types.ts` | 236 | Contract types for the existing backend (room_runtime.py, project_room.py, coordination_records.py). These mirror server payloads; they are not a new API. |
+| `lib/types.ts` | 247 | Contract types for the existing backend (room_runtime.py, project_room.py, coordination_records.py). These mirror server payloads; they are not a new API. |
 | `main.tsx` | 15 | - |
 | `shell.css` | 138 | Shell: Codex/Claude-style sidebar (Sidebar.tsx), one header row (HeaderBar.tsx) and the Ctrl+K switcher (ChatSearch.tsx). Loaded after styles.css. |
 | `sidepanel/fileview.css` | 26 | - |
@@ -162,9 +162,9 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 | `team/builder/MemberCard.tsx` | 229 | Step 2: one proposed member, with approve / edit / revise / decline decisions. |
 | `team/builder/Summary.tsx` | 101 | Step 3: the proposed team at a glance, and adding the approved members. |
 | `team/ProfileEditor.tsx` | 380 | Agent profile form, ported from static/profiles.js with the same validation hints, handle generation, model/effort catalogs and archive semantics. |
-| `team/ProviderForm.tsx` | 141 | Add or edit a provider connection (Team > Providers, provider_store.py). Subscription connections have a name and color; a local OpenAI-compatible server also has its address, model and maximum response length. |
-| `team/Providers.tsx` | 336 | Team > Providers: which provider apps are installed and signed in, and which local model servers are running (GET /api/runtime/providers/status, provider_setup.py). |
-| `team/team.css` | 79 | Team page. Reuses the board primitives (.bd-btn, .bd-field, .bd-panel, tokens). |
+| `team/ProviderForm.tsx` | 196 | Add or edit a provider connection (Team > Providers, provider_store.py). Subscription connections have a name and color; a local OpenAI-compatible server also has its address, model and maximum response length. |
+| `team/Providers.tsx` | 350 | Team > Providers: which provider apps are installed and signed in, and which local model servers are running (GET /api/runtime/providers/status, provider_setup.py). |
+| `team/team.css` | 82 | Team page. Reuses the board primitives (.bd-btn, .bd-field, .bd-panel, tokens). |
 | `team/Team.tsx` | 282 | Team page: named agent profiles (static/profiles.js) and their live runtime controls (static/runtime.js provider cards) in one place. |
 | `team/teamBuilder.css` | 91 | Team builder (approved mockup final.html). Reuses board tokens and buttons. |
 | `team/TeamBuilder.tsx` | 184 | Team builder: Brief > Review team > Add approved members. Implements the user-approved design (task ccc5fbdb, mockup final.html 5783b87f5e0f1949). |

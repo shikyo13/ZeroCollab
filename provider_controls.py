@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import native_adapters as native
+import provider_keys
 from durable import atomic_write
 
 EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
@@ -113,10 +114,11 @@ class ProviderControls:
             return False
 
     @staticmethod
-    async def lookup(provider, cfg, cwd):
+    async def lookup(provider, cfg, cwd, headers=None):
         """One provider connection's catalog; raises when the provider cannot list models.
         cwd is where an official CLI runs its model listing (an agent's worktree, or the room data
-        folder for a provider no agent uses yet)."""
+        folder for a provider no agent uses yet). headers: a key being checked before it is saved;
+        otherwise a saved key is attached after its origin check (provider_keys)."""
         if provider != 'api':
             models = await cli_catalog(provider, cwd)
             source = 'Official CLI model catalog'
@@ -126,7 +128,8 @@ class ProviderControls:
         else:
             base = cfg['base_url'].rstrip('/')
             efforts = cfg.get('effort_options', [])
-            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+            headers = provider_keys.headers(cfg) if headers is None else headers
+            async with httpx.AsyncClient(timeout=5, trust_env=False, headers=headers) as client:
                 response = await client.get(base + '/models')
                 response.raise_for_status()
                 ids = [m['id'] for m in response.json().get('data', [])]

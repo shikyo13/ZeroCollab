@@ -67,6 +67,13 @@ class WakeQueue(asyncio.Queue):
         self._finished.clear()
         self._wakeup_next(self._getters)
 
+    def retry(self, item):
+        """Put a failed batch back ahead of newer work, so later same-channel requests merge after it."""
+        self._queue.appendleft(item)
+        self._unfinished_tasks += 1
+        self._finished.clear()
+        self._wakeup_next(self._getters)
+
     def merge_waiting(self, batch):
         for pending in list(self._queue):
             if pending['channel'] == batch['channel']:

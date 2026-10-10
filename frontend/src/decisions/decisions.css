@@ -1,0 +1,38 @@
+.decision-root { padding: 20px; min-width: 0; color: var(--text); }
+.decision-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.decision-heading h2 { margin: 0 0 8px; font-size: 23px; }
+.decision-heading p { margin: 7px 0; }
+.decision-eyebrow { color: var(--accent-text); letter-spacing: .07em; font-size: 12px; }
+.decision-layout { display: grid; grid-template-columns: minmax(0,1.45fr) minmax(0,1fr); gap: 16px; margin: 16px 0; }
+.decision-card { border: 1px solid var(--border); background: var(--bg-msg); border-radius: 10px; padding: 20px; margin-bottom: 16px; min-width: 0; overflow-wrap: anywhere; }
+.decision-card h2,.decision-card h3 { margin: 0 0 12px; }
+.decision-card h4 { margin: 15px 0 8px; }
+.decision-muted { color: var(--text-dim); font-size: 13px; }
+.decision-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.decision-stages { display: flex; gap: 12px; list-style: none; padding: 0; margin: 18px 0; flex-wrap: wrap; }
+.decision-stages li { flex: 1; min-width: 135px; border-top: 2px solid var(--border-strong); padding-top: 9px; font-size: 13px; color: var(--text-dim); }
+.decision-stages li[aria-current] { color: var(--accent-text); border-color: var(--accent); }
+.decision-banner,.decision-warning { color: var(--text); background: var(--warning-surface); border: 1px solid var(--border-emphasis); padding: 12px; border-radius: 7px; margin: 12px 0; overflow-wrap: anywhere; }
+.decision-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.decision-error { color: var(--error-color); border-left: 3px solid var(--danger-border); padding: 10px; overflow-wrap: anywhere; }
+.decision-setup label,.decision-dialog label { display: grid; gap: 6px; margin: 12px 0; font-weight: 600; }
+.decision-setup :is(textarea,select),.decision-dialog textarea { color: var(--text); font: inherit; width: 100%; min-width: 0; border: 1px solid var(--border-control); border-radius: 6px; background: var(--bg-input); padding: 10px; }
+.decision-setup textarea,.decision-dialog textarea { min-height: 105px; resize: vertical; }
+.decision-setup fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+.decision-setup .decision-choice { display: flex; align-items: center; gap: 10px; font-weight: normal; }
+.decision-choice small { color: var(--text-dim); }
+.decision-list-item { display: grid; gap: 8px; width: 100%; text-align: left; font: inherit; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border-control); padding: 14px; margin: 10px 0; border-radius: 7px; cursor: pointer; overflow-wrap: anywhere; }
+.decision-list-item small { color: var(--text-dim); }
+.decision-wait { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding: 12px 0; }
+.decision-wait p { margin: 6px 0; }
+.decision-verdict,.decision-task,.decision-contribution { border-bottom: 1px solid var(--border); padding: 12px 0; }
+.decision-record pre { font: 12px/1.6 monospace; padding: 14px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.decision-trail summary { cursor: pointer; font-weight: 600; }
+.decision-dialog { background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border-strong); padding: 22px; width: min(600px,94vw); max-height: 90vh; overflow: auto; border-radius: 10px; overflow-wrap: anywhere; }
+.decision-dialog::backdrop { background: var(--backdrop); }
+.decision-chat-link { white-space: nowrap; font-size: 12px; padding: 5px 8px; }
+.decision-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.decision-root :is(a,button,input,textarea,select,summary,h2):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.decision-root a { color: var(--accent-text); }
+@media(max-width:900px) { .decision-layout { grid-template-columns: minmax(0,1fr); } }
+@media(max-width:450px) { .decision-root { padding: 12px; }.decision-card { padding: 14px; }.decision-heading h2 { font-size: 20px; }.decision-stages li { min-width: 110px; } }

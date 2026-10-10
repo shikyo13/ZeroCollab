@@ -73,7 +73,7 @@ class AgentProfiles:
                             if profile['template'] == template and name in self.runtime.controls.catalogs), fallback)
             providers.append({'id': template, 'provider': cfg.get('provider', template),
                               'label': cfg.get('label', template), 'color': cfg.get('color', '#8b5cf6'),
-                              'controls': catalog})
+                              'controls': catalog, 'offered': self.store.offered(template)})
         return {'project': str(self.runtime.project or ''), 'profiles': [
                     {**p, 'handle': p.get('handle', p['id']), 'previous_handles': list(p.get('previous_handles', []))}
                     for p in self.items.values()], 'providers': providers,
@@ -88,6 +88,8 @@ class AgentProfiles:
             raise ValueError('Choose a configured provider connection')
         if old and template != old['template']:
             raise ValueError('Duplicate the agent to choose a different provider and keep its history intact')
+        if not old and not self.store.offered(template):
+            raise ValueError('API provider turned off. Turn it on in Team > Providers to add agents on it')
         label = body.get('name', old['name'] if old else '').strip()
         if not label or len(label) > 60:
             raise ValueError('Give the agent a name between 1 and 60 characters')

@@ -173,7 +173,7 @@ def room_decision(action: str = 'get', decision_id: str = '', stage: str = '', r
 def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
                  text: str = '', key: str = '', modifiers: int = 0,
                  x: float | None = None, y: float | None = None, delta: float = 500,
-                 accept: bool = False) -> list:
+                 accept: bool = False, page: str = '') -> list:
     """See and drive the user's Browser panel: check a UI change the way the user sees it, and capture
     before and after screenshots for mockups and reviews. screenshot also returns an /uploads URL to pass
     to room_markup or task attachments. status/inspect/screenshot observe the page.
@@ -185,9 +185,14 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
     select chooses an option by ref and text (option value). key accepts Enter, Tab, Backspace, Delete,
     Escape, arrows, Home/End, PageUp/Down or a (modifiers: Ctrl=2, Shift=8).
     screenshot returns the same page pixels the user sees. The page uses a temporary profile.
+    Pages: actions apply to the active page unless page names one from status pages[]; a closed page
+    is refused, never redirected. new_page (optional url) opens another page and makes it active;
+    select_page and close_page take page. Keep to one page unless you need to compare two.
     """
     args = dict(action=action, url=url, ref=ref, text=text, key=key, modifiers=modifiers,
                 delta=delta, accept=accept)
+    if page:
+        args['page'] = page
     if x is not None:
         args['x'] = x
     if y is not None:

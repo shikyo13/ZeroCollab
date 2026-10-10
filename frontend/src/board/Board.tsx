@@ -22,6 +22,7 @@ import { FollowBanner, placeFollow, useFollowKeys, useReconcileRuns } from '../f
 import { useFollow } from '../follow/followStore';
 import { FollowPip } from '../follow/Pip';
 import './board.css';
+import Decisions from '../decisions/Decisions';
 
 // The legacy chat lightbox can open the same annotation tool through window.ZeroAnnotate.
 installAnnotateHook();
@@ -40,6 +41,10 @@ export default function Board() {
   const [showAllDone, setShowAllDone] = useState(false);
   const changed = useChangeHighlights(project?.tasks);
   const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const sync = () => {if (new URLSearchParams(location.search).has('decision')) setTab('decisions', false);};
+    sync(); window.addEventListener('popstate', sync); return () => window.removeEventListener('popstate', sync);
+  }, [setTab]);
 
   // Opening a task from another section shows the task list without changing the remembered tab.
   const openTask = useCallback((id: string) => {
@@ -126,6 +131,7 @@ export default function Board() {
   const tabs: [Tab, string, string?][] = [
     ['tasks', 'Tasks', active ? String(active) : undefined],
     ['coordination', 'Reviews & follow-ups', openCoordination ? String(openCoordination) : undefined],
+    ['decisions', 'Decisions'],
     ['spec', 'Spec', project.spec ? undefined : 'none'],
     ['memory', 'Memory'],
     ['controls', 'Limits & usage'],
@@ -258,6 +264,11 @@ export default function Board() {
       </div>
       <div hidden={tab !== 'coordination'}>
         <CoordinationView project={project} agents={agents} channel={channel} onOpenTask={openTask} />
+      </div>
+      <div hidden={tab !== 'decisions'}>
+        <Decisions key={window.activeProjectId || runtimeState?.project_id || runtimeState?.project || ''}
+          project={window.activeProjectId || runtimeState?.project_id || runtimeState?.project || ''}
+          active={tab === 'decisions'} channel={channel} agents={agents} runs={runs} onTask={openTask} />
       </div>
       <div hidden={tab !== 'spec'}>
         <SpecPanel project={project} channel={channel} refresh={refresh} />

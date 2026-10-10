@@ -45,7 +45,10 @@ export function ChatSearch({ open, setOpen, projects, navigate, onOpenProject }:
       ...VIEWS.map(([view, label]) => ({ key: 'v' + view, label, hint: 'View', run: () => navigate(view) })),
     ];
     const q = query.trim().toLowerCase();
-    return (q ? all.filter(r => r.label.toLowerCase().includes(q)) : all).slice(0, RESULTS_SHOWN);
+    const matches = q ? all.filter(r => r.label.toLowerCase().includes(q)) : all;
+    // Keep an exact named view reachable even when matching titles fill the limit.
+    const exactView = q ? matches.find(r => r.key.startsWith('v') && r.label.toLowerCase() === q) : undefined;
+    return (exactView ? [exactView, ...matches.filter(r => r !== exactView)] : matches).slice(0, RESULTS_SHOWN);
   }, [sessions, archive, projects, query, navigate, onOpenProject]);
 
   useEffect(() => {

@@ -5,7 +5,7 @@ import { STORAGE_KEYS } from '../lib/constants';
 import { readStored, writeStored } from '../lib/storage';
 
 // The first entry of each list is the default when nothing valid is saved.
-export const TABS = ['tasks', 'coordination', 'spec', 'memory', 'controls'] as const;
+export const TABS = ['tasks', 'coordination', 'decisions', 'spec', 'memory', 'controls'] as const;
 export const GROUPINGS = ['status', 'area', 'owner'] as const;
 export const SORTS = ['recent', 'oldest', 'title'] as const;
 export type Tab = typeof TABS[number];

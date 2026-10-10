@@ -12,6 +12,7 @@ import functools
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ import httpx
 from fastapi.responses import JSONResponse
 
 import native_adapters as native
+import provider_keys
 
 # Default ports of the local servers users run most; all of them speak the OpenAI /v1 API.
 # Apple's MLX LM server defaults to llama.cpp's port 8080; local_rows() credits that port only on evidence.
@@ -170,6 +172,106 @@ async def probe_server(client, base_url):
             'served_by': served_by(response, data)}
 
 
+CHECK_TOOL = {'type': 'function', 'function': {
+    'name': 'report_ready', 'description': 'Report that you can call tools.',
+    'parameters': {'type': 'object', 'properties': {'ready': {'type': 'boolean'}}, 'required': ['ready']}}}
+# A first request can load the model into memory; local servers may take a while.
+CHECK_TIMEOUT = 120
+
+
+MARKUP_FIX = ('Returned tool markup as text instead of a structured call. For llama.cpp start llama-server with --jinja; '
+              'for Ollama or LM Studio choose a tool-capable model.')
+
+
+async def tool_call_check(base_url, model, request_options=None, max_tokens=1024, headers=None):
+    """Agents need structured tool calls. One tiny request with one tool, against exactly this address
+    and model, sent the way a real local turn sends it (streamed, with the connection's request
+    options) and accepted by the same code: room_runtime.stream_chat assembles it, and
+    local_protocol.visible_text and validate_calls judge it."""
+    from local_protocol import validate_calls, visible_text
+    from room_runtime import stream_chat
+    # The connection's own response length: reasoning models spend part of it thinking before the call.
+    payload = {'model': model, 'stream': True, 'stream_options': {'include_usage': True}, 'max_tokens': max_tokens, 'temperature': 0,
+               'tools': [CHECK_TOOL], 'tool_choice': 'auto',
+               'messages': [{'role': 'user', 'content': 'Call the report_ready tool with ready set to true. Do not answer in text.'}]}
+    payload.update(request_options or {})
+    payload['model'] = model
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(CHECK_TIMEOUT, connect=3), trust_env=False, headers=headers or {}) as client:
+            text, calls, finish_reason, _ = await stream_chat(client, base_url.rstrip('/'), payload)
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        return {'ok': False, 'detail': 'The server is not running at this address'}
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (401, 403) and headers:
+            return {'ok': False, 'detail': 'The server did not accept the key for a chat request'}
+        return {'ok': False, 'detail': f'The server refused a streamed tool request (HTTP {exc.response.status_code})'}
+    except httpx.TimeoutException:
+        return {'ok': False, 'detail': f'No reply within {CHECK_TIMEOUT} seconds; the model may still be loading. Check again.'}
+    except (httpx.HTTPError, ValueError) as exc:
+        return {'ok': False, 'detail': f'Not an OpenAI-compatible streaming chat endpoint ({type(exc).__name__})'}
+    try:
+        visible_text(text)
+    except ValueError:
+        return {'ok': False, 'detail': MARKUP_FIX}
+    if finish_reason == 'length':
+        return {'ok': False, 'detail': f'Ran out of response length ({max_tokens:,} tokens) before completing the tool call; '
+                                       'raise the maximum response length (reasoning models think first) and check again'}
+    try:
+        validated = validate_calls(list(calls.values()), [CHECK_TOOL])
+    except ValueError as exc:
+        return {'ok': False, 'detail': f'Returned a tool call the room would reject: {exc}'}
+    if any(name == 'report_ready' for _, name, _ in validated):
+        return {'ok': True, 'detail': 'Returned a structured tool call, streamed as real turns use it'}
+    if 'report_ready' in text:
+        return {'ok': False, 'detail': MARKUP_FIX}
+    return {'ok': False, 'detail': 'Answered without calling the tool. Choose a model with tool calling support.'}
+
+
+async def server_context(base_url, model, headers=None):
+    """The context window the server runs this model with, from the server's own reports. Returns
+    {'tokens': int | None, 'source': str}. Values are approximate: servers may round or cap them.
+    Every probe stays on the connection's own origin, so a key in headers goes nowhere else."""
+    base = base_url.rstrip('/')
+    root = base.removesuffix('/v1')
+    async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=2), trust_env=False, headers=headers or {}) as client:
+        async def get_json(url, method='GET', body=None):
+            try:
+                response = await (client.post(url, json=body) if method == 'POST' else client.get(url))
+                return response.json() if response.status_code == 200 else None
+            except (httpx.HTTPError, ValueError):
+                return None
+        # vLLM and some gateways list it with the model.
+        listed = await get_json(base + '/models')
+        for entry in (listed or {}).get('data', []) if isinstance(listed, dict) else []:
+            if isinstance(entry, dict) and entry.get('id') == model:
+                for key in ('max_model_len', 'context_length', 'context_window'):
+                    if isinstance(entry.get(key), int):
+                        return {'tokens': entry[key], 'source': f'/models {key}'}
+        # llama.cpp: the slot context the server was started with (-c).
+        props = await get_json(root + '/props')
+        if isinstance(props, dict):
+            n_ctx = (props.get('default_generation_settings') or {}).get('n_ctx') or props.get('n_ctx')
+            if isinstance(n_ctx, int) and n_ctx > 0:
+                return {'tokens': n_ctx, 'source': 'llama.cpp /props n_ctx'}
+        # LM Studio: the loaded context, else the model maximum.
+        lmstudio = await get_json(root + '/api/v0/models/' + model)
+        if isinstance(lmstudio, dict):
+            for key in ('loaded_context_length', 'max_context_length'):
+                if isinstance(lmstudio.get(key), int):
+                    return {'tokens': lmstudio[key], 'source': f'LM Studio {key}'}
+        # Ollama: a loaded model reports its context; otherwise a num_ctx set in the Modelfile.
+        running = await get_json(root + '/api/ps')
+        for entry in (running or {}).get('models', []) if isinstance(running, dict) else []:
+            if isinstance(entry, dict) and entry.get('name') == model and isinstance(entry.get('context_length'), int):
+                return {'tokens': entry['context_length'], 'source': 'Ollama /api/ps (loaded)'}
+        shown = await get_json(root + '/api/show', 'POST', {'model': model})
+        if isinstance(shown, dict):
+            match = re.search(r'num_ctx\s+(\d+)', str(shown.get('parameters') or ''))
+            if match:
+                return {'tokens': int(match[1]), 'source': 'Ollama Modelfile num_ctx'}
+    return {'tokens': None, 'source': 'not reported by this server'}
+
+
 def served_by(response, data):
     """Which local server answered, on positive evidence only: llama.cpp marks its models owned_by
     'llamacpp'. MLX LM has no such marker (its entries are only id/object/created), so it stays unknown."""
@@ -224,6 +326,19 @@ def local_rows(listed, probes, configured_bases):
     return rows
 
 
+async def probe_configured(client, cfg):
+    """A configured server's model list; a keyed one uses its own client carrying its key, after the
+    key's origin check, and reports a missing, switched-off or misplaced key instead of probing."""
+    if not cfg.get('key_target'):
+        return await probe_server(client, cfg['base_url'])
+    try:
+        headers = provider_keys.headers(cfg)
+    except provider_keys.KeyProblem as exc:
+        return {'reachable': False, 'detail': str(exc)}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(6, connect=3), trust_env=False, headers=headers) as keyed:
+        return await probe_server(keyed, cfg['base_url'])
+
+
 async def status(runtime):
     templates = runtime.profiles.templates
     providers = sorted({cfg.get('provider', name) for name, cfg in templates.items()} - {'api'})
@@ -233,7 +348,7 @@ async def status(runtime):
         bases = list(dict.fromkeys(base for _, _, base, _ in listed))
         cli_results, configured_results, local_results = await asyncio.gather(
             asyncio.gather(*(cli_status(p) for p in providers)),
-            asyncio.gather(*(probe_server(client, cfg['base_url']) for cfg in configured.values())),
+            asyncio.gather(*(probe_configured(client, cfg) for cfg in configured.values())),
             asyncio.gather(*(probe_server(client, base) for base in bases)))
     by_provider = dict(zip(providers, cli_results))
     by_template = dict(zip(configured, configured_results))
@@ -328,8 +443,9 @@ def install(host, runtime):
         except (OSError, RuntimeError) as exc:
             return JSONResponse({'error': str(exc)[:400]}, 400)
 
-    # Add, edit, remove and reset connections (S3, provider_store.py).
+    # Add, edit, remove and reset connections (S3, provider_store.py), and API keys (S5a).
     import provider_store
+    provider_keys.install(host, runtime)
     provider_store.install(host, runtime)
 
 

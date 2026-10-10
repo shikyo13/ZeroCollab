@@ -93,3 +93,9 @@ Changes from v2, taking opus's f93e3350 build notes:
 - **Caps**: Edit and Return stay separate, 2 each.
 - **Storage**: `decisions.json` beside the board, atomic writes, the newest 40 discussions kept (closed ones are dropped first).
 - **Placement**: each started discussion gets its own chat titled `Decision <id>: <question>`, which uses one of the project's 24 chat slots. Design's follow-up 810e6c69 is still open.
+
+## Design 810e6c69 additions (task 98fccdac)
+
+- The recorded note lists each participant with their first answer's context label ("Fresh session" or "Prior debate in context"), every stage they were skipped at, and their verdict or "no verdict". A skip is never read as agreement.
+- `GET /api/decisions` returns `chat_slots: {used, limit}` so the UI can show slot use before Start. A start refused for lack of a slot leaves the draft unchanged.
+- The UI keeps the discussion chat as the transcript and Board > Decisions as the main surface; the backend needs nothing more for that.

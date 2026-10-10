@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { errorMessage, runtime } from '../lib/api';
 import { ErrorText } from '../board/shared';
 import { ProviderForm, type FormRequest, type ProviderDef, type ProviderDefs } from './ProviderForm';
+import { ApiKeys, isKeyed } from './ApiKeys';
 
 type SignIn = {
   state: 'signed_in' | 'signed_out' | 'unknown';
@@ -94,7 +95,16 @@ function localLine(local: LocalServer): Line {
 }
 
 /** manage: the connection's own controls (source, Edit, Remove, Reset), after the row's action. */
-type RowProps = { name: string; line: Line; note?: string; busy?: boolean; onAction?: () => void; manage?: React.ReactNode };
+/** S4 facts for a local connection: its approximate context window and its last tool-call check. */
+function connectionFacts(def: ProviderDef | undefined): string[] {
+  if (!def || def.provider !== 'api') return [];
+  const context = def.context_tokens ? `Context about ${def.context_tokens.toLocaleString()} tokens (${def.context_source || 'source not recorded'})`
+    : 'Context window unknown: the room uses its standard prompt budget';
+  const check = def.tool_check?.ok ? `Tool calls checked for ${def.tool_check.model}` : 'Tool calls not checked yet: Edit and save to check';
+  return [context, check];
+}
+
+type RowProps ={ name: string; line: Line; note?: string; busy?: boolean; onAction?: () => void; manage?: React.ReactNode };
 
 function Row({ name, line, note, busy, onAction, manage }: RowProps) {
   return (
@@ -233,13 +243,16 @@ export function Providers({ reload }: { reload: number }) {
 
   if (!status) return error ? <ErrorText message={`Could not check providers: ${error}`} /> : <p className="bd-empty">Checking providers…</p>;
 
+  const defById = new Map((defs?.providers ?? []).map(d => [d.id, d]));
   const subscriptions = status.providers.filter(p => p.cli);
-  const configured = status.providers.filter(p => p.server);
+  // API key connections have their own panel; Local models lists only keyless servers.
+  const configured = status.providers.filter(p => p.server && !isKeyed(defById.get(p.template)));
+  const keyed = (defs?.providers ?? []).filter(isKeyed);
+  const keyedServers = Object.fromEntries(status.providers.filter(p => p.server).map(p => [p.template, p.server]));
   // Servers can share a default address (MLX LM and llama.cpp on 8080); only one is the configured one.
   const localByBase = new Map(status.local_servers.filter(s => s.configured).map(s => [s.base_url.replace(/\/$/, ''), s]));
   const unconfigured = status.local_servers.filter(s => !s.configured);
   const when = checking ? 'Checking…' : checked ? `Checked at ${checked.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
-  const defById = new Map((defs?.providers ?? []).map(d => [d.id, d]));
   const editable = !defs?.error;
 
   const manage = (def: ProviderDef | undefined) => def && <>
@@ -269,9 +282,9 @@ export function Providers({ reload }: { reload: number }) {
       <section className="bd-panel pv-panel" aria-labelledby="pv-subscriptions">
         <div className="pv-head"><h2 id="pv-subscriptions">Subscriptions</h2><span className="pv-note" role="status">{when}</span></div>
         <p className="pv-note">
-          Each provider signs in with its own official app, and ZeroCollab never sees your password or token. API keys in
-          your environment are ignored, but a CLI signed in with an API account bills that account; each row shows the
-          sign-in its CLI reports.
+          Each provider signs in with its own official app, and ZeroCollab never sees your password or token. A CLI signed
+          in with an API account bills that account; each row shows the sign-in its CLI reports.
+          {keyed.length > 0 && ' API keys added below are used only for their own servers; keys in your environment are ignored.'}
         </p>
         <ul className="pv-list">
           {subscriptions.map(row => (
@@ -298,8 +311,10 @@ export function Providers({ reload }: { reload: number }) {
           {configured.map(row => {
             const server = row.server!;
             const local = localByBase.get(server.base_url.replace(/\/$/, ''));
-            return <Row key={row.template} name={local ? `${row.label} (${local.name})` : row.label} line={serverLine(server, local?.start_command)}
-                        manage={manage(defById.get(row.template))} />;
+            const def = defById.get(row.template);
+            const line = serverLine(server, local?.start_command);
+            return <Row key={row.template} name={local ? `${row.label} (${local.name})` : row.label}
+                        line={{ ...line, details: [...line.details, ...connectionFacts(def)] }} manage={manage(def)} />;
           })}
           {unconfigured.map(local => (
             <Row key={local.id} name={local.name} line={localLine(local)}
@@ -318,6 +333,8 @@ export function Providers({ reload }: { reload: number }) {
           </div>
         )}
       </section>
+      {defs && <ApiKeys defs={keyed} servers={keyedServers} editable={editable} changing={changing} manage={manage}
+        onChanged={(text, failed) => { setNotice({ text, error: failed }); void loadDefs(); void check(); }} />}
       {!!defs?.removed.length && (
         <section className="bd-panel pv-panel" aria-labelledby="pv-removed">
           <div className="pv-head"><h2 id="pv-removed">Removed from this room</h2></div>

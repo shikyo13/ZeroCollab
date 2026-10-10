@@ -50,6 +50,10 @@ class RepositoryInUse(ValueError):
     """A repository still has reserved work."""
 
 
+class OpenProject(ValueError):
+    """The open project cannot be archived."""
+
+
 def _read(path, fallback):
     try:
         return json.loads(path.read_text('utf-8'))
@@ -188,15 +192,20 @@ def owner_of(runtime, path, exclude=''):
 
 
 def identity_for(runtime, path):
-    """Existing project for a repository path, else the legacy path hash; 'chat' without a path."""
-    if not path:
-        return 'chat'
-    return owner_of(runtime, path) or hashlib.sha256(str(path).encode()).hexdigest()[:8]
+    """Existing project for a repository path, else the legacy path hash; 'chat' without a path.
+    Opening by path must not reopen an archived project, so an archived match is refused; setup_project
+    calls this before it changes anything. The open project can never be archived, so startup is unaffected."""
+    identity = owner_of(runtime, path) or hashlib.sha256(str(path).encode()).hexdigest()[:8] if path else 'chat'
+    if record(_root(runtime) / identity).get('archived'):
+        raise ValueError('This project is archived; restore it before opening it')
+    return identity
 
 
 def switch_target(runtime, identity):
     """Repository path to attach when switching to a listed project ('' for conversation projects)."""
     folder = _folder(runtime, identity)
+    if record(folder).get('archived'):
+        raise ValueError('This project is archived; restore it before opening it')
     path = path_of(runtime, folder)
     if not _available(folder, record(folder), path):
         raise ValueError("This project's repository folder no longer exists or could not be recovered")
@@ -624,12 +633,31 @@ def summarize(runtime, folder):
             'repo_request': value.get('repo_request'),
             'repositories': repositories(runtime, folder),
             'repository_history': [{**item, 'key': repository_key(item['path'])} for item in value.get('repository_history', [])],
-            'team': team, 'spec': bool(state.get('spec')), 'updated': updated}
+            'team': team, 'spec': bool(state.get('spec')), 'updated': updated,
+            'archived': bool(value.get('archived')), 'archived_at': value.get('archived_at')}
+
+
+def set_archived(runtime, identity, archived):
+    """Archive only files a project away in the list: board, team, chats, repositories and worktrees
+    stay exactly as they are, and Restore undoes it. The open project cannot be archived."""
+    if not isinstance(archived, bool):
+        raise ValueError('archived must be true or false')
+    folder = _folder(runtime, identity)
+    if archived and _is_active(runtime, folder):
+        raise OpenProject('This is the open project; switch to another project before archiving it')
+    value = record(folder)
+    if bool(value.get('archived')) != archived:
+        _pin_path(runtime, folder, value)
+        value['archived'] = archived
+        value['archived_at'] = time.time() if archived else None
+        _save_record(folder, value)
+    return summarize(runtime, folder)
 
 
 def listing(runtime):
+    # Archived projects stay listed (flagged) so they can be restored; the UI decides what to show.
     projects = [summarize(runtime, f) for f in _folders(runtime)]
-    projects.sort(key=lambda p: (not p['active'], -p['updated']))
+    projects.sort(key=lambda p: (not p['active'], p['archived'], -p['updated']))
     return {'active': next((p['id'] for p in projects if p['active']), ''), 'projects': projects}
 
 
@@ -695,6 +723,22 @@ def install(host, runtime):
             return summarize(runtime, folder)
         except (ValueError, AttributeError) as exc:
             return JSONResponse({'error': str(exc)}, 400)
+
+    @host.app.post('/api/runtime/projects/{identity}/archive')
+    async def archive_project(identity: str, request: Request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError('Send {"archived": true} or {"archived": false}')
+            # Serialised with project switches, which take the same lock.
+            async with runtime.profile_lock:
+                result = set_archived(runtime, identity, body.get('archived'))
+            await host.broadcast_settings()
+            return result
+        except OpenProject as exc:
+            return JSONResponse({'error': str(exc)}, 409)
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({'error': str(exc)}, 404 if str(exc) == 'Choose a listed project' else 400)
 
     @host.app.post('/api/runtime/projects/{identity}/repository')
     async def attach_repository(identity: str, request: Request):

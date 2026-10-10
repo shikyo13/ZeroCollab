@@ -441,6 +441,13 @@ class DecisionFlow:
     def available(self):
         return [a['id'] for a in self.runtime.team_builder.agents()]
 
+    def chat_slots(self):
+        # Starting a discussion opens a chat; the UI shows this before Start (design 810e6c69).
+        import project_registry
+        folder = project_registry.active_folder(self.runtime)
+        used = len(project_registry.sessions(folder)) if folder is not None else 0
+        return {'used': used, 'limit': project_registry.SESSIONS_PER_PROJECT}
+
     def create(self, body):
         question = text(body.get('question'), 'Question', 2000)
         criteria = items(body.get('criteria'), 'Decision criterion', 8, 300)
@@ -538,9 +545,21 @@ class DecisionFlow:
                 for key_name, label in (('agreed', 'Agreed'), ('unresolved', 'Unresolved')):
                     if current.get(key_name):
                         lines.append(f'{label}: ' + '; '.join(current[key_name]))
+            superseded = set(d.get('superseded', []))
+            labels = {'fresh': 'Fresh session', 'prior': 'Prior debate in context'}
             for name in d['participants']:
                 vote = votes.get(name)
-                lines.append(f'{name}: ' + (f'{vote["verdict"]}, {vote["reason"]}' if vote else 'no verdict'))
+                # Reused context is disclosed, never called independent; skips are stated, never read as agreement.
+                position = next((c for c in reversed(d['contributions']) if c['kind'] == 'position'
+                                 and c['author'] == name and c['id'] not in superseded), None)
+                skipped = list(dict.fromkeys(c['stage'] for c in d['contributions'] if c['kind'] == 'missing'
+                                             and c['author'] == name))
+                facts = [f'first answer: {labels.get(position.get("context"), "unknown context")}' if position
+                         else 'no first answer']
+                if skipped:
+                    facts.append('skipped: ' + ', '.join(skipped))
+                lines.append(f'{name} ({"; ".join(facts)}): '
+                             + (f'{vote["verdict"]}, {vote["reason"]}' if vote else 'no verdict'))
             lines.append('Grants no deploy, restart, settings or credential authority.')
             note = '\n'.join(lines)
             if len(note) > NOTE_LIMIT:
@@ -577,7 +596,8 @@ def install(host, runtime):
 
     @host.app.get('/api/decisions')
     async def listing():
-        return {'decisions': [flow.summary(d) for d in reversed(flow.items)], 'available': flow.available()}
+        return {'decisions': [flow.summary(d) for d in reversed(flow.items)], 'available': flow.available(),
+                'chat_slots': flow.chat_slots()}
 
     @host.app.get('/api/decisions/{identifier}')
     async def detail(identifier: str):

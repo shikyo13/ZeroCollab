@@ -1,4 +1,5 @@
-"""One disposable, project-scoped Chromium page shared by the user and room agents."""
+"""One disposable, project-scoped Chromium browser shared by the user and room agents: one page by default,
+more only on an explicit new_page request."""
 import asyncio
 import base64
 import contextlib
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from urllib.parse import urlsplit, unquote
@@ -19,6 +21,8 @@ from fastapi.responses import JSONResponse, Response
 
 WIDTH, HEIGHT = 1280, 800
 LEASE_SECONDS = 60
+# Explicitly opened pages per browser; each headless page costs a renderer process.
+MAX_PAGES = 4
 
 
 class WindowsBrowserProcess:
@@ -106,6 +110,20 @@ def preview_url(value, blocked_ports=()):
     return value
 
 
+def remove_stale_profiles():
+    """A crashed room can leave a temporary profile behind, holding the default context's account
+    identifiers. Remove those no browser still holds: on Windows a running Chromium keeps 'lockfile'
+    open, so it cannot be deleted; on other systems a SingletonLock link marks a profile as possibly live."""
+    for folder in Path(tempfile.gettempdir()).glob('zerocollab-browser-*'):
+        try:
+            if not folder.is_dir() or (folder / 'SingletonLock').is_symlink():
+                continue
+            (folder / 'lockfile').unlink(missing_ok=True)
+        except OSError:
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def executable():
     candidates = [shutil.which(name) for name in ('msedge', 'google-chrome', 'chromium', 'chromium-browser')]
     if os.name == 'nt':
@@ -118,19 +136,45 @@ def executable():
     return next((p for p in candidates if p and Path(p).is_file()), None)
 
 
+
+
+class Page:
+    """One tab of the shared browser: its own CDP session, location, viewport, dialog and file chooser.
+    Its public id is ours, not Chromium's target id, and is never reused while the browser runs."""
+    def __init__(self, target, session):
+        self.id = uuid.uuid4().hex[:8]
+        self.target, self.session = target, session
+        self.url = self.title = ''
+        self.generation = 0
+        self.dialog = self.file_node = None
+        self.dialog_event = asyncio.Event()
+        self.frame, self.frame_at = b'', 0
+        self.width, self.height = WIDTH, HEIGHT
+
+    def summary(self, active):
+        return {'id': self.id, 'url': self.url, 'title': self.title, 'generation': self.generation,
+                'dialog': bool(self.dialog), 'file_chooser': bool(self.file_node), 'active': active}
+
+
 class Browser:
     def __init__(self, runtime):
         self.runtime = runtime
         self.lock = asyncio.Lock()
         self.proc = self.ws = self.reader = self.profile = None
-        self.page_id = self.page_session = None
+        # Pages in creation order; the active page receives actions that name no page.
+        self.pages, self.active = {}, None
+        # While new_page waits for its target, unknown page attachments are held here instead of
+        # being closed at once; everything except the created target is then closed as a pop-up.
+        self.adopting, self.adopted = None, asyncio.Event()
+        # Every shared page lives in one off-the-record browser context, which never carries the
+        # profile's account: without --guest, Edge signs a new profile in with the OS account. The
+        # startup tab is the only page in that default context and is closed once ours exists.
+        self.context = self.anchor = None
         self.pending, self.serial = {}, 0
         self.project = self.owner = self.owner_label = ''
         self.expires = 0
-        self.url, self.title = '', ''
         self.events = deque(maxlen=50)
-        self.dialog = self.file_node = None
-        self.dialog_event = asyncio.Event()
+        # Browser-wide: changes on any navigation, page switch, page close and teardown.
         self.generation = 0
         self.ref_serial = 0
         self.background = set()
@@ -139,18 +183,70 @@ class Browser:
                               int(cfg.get('mcp', {}).get('http_port', 8200)),
                               int(cfg.get('mcp', {}).get('sse_port', 8201))}
         self.debug_port = None
-        self.frame, self.frame_at = b'', 0
-        self.width, self.height = WIDTH, HEIGHT
         self.activity = None
 
-    async def publish_activity(self, actor, label, action, phase):
+    async def publish_activity(self, actor, label, action, phase, page=None):
         # Broadcast existing observer status plus action metadata, not action arguments or screenshots.
         self.activity = {'actor': actor, 'label': label, 'action': action,
-                         'phase': phase, 'time': time.time()}
+                         'phase': phase, 'time': time.time(), 'page': page or self.active}
         await self.runtime.emit('browser_activity', self.status())
 
-    def note(self, kind, text):
-        self.events.append({'time': time.time(), 'kind': kind, 'text': str(text)[:500]})
+    def note(self, kind, text, page=None):
+        self.events.append({'time': time.time(), 'kind': kind, 'text': str(text)[:500],
+                            'page': page.id if page else None})
+
+    def page(self, arguments=None):
+        """The page an action targets. A named page must still exist; it never falls back to another."""
+        wanted = (arguments or {}).get('page')
+        if wanted:
+            if not isinstance(wanted, str) or wanted not in self.pages:
+                raise ValueError('That browser page was closed; read status for the current pages')
+            return self.pages[wanted]
+        if self.active not in self.pages:
+            raise ValueError('Open a local preview first')
+        return self.pages[self.active]
+
+    def session_page(self, session):
+        return next((p for p in self.pages.values() if p.session == session), None) if session else None
+
+    def schedule(self, coroutine):
+        task = asyncio.create_task(coroutine)
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
+
+    def ours(self, target):
+        return target == self.anchor or any(page.target == target for page in self.pages.values())
+
+    async def sweep(self):
+        """Close page targets that are not ours, e.g. a link pop-up created while new_page was adopting."""
+        with contextlib.suppress(ValueError, websockets.ConnectionClosed):
+            for info in (await self.command('Target.getTargets'))['targetInfos']:
+                # Runs outside the action lock: a later new_page may be adopting a target that is
+                # not in pages yet, so stand down for it and re-check each target just before closing.
+                if self.adopting is not None:
+                    return
+                if info.get('type') == 'page' and not self.ours(info['targetId']):
+                    await self.close_stray(info['targetId'])
+
+    async def refresh_titles(self):
+        """Chromium sends no event when a page's title changes (checked on headless Edge), but
+        Target.getTargets reports the current one; read it on each status request so tabs are named
+        without an inspect. The title is page-controlled text."""
+        if not (self.ws and self.pages):
+            return
+        with contextlib.suppress(ValueError, websockets.ConnectionClosed):
+            titles = {info['targetId']: info.get('title', '') for info in
+                      (await self.command('Target.getTargets'))['targetInfos'] if info.get('type') == 'page'}
+            for page in self.pages.values():
+                if isinstance(titles.get(page.target), str):
+                    page.title = titles[page.target][:300]
+
+    def drop(self, page):
+        if self.pages.pop(page.id, None) is None:
+            return
+        if self.active == page.id:
+            self.active = next(reversed(self.pages), None)
+        self.generation += 1
 
     async def receive(self):
         try:
@@ -166,37 +262,55 @@ class Browser:
                     continue
                 method, p = message.get('method'), message.get('params', {})
                 if method == 'Target.attachedToTarget' and p.get('targetInfo', {}).get('type') == 'page':
-                    if p['targetInfo']['targetId'] != self.page_id:
-                        # Auto-attach pauses new pages before their document can run or navigate.
-                        task = asyncio.create_task(self.close_popup(p['targetInfo']['targetId'], p['sessionId']))
-                        self.background.add(task)
-                        task.add_done_callback(self.background.discard)
+                    target, session = p['targetInfo']['targetId'], p['sessionId']
+                    known = next((page for page in self.pages.values() if page.target == target), None)
+                    if target == self.anchor:
+                        pass  # The startup tab in the signed-in default context; never driven, closed at start.
+                    elif known:
+                        known.session = session
+                    elif self.adopting is not None:
+                        self.adopting[target] = session
+                        self.adopted.set()
                     else:
-                        self.page_session = p['sessionId']
+                        # Auto-attach pauses new pages before their document can run or navigate.
+                        self.schedule(self.close_popup(target, session))
                     continue
-                if message.get('sessionId') != self.page_session:
+                if method == 'Target.targetCreated' and p.get('targetInfo', {}).get('type') == 'page':
+                    # Tripwire behind auto-attach: a page target that is neither ours nor being adopted
+                    # is closed. Tab targets are not touched; in the tab-target model they wrap our pages.
+                    target = p['targetInfo']['targetId']
+                    if self.adopting is None and not self.ours(target):
+                        self.schedule(self.close_stray(target, tripwire=True))
+                    continue
+                if method == 'Target.detachedFromTarget':
+                    gone = self.session_page(p.get('sessionId'))
+                    if gone:
+                        self.note('browser', 'A shared page closed', gone)
+                        self.drop(gone)
+                    continue
+                page = self.session_page(message.get('sessionId'))
+                if page is None:
                     continue
                 if method == 'Page.frameNavigated' and not p.get('frame', {}).get('parentId'):
-                    self.url = p['frame']['url']
+                    page.url = p['frame']['url']
+                    page.generation += 1
                     self.generation += 1
                 elif method == 'Runtime.consoleAPICalled' and p.get('type') in ('error', 'warning'):
-                    self.note('console', ' '.join(str(a.get('value', a.get('description', ''))) for a in p.get('args', [])))
+                    self.note('console', ' '.join(str(a.get('value', a.get('description', ''))) for a in p.get('args', [])), page)
                 elif method == 'Runtime.exceptionThrown':
-                    self.note('error', p.get('exceptionDetails', {}).get('text', 'Page exception'))
+                    self.note('error', p.get('exceptionDetails', {}).get('text', 'Page exception'), page)
                 elif method == 'Network.loadingFailed' and not p.get('canceled'):
-                    self.note('network', p.get('errorText', 'Request failed'))
+                    self.note('network', p.get('errorText', 'Request failed'), page)
                 elif method == 'Page.javascriptDialogOpening':
-                    self.dialog = {'type': p.get('type'), 'message': p.get('message', '')[:1000]}
-                    self.dialog_event.set()
+                    page.dialog = {'type': p.get('type'), 'message': p.get('message', '')[:1000]}
+                    page.dialog_event.set()
                 elif method == 'Page.javascriptDialogClosed':
-                    self.dialog = None
-                    self.dialog_event.clear()
+                    page.dialog = None
+                    page.dialog_event.clear()
                 elif method == 'Page.fileChooserOpened':
-                    self.file_node = p.get('backendNodeId')
+                    page.file_node = p.get('backendNodeId')
                 elif method == 'Fetch.requestPaused':
-                    task = asyncio.create_task(self.route_document(p))
-                    self.background.add(task)
-                    task.add_done_callback(self.background.discard)
+                    self.schedule(self.route_document(p, page.session))
         except Exception as exc:
             self.note('browser', 'Browser connection closed')
             for waiter in self.pending.values():
@@ -205,18 +319,38 @@ class Browser:
             self.pending.clear()
 
     async def close_popup(self, target, session):
+        # Block its network before anything else, then always try to close it, even if blocking failed.
+        # The pop-up itself is never resumed. Our own pages are released afterwards either way: an opener
+        # stays blocked in window.open until then, and resuming our own page cannot release the pop-up.
         with contextlib.suppress(ValueError, websockets.ConnectionClosed):
-            # Close before resuming: otherwise its initial navigation may still escape.
-            # Release debugger waits after close so window.open does not stall the opener.
             await self.command('Network.enable', session=session)
             await self.command('Network.setBlockedURLs', {'urls': ['*']}, session=session)
-            await self.command('Target.closeTarget', {'targetId': target})
-            with contextlib.suppress(ValueError):
-                await self.command('Runtime.runIfWaitingForDebugger', session=session)
-            await self.command('Runtime.runIfWaitingForDebugger')
-            self.note('navigation', 'Blocked a new browser window; use the shared page')
+        closed = await self.close_stray(target)
+        for page in list(self.pages.values()):
+            with contextlib.suppress(ValueError, websockets.ConnectionClosed):
+                await self.command('Runtime.runIfWaitingForDebugger', page=page)
+        if closed:
+            self.note('navigation', 'Blocked a new browser window; use new_page for another shared page')
 
-    async def route_document(self, params):
+    async def close_stray(self, target, tripwire=False):
+        """Close a page target we did not create. True once it is gone, including when it already was."""
+        if tripwire:
+            # Normally close_popup has already closed it; the tripwire acts only on a page that survived.
+            await asyncio.sleep(.5)
+            if self.adopting is not None or self.ours(target):
+                return False
+        try:
+            await self.command('Target.closeTarget', {'targetId': target})
+        except (ValueError, websockets.ConnectionClosed) as exc:
+            if 'No target with given id' in str(exc):
+                return not tripwire
+            self.note('navigation', 'Could not close a blocked browser window; it stays paused')
+            return False
+        if tripwire:
+            self.note('navigation', 'Closed an unexpected browser page')
+        return True
+
+    async def route_document(self, params, session):
         try:
             url = params['request']['url']
             try:
@@ -228,14 +362,17 @@ class Browser:
                 if params.get('resourceType') == 'Document' and url != 'about:blank':
                     preview_url(url, ports)
             except ValueError:
-                await self.command('Fetch.failRequest', {'requestId': params['requestId'], 'errorReason': 'BlockedByClient'})
-                self.note('navigation', 'Blocked protected endpoint or navigation outside local previews')
+                await self.command('Fetch.failRequest', {'requestId': params['requestId'], 'errorReason': 'BlockedByClient'}, session=session)
+                self.note('navigation', 'Blocked protected endpoint or navigation outside local previews', self.session_page(session))
             else:
-                await self.command('Fetch.continueRequest', {'requestId': params['requestId']})
+                await self.command('Fetch.continueRequest', {'requestId': params['requestId']}, session=session)
         except (ValueError, websockets.ConnectionClosed):
             pass
 
-    async def command(self, method, params=None, session=None):
+    async def command(self, method, params=None, page=None, session=None):
+        session = session or (page.session if page else None)
+        if not method.startswith(('Target.', 'Browser.')) and not session:
+            raise ValueError('Open a local preview first')
         self.serial += 1
         identifier = self.serial
         waiter = asyncio.get_running_loop().create_future()
@@ -244,12 +381,13 @@ class Browser:
         try:
             message = {'id': identifier, 'method': method, 'params': params or {}}
             if not method.startswith(('Target.', 'Browser.')):
-                message['sessionId'] = session or self.page_session
+                message['sessionId'] = session
             await self.ws.send(json.dumps(message))
             # Chromium leaves a click pending while its JS alert is open. Return control
             # to the user/agent so it can answer the dialog instead of holding our lock.
-            if method.startswith('Input.'):
-                dialog_waiter = asyncio.create_task(self.dialog_event.wait())
+            target = page or self.session_page(session)
+            if method.startswith('Input.') and target:
+                dialog_waiter = asyncio.create_task(target.dialog_event.wait())
                 done, _ = await asyncio.wait({waiter, dialog_waiter}, timeout=5, return_when=asyncio.FIRST_COMPLETED)
                 if waiter in done:
                     return waiter.result()
@@ -266,24 +404,38 @@ class Browser:
             if not waiter.done():
                 waiter.cancel()
 
-    async def evaluate(self, expression):
-        data = await self.command('Runtime.evaluate', {'expression': expression, 'returnByValue': True})
+    async def evaluate(self, expression, page):
+        data = await self.command('Runtime.evaluate', {'expression': expression, 'returnByValue': True}, page=page)
         if data.get('exceptionDetails'):
             raise ValueError('Page changed; inspect it again')
         return data.get('result', {}).get('value')
+
+    async def setup(self, page):
+        """Per-session protections: every page gets the same blocklist, routing fence, viewport and file-chooser intercept."""
+        for domain in ('Page', 'Runtime', 'Network'):
+            await self.command(domain + '.enable', page=page)
+        await self.command('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]}, page=page)
+        await self.command('Network.setBlockedURLs', {'urls': [f'*://{host}:{p}/*'
+            for host in ('localhost', '127.0.0.1', '[::1]') for p in self.blocked_ports | {self.debug_port}]}, page=page)
+        await self.command('Emulation.setDeviceMetricsOverride', {'width': page.width, 'height': page.height, 'deviceScaleFactor': 1, 'mobile': False}, page=page)
+        await self.command('Page.setInterceptFileChooserDialog', {'enabled': True}, page=page)
 
     async def start(self):
         binary = executable()
         if not binary:
             raise ValueError('Install Microsoft Edge, Google Chrome or Chromium to use the shared browser')
+        await asyncio.to_thread(remove_stale_profiles)
         self.profile = tempfile.TemporaryDirectory(prefix='zerocollab-browser-')
         try:
             # An elevated Edge or Chrome otherwise relaunches itself de-elevated through the shell.
             # That child escapes the kill-on-close job and, with Administrators deny-only, cannot
             # write the mkdtemp profile (its 0o700 ACL is owned by Administrators), so it never starts.
-            args = [binary, '--headless=new', '--disable-gpu', '--guest', '--do-not-de-elevate',
-                '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0',
+            # No --guest: guest mode refuses Target.createTarget, so new_page could not work. The profile is
+            # still a fresh temporary directory per browser, deleted on close.
+            args = [binary, '--headless=new', '--disable-gpu', '--do-not-de-elevate',
+                '--no-first-run', '--no-default-browser-check', '--disable-sync', '--remote-debugging-port=0',
                 '--remote-debugging-address=127.0.0.1', '--disable-background-networking',
+                # Refuses window.open and target=_blank at the process level; explicit CDP pages still open.
                 '--block-new-web-contents',
                 '--user-data-dir=' + self.profile.name, 'about:blank']
             self.proc = (WindowsBrowserProcess(args) if os.name == 'nt' else
@@ -306,26 +458,71 @@ class Browser:
             async with httpx.AsyncClient(trust_env=False, timeout=3) as client:
                 pages = (await client.get(f'http://127.0.0.1:{port}/json/list')).json()
                 version = (await client.get(f'http://127.0.0.1:{port}/json/version')).json()
-            page = next(p for p in pages if p['type'] == 'page' and p['url'] == 'about:blank')
-            self.page_id = page['id']
+            self.anchor = next(p for p in pages if p['type'] == 'page' and p['url'] == 'about:blank')['id']
             self.ws = await websockets.connect(version['webSocketDebuggerUrl'], max_size=8 * 1024 * 1024)
             self.reader = asyncio.create_task(self.receive())
-            self.page_session = (await self.command('Target.attachToTarget', {'targetId': self.page_id, 'flatten': True}))['sessionId']
             await self.command('Target.setAutoAttach', {'autoAttach': True, 'waitForDebuggerOnStart': True,
                 'flatten': True, 'filter': [{'type': 'page', 'exclude': False}, {'exclude': True}]})
-            self.width, self.height = WIDTH, HEIGHT
-            for domain in ('Page', 'Runtime', 'Network'):
-                await self.command(domain + '.enable')
-            await self.command('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]})
-            await self.command('Network.setBlockedURLs', {'urls': [f'*://{host}:{p}/*'
-                for host in ('localhost', '127.0.0.1', '[::1]') for p in self.blocked_ports | {port}]})
-            await self.command('Emulation.setDeviceMetricsOverride', {'width': WIDTH, 'height': HEIGHT, 'deviceScaleFactor': 1, 'mobile': False})
-            await self.command('Page.setInterceptFileChooserDialog', {'enabled': True})
+            await self.command('Target.setDiscoverTargets', {'discover': True})
+            self.context = (await self.command('Target.createBrowserContext', {'disposeOnDetach': True}))['browserContextId']
+            page = await self.new_page()
+            # The browser keeps running on the context page alone (checked live on headless Edge).
+            await self.command('Target.closeTarget', {'targetId': self.anchor})
             self.project = self.runtime.identity
-            self.note('browser', 'Shared browser started with a temporary profile')
+            self.note('browser', 'Shared browser started with a temporary profile', page)
         except Exception:
             await self.close()
             raise
+
+    async def new_page(self):
+        """Create a page only on an explicit request; the page's own pop-ups stay blocked."""
+        if len(self.pages) >= MAX_PAGES:
+            raise ValueError(f'The shared browser keeps at most {MAX_PAGES} pages; close one first')
+        self.adopting, target, session, paused = {}, None, None, False
+        try:
+            target = (await self.command('Target.createTarget', {'url': 'about:blank', 'browserContextId': self.context}))['targetId']
+            deadline = asyncio.get_running_loop().time() + 5
+            while target not in self.adopting:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                self.adopted.clear()
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self.adopted.wait(), remaining)
+            session = self.adopting.pop(target, None)
+            paused = session is not None
+            if session is None:
+                session = (await self.command('Target.attachToTarget', {'targetId': target, 'flatten': True}))['sessionId']
+            page = Page(target, session)
+            self.pages[page.id] = page
+            await self.setup(page)
+            if paused:
+                await self.command('Runtime.runIfWaitingForDebugger', page=page)
+        except Exception:
+            if target:
+                stale = next((p for p in self.pages.values() if p.target == target), None)
+                if stale:
+                    self.pages.pop(stale.id)
+                with contextlib.suppress(ValueError, websockets.ConnectionClosed):
+                    await self.command('Target.closeTarget', {'targetId': target})
+            raise
+        finally:
+            strays, self.adopting = self.adopting or {}, None
+            for stray, stray_session in strays.items():
+                self.schedule(self.close_popup(stray, stray_session))
+            # The tripwire stands down while adopting, so check once more for unattached strays.
+            self.schedule(self.sweep())
+        self.active = page.id
+        self.generation += 1
+        if len(self.pages) > 1:
+            self.note('browser', 'Opened another shared page', page)
+        return page
+
+    async def close_page(self, page):
+        if len(self.pages) == 1:
+            raise ValueError('This is the only page; use stop to close the shared browser')
+        await self.command('Target.closeTarget', {'targetId': page.target})
+        self.drop(page)
 
     async def close(self):
         if self.ws:
@@ -352,30 +549,34 @@ class Browser:
             with contextlib.suppress(OSError):
                 self.profile.cleanup()
         self.proc = self.ws = self.reader = self.profile = None
-        self.page_id = self.page_session = None
-        self.owner = self.owner_label = self.project = self.url = self.title = ''
+        self.pages, self.active, self.adopting = {}, None, None
+        self.context = self.anchor = None
+        self.owner = self.owner_label = self.project = ''
         self.activity = None
-        self.frame, self.frame_at = b'', 0
-        self.dialog = self.file_node = None
-        self.dialog_event.clear()
         self.generation += 1
 
     def expire(self):
         if self.owner and self.owner != 'user' and time.monotonic() >= self.expires:
             self.owner = self.owner_label = ''
 
-    def status(self):
+    def status(self, page=None):
+        """Top-level page fields describe the targeted page (the active page by default), as before;
+        pages[] and active_page describe every open page."""
         self.expire()
+        page = page or self.pages.get(self.active)
         # The connected reader tracks the browser child after a successful Windows launcher exit.
         process_ready = self.proc and (self.proc.returncode is None or
                                       isinstance(self.proc, WindowsBrowserProcess) and self.proc.returncode == 0)
         return {'running': bool(process_ready and self.ws and self.reader and not self.reader.done()),
-                'project': self.runtime.identity, 'url': self.url, 'title': self.title,
+                'project': self.runtime.identity, 'url': page.url if page else '', 'title': page.title if page else '',
                 'owner': self.owner, 'owner_label': self.owner_label,
                 'lease_seconds': max(0, int(self.expires - time.monotonic())) if self.owner != 'user' else None,
-                'width': self.width, 'height': self.height, 'generation': self.generation,
-                'events': list(self.events), 'dialog': self.dialog, 'file_chooser': bool(self.file_node),
-                'activity': self.activity}
+                'width': page.width if page else WIDTH, 'height': page.height if page else HEIGHT,
+                'generation': self.generation, 'events': list(self.events),
+                'dialog': page.dialog if page else None, 'file_chooser': bool(page and page.file_node),
+                'activity': self.activity, 'page': page.id if page else None,
+                'active_page': self.active if self.active in self.pages else None,
+                'pages': [p.summary(p.id == self.active) for p in self.pages.values()], 'max_pages': MAX_PAGES}
 
     def control(self, actor):
         self.expire()
@@ -383,12 +584,12 @@ class Browser:
             raise ValueError(f'{self.owner_label or "Nobody"} controls the browser. Claim control first; agents cannot take over from the user.')
         self.expires = time.monotonic() + LEASE_SECONDS
 
-    async def screenshot(self):
-        if time.monotonic() - self.frame_at > .35:
-            result = await self.command('Page.captureScreenshot', {'format': 'jpeg', 'quality': 75})
-            self.frame = base64.b64decode(result['data'])
-            self.frame_at = time.monotonic()
-        return self.frame
+    async def screenshot(self, page):
+        if time.monotonic() - page.frame_at > .35:
+            result = await self.command('Page.captureScreenshot', {'format': 'jpeg', 'quality': 75}, page=page)
+            page.frame = base64.b64decode(result['data'])
+            page.frame_at = time.monotonic()
+        return page.frame
 
     async def act(self, actor, label, arguments):
         if not isinstance(arguments, dict):
@@ -399,7 +600,8 @@ class Browser:
                 self.events.clear()
             action = arguments.get('action', 'status')
             if action == 'status':
-                return self.status()
+                await self.refresh_titles()
+                return self.status(self.page(arguments) if arguments.get('page') else None)
             if action == 'claim':
                 self.expire()
                 if self.owner and self.owner != actor and actor != 'user':
@@ -414,27 +616,54 @@ class Browser:
                 return self.status()
             if action not in ('inspect', 'screenshot'):
                 self.control(actor)
-            if action == 'open':
-                url = preview_url(arguments.get('url', ''), self.blocked_ports | {self.debug_port})
+            if action in ('open', 'new_page'):
+                url = arguments.get('url', '')
+                if action == 'open' or url:
+                    url = preview_url(url, self.blocked_ports | {self.debug_port})
                 if not self.status()['running']:
+                    if arguments.get('page'):
+                        raise ValueError('That browser page was closed; read status for the current pages')
                     await self.close()
                     self.owner, self.owner_label = actor, label
                     self.expires = time.monotonic() + LEASE_SECONDS
                     await self.start()
-                result = await self.command('Page.navigate', {'url': url})
-                if result.get('errorText'):
-                    raise ValueError('Navigation failed: ' + result['errorText'])
-                self.note('action', label + ' opened ' + url)
-            elif action == 'stop':
+                    page = self.page()
+                elif action == 'new_page' or not self.pages:
+                    page = await self.new_page()
+                else:
+                    page = self.page(arguments)
+                if url:
+                    result = await self.command('Page.navigate', {'url': url}, page=page)
+                    if result.get('errorText'):
+                        raise ValueError('Navigation failed: ' + result['errorText'])
+                    self.note('action', label + ' opened ' + url, page)
+                page.frame_at = 0
+                return self.status(page)
+            if action == 'stop':
                 await self.close()
-            elif not self.status()['running']:
+                return self.status()
+            if not self.status()['running']:
                 raise ValueError('Open a local preview first')
-            elif action == 'screenshot':
-                return {**self.status(), 'image': base64.b64encode(await self.screenshot()).decode()}
-            elif action == 'resize':
-                self.width = max(360, min(1600, int(arguments.get('width', WIDTH))))
-                self.height = max(300, min(1000, int(arguments.get('height', HEIGHT))))
-                await self.command('Emulation.setDeviceMetricsOverride', {'width': self.width, 'height': self.height, 'deviceScaleFactor': 1, 'mobile': False})
+            page = self.page(arguments)
+            if action == 'select_page':
+                if not arguments.get('page'):
+                    raise ValueError('Name the page to select')
+                if self.active != page.id:
+                    self.active = page.id
+                    self.generation += 1
+                return self.status()
+            if action == 'close_page':
+                if not arguments.get('page'):
+                    raise ValueError('Name the page to close')
+                await self.close_page(page)
+                self.note('browser', label + ' closed a shared page', page)
+                return self.status()
+            if action == 'screenshot':
+                return {**self.status(page), 'image': base64.b64encode(await self.screenshot(page)).decode()}
+            if action == 'resize':
+                page.width = max(360, min(1600, int(arguments.get('width', WIDTH))))
+                page.height = max(300, min(1000, int(arguments.get('height', HEIGHT))))
+                await self.command('Emulation.setDeviceMetricsOverride', {'width': page.width, 'height': page.height, 'deviceScaleFactor': 1, 'mobile': False}, page=page)
             elif action == 'inspect':
                 self.ref_serial += 1000
                 expression = """(() => { let n = REF_START; return {title: document.title,
@@ -442,9 +671,9 @@ class Browser:
                     'a,button,input,textarea,select,[role=button],[contenteditable=true]')).filter(e => e.getClientRects().length)
                     .slice(0,150).map(e => { e.setAttribute('data-room-ref', String(++n)); return {ref:n,tag:e.tagName,
                     type:e.type||'',text:(e.innerText||e.getAttribute('aria-label')||e.placeholder||'').slice(0,160)}; })}; })()"""
-                elements = await self.evaluate(expression.replace('REF_START', str(self.ref_serial)))
-                self.title = elements.get('title', '')
-                return {**self.status(), **elements}
+                elements = await self.evaluate(expression.replace('REF_START', str(self.ref_serial)), page)
+                page.title = elements.get('title', '')
+                return {**self.status(page), **elements}
             elif action in ('click', 'type'):
                 reference = arguments.get('ref')
                 if reference is not None:
@@ -452,31 +681,31 @@ class Browser:
                         raise ValueError('Use a ref from inspect')
                     point = await self.evaluate(f"""(() => {{ const e=document.querySelector('[data-room-ref="{reference}"]');
                         if(!e) return null; e.scrollIntoView({{block:'center'}}); e.focus(); const r=e.getBoundingClientRect();
-                        return {{x:r.x+r.width/2,y:r.y+r.height/2}}; }})()""")
+                        return {{x:r.x+r.width/2,y:r.y+r.height/2}}; }})()""", page)
                     if not point:
                         raise ValueError('Element no longer exists; inspect again')
                 else:
                     point = arguments
                 if action == 'click':
-                    x, y = self.point(point)
+                    x, y = self.point(point, page)
                     for phase in ('mousePressed', 'mouseReleased'):
-                        await self.command('Input.dispatchMouseEvent', {'type': phase, 'x': x, 'y': y, 'button': 'left', 'clickCount': 1})
+                        await self.command('Input.dispatchMouseEvent', {'type': phase, 'x': x, 'y': y, 'button': 'left', 'clickCount': 1}, page=page)
                 else:
                     value = arguments.get('text', '')
                     if not isinstance(value, str) or len(value) > 16000:
                         raise ValueError('Text must be at most 16000 characters')
-                    await self.command('Input.insertText', {'text': value})
+                    await self.command('Input.insertText', {'text': value}, page=page)
             elif action == 'pointer':
                 phase = arguments.get('phase')
                 if phase not in ('mousePressed', 'mouseReleased', 'mouseMoved'):
                     raise ValueError('Invalid pointer event')
-                x, y = self.point(arguments)
+                x, y = self.point(arguments, page)
                 await self.command('Input.dispatchMouseEvent', {'type': phase, 'x': x, 'y': y, 'button': 'left',
-                    'buttons': 0 if phase == 'mouseReleased' else 1, 'clickCount': 1})
+                    'buttons': 0 if phase == 'mouseReleased' else 1, 'clickCount': 1}, page=page)
             elif action == 'scroll':
-                x, y = self.point(arguments, default=True)
+                x, y = self.point(arguments, page, default=True)
                 delta = max(-2000, min(2000, float(arguments.get('delta', 500))))
-                await self.command('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': y, 'deltaX': 0, 'deltaY': delta})
+                await self.command('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': y, 'deltaX': 0, 'deltaY': delta}, page=page)
             elif action == 'key':
                 key = arguments.get('key', '')
                 keys = {'Enter':13,'Tab':9,'Backspace':8,'Delete':46,'Escape':27,'ArrowLeft':37,'ArrowUp':38,'ArrowRight':39,'ArrowDown':40,'Home':36,'End':35,'PageUp':33,'PageDown':34,'a':65}
@@ -484,7 +713,7 @@ class Browser:
                     raise ValueError('Unsupported key')
                 modifiers = int(arguments.get('modifiers', 0)) & 15
                 for phase in ('keyDown', 'keyUp'):
-                    await self.command('Input.dispatchKeyEvent', {'type': phase, 'key': key, 'windowsVirtualKeyCode': keys[key], 'modifiers': modifiers})
+                    await self.command('Input.dispatchKeyEvent', {'type': phase, 'key': key, 'windowsVirtualKeyCode': keys[key], 'modifiers': modifiers}, page=page)
             elif action == 'select':
                 reference = arguments.get('ref')
                 if not isinstance(reference, int) or reference < 1:
@@ -492,21 +721,21 @@ class Browser:
                 value = json.dumps(str(arguments.get('text', ''))[:4000])
                 changed = await self.evaluate(f"""(() => {{ const e=document.querySelector('select[data-room-ref="{reference}"]');
                     if(!e||!Array.from(e.options).some(o=>o.value==={value})) return false;
-                    e.value={value}; e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); return true; }})()""")
+                    e.value={value}; e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); return true; }})()""", page)
                 if not changed:
                     raise ValueError('Select or option changed; inspect again')
             elif action == 'reload':
-                await self.command('Page.reload')
+                await self.command('Page.reload', page=page)
             elif action == 'dialog':
-                await self.command('Page.handleJavaScriptDialog', {'accept': bool(arguments.get('accept')), 'promptText': str(arguments.get('text', ''))[:2000]})
+                await self.command('Page.handleJavaScriptDialog', {'accept': bool(arguments.get('accept')), 'promptText': str(arguments.get('text', ''))[:2000]}, page=page)
             else:
                 raise ValueError('Unknown browser action')
-            self.frame_at = 0
-            return self.status()
+            page.frame_at = 0
+            return self.status(page)
 
-    def point(self, args, default=False):
-        x, y = float(args.get('x', self.width / 2 if default else -1)), float(args.get('y', self.height / 2 if default else -1))
-        if not (0 <= x < self.width and 0 <= y < self.height):
+    def point(self, args, page, default=False):
+        x, y = float(args.get('x', page.width / 2 if default else -1)), float(args.get('y', page.height / 2 if default else -1))
+        if not (0 <= x < page.width and 0 <= y < page.height):
             raise ValueError('Point is outside the browser viewport')
         return x, y
 
@@ -515,8 +744,19 @@ def install(host, runtime):
     browser = runtime.browser = Browser(runtime)
 
     @host.app.get('/api/runtime/browser')
-    async def status():
-        return await browser.act('user', 'You', {'action': 'status'})
+    async def status(request: Request):
+        """Read-only and never published as activity. page targets one page (a closed id is refused,
+        never redirected); project, when given, must be the open project."""
+        project = request.query_params.get('project')
+        if project is not None and project != runtime.identity:
+            return JSONResponse({'error': 'Project changed; reload the browser view'}, 409)
+        arguments = {'action': 'status'}
+        if request.query_params.get('page'):
+            arguments['page'] = request.query_params['page']
+        try:
+            return await browser.act('user', 'You', arguments)
+        except ValueError as exc:
+            return JSONResponse({'error': str(exc)}, 400)
 
     @host.app.post('/api/runtime/browser')
     async def action(request: Request):
@@ -527,7 +767,7 @@ def install(host, runtime):
             if body.get('project') != runtime.identity:
                 return JSONResponse({'error': 'Project changed; reload the browser view'}, 409)
             result = await browser.act('user', 'You', body)
-            await browser.publish_activity('user', 'You', body.get('action', 'status'), 'done')
+            await browser.publish_activity('user', 'You', body.get('action', 'status'), 'done', result.get('page'))
             return {**result, 'activity': browser.activity}
         except (ValueError, TypeError, OSError) as exc:
             return JSONResponse({'error': str(exc)}, 400)
@@ -537,7 +777,10 @@ def install(host, runtime):
         try:
             if request.query_params.get('project') != runtime.identity:
                 return Response(status_code=409)
-            result = await browser.act('user', 'You', {'action': 'screenshot'})
+            arguments = {'action': 'screenshot'}
+            if request.query_params.get('page'):
+                arguments['page'] = request.query_params['page']
+            result = await browser.act('user', 'You', arguments)
             return Response(base64.b64decode(result['image']), media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
         except (ValueError, OSError):
             return Response(status_code=409)
@@ -549,7 +792,8 @@ def install(host, runtime):
                 if request.query_params.get('project') != runtime.identity or browser.project != runtime.identity:
                     raise ValueError('Project changed; reopen the browser')
                 browser.control('user')
-                if not browser.file_node:
+                page = browser.page({'page': request.query_params.get('page', '')})
+                if not page.file_node:
                     raise ValueError('The page has no pending file picker')
                 filename = Path(unquote(request.headers.get('X-File-Name', 'upload')).replace('\\', '/')).name
                 if not filename or filename in ('.', '..') or ':' in filename:
@@ -563,8 +807,8 @@ def install(host, runtime):
                         if count > 16 * 1024 * 1024:
                             raise ValueError('File must be smaller than 16 MB')
                         output.write(chunk)
-                await browser.command('DOM.setFileInputFiles', {'files': [str(target)], 'backendNodeId': browser.file_node})
-                browser.file_node = None
-                return browser.status()
+                await browser.command('DOM.setFileInputFiles', {'files': [str(target)], 'backendNodeId': page.file_node}, page=page)
+                page.file_node = None
+                return browser.status(page)
             except (ValueError, OSError) as exc:
                 return JSONResponse({'error': str(exc)}, 400)

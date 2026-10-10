@@ -1,0 +1,15 @@
+{
+  "baseline": "57d6298e5d7f30159e86b59ac9d44236f73c76ed",
+  "m3_review_manifest": "1762e2836d9273450ac61edfaeb3685886a6cf1a726c93efd6b1e8f3bbccc373",
+  "m3_backend_manifest": "3393ac67e0d2645a809fa85f5995f7244b51dd84b2cabc47449542c59de10df1",
+  "m3_combined_patch": "072dcb89c513201acb41d7a911ba16143a614af709df74e95fe76797b36ea446",
+  "additional_commit": "7254513c0b58047b3600ae5f99ef1ccfb95f02ce",
+  "config": "Shipped normal defaults retained; rehearsal fixture excluded. Desktop host constructs isolated agents={} config separately.",
+  "excluded": [
+    "M3 runtime profiles/artifacts/fixtures/node_modules",
+    "Team suggestion",
+    "Live view rename",
+    "unfinished provider/local-worker source",
+    "live installation"
+  ]
+}

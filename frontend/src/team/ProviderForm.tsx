@@ -10,6 +10,9 @@ export type ProviderKind = 'codex' | 'claude' | 'antigravity' | 'api';
 export type ProviderDef = {
   id: string; provider: ProviderKind; label: string; color: string; source: 'config' | 'edited' | 'app';
   base_url: string; model: string; max_tokens: number | null;
+  /** S4: approximate context window, where it came from, and the last tool-call check. */
+  context_tokens?: number | null; context_source?: string;
+  tool_check?: { ok: boolean; detail: string; base_url: string; model: string; checked: number } | null;
 };
 export type ProviderDefs = {
   providers: ProviderDef[]; removed: { id: string; label: string }[]; error: string;
@@ -20,9 +23,14 @@ export type FormRequest =
   | { mode: 'edit'; def: ProviderDef };
 
 type Probe = { reachable: boolean; detail?: string; models?: string[]; model_count?: number };
+/** POST /providers/check: nothing is saved. */
+type Check = { tool_check: { ok: boolean; detail: string }; context: { tokens: number | null; source: string }; budget_note: string; fits: boolean };
+type Saved = { budget_note?: string };
 
 const DEFAULT_OUTPUT = 1024;
 const OUTPUT_RANGE = [256, 32768] as const;
+/** provider_store.CONTEXT_TOKENS */
+export const CONTEXT_RANGE = [2048, 2_000_000] as const;
 
 export function ProviderForm({ request, onClose, onSaved }: { request: FormRequest; onClose: () => void; onSaved: (note: string) => void }) {
   const editing = request.mode === 'edit' ? request.def : null;
@@ -33,6 +41,10 @@ export function ProviderForm({ request, onClose, onSaved }: { request: FormReque
   const [baseUrl, setBaseUrl] = useState(editing?.base_url ?? (request.mode === 'create' ? request.base_url ?? '' : ''));
   const [model, setModel] = useState(editing?.model ?? '');
   const [output, setOutput] = useState(String(editing?.max_tokens ?? DEFAULT_OUTPUT));
+  // Empty means: read it from the server when the connection is checked or saved.
+  const [contextText, setContextText] = useState(editing?.context_tokens ? String(editing.context_tokens) : '');
+  const [check, setCheck] = useState<Check | null>(null);
+  const [checking, setChecking] = useState(false);
   const [probe, setProbe] = useState<Probe | null>(null);
   const [probing, setProbing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -52,7 +64,8 @@ export function ProviderForm({ request, onClose, onSaved }: { request: FormReque
     setProbing(true);
     setError('');
     try {
-      const result = await runtime<Probe>('/providers/probe', { base_url: address.trim() });
+      // Editing an API key connection lists its models with the saved key (checked against its server).
+      const result = await runtime<Probe>('/providers/probe', { base_url: address.trim(), id: editing?.id });
       if (probedFor.current !== address.trim()) return;  // the address changed while this ran
       setProbe(result);
       if (result.reachable && result.models?.length && !result.models.includes(model)) setModel(result.models[0]);
@@ -70,17 +83,40 @@ export function ProviderForm({ request, onClose, onSaved }: { request: FormReque
   const outputValid = Number.isInteger(outputValue) && outputValue >= OUTPUT_RANGE[0] && outputValue <= OUTPUT_RANGE[1];
   const served = probe?.reachable ? probe.models ?? [] : [];
   const choices = model && !served.includes(model) ? [model, ...served] : served;
-  const ready = label.trim() && (!local || (baseUrl.trim() && model && outputValid));
+  const contextValue = contextText.trim() ? Number(contextText) : null;
+  const contextValid = contextValue === null || (Number.isInteger(contextValue) && contextValue >= CONTEXT_RANGE[0] && contextValue <= CONTEXT_RANGE[1]);
+  const ready = label.trim() && (!local || (baseUrl.trim() && model && outputValid && contextValid));
+  // A check answers for one address, model and length; any change makes it stale.
+  const checkKey = `${baseUrl.trim()}|${model}|${outputValue}|${contextValue}`;
+  const checkedKey = useRef('');
+  const shownCheck = check && checkedKey.current === checkKey ? check : null;
+
+  const runCheck = async () => {
+    setChecking(true);
+    setError('');
+    const key = checkKey;
+    try {
+      const result = await runtime<Check>('/providers/check', { base_url: baseUrl.trim(), model, max_tokens: outputValue, context_tokens: contextValue, id: editing?.id });
+      checkedKey.current = key;
+      setCheck(result);
+    } catch (e) {
+      setCheck(null);
+      setError(errorMessage(e));
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const save = async () => {
     setBusy(true);
     setError('');
     const body: Record<string, unknown> = { label: label.trim(), color };
-    if (local) Object.assign(body, { base_url: baseUrl.trim(), model, max_tokens: outputValue });
+    if (local) Object.assign(body, { base_url: baseUrl.trim(), model, max_tokens: outputValue, context_tokens: contextValue });
     try {
-      if (editing) await runtime(`/providers/${encodeURIComponent(editing.id)}`, body);
-      else await runtime('/providers', { ...body, provider: kind });
-      onSaved(editing ? `Saved ${label.trim()}.` : `Added ${label.trim()}. Choose it in Add agent.`);
+      const saved = editing ? await runtime<Saved>(`/providers/${encodeURIComponent(editing.id)}`, body)
+        : await runtime<Saved>('/providers', { ...body, provider: kind });
+      const done = editing ? `Saved ${label.trim()}.` : `Added ${label.trim()}. Choose it in Add agent.`;
+      onSaved(saved?.budget_note ? `${done} ${saved.budget_note}.` : done);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -127,6 +163,27 @@ export function ProviderForm({ request, onClose, onSaved }: { request: FormReque
           <Field label="Maximum response length (tokens)" hint={`${OUTPUT_RANGE[0]} to ${OUTPUT_RANGE[1]}. Longer answers stop at this length.`}>
             <input inputMode="numeric" value={output} aria-invalid={!outputValid} onChange={e => setOutput(e.target.value.replace(/[^0-9]/g, ''))} />
           </Field>
+          <Field label="Context window (tokens, approximate)"
+            hint={contextText.trim() ? (editing?.context_source && Number(contextText) === editing.context_tokens ? `From ${editing.context_source}` : 'Entered by you')
+              : 'Leave empty to read it from the server. The room fits its prompt inside this window.'}>
+            <input inputMode="numeric" value={contextText} placeholder="Read from the server" aria-invalid={!contextValid}
+              onChange={e => setContextText(e.target.value.replace(/[^0-9]/g, ''))} />
+          </Field>
+          <div className="pv-check" aria-live="polite">
+            <div className="pv-inline">
+              <strong>Check</strong>
+              <span className="tm-spacer" />
+              <button type="button" className="bd-btn" disabled={checking || busy || !baseUrl.trim() || !model || !outputValid || !contextValid} onClick={() => void runCheck()}>
+                {checking ? 'Checking the server…' : 'Check server'}
+              </button>
+            </div>
+            {shownCheck ? <>
+              <p><span className={`tm-state tm-tone-${shownCheck.tool_check.ok ? 'ok' : 'danger'}`}>{shownCheck.tool_check.ok ? 'Passed' : 'Failed'}</span> {shownCheck.tool_check.detail}</p>
+              <p className="bd-muted">Server reports: {shownCheck.context.tokens ? `about ${shownCheck.context.tokens.toLocaleString()} tokens of context (${shownCheck.context.source})` : `context ${shownCheck.context.source}`}
+                {contextValue && shownCheck.context.tokens && contextValue !== shownCheck.context.tokens ? `. Your entry of ${contextValue.toLocaleString()} is used.` : ''}</p>
+              <p className={shownCheck.fits ? 'bd-muted' : 'bd-error'}>{shownCheck.budget_note}</p>
+            </> : <p className="bd-muted">Saving runs this check on the exact address and model: agents need structured tool calls, and the room must fit the context window. Check first to see the result without saving.</p>}
+          </div>
         </>}
         <ErrorText message={error} />
         <div className="pv-form-actions">

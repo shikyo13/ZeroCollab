@@ -7,6 +7,30 @@
     document.querySelector('#app header').after(panel);
     let state = null;
     const active = new Map();
+    let runtimeRevision = 0;
+    let snapshotRequest = 0;
+    let connectionState = window.roomConnectionState || 'connecting';
+    const connectionNotice = document.createElement('p');
+    connectionNotice.id = 'chat-connection-status';
+    connectionNotice.setAttribute('role', 'status');
+    connectionNotice.style.cssText = 'font-size:12px;color:var(--text-muted);margin:4px 0';
+    document.querySelector('#app footer')?.prepend(connectionNotice);
+    function renderConnection() {
+        connectionNotice.hidden = connectionState === 'connected';
+        connectionNotice.textContent = connectionState === 'connecting' ? 'Connecting to room…'
+            : 'Reconnecting to room; work status unknown. Streaming previews may be outdated.';
+        for (const run of active.values()) run.header.textContent = run.label
+            + (connectionState === 'connected' ? '' : ' · preview may be outdated');
+    }
+    // A late HTTP response must not overwrite newer streamed text or revive an ended run.
+    async function refreshRuntime() {
+        const revision = runtimeRevision;
+        const request = ++snapshotRequest;
+        try {
+            const snapshot = await api('');
+            if (revision === runtimeRevision && request === snapshotRequest) render(snapshot);
+        } catch (e) { if (request === snapshotRequest) showError(e); }
+    }
     const approvalCards = new Map();
     const activity = [];
     const ACTIVITY_SHOWN = 12;           // tool calls kept in the panel
@@ -60,7 +84,13 @@
     };
     const showError = e => { document.getElementById('room-mode').textContent = e.message; };
     function render(s) {
+        runtimeRevision++;
         state = s;
+        const timeline = document.getElementById('timeline');
+        const followsBottom = window.autoScroll;
+        const anchor = !followsBottom && timeline ? [...document.getElementById('messages').children]
+            .find(el => el.id.startsWith('message-') && el.getBoundingClientRect().bottom > timeline.getBoundingClientRect().top) : null;
+        const anchorTop = anchor?.getBoundingClientRect().top;
         for (const run of s.runs || []) for (const update of run.steering || [])
             showDelivery({...update, run: run.id, agent: run.agent, channel: run.channel});
         const capacity = s.limits.parallel_agents_effective ?? (s.limits.parallel_agents || Object.keys(s.agents).length);
@@ -70,10 +100,14 @@
         for (const pending of s.approvals || []) approval(pending);
         const valid = new Set((s.approvals || []).map(a => a.id));
         for (const [id, card] of approvalCards) if (!valid.has(id)) { card.remove(); approvalCards.delete(id); }
+        const running = new Set((s.runs || []).map(run => run.id));
+        for (const [id, run] of active) if (!running.has(id)) { run.el.remove(); active.delete(id); }
         for (const run of s.runs || []) {
             if (run.text) { live(run.id, run.agent, run.channel, run.message); active.get(run.id).text.textContent = run.text; }
             else { const pending = active.get(run.id); if (pending) { pending.el.remove(); active.delete(run.id); } }
         }
+        if (anchor?.isConnected) timeline.scrollBy({top: anchor.getBoundingClientRect().top - anchorTop, behavior: 'instant'});
+        else if (followsBottom) window.scrollToBottom?.(true);
     }
     function live(id, name, channel, message) {
         if (active.has(id) && message && active.get(id).message !== message) {
@@ -90,7 +124,8 @@
         const header = document.createElement('div'); header.className = 'bubble-header'; header.textContent = name + ' · streaming in ' + (window.chatSessionTitle?.(channel) || channel);
         const text = document.createElement('div'); text.className = 'msg-text';
         bubble.append(header, text); el.append(bubble);
-        document.getElementById('messages').append(el); active.set(id, {el, text, channel, message});
+        document.getElementById('messages').append(el); active.set(id, {el, text, header, label: header.textContent, channel, message});
+        renderConnection();
         if (window.activeChannel && window.activeChannel !== channel) el.hidden = true;
     }
     function approval(a) {
@@ -123,10 +158,10 @@
     };
     Hub.on('runtime_state', e => render(e.data));
     Hub.on('runtime_steering', e => showDelivery(e.data));
-    Hub.on('runtime_start', e => { const d = e.data; live(d.run, d.agent, d.channel); });
-    Hub.on('runtime_delta', e => { const d = e.data; live(d.run, d.agent, d.channel, d.message); active.get(d.run).text.textContent += d.text; if(d.channel === window.activeChannel) window.followIncomingContent?.(); });
-    Hub.on('runtime_message_end', e => { const run = active.get(e.data.run); if(run && (!run.message || run.message === e.data.message)) {run.el.remove(); active.delete(e.data.run);} });
-    Hub.on('runtime_end', e => { const run = active.get(e.data.run); if(run) {run.el.remove(); active.delete(e.data.run);} });
+    Hub.on('runtime_start', e => { runtimeRevision++; const d = e.data; live(d.run, d.agent, d.channel); });
+    Hub.on('runtime_delta', e => { runtimeRevision++; const d = e.data; live(d.run, d.agent, d.channel, d.message); active.get(d.run).text.textContent += d.text; if(d.channel === window.activeChannel) window.followIncomingContent?.(); });
+    Hub.on('runtime_message_end', e => { runtimeRevision++; const run = active.get(e.data.run); if(run && (!run.message || run.message === e.data.message)) {run.el.remove(); active.delete(e.data.run);} });
+    Hub.on('runtime_end', e => { runtimeRevision++; const run = active.get(e.data.run); if(run) {run.el.remove(); active.delete(e.data.run);} });
     Hub.on('runtime_approval', e => approval(e.data));
     Hub.on('runtime_approval_resolved', e => { approvalCards.get(e.data.id)?.remove(); approvalCards.delete(e.data.id); });
     Hub.on('runtime_tool', e => {
@@ -134,7 +169,8 @@
         activity.length = Math.min(activity.length, ACTIVITY_SHOWN);  // only the shown entries are kept
         document.getElementById('room-tools').textContent = activity.join('\n\n');
     });
-    Hub.on('history_complete', () => api('').then(render).catch(showError));
+    Hub.on('history_complete', refreshRuntime);
+    Hub.on('chat_connection', e => { runtimeRevision++; connectionState = e.state; renderConnection(); });
     Store.watch('activeChannel', () => {
         refreshDelivery();
         for (const run of active.values()) {
@@ -142,5 +178,6 @@
             run.el.hidden = window.activeChannel !== run.channel;
         }
     });
-    api('').then(render).catch(showError);
+    renderConnection();
+    refreshRuntime();
 })();

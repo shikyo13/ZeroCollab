@@ -18,9 +18,13 @@ function applySettings(data) {
         if (subInput) subInput.value = data.subtitle;
     }
     if (data.username) {
+        const nameChanged = username !== data.username;
         username = data.username;
         document.getElementById('sender-label').textContent = username;
         document.getElementById('setting-username').value = username;
+        if (nameChanged) {
+            for (const message of document.querySelectorAll(SENDER_MESSAGES)) applySender(message);
+        }
     }
     if (data.font) {
         document.body.classList.remove('font-mono', 'font-serif', 'font-sans');

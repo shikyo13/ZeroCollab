@@ -699,6 +699,10 @@ def _on_registry_change():
 
 # --- WebSocket ---
 
+# Liveness probe for the page's connection watchdog: {"type": "ping", "id": "<1-64 of A-Z a-z 0-9 _ ->"}
+# gets {"type": "pong", "id": <same>} on the same socket.
+_PING_ID = _re.compile(r'[A-Za-z0-9_-]{1,64}')
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     # --- Security: validate session token on WebSocket connect ---
@@ -765,6 +769,15 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             raw = await websocket.receive_text()
             event = json.loads(raw)
+
+            if isinstance(event, dict) and event.get("type") == "ping":
+                # Answered before the deployment gate, so a read-only room still proves the connection is
+                # alive. Only this socket gets the reply: nothing is stored, broadcast, routed, woken or
+                # counted. An id that isn't a short plain token gets no reply, so it can't be echoed.
+                ping_id = event.get("id")
+                if isinstance(ping_id, str) and _PING_ID.fullmatch(ping_id):
+                    await websocket.send_text(json.dumps({"type": "pong", "id": ping_id}))
+                continue
 
             gate = getattr(_runtime(), 'deployment', None)
             if gate and not gate.enter_mutation():

@@ -199,6 +199,27 @@ document.addEventListener('click', (e) => {
     openFileRef(link);
 });
 
+// Uploaded image links in prose use the same viewer as attachment thumbnails.
+// Keep the real href for copy-link, downloads and intentional modified clicks.
+function chatUploadImageUrl(href) {
+    try {
+        const url = new URL(href, location.href);
+        if (url.origin !== location.origin || url.username || url.password) return null;
+        if (!/^\/uploads\/[^/]+\.(png|jpe?g|gif|webp)$/i.test(url.pathname)) return null;
+        return url.href;
+    } catch { return null; }
+}
+
+document.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    const link = e.target.closest?.('.msg-text a[href]');
+    if (!link || link.hasAttribute('download') || typeof openImageModal !== 'function') return;
+    const url = chatUploadImageUrl(link.getAttribute('href'));
+    if (!url) return;
+    e.preventDefault();
+    openImageModal(url);
+});
+
 function addCodeCopyButtons(container) {
     const blocks = container.querySelectorAll('pre');
     for (const pre of blocks) {

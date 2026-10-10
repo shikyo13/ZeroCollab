@@ -54,8 +54,8 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `project_registry` | project_room, room_runtime | fastapi |
 | `project_room` | coordination_queue, coordination_records, coordination_state, durable, project_registry, room_markup | - |
 | `provider_controls` | durable, native_adapters | httpx |
-| `provider_setup` | native_adapters, provider_store | fastapi, httpx |
-| `provider_store` | project_room, provider_setup | fastapi, httpx |
+| `provider_setup` | local_protocol, native_adapters, provider_store, room_runtime | fastapi, httpx |
+| `provider_store` | project_room, provider_setup, room_runtime | fastapi, httpx |
 | `queue_file` | - | - |
 | `registry` | durable | - |
 | `release_pack` | - | - |
@@ -93,7 +93,7 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `durable` | app, mcp_bridge, project_room, provider_controls, registry, room_deploy, room_goals, room_runtime, store |
 | `file_preview` | app |
 | `git_preview` | file_preview, room_runtime |
-| `local_protocol` | room_runtime |
+| `local_protocol` | provider_setup, room_runtime |
 | `mcp_bridge` | agents, app, room_deploy, room_runtime, run |
 | `mcp_proxy` | wrapper |
 | `native_adapters` | login_gemini, provider_controls, provider_setup, room_runtime |
@@ -108,7 +108,7 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `room_deploy` | room_runtime |
 | `room_goals` | room_runtime |
 | `room_markup` | project_room |
-| `room_runtime` | file_preview, project_registry, run |
+| `room_runtime` | file_preview, project_registry, provider_setup, provider_store, run |
 | `router` | app |
 | `shared_browser` | room_runtime |
 | `steering_delivery` | room_runtime |

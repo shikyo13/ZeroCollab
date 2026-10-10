@@ -56,23 +56,27 @@ export default function FileView({ request, active }: Props) {
   const sender = str(request?.sender);
   const time = request?.time;
   const root = choice.root ?? (request?.root as number | null | undefined) ?? null;
+  const at = (choice.at ?? str(request?.at)) || undefined;
+  const [refresh, setRefresh] = useState(0);
+  const loaded = useRef('');
+  const sourceKey = JSON.stringify([ref, sender, time, root, at, refresh]);
 
   useEffect(() => { setChoice({}); setNotice(''); }, [request]);
 
   useEffect(() => {
-    if (!ref || !active) return;
+    if (!ref || !active || request?.source_required || loaded.current === sourceKey) return;
     let current = true;
     const query = new URLSearchParams({ ref, sender });
     if (time) query.set('message_time', str(time));
-    if (choice.at) query.set('at', choice.at);
+    if (at) query.set('at', at);
     if (root != null) query.set('root', String(root));
     setLoading(true);
     api<Result>('/api/file-view?' + query)
-      .then(data => { if (current) setResult(data); })
+      .then(data => { if (current) {setResult(data); loaded.current = sourceKey;} })
       .catch(error => { if (current) setResult({ kind: 'error', error: errorMessage(error) }); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [ref, sender, time, root, choice.at, active]);
+  }, [ref, sender, time, root, at, active, sourceKey, request?.source_required]);
 
   // Bring the referenced lines into view, a third of the way down.
   useLayoutEffect(() => {
@@ -82,6 +86,7 @@ export default function FileView({ request, active }: Props) {
   }, [result]);
 
   if (!request) return <div className="fileview-empty">Click a file name in a chat message to open it here.</div>;
+  if (request.source_required) return <div className="fileview-message"><strong>{ref}</strong><p>This tab used a repository source index which may have changed. Open this file from New tab to choose its source again.</p></div>;
   // While a new reference or revision loads, the previous file's actions would act on the new reference: show nothing stale.
   if (!result || loading) return <div className="fileview-empty">Opening {ref}...</div>;
 
@@ -113,8 +118,12 @@ export default function FileView({ request, active }: Props) {
     }
   }
 
+  function openVersion(at?: string) {
+    window.dispatchEvent(new CustomEvent('workspace-side-panel', {detail: {...request, tab: 'file', ref, sender, root, at}}));
+  }
+
   if (result.kind === 'error') {
-    return <div className="fileview-message" role="alert"><strong>{ref}</strong><p>{result.error}</p></div>;
+    return <div className="fileview-message" role="alert"><strong>{ref}</strong><p>{result.error}</p><button onClick={() => setRefresh(n => n + 1)}>Retry file</button></div>;
   }
   if (result.kind === 'ambiguous') {
     return <div className="fileview-message">
@@ -122,7 +131,7 @@ export default function FileView({ request, active }: Props) {
       <p>In the {result.root_label}. Choose one:</p>
       <ul className="fileview-candidates">
         {result.candidates.map(path => <li key={path}>
-          <button onClick={() => setChoice({ ref: path + lineSuffix(result), root: result.root_index })}>{path}</button>
+          <button onClick={() => window.dispatchEvent(new CustomEvent('workspace-side-panel', {detail: {...request, tab: 'file', ref: path + lineSuffix(result), root: result.root_index, source_label: result.root_label}}))}>{path}</button>
         </li>)}
       </ul>
       {result.more > 0 && <p>and {result.more} more; use the full path in chat to pick one of those.</p>}
@@ -163,16 +172,17 @@ export default function FileView({ request, active }: Props) {
     </div>
     {result.source === 'revision'
       ? <div className="fileview-banner">
-          Showing commit {result.at}: the last commit before the message, inferred from commit dates.
-          <button onClick={() => setChoice(c => ({ ...c, at: undefined }))}>Show current version</button>
+          Showing commit {result.at}{request.at ? ' (selected revision).' : ': the last commit before the message, inferred from commit dates.'}
+          <button onClick={() => openVersion()}>Open working copy tab</button>
         </div>
       : result.changed_since_message && <div className="fileview-banner">
           This file changed after the message.
-          {result.committed_before_message && <button onClick={() => setChoice(c => ({ ...c, at: result.committed_before_message ?? undefined }))}>
+          {result.committed_before_message && <button onClick={() => openVersion(result.committed_before_message ?? undefined)}>
             Show last commit before it (inferred)
           </button>}
         </div>}
     <div className="fileview-actions">
+      <button onClick={() => setRefresh(n => n + 1)}>Refresh file</button>
       <button onClick={() => open('editor')}>Open in VS Code</button>
       <button onClick={() => open('explorer')}>Show in Explorer</button>
       <button onClick={() => copy(result.absolute)}>Copy path</button>

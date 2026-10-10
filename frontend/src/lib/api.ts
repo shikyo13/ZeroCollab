@@ -2,7 +2,8 @@
  * window.__SESSION_TOKEN__ into the page; every /api call must carry it. */
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  /** field: the form field a refusal belongs to, when the route names one (provider forms). */
+  constructor(message: string, readonly status: number, readonly field?: string) {
     super(message);
     this.name = 'ApiError';
   }
@@ -37,9 +38,13 @@ export async function api<T = unknown>(path: string, body?: unknown, method?: Me
   }
   if (!response.ok) {
     let message = response.statusText || `Request failed (${response.status})`;
-    if (data && typeof data === 'object' && 'error' in data) message = String((data as { error: unknown }).error);
-    else if (typeof data === 'string' && data) message = data;
-    throw new ApiError(message, response.status);
+    let field: string | undefined;
+    if (data && typeof data === 'object' && 'error' in data) {
+      const body = data as { error: unknown; field?: unknown };
+      message = String(body.error);
+      if (typeof body.field === 'string') field = body.field;
+    } else if (typeof data === 'string' && data) message = data;
+    throw new ApiError(message, response.status, field);
   }
   return data as T;
 }

@@ -75,5 +75,25 @@
 .pv-inline input { flex: 1 1 auto; min-width: 0; }
 .pv-inline .bd-btn { flex: 0 0 auto; white-space: nowrap; }
 .pv-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+.pv-check { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--bd-border); border-radius: 8px; font-size: 13px; }
+.pv-check p { margin: 0; }
+.pv-check .pv-inline { align-items: center; }
 .pv-pending { margin: 2px 0 0; color: var(--bd-accent); font-size: 12.5px; }
 .pv-row code { padding: 1px 6px; border-radius: 4px; background: var(--bd-surface-2); font-size: 12px; }
+/* S5a API keys: switch, totals and usage table. */
+.pv-add-only { margin-top: 0; padding-top: 0; border-top: 0; }
+.pv-switch { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 2px 6px; border: 0; border-radius: 9px;
+  background: none; color: var(--bd-muted); font: inherit; font-size: 12.5px; cursor: pointer; }
+.pv-switch:focus-visible { outline: 2px solid var(--bd-accent); outline-offset: 2px; }
+.pv-track { position: relative; width: 32px; height: 18px; border-radius: 9px; background: var(--bd-border); }
+.pv-track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--bd-muted); transition: left .15s; }
+.pv-switch[aria-checked='true'] { color: var(--bd-text); }
+.pv-switch[aria-checked='true'] .pv-track { background: var(--bd-accent); }
+.pv-switch[aria-checked='true'] .pv-track::after { left: 16px; background: var(--bd-surface); }
+.pv-totals { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 4px 0 0; font-size: 13px; }
+.pv-usage { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pv-usage th { color: var(--bd-muted); font-weight: 600; text-align: left; padding: 3px 4px; }
+.pv-usage td { padding: 3px 4px; overflow-wrap: anywhere; }
+.pv-usage th:not(:first-child), .pv-usage td:not(:first-child) { text-align: right; }
+.pv-usage input { width: 100%; max-width: 90px; text-align: right; }
+.pv-prices { display: grid; gap: 6px; }

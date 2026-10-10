@@ -22,6 +22,8 @@ export interface ProjectSummary {
   name: string;
   path: string;
   active: boolean;
+  /** Archived projects retain their data and remain available for browsing and Restore. */
+  archived?: boolean;
   conversation: boolean;
   available: boolean;
   tasks: Record<TaskStatus, number>;

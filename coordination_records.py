@@ -13,6 +13,9 @@ LIMITS = dict(title=120, details=8000, update=4000, note=4000, request=4000, fin
               # that summary and up to 20 mark lines of at most 358 characters: under 8500.
               markup=1000, **{'attachment note': 9000})
 HISTORY_TEXT = 1600
+# Characters of one captured review file returned to a workspace tab; a whole capture is at most 2 MB.
+ARTIFACT_TEXT = 1_000_000
+REVIEW_FIELDS = ('id', 'task_id', 'revision', 'status', 'reviewer', 'owner', 'requested_by', 'created', 'updated')
 
 
 def bounded(text, kind):
@@ -135,6 +138,36 @@ class CoordinationRecords:
             if not matches:
                 changed.append(entry['path'])
         return changed
+
+    def artifact(self, review_id, path):
+        """One captured review file exactly as it was submitted, never the current working copy.
+        Only the stored record names the blob, so no caller-supplied path reaches the filesystem."""
+        item = self.record('reviews', review_id)
+        snapshot = item.get('snapshot', {})
+        task = next((t for t in self.room.state['tasks'] if t['id'] == item['task_id']), {})
+        result = {'review': {k: item.get(k) for k in REVIEW_FIELDS},
+                  'task': {'id': item['task_id'], 'title': task.get('title', '')}, 'path': path}
+        entry = next((f for f in snapshot.get('files', []) if f['path'] == path), None)
+        if entry is None:
+            if path in snapshot.get('unavailable', []):
+                return {**result, 'kind': 'unavailable', 'reason': 'The file was missing when the review was requested'}
+            raise LookupError('That file is not part of this review snapshot')
+        try:
+            data = (self.room.path.parent / 'review-artifacts' / item['id'] / entry['sha256']).read_bytes()
+        except OSError:
+            return {**result, 'kind': 'unavailable', 'reason': 'The captured copy is no longer stored'}
+        if hashlib.sha256(data).hexdigest() != entry['sha256']:
+            return {**result, 'kind': 'unavailable', 'reason': 'The captured copy does not match its recorded hash'}
+        result.update(sha256=entry['sha256'], bytes=len(data),
+                      changed_since=bool(self.changed_files({'snapshot': {**snapshot, 'files': [entry]}})))
+        try:
+            text = data.decode('utf-8')
+        except UnicodeDecodeError:
+            text = None
+        if text is None or '\0' in text[:8192]:
+            return {**result, 'kind': 'binary'}
+        return {**result, 'kind': 'ok', 'encoding': 'utf-8', 'text': text[:ARTIFACT_TEXT],
+                'truncated': len(text) > ARTIFACT_TEXT}
 
     def review_view(self, item, hashes=None):
         return {**item, 'changed_files': self.changed_files(item, hashes),
@@ -262,3 +295,18 @@ class CoordinationRecords:
             'followups': [f for f in self.room.state.get('followups', []) if f['assigned_to'] == actor and f['status'] == 'open'],
             'waiting_for': [f for f in self.room.state.get('followups', []) if f['created_by'] == actor and f['assigned_to'] != actor and f['status'] == 'open'],
         }
+
+
+def install(host, runtime):
+    from fastapi.responses import JSONResponse
+
+    @host.app.get('/api/runtime/review-artifact')
+    async def review_artifact(project: str, review_id: str, path: str):
+        """Read-only: the exact file captured for a review in the open project (UI session token only)."""
+        if project != runtime.identity:
+            return JSONResponse({'kind': 'error', 'error': 'This review belongs to another project; open that project first'},
+                                status_code=409)
+        try:
+            return runtime.project_room.records.artifact(review_id, path)
+        except (ValueError, LookupError) as exc:
+            return JSONResponse({'kind': 'error', 'error': str(exc)}, status_code=404)

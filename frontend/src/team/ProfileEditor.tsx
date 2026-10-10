@@ -33,6 +33,8 @@ export interface ProviderInfo {
   provider: string;
   label: string;
   color: string;
+  /** False for an API key connection that is switched off: Add agent does not offer it. */
+  offered?: boolean;
   controls: {
     models: ModelOption[];
     selected?: { model: string; effort: string };
@@ -92,21 +94,24 @@ interface Draft {
 }
 
 function initialDraft(data: ProfilesData, profile: Profile | null, duplicate: boolean): Draft {
+  const provider = data.providers.find(p => p.offered !== false);
   if (profile) {
     const name = duplicate ? profile.name + ' copy' : profile.name;
     const id = duplicate ? availableHandle(name, data.profiles) : profile.id;
+    // A copy is a new agent: if its provider is no longer offered (an API key switched off), it starts
+    // on the first offered one, as Add agent does, rather than on a connection that can't run it.
+    const moved = duplicate && data.providers.find(p => p.id === profile.template)?.offered === false;
     return {
       name,
       id,
       handle: duplicate ? id : profile.handle || profile.id,
-      template: profile.template,
+      template: moved ? provider?.id ?? '' : profile.template,
       color: profile.color,
-      model: profile.model,
-      effort: profile.effort || '',
+      model: moved ? provider?.controls.selected?.model ?? provider?.controls.models[0]?.value ?? '' : profile.model,
+      effort: moved ? '' : profile.effort || '',
       background: profile.background || '',
     };
   }
-  const provider = data.providers[0];
   return {
     name: '',
     id: '',
@@ -276,7 +281,8 @@ export function ProfileEditor({
               });
             }}
           >
-            {data.providers.map(p => (
+            {/* A switched-off API key connection is not offered for new agents or copies; an agent being edited keeps showing its own. */}
+            {data.providers.filter(p => p.offered !== false || (editing && p.id === draft.template)).map(p => (
               <option key={p.id} value={p.id}>
                 {p.label}
               </option>

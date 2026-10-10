@@ -811,7 +811,8 @@ class ProjectRoom:
         return [m for m in messages if not (decisions and decisions.hidden(m, run.name))]
 
     def context(self, run, changes=None):
-        maximum = self.limits['input_chars']
+        # A local model's context window can lower the room limit for its turns (room_runtime.local_input_budget).
+        maximum = min(self.limits['input_chars'], getattr(run, 'input_budget', None) or self.limits['input_chars'])
         task_limit, spec_limit, memory_limit = int(maximum * .18), int(maximum * .28), int(maximum * .12)
         # Views carry the observed execution state; your own tasks first, by priority (1 highest).
         tasks = [self.task_view(t) for t in self.state['tasks'] if t['status'] != 'done']

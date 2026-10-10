@@ -66,9 +66,9 @@
 .modern-workspace .header-right .ws-stop { order: 2; }
 .modern-workspace .header-right .companion-toggle { order: 3; }
 .ws-context { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.ws-title { font-size: 15px; font-weight: 650; color: var(--text-bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
-.ws-crumb { color: var(--text-dim); font-size: 13px; white-space: nowrap; }
-.ws-goal-chip { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 420px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 14px; background: transparent; color: var(--text-dim); font-size: 12.5px; }
+.ws-title { flex-shrink: 0; max-width: min(32vw, 260px); font-size: 15px; font-weight: 650; color: var(--text-bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
+.ws-crumb { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font-size: 13px; white-space: nowrap; }
+.ws-goal-chip { display: flex; align-items: center; gap: 6px; flex: none; white-space: nowrap; padding: 3px 10px; border: 1px solid var(--border); border-radius: 14px; background: transparent; color: var(--text-dim); font-size: 12.5px; }
 .ws-goal-chip b { color: var(--accent-text); font-weight: 600; }
 .ws-goal-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-goal-chip:hover { border-color: var(--border-strong); color: var(--text); }
@@ -105,7 +105,21 @@
 @media (max-width: 600px) {
   .ws-roster-menu { position: fixed; top: 60px; right: 12px; width: calc(100vw - 24px); max-height: calc(100dvh - 72px); }
 }
-.workspace-goal-actions { display: flex; gap: 8px; margin: 10px 0; }
+.workspace-goal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.workspace-work-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.workspace-work-heading h2 { margin: 0; font-size: 20px; }
+.workspace-work-button { min-height: 34px; padding: 7px 12px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--bg-elevated); color: var(--text); font-weight: 600; }
+.workspace-work-button:hover:not(:disabled) { border-color: var(--accent); }
+.workspace-work-primary { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
+.workspace-work-danger { background: transparent; color: var(--danger-text); border-color: var(--danger-border); }
+.workspace-work-button:disabled { opacity: .5; cursor: not-allowed; }
+.workspace-work-dialog .workspace-goal-limit { padding: 12px; background: var(--warning-surface); border: 1px solid var(--warning); border-radius: 8px; }
+.workspace-work-dialog .workspace-work-error { color: var(--danger-text); }
+.workspace-work-dialog p { overflow-wrap: anywhere; white-space: pre-wrap; }
+@media (max-width: 600px) {
+  .ws-context { flex-wrap: wrap; }
+  .modern-workspace .workspace-toolbar header { flex-wrap: wrap; }
+}
 
 /* Mention chips: one compact scrolling row instead of tall wrapping buttons. */
 .modern-workspace #mention-toggles { flex-wrap: nowrap; }
@@ -134,7 +148,7 @@
   }
   .ws-nav-item { justify-content: center; padding: 8px; position: relative; }
   .ws-badge { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; padding: 0; font-size: 0; }
-  .ws-crumb, .ws-roster-text, .ws-goal-chip span, .ws-goal-chip small { display: none; }
+  .ws-crumb, .ws-roster-text { display: none; }
 }
 
 /* Waiting-on-you bell (AttentionBell.tsx). */

@@ -25,6 +25,7 @@ from git_preview import preview as git_preview
 import native_adapters as native
 import provider_setup
 import provider_store
+import provider_keys
 from provider_controls import ProviderControls
 from coordination_state import pending_human_wait
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
@@ -48,6 +49,8 @@ READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "We
                    "BashOutput", "webSearch", "imageView", "todoList",
                    "read_file", "file_glob_search", "grep_search", "get_info"}
 ROOM_SERVER = 'zerocollab_coordination'
+# One automatic retry for a turn that failed before producing any output (task 33f0aa98).
+STARTUP_RETRY_SECONDS = 5
 ROOM_TOOLS = {"room_read", "room_image", "room_task", "room_markup", "room_update", "room_review", "room_followup",
               "room_repository", "room_goal", "room_team_builder", "room_decision", "room_browser"}
 
@@ -110,6 +113,47 @@ def save_workspace(path, value):
         else:
             atomic_write(path.with_suffix('.json.bak'), lambda stream: stream.write(previous))
     atomic_write(path, lambda stream: stream.write(encoded))
+
+
+# A local tool result never exceeds this (file tools already cap at 16,000; coordination results did not),
+# and with a known context window it is cut further to its share of what is left.
+LOCAL_TOOL_RESULT_CHARS = 16000
+LOCAL_RESULT_FLOOR = 400
+
+
+async def stream_chat(client, base, payload, on_text=None, on_usage=None, on_model=None):
+    """POST a streaming /chat/completions and assemble it exactly as local turns do: content deltas
+    into text, tool_calls deltas by index into calls. The Providers tool-call check uses this too,
+    so a server that passes the check streams tool calls the way real turns read them.
+    Returns (text, calls_by_index, finish_reason, usage)."""
+    calls, text, finish_reason, usage = {}, '', None, None
+    async with client.stream('POST', base + '/chat/completions', json=payload) as response:
+        response.raise_for_status()
+        async for line in response.aiter_lines():
+            if not line.startswith('data:') or line[5:].strip() == '[DONE]':
+                continue
+            item = json.loads(line[5:])
+            if item.get('usage'):
+                usage = item['usage']
+                if on_usage:
+                    await on_usage(usage)
+            if item.get('model') and on_model:
+                await on_model(item['model'])
+            for choice in item.get('choices', []):
+                finish_reason = choice.get('finish_reason') or finish_reason
+                delta = choice.get('delta', {})
+                if delta.get('content'):
+                    text += delta['content']
+                    if on_text:
+                        await on_text(delta['content'])
+                for call in delta.get('tool_calls', []):
+                    part = calls.setdefault(call.get('index', 0), {'id': '', 'type': 'function', 'function': {'name': '', 'arguments': ''}})
+                    if call.get('id'):
+                        part['id'] = call['id']
+                    for key in ('name', 'arguments'):
+                        if call.get('function', {}).get(key):
+                            part['function'][key] += call['function'][key]
+    return text, calls, finish_reason, usage
 
 
 def local_tool_definitions():
@@ -887,7 +931,8 @@ class RoomRuntime:
                 if provider == "api":
                     cfg = self.cfg["agents"][name]
                     url = cfg["base_url"].rstrip("/") + "/models"
-                    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                    # An API key connection sends its key (after its origin check); a switched-off one blocks here.
+                    async with httpx.AsyncClient(timeout=5, trust_env=False, headers=provider_keys.headers(cfg)) as client:
                         response = await client.get(url)
                         response.raise_for_status()
                         ids = [m["id"] for m in response.json().get("data", [])]
@@ -1061,7 +1106,25 @@ class RoomRuntime:
         return result
 
     def context(self, run, changes):
+        run.input_budget = self.local_input_budget(run)
         return self.project_room.context(run, changes) + self.goals.context(run)
+
+    def local_input_budget(self, run):
+        """Room prompt characters that fit a local model's context window after its response, this
+        agent's instructions and the tool definitions (Team > Providers S4). None when the window is
+        unknown or the agent is not local. Approximate: characters per token is an estimate."""
+        cfg = self.cfg['agents'].get(run.name, {})
+        if self.states[run.name]['provider'] != 'api' or not cfg.get('context_tokens'):
+            return None
+        tools = local_tool_definitions() + coordination_tools() if cfg.get('tools', True) else []
+        fixed = len(run.instructions) + len(json.dumps(tools)) + 300  # system suffix and message framing
+        output = max(provider_store.OUTPUT_TOKENS[0], min(provider_store.OUTPUT_TOKENS[1], int(cfg.get('max_tokens', 1024))))
+        budget = provider_store.input_budget_chars(cfg['context_tokens'], output, fixed)
+        if budget < provider_store.MIN_INPUT_CHARS:
+            raise RuntimeError(f"{cfg.get('label', run.name)}'s context window (about {cfg['context_tokens']:,} tokens) is too small for "
+                               "the room instructions, tools and a response. Raise the server context or lower the maximum "
+                               "response length in Team > Providers.")
+        return budget
 
     async def worker(self, name):
         while True:
@@ -1106,9 +1169,11 @@ class RoomRuntime:
             while True:
                 if self.paused or self.states[name].get('paused'):
                     return
+                # A startup retry waits out its delay here (wall clock: it may be checkpointed across a restart).
                 if (self.states[name]['state'] not in ('blocked', 'login_required')
                         and len(self.running) < self.parallel_capacity()
-                        and self.turn_admission_open()):
+                        and self.turn_admission_open()
+                        and entry.get('retry_after', 0) <= time.time()):
                     break
                 await asyncio.sleep(.2)
             self.queues[name].merge_waiting(entry)
@@ -1195,8 +1260,12 @@ class RoomRuntime:
                 diagnostic = re.sub(r'(?i)(?:bearer\s+|(?:token|api[-_]?key|password|secret)\s*[=:]\s*)\S+', '[redacted]', run.stderr)
                 diagnostic = re.sub(r'\b(?:sk-|hf_)[A-Za-z0-9_-]+', '[redacted]', diagnostic)
                 detail += ": " + diagnostic[-1200:]
-            self.states[name].update(state="blocked", detail=detail[:600])
-            self.host.store.add("system", f"{name} failed: {detail[:600]}", channel=run.channel)
+            if self.retry_startup(run, exc, detail):
+                self.host.store.add("system", f"{name} failed to start; retrying once in {STARTUP_RETRY_SECONDS} s: {detail[:600]}",
+                                    channel=run.channel, metadata={'no_route': True})
+            else:
+                self.states[name].update(state="blocked", detail=detail[:600])
+                self.host.store.add("system", f"{name} failed: {detail[:600]}", channel=run.channel)
             await run.finish_message(partial=True)
         finally:
             await run.steering.close(outcome)
@@ -1320,6 +1389,24 @@ class RoomRuntime:
         self.host.store.add(run.name, text, channel=run.channel, metadata={'no_route': True, 'chain': run.entry['chain']})
         await self.emit('project_state', self.project_room.snapshot())
         return result
+
+    def retry_startup(self, run, exc, detail):
+        """A failure before the provider produced anything (no text, message, tool or room call) is usually a
+        startup or transport glitch, such as an MCP handshake that closed. The agent stays ready and the same
+        work is re-queued once; a second consecutive startup failure blocks as before. Configuration and key
+        problems (ValueError, including provider_keys.KeyProblem), turn limits and timeouts are never retried.
+        The retry mark lives on the entry, not the agent: a retry that is stopped, pruned or refused takes it
+        along, so the next unrelated failure still gets its own retry. The entry goes back at the front of the
+        queue now and waits out the delay in run_turn's admission loop, so newer same-channel work merges after
+        it, Stop drains it and a deployment checkpoint keeps it."""
+        entry = run.entry
+        if (isinstance(exc, (ValueError, TimeoutError)) or run.stop_reason or run.text or run.published_messages
+                or run.native_tool_calls or run.coordination_calls or entry.get('startup_retry')):
+            return False
+        entry.update(startup_retry=True, retry_after=time.time() + STARTUP_RETRY_SECONDS)
+        self.states[run.name].update(state='ready', detail=f'Last turn failed to start; retrying once: {detail[:300]}')
+        self.queues[run.name].retry(entry)
+        return True
 
     async def silent_turn(self, run):
         """Adapters return only after the provider's explicit normal completion (Codex turn/completed,
@@ -1515,7 +1602,23 @@ class RoomRuntime:
             messages = [{"role": "system", "content": run.instructions + "\nLocal file tools use your primary worktree by default; key:relative/path selects one of your attached repository worktrees. Shell execution is unavailable. Tool arguments must match their advertised schemas."},
                         {"role": "user", "content": prompt}]
             rounds = run.limits['local_tool_rounds']
+            # S4: with a known context window, every round's request must fit, not only the first:
+            # tool results are capped to the room left after the response and what was already sent.
+            window = cfg.get('context_tokens') if cfg.get('context_tokens') else None
+            output_tokens = max(provider_store.OUTPUT_TOKENS[0], min(provider_store.OUTPUT_TOKENS[1], int(cfg.get('max_tokens', 1024))))
+            tool_chars = len(json.dumps(tools, ensure_ascii=False)) if tools else 0
+            ratio = provider_store.CHARS_PER_TOKEN
+
+            def room_left(pending):
+                """Characters still free for tool results, given what the next request will carry."""
+                used = len(json.dumps(messages, ensure_ascii=False)) + tool_chars + pending
+                return int((window - output_tokens - provider_store.SAFETY_TOKENS) * ratio) - used
+
             for turn in range(rounds + 1):
+                # Checked on every request, not once per turn: a key switched off mid-turn stops the next
+                # round, and an address changed outside the app never receives the key. Set only after the
+                # tool schema fetch above, so that request never carries it.
+                client.headers.update(provider_keys.headers({**cfg, 'base_url': base}))  # the address actually requested
                 payload = {"model": run.settings['model'], "messages": messages, "stream": True,
                            'stream_options': {'include_usage': True},
                            # The connection's maximum response length (Team > Providers), within provider_store's range.
@@ -1533,36 +1636,25 @@ class RoomRuntime:
                     payload['reasoning_effort'] = run.settings['effort']
                     payload['chat_template_kwargs'] = {**payload.get('chat_template_kwargs', {}), 'reasoning_effort': run.settings['effort']}
                 await run.report_settings()
-                calls, text = {}, ""
-                finish_reason = None
-                async with client.stream("POST", base + "/chat/completions", json=payload) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:") or line[5:].strip() == "[DONE]":
-                            continue
-                        item = json.loads(line[5:])
-                        if item.get('usage'):
-                            usage = item['usage']
-                            previous = getattr(run, 'local_reported_tokens', 0)
-                            total = usage.get('total_tokens', usage.get('prompt_tokens', 0) + usage.get('completion_tokens', 0))
-                            await run.report_usage({'total_tokens': previous + total})
-                            run.local_reported_tokens = previous + total
-                        if item.get('model') and run.reported_settings.get('model') != item['model']:
-                            await run.report_settings(model=item['model'])
-                        for choice in item.get("choices", []):
-                            finish_reason = choice.get('finish_reason') or finish_reason
-                            delta = choice.get("delta", {})
-                            if delta.get("content"):
-                                text += delta["content"]
-                                if not tools:
-                                    await run.delta(delta["content"])
-                            for call in delta.get("tool_calls", []):
-                                part = calls.setdefault(call.get("index", 0), {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-                                if call.get("id"):
-                                    part["id"] = call["id"]
-                                for key in ("name", "arguments"):
-                                    if call.get("function", {}).get(key):
-                                        part["function"][key] += call["function"][key]
+
+                async def usage_seen(usage):
+                    previous = getattr(run, 'local_reported_tokens', 0)
+                    total = usage.get('total_tokens', usage.get('prompt_tokens', 0) + usage.get('completion_tokens', 0))
+                    await run.report_usage({'total_tokens': previous + total})
+                    run.local_reported_tokens = previous + total
+
+                async def model_seen(model):
+                    if run.reported_settings.get('model') != model:
+                        await run.report_settings(model=model)
+
+                sent_chars = len(json.dumps(messages, ensure_ascii=False)) + tool_chars
+                text, calls, finish_reason, usage = await stream_chat(
+                    client, base, payload, on_text=None if tools else run.delta, on_usage=usage_seen, on_model=model_seen)
+                provider_keys.record(cfg, run.name, run.id, payload['model'], usage)  # API key connections only
+                if window and usage and usage.get('prompt_tokens'):
+                    # Recalibrate the estimate from what the server actually counted for this request.
+                    # Bounded: a server counting only uncached prompt tokens would otherwise inflate it and reopen overflow.
+                    ratio = min(4.0, max(1.5, sent_chars / usage['prompt_tokens']))
                 clean = visible_text(text)
                 if finish_reason == 'length' and calls:
                     raise RuntimeError('Local tool call was truncated; no incomplete call was executed')
@@ -1579,6 +1671,7 @@ class RoomRuntime:
                 for call in structured:
                     call['id'] = call.get('id') or 'call_' + uuid.uuid4().hex
                 messages.append({"role": "assistant", "content": clean or None, "tool_calls": structured})
+                results = []
                 for call in structured:
                     name, params = call['function']['name'], {}
                     result = "Denied"
@@ -1587,18 +1680,33 @@ class RoomRuntime:
                         if name in {t['function']['name'] for t in coordination_tools()}:
                             result = json.dumps(await self.coordination(run, name, params), ensure_ascii=False)
                             await run.tool_event(name, {'result': result[:4000]}, 'completed')
-                            messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': result})
-                            continue
-                        if name not in FILE_TOOLS:
-                            raise ValueError("Tool is disabled")
-                        root, file_params = file_tool_target(run.worktree, self.states[run.name].get('repositories', {}), params)
-                        if await run.approval(name, params, f"Bonsai file action · applies only to {root}"):
-                            result = execute_file_tool(root, name, file_params)
-                            await run.tool_event(name, {"result": result[:4000]}, "completed")
+                        else:
+                            if name not in FILE_TOOLS:
+                                raise ValueError("Tool is disabled")
+                            root, file_params = file_tool_target(run.worktree, self.states[run.name].get('repositories', {}), params)
+                            if await run.approval(name, params, f"Bonsai file action · applies only to {root}"):
+                                result = execute_file_tool(root, name, file_params)
+                                await run.tool_event(name, {"result": result[:4000]}, "completed")
                     except (ValueError, OSError) as exc:
                         result = "Tool refused: " + str(exc)
                         await run.tool_event(name, {"error": result}, "refused")
-                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                    results.append((call['id'], result))
+                for index, (call_id, result) in enumerate(results):
+                    limit = LOCAL_TOOL_RESULT_CHARS
+                    if window:
+                        # Each remaining result gets an equal share of what is left of the window.
+                        overhead = 120 * (len(results) - index)  # message framing per pending result
+                        limit = min(limit, room_left(overhead) // (len(results) - index))
+                        if limit < LOCAL_RESULT_FLOOR:
+                            if index == 0 and room_left(0) < LOCAL_RESULT_FLOOR:
+                                raise RuntimeError(f"{cfg.get('label', run.name)}'s context window is full after {turn + 1} tool "
+                                                   f"round{'s' if turn else ''}; the turn stops here. Raise the context window in Team > Providers, "
+                                                   "or ask for a narrower task.")
+                            result = '[Not included: this model\'s context window is full. Answer with what you have.]'
+                    if len(result) > limit:
+                        result = (result[:max(0, limit - 160)] + f'\n[Truncated to fit the context window: {limit:,} of {len(result):,} characters. '
+                                  'Request a smaller range (start_line/end_line, offset/limit) to read more.]')
+                    messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
 
     async def cancel_turn(self, name):
         run = self.running.get(name)
@@ -1700,6 +1808,8 @@ def install(host):
     decision_flow.install(host, runtime)
     import shared_browser
     shared_browser.install(host, runtime)
+    import coordination_records
+    coordination_records.install(host, runtime)
     provider_setup.install(host, runtime)
     import mcp_bridge
     mcp_bridge.channel_guard = runtime.owns_channel

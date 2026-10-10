@@ -12,6 +12,8 @@ import { NewProject } from './NewProject';
 import { Repository, RequestCard } from './Repository';
 import { openChannel, PROJECT_REFRESH_MS, projectLabel, roomIsBusy, switchProject, teamSignature, type ProjectDetail, type ProjectMember, type ProjectSummary } from './projectData';
 import { EVENTS, LIMITS } from '../lib/constants';
+import ProjectHistory from './ProjectHistory';
+import { ProjectActions } from './ProjectActions';
 
 export type ProjectNav = (view: 'chat' | 'board' | 'team') => void;
 
@@ -44,6 +46,7 @@ function ProjectCard({ project, selected, onSelect, now }: { project: ProjectSum
       <span className="pj-card-head">
         <strong>{project.name}</strong>
         {project.active && <span className="bd-pill pj-active">Active</span>}
+        {project.archived && <span className="bd-pill">Archived</span>}
         {!project.available && <span className="bd-pill pj-missing">Repo missing</span>}
       </span>
       <code className="pj-path" title={projectLabel(project)}>{projectLabel(project)}</code>
@@ -79,6 +82,7 @@ function SwitchButton({ project, onSwitched, label = 'Switch to this project' }:
   const [confirming, setConfirming] = useState(false);
   const { run, busy, error } = useAction();
   useEffect(() => setConfirming(false), [project.id]);
+  if (project.archived) return <p className="bd-attention">Restore this archived project before switching to it.</p>;
   if (!project.available && !project.conversation) return <p className="bd-attention">{project.path ? 'This repository folder no longer exists, so it cannot be attached.' : 'The repository path for this project could not be recovered. Attach the repository by its path below.'}</p>;
   const busyRoom = roomIsBusy(state);
   const go = async () => { if (await run(() => switchProject(project.id, state))) onSwitched(); };
@@ -94,7 +98,7 @@ function SwitchButton({ project, onSwitched, label = 'Switch to this project' }:
   </div>;
 }
 
-function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void; navigate: ProjectNav }) {
+function Detail({ id, onRenamed, navigate, browseHistory }: { id: string; onRenamed: () => void; navigate: ProjectNav; browseHistory: (project: string, session: string) => void }) {
   const { data: state } = useRuntimeState();
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [error, setError] = useState('');
@@ -122,7 +126,7 @@ function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void
   const followups = (board.followups ?? []).filter(f => f.status === 'open');
   const team = detail.team.filter(m => !m.archived);
   const archived = detail.team.length - team.length;
-  const chat = (channel: string) => { if (!detail.active) return; openChannel(channel); navigate('chat'); };
+  const chat = (channel: string) => { if (!detail.active) { browseHistory(detail.id, channel); return; } openChannel(channel); navigate('chat'); };
   return <section className="pj-detail" aria-labelledby="pj-detail-title">
     <div className="bd-panel">
       <div className="pj-detail-head">
@@ -131,6 +135,7 @@ function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void
           <code className="pj-path">{projectLabel(detail)}</code>
         </div>
         <Rename project={detail} onDone={() => { void load(); onRenamed(); }} />
+        <ProjectActions project={detail} onChanged={() => { void load(); onRenamed(); }} onDetails={() => document.getElementById('pj-detail-title')?.focus()} />
       </div>
       {detail.active
         ? <div className="pj-actions">
@@ -170,9 +175,9 @@ function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void
       <div className="bd-panel">
         <h3>Chats</h3>
         {detail.sessions?.length
-          ? <div className="pj-channels">{detail.sessions.map(session => <button key={session.id} className="bd-btn" disabled={!detail.active} onClick={() => chat(session.id)}>{session.title}</button>)}</div>
+          ? <div className="pj-channels">{detail.sessions.map(session => <button key={session.id} className="bd-btn" onClick={() => chat(session.id)}>{session.title}</button>)}</div>
           : <p className="bd-muted">No chat sessions yet.</p>}
-        <small className="bd-muted">{detail.active ? 'Conversations in this project.' : 'Switch to this project to open its conversations.'}</small>
+        <small className="bd-muted">{detail.active ? 'Conversations in this project.' : 'Browse saved conversations without switching the running room. History is read-only.'}</small>
       </div>
       <div className="bd-panel" id="pj-repository">
         <h3>{(detail.repositories?.length ?? 0) > 1 ? 'Repositories' : 'Repository'}</h3>
@@ -195,14 +200,19 @@ function Detail({ id, onRenamed, navigate }: { id: string; onRenamed: () => void
   </section>;
 }
 
-export default function Projects({ projects, error, refresh, focus, setFocus, navigate }: {
+export default function Projects({ projects, error, refresh, focus, setFocus, navigate, historySession, browseHistory }: {
   projects: ProjectSummary[]; error: string; refresh: () => Promise<void>;
   focus: string; setFocus: (id: string) => void; navigate: ProjectNav;
+  historySession: string; browseHistory: (project: string, session: string) => void;
 }) {
   const now = useNow();
   const [creating, setCreating] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   useEffect(() => { const open = () => setCreating(true); window.addEventListener(EVENTS.newProject, open); return () => window.removeEventListener(EVENTS.newProject, open); }, []);
   const selected = projects.find(p => p.id === focus) ?? projects.find(p => p.active) ?? projects[0];
+  if (historySession) return <ProjectHistory key={`${focus}:${historySession}`} project={focus} session={historySession}
+    summary={projects.find(p => p.id === focus)}
+    runningName={projects.find(p => p.active)?.name ?? ''} onReturn={() => navigate('chat')} onDetails={() => setFocus(focus)} />;
   return <div className="bd-root pj-root">
     <header className="workspace-page-heading">
       <div>
@@ -216,9 +226,10 @@ export default function Projects({ projects, error, refresh, focus, setFocus, na
     {creating && <NewProject onCancel={() => setCreating(false)} onCreated={id => { setCreating(false); setFocus(id); void refresh(); }} />}
     <div className="pj-layout">
       <div className="pj-side">
-        <ul className="pj-list">{projects.map(p => <ProjectCard key={p.id} project={p} selected={p.id === selected?.id} onSelect={() => setFocus(p.id)} now={now} />)}</ul>
+        <label><input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} /> Show archived projects</label>
+        <ul className="pj-list">{projects.filter(p => p.active || !p.archived || showArchived || p.id === focus).map(p => <ProjectCard key={p.id} project={p} selected={p.id === selected?.id} onSelect={() => setFocus(p.id)} now={now} />)}</ul>
       </div>
-      {selected ? <Detail key={selected.id} id={selected.id} onRenamed={() => void refresh()} navigate={navigate} /> : <p className="bd-muted">No projects yet. Choose New project to start a conversation.</p>}
+      {selected ? <Detail key={selected.id} id={selected.id} onRenamed={() => void refresh()} navigate={navigate} browseHistory={browseHistory} /> : <p className="bd-muted">No projects yet. Choose New project to start a conversation.</p>}
     </div>
   </div>;
 }

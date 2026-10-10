@@ -1,10 +1,13 @@
 """Explicit shared goals. Event-driven continuation, never a background model poll."""
 import json
+import logging
 import time
 import uuid
 
 from coordination_records import bounded
 from durable import atomic_write
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RoomGoals:
@@ -34,6 +37,20 @@ class RoomGoals:
             self.goal.update(status='paused', evidence=reason, updated=time.time())
             self.goal['revision'] += 1
             self.save()
+            self.announce('pause', f'Goal paused: {reason}')
+
+    def name(self, actor):
+        return 'the user' if actor == 'user' else self.runtime.states.get(actor, {}).get('label') or actor
+
+    def announce(self, action, text):
+        """A readable, durable record of a goal transition in the goal's own chat. It wakes no one
+        (no_route), and reporting never undoes the transition, which is already saved."""
+        g = self.goal
+        try:
+            self.runtime.host.store.add('system', text, channel=g['channel'], metadata={
+                'no_route': True, 'goal': {'id': g['id'], 'action': action, 'status': g['status'], 'revision': g['revision']}})
+        except Exception:
+            LOGGER.exception('Could not post the goal %s message for %s', action, g['id'])
 
     def change(self, actor, action='status', goal_id='', evidence='', text='', owner='', channel='', max_rounds=12):
         if action == 'status':
@@ -64,6 +81,9 @@ class RoomGoals:
             if self.goal['status'] in ('complete', 'cancelled'):
                 raise ValueError('This goal is already closed.')
             if not human and actor != self.goal['owner']:
+                # Shown in chat too: a refused attempt is otherwise visible only in the tool log.
+                self.announce('refused', f'{self.name(actor)} tried to {"complete" if action == "complete" else "block"} the goal, '
+                              f'but only its lead, {self.name(self.goal["owner"])}, can. The goal is still {self.goal["status"]}.')
                 raise ValueError('The goal lead records completion or blockers; coordinate with them.')
             evidence = bounded(evidence, 'evidence')
             if action in ('complete', 'block') and not evidence:
@@ -83,6 +103,14 @@ class RoomGoals:
             self.goal.update(status=states[action], evidence=evidence, updated=time.time())
             self.goal['revision'] += 1
         self.save()
+        g, who = self.goal, self.name(actor)
+        self.announce(action, {
+            'start': f'Goal started by {who}, led by {self.name(g["owner"])} (up to {g["max_rounds"]} rounds): {g["text"]}',
+            'complete': f'Goal complete, reported by {who}: {evidence}',
+            'block': f'Goal blocked, reported by {who}: {evidence}',
+            'pause': f'Goal paused by {who}.',
+            'resume': f'Goal resumed by {who} ({g["rounds"]} of {g["max_rounds"]} rounds used).',
+            'cancel': f'Goal cancelled by {who}.'}[action])
         return self.goal
 
     def accepts(self, request):

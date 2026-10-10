@@ -1,4 +1,4 @@
-.shared-browser { padding: 24px; max-width: 1500px; margin: auto; }
+.shared-browser { padding: 10px; max-width: 1500px; margin: auto; min-width: 0; }
 .browser-controls { position: sticky; top: 0; z-index: 1; background: var(--bg); padding-top: 1px; border-bottom: 1px solid var(--border); }
 .browser-live-activity { color: var(--accent-text); font-size: 12px; margin: 4px 0 10px; }
 .browser-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
@@ -6,13 +6,16 @@
 .browser-heading p,.browser-hint,.browser-location { color: var(--text-dim); }
 .browser-location { overflow-wrap: anywhere; font-size: 13px; }
 .browser-owner { padding: 8px 14px; border-radius: 20px; border: 1px solid var(--accent-border); background: var(--accent-surface); white-space: nowrap; }
-.browser-toolbar,.browser-type { display: flex; gap: 8px; margin: 16px 0; flex-wrap: wrap; }
+.browser-toolbar { display: flex; align-items: center; gap: 6px; margin: 0; flex-wrap: nowrap; }
+.browser-type { display: flex; gap: 8px; margin: 16px 0; flex-wrap: wrap; }
 .shared-browser button { padding: 9px 14px; background: var(--bg-elevated); border: 1px solid var(--border-control); border-radius: 6px; color: var(--text); cursor: pointer; }
 .shared-browser button:disabled { opacity: .45; cursor: default; }
 .shared-browser input { background: var(--bg-input); color: var(--text); border: 1px solid var(--border-control); border-radius: 6px; padding: 10px; min-width: 150px; }
-.browser-toolbar input,.browser-type input { flex: 1; }
+.browser-toolbar input { flex: 1; width: 0; min-width: 0; }
+.browser-type input { flex: 1; }
 .shared-browser .browser-primary { background: var(--accent); color: var(--text-on-accent); }
 .browser-stage { border: 1px solid var(--border-strong); background: var(--bg-input); border-radius: 8px; overflow: hidden; }
+.browser-stage.browser-actual-size { overflow: auto; }
 .browser-stage img { width: 100%; display: block; aspect-ratio: 1.6; touch-action: none; }
 .browser-stage img:focus { outline: 3px solid var(--accent); outline-offset: -3px; }
 .browser-empty { min-height: 320px; display: flex; flex-direction: column; justify-content: center; padding: 32px; }
@@ -23,3 +26,18 @@
 .browser-events ul { max-height: 240px; overflow: auto; padding-left: 20px; overflow-wrap: anywhere; }
 .browser-events time { color: var(--text-dim); }
 @media(max-width:700px) { .shared-browser { padding: 12px; } .browser-heading { align-items: flex-start; flex-direction: column; } }
+.browser-ownership { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 38px; font-size: 12px; padding: 4px 0; }
+.browser-ownership > span:first-child { flex: 1; min-width: 110px; color: var(--text-dim); }
+.browser-ownership > button { color: var(--accent-text); font-size: 12px; background: transparent; border-color: transparent; }
+.browser-page-marker { border: 1px solid var(--border); border-radius: 4px; color: var(--text-dim); padding: 2px 4px; font-size: 10px; white-space: nowrap; }
+.browser-actions-menu { position: relative; flex: 0 0 auto; }
+.browser-actions-menu > summary { display: grid; place-items: center; cursor: pointer; list-style: none; width: 34px; height: 34px; border-radius: 5px; }
+.browser-actions-menu > summary:hover { background: var(--bg-hover); }
+.browser-menu-content { position: absolute; z-index: 30; right: 0; top: 100%; display: flex; flex-direction: column; gap: 5px; padding: 10px; width: min(310px,calc(100vw - 40px)); max-height: 65vh; overflow: auto; background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 8px 24px #0005; }
+.browser-menu-content button { text-align: left; }
+.browser-menu-content small { color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+.browser-menu-content hr { border: 0; border-top: 1px solid var(--border); width: 100%; }
+.shared-browser :is(button,input,summary):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.shared-browser .browser-toolbar > button { min-height: 34px; min-width: 34px; padding: 5px; }
+.browser-events { margin-top: 8px; font-size: 12px; }
+.browser-events > summary { cursor: pointer; }

@@ -43,6 +43,7 @@ function AgentRow({
   selected,
   onSelect,
   guarded,
+  onProviders,
 }: {
   profile: Profile;
   agent?: AgentState;
@@ -52,6 +53,8 @@ function AgentRow({
   onSelect: () => void;
   /** True when an unsaved edit must be saved or cancelled first (it warns instead). */
   guarded: () => boolean;
+  /** Opens Team > Providers, offered when the agent's detail says the fix is there (sign-in, API key). */
+  onProviders: () => void;
 }) {
   const { run: act, busy, error } = useAction();
   const status = statusOf(agent, profile, !!run);
@@ -82,7 +85,11 @@ function AgentRow({
         )}
       </div>
       {run && <p className="tm-agent-run">Active turn in {sessionTitle(run.channel)}: {settingsText(run)}</p>}
-      {agent?.detail && !agent.paused && agent.state !== 'ready' && <p className="tm-agent-detail">{agent.detail}</p>}
+      {agent?.detail && !agent.paused && agent.state !== 'ready' && (
+        <p className="tm-agent-detail">{agent.detail}
+          {agent.detail.includes('Team > Providers') && <> <button type="button" className="bd-link" onClick={onProviders}>Open Providers</button></>}
+        </p>
+      )}
       <ErrorText message={error} />
     </li>
   );
@@ -223,6 +230,7 @@ export default function Team() {
                   agent={runtimeState?.agents[p.id]}
                   run={runs.find(r => r.agent === p.id)}
                   providerLabel={providerLabel(p.template)}
+                  onProviders={() => guarded('Save or cancel your changes first.') || setSection('providers')}
                   selected={mode === 'edit' && p.id === selected}
                   onSelect={() => choose(p.id, 'edit')}
                   guarded={() => guarded()}

@@ -8,6 +8,12 @@ let ws = null;
 let pendingAttachments = [];
 let autoScroll = true;
 let reconnectTimer = null;
+let roomConnectionState = 'connecting';
+Object.defineProperty(window, 'roomConnectionState', { get() { return roomConnectionState; } });
+function setRoomConnection(state) {
+    roomConnectionState = state;
+    Hub.emit('chat_connection', {state});
+}
 let username = 'user';
 let agentConfig = {};  // { name: { color, label } } — registered instances (used for pills)
 let baseColors = {};   // { name: { color, label } } — base agent colors (for message coloring)
@@ -46,6 +52,10 @@ Object.defineProperty(window, 'autoScroll', { get() { return autoScroll; } });
 const CONFIG = {
     sessionRejectedCode: 4003,  // websocket close code for a stale session token: reload the page
     reconnectDelayMs: 2000,     // wait before reconnecting a dropped websocket
+    connectionProbeMs: 25000,  // application ping; requires the matching server pong seam
+    connectionTimeoutMs: 10000,
+    connectionTickMs: 1000,
+    suspendedTickMs: 5000,     // give a suspended page a fresh probe, not a false timeout
     historyBatch: 100,          // history messages rendered per task, keeps the page responsive
     historyWindow: 200,         // newest saved messages per chat built into the page on load
     olderBatch: 200,            // earlier messages added per "Show earlier messages" step
@@ -175,6 +185,8 @@ function renderHistoryBatch() {
         pendingLiveEvents = [];
         for (const event of events) handleServerEvent(event);
         if (autoScroll) scrollToBottom(true);
+        setRoomConnection('connected');
+        Hub.emit('history_complete', {type: 'history_complete'});
     }
 }
 
@@ -257,7 +269,7 @@ const SERVER_EVENTS = {
         if (document.getElementById(`message-${event.data.id}`)) return;
         messageIndex.set(event.data.id, event.data);
         // Play notification sound for new messages from others (not joins, not when focused)
-        if (soundEnabled && !document.hasFocus() && event.data.type !== 'join' && event.data.type !== 'leave' && event.data.sender && event.data.sender.toLowerCase() !== username.toLowerCase()) {
+        if (soundEnabled && !document.hasFocus() && event.data.type !== 'join' && event.data.type !== 'leave' && event.data.sender && !isHumanSender(event.data.sender)) {
             playNotificationSound(event.data.sender);
         }
         appendMessage(event.data);
@@ -400,6 +412,63 @@ function onClear(event) {
     dayFloatRefresh();
 }
 
+let connectionWatch = null;
+let connectionProbe = null;
+let connectionProbeSequence = 0;
+let connectionLastTick = 0;
+let connectionNextProbe = 0;
+
+function resetConnectionProbe() {
+    connectionProbe = null;
+    connectionLastTick = performance.now();
+    connectionNextProbe = connectionLastTick;
+}
+document.addEventListener('visibilitychange', resetConnectionProbe);
+window.addEventListener('focus', resetConnectionProbe);
+
+function watchConnection(socket) {
+    clearInterval(connectionWatch);
+    resetConnectionProbe();
+    connectionWatch = setInterval(() => {
+        if (socket !== ws || socket.readyState !== WebSocket.OPEN) return;
+        const now = performance.now();
+        const suspended = now - connectionLastTick > CONFIG.suspendedTickMs;
+        connectionLastTick = now;
+        if (document.hidden || suspended) { connectionProbe = null; connectionNextProbe = now; return; }
+        if (connectionProbe) {
+            if (now - connectionProbe.sent >= CONFIG.connectionTimeoutMs) reconnectSocket(socket);
+            return;
+        }
+        if (now < connectionNextProbe) return;
+        const id = String(++connectionProbeSequence);
+        connectionProbe = {id, sent: now};
+        connectionNextProbe = now + CONFIG.connectionProbeMs;
+        try { socket.send(JSON.stringify({type: 'ping', id})); }
+        catch { reconnectSocket(socket); }
+    }, CONFIG.connectionTickMs);
+}
+
+function reconnectSocket(socket) {
+    if (socket !== ws) return;
+    clearInterval(connectionWatch);
+    connectionProbe = null;
+    // Don't wait for a dead transport's closing handshake, or accept its late events.
+    socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
+    socket.close();
+    ws = null;
+    setRoomConnection('reconnecting');
+    soundEnabled = false;
+    historyGeneration++;
+    historyScheduled = false;
+    historyLoading = true;
+    historyReceived = false;
+    pendingHistory = [];
+    pendingLiveEvents = [];
+    setHistoryIndicator(true);
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectWebSocket, CONFIG.reconnectDelayMs);
+}
+
 function connectWebSocket() {
     historyGeneration++;
     historyScheduled = false;
@@ -408,9 +477,10 @@ function connectWebSocket() {
     pendingHistory = [];
     pendingLiveEvents = [];
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}`);
+    const socket = ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}`);
 
     ws.onopen = () => {
+        if (socket !== ws) return;
         console.log('WebSocket connected');
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
@@ -418,9 +488,19 @@ function connectWebSocket() {
         }
     };
 
-    ws.onmessage = (e) => handleServerEvent(JSON.parse(e.data));
+    ws.onmessage = (e) => {
+        if (socket !== ws) return;
+        const event = JSON.parse(e.data);
+        if (event.type === 'pong') {
+            if (connectionProbe?.id === event.id) connectionProbe = null;
+            return;
+        }
+        handleServerEvent(event);
+        if (event.type === 'history_complete') watchConnection(socket);
+    };
 
     ws.onclose = (e) => {
+        if (socket !== ws) return;
         // Server sends 4003 when session token is invalid (server restarted).
         // Auto-reload to pick up the fresh token from the new HTML page.
         if (e.code === CONFIG.sessionRejectedCode) {
@@ -428,21 +508,12 @@ function connectWebSocket() {
             location.reload();
             return;
         }
-        console.log('Disconnected, reconnecting in 2s...');
-        soundEnabled = false;  // suppress sounds during reconnect history replay
-        historyGeneration++;
-        historyScheduled = false;
-        historyLoading = true;
-        historyReceived = false;
-        pendingHistory = [];
-        pendingLiveEvents = [];
-        setHistoryIndicator(true);
-        reconnectTimer = setTimeout(connectWebSocket, CONFIG.reconnectDelayMs);
+        reconnectSocket(socket);
     };
 
     ws.onerror = (err) => {
         console.error('WebSocket error:', err);
-        ws.close();
+        reconnectSocket(socket);
     };
 }
 
@@ -477,7 +548,7 @@ function appendMessage(msg, options = {}) {
 
         let textHtml = styleHashtags(renderMarkdown(msg.text));
 
-        const isSelf = msg.sender.toLowerCase() === username.toLowerCase();
+        const isSelf = isHumanSender(msg.sender);
         el.classList.add(isSelf ? 'self' : 'other');
 
         let attachmentsHtml = '';
@@ -524,7 +595,7 @@ function appendMessage(msg, options = {}) {
             channelUnread[msgChannel] = (channelUnread[msgChannel] || 0) + 1;
             renderChannelTabs();
             // Play soft pluck for cross-channel chat messages from others (only when focused)
-            if (document.hasFocus() && msg.type === 'chat' && msg.sender && msg.sender.toLowerCase() !== username.toLowerCase()) {
+            if (document.hasFocus() && msg.type === 'chat' && msg.sender && !isHumanSender(msg.sender)) {
                 playCrossChannelSound();
             }
         }
@@ -566,8 +637,16 @@ function resolveAgent(name) {
     return null;
 }
 
+function isHumanSender(sender) {
+    const key = sender.toLowerCase();
+    return key === 'user' || key === username.toLowerCase();
+}
+
 function getAgentDisplayName(sender) {
     const key = sender.toLowerCase();
+    // Board/bell actions use the permanent human id, independently of the name in Settings.
+    // Resolve its label here so history and permissions keep the same sender identity.
+    if (key === 'user') return username;
     return agentConfig[key]?.label || baseColors[key]?.label || sender;
 }
 
@@ -677,6 +756,14 @@ function applySender(el) {
     const label = el.querySelector('.msg-sender, .join-text strong');
     label.textContent = getAgentDisplayName(name);
     label.title = '@' + (agentConfig[resolveAgent(name)]?.handle || name);
+    const quote = el.querySelector('.reply-sender');
+    if (quote) {
+        const message = messageIndex.get(Number(el.dataset.id));
+        const parent = messageIndex.get(message?.reply_to);
+        if (parent && !['system', 'join', 'leave'].includes(parent.type) && parent.sender !== 'system') {
+            quote.textContent = getAgentDisplayName(parent.sender);
+        }
+    }
 }
 
 function recolorMessages() {
