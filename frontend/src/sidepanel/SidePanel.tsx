@@ -194,7 +194,6 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
           </div>
         </details>
         <button className="companion-expand" ref={expandButton} aria-label={expanded ? 'Restore panel width' : 'Expand panel'} title={expanded ? 'Restore' : 'Expand'} onClick={() => setExpanded(!expanded)}>{expanded ? '↙' : '↗'}</button>
-        <button className="companion-hide" aria-label="Hide side panel" title="Hide panel" onClick={() => {setChoosing(false); hide();}}>◫</button>
       </div>
     </div>
     <p className="panel-sr-only" role="status">{announcement}</p>
