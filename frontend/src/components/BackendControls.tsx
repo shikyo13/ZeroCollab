@@ -7,7 +7,7 @@ const controller = 'http://127.0.0.1:8301';
 
 /** The tray's local controller outlives the backend, so this mounted UI can
  * still start it after Stop. It never relies on the backend's API/session. */
-export function BackendControls() {
+export function BackendControls({ inline = false }: { inline?: boolean }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -44,7 +44,7 @@ export function BackendControls() {
   }, [open, pending, status?.busy, refresh]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || inline) return;
     const close = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { setOpen(false); setConfirmation(null); trigger.current?.focus(); }
     };
@@ -54,7 +54,7 @@ export function BackendControls() {
     document.addEventListener('keydown', close);
     document.addEventListener('pointerdown', outside);
     return () => { document.removeEventListener('keydown', close); document.removeEventListener('pointerdown', outside); };
-  }, [open]);
+  }, [open, inline]);
 
   async function run(action: Action) {
     if (!status || status.busy || actionInFlight.current) return;
@@ -78,12 +78,12 @@ export function BackendControls() {
   const busy = !!pending || !!status?.busy;
   const label = unavailable ? 'Controller offline' : !status ? 'Checking…' : busy ? `${pending || status.action}…` : status.state.replaceAll('_', ' ').replace(/^./, c => c.toUpperCase());
   return <div className="backend-controls">
-    <button ref={trigger} className="ws-nav-item backend-trigger" title={`Server controls: ${label}`} aria-label={`Server controls: ${label}`} aria-expanded={open} aria-controls="backend-panel" onClick={() => { setOpen(!open); setConfirmation(null); void refresh(); }}>
+    {!inline && <button ref={trigger} className="ws-nav-item backend-trigger" title={`Server controls: ${label}`} aria-label={`Server controls: ${label}`} aria-expanded={open} aria-controls="backend-panel" onClick={() => { setOpen(!open); setConfirmation(null); void refresh(); }}>
       <i className="backend-indicator" aria-hidden="true"><i className={`backend-dot ${status?.alive ? 'is-running' : ''}`} /></i>
       <span>Server</span><small className="backend-status">{label}</small>
-    </button>
-    {open && <div ref={panel} id="backend-panel" className="backend-panel" role="region" aria-label="Server controls">
-      <div className="backend-heading"><strong>Server controls</strong><button aria-label="Close server controls" onClick={() => { setOpen(false); trigger.current?.focus(); }}>×</button></div>
+    </button>}
+    {(inline || open) && <div ref={panel} id="backend-panel" className={`backend-panel${inline ? ' backend-inline' : ''}`} role="region" aria-label="Server controls">
+      <div className="backend-heading"><strong>Server controls</strong>{!inline && <button aria-label="Close server controls" onClick={() => { setOpen(false); trigger.current?.focus(); }}>×</button>}</div>
       <p role="status">{label}</p>
       {unavailable ? <p>Open <strong>ZeroCollab Control</strong> from your desktop or tray to connect these controls.</p> : <p>Stop interrupts active agent turns. Saved chats and files remain.</p>}
       <div className="backend-actions">

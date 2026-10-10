@@ -92,9 +92,6 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
   const earlier = (data?.releases ?? []).filter(r => r.relation === 'older');
   const [rollbackId, setRollbackId] = useState('');
   const rollbackTarget = earlier.find(r => r.id === rollbackId) ?? earlier[0];
-  // Receipts name releases by id; show the version when the release is still known.
-  const versions = new Map([...(data?.releases ?? []), data?.current ?? {}].map(r => [r.id, r.version]));
-  const receiptRelease = (id: string) => versions.get(id) ? <>{versions.get(id)} <code className="bd-muted">{id}</code></> : <code>{id}</code>;
   // The tick confirms one exact rollback; if the target or running release changes on refresh, it no longer counts.
   const rollbackKey = rollbackTarget ? `${data?.current.id}:${rollbackTarget.id}:${rollbackTarget.manifest_sha}` : '';
   const [confirmedKey, setConfirmedKey] = useState('');
@@ -116,7 +113,7 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
     finally { setBusy(false); }
   }
   return <section className="deploy-panel bd-panel" aria-labelledby="deploy-title">
-    <div className="deploy-heading"><div><h2 id="deploy-title">Deployments</h2></div><span className="bd-pill">{online ? label(supervisor?.state) : 'Supervisor offline'}</span></div>
+    <div className="deploy-heading"><div><h2 id="deploy-title">Updates</h2></div><span className="bd-pill">{online ? label(supervisor?.state) : 'Supervisor offline'}</span></div>
     <p className="bd-muted">Review a release and approve it here. The supervisor handles the restart and saves the result.</p>
     {error && <p role="status" className="deploy-warning">{feed.reload ? 'The room restarted; reload to reconnect.' : 'Cannot refresh deployment status. Controls are disabled until the connection returns.'} <button className="bd-btn" onClick={() => feed.reload ? window.location.reload() : void refresh()}>{feed.reload ? 'Reload room' : 'Retry'}</button></p>}
     {!data && !error && <p role="status">Loading deployments…</p>}
@@ -144,7 +141,21 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
       </details>}
       {actionError && <p role="alert" className="bd-error">{actionError}</p>}
       {waiting && <p role="status" className="deploy-warning">Approval recorded for <code>{waiting.release_id}</code>. {label(supervisor?.step || supervisor?.state)}. You can leave this page; the supervisor saves the result.</p>}
-      <h3>Recent results</h3>
+
+    </>}
+  </section>;
+}
+
+export function DeploymentHistory({ feed }: { feed: DeploymentFeed }) {
+  const data = feed.data;
+  // Receipts name releases by id; show the version when the release is still known.
+  const versions = new Map([...(data?.releases ?? []), data?.current ?? {}].map(r => [r.id, r.version]));
+  const receiptRelease = (id: string) => versions.get(id) ? <>{versions.get(id)} <code className="bd-muted">{id}</code></> : <code>{id}</code>;
+  return <section className="deploy-panel bd-panel" aria-labelledby="deployment-history-title">
+    <h2 id="deployment-history-title">Update history</h2>
+    {feed.error && <p role="status" className="deploy-warning">History could not be refreshed. <button className="bd-btn" onClick={() => void feed.refresh()}>Retry</button></p>}
+    {!data && !feed.error && <p role="status">Loading history...</p>}
+    {data && <>
       {!data.receipts?.length && <p className="bd-muted">No deployment receipts yet.</p>}
       {!!data.receipts?.length && <div className="deploy-receipts">{data.receipts.map(r => {
         const reason = r.error || r.detail;

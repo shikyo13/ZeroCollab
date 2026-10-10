@@ -1,0 +1,20 @@
+.server-page{max-width:1120px;margin:0 auto;padding:28px 32px 48px;width:100%;box-sizing:border-box}
+.server-page .workspace-page-heading{padding:0 0 24px}
+.server-sections{display:flex;gap:8px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:12px}
+.server-sections button[aria-current=page]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.server-page .deploy-panel{margin:0}
+.server-version{padding:24px;margin-bottom:18px;border:1px solid var(--border);border-radius:12px;background:var(--bg-msg);display:flex;flex-direction:column;align-items:flex-start}
+.server-version h2{margin-top:0;font-size:18px}
+.server-version p{font-size:24px;font-weight:600}
+.server-page .backend-panel.backend-inline{position:static;width:auto;max-width:none;max-height:none;box-shadow:none;overflow:visible;padding:24px}
+.server-page .backend-panel button{padding:8px 14px;border:1px solid var(--border-control);border-radius:7px;background:var(--bg-elevated);color:var(--text);font:inherit;cursor:pointer}
+.server-page .backend-panel button:disabled{opacity:.45;cursor:not-allowed}
+.server-page .backend-panel button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.activity-deployments{margin:0 0 24px;padding:20px 24px;border:1px solid var(--border);border-radius:12px;background:var(--bg-msg)}
+.activity-deployments h2{font-size:17px;margin:0}
+.activity-deployments ul{list-style:none;padding:0;margin:12px 0 0}
+.activity-deployments li+li{border-top:1px solid var(--border)}
+.activity-deployments li button{display:flex;width:100%;justify-content:space-between;gap:12px;text-align:left;padding:12px 0;background:none;color:var(--text);border:0;cursor:pointer;font:inherit}
+.activity-deployments li small{color:var(--text-muted)}
+@media(max-width:800px){.server-page{padding:20px 16px}.activity-deployments{margin:0 0 20px;padding:16px}.server-page .backend-panel.backend-inline{padding:18px}.activity-deployments li button{flex-wrap:wrap}}
+.server-page,.activity-deployments{--bd-surface:var(--bg-msg);--bd-surface-2:var(--bg-elevated);--bd-border:var(--border);--bd-text:var(--text);--bd-muted:var(--text-dim);--bd-accent:var(--accent);--bd-on-accent:var(--text-on-accent);--bd-radius:12px;--bd-danger:var(--error-color);line-height:1.5}

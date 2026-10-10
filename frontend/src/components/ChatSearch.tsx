@@ -11,7 +11,7 @@ type Result = { key: string; label: string; hint: string; run: () => void };
 
 const NO_SESSIONS: Session[] = [];
 const NO_ARCHIVE: Archive = { closed: [], history: [] };
-const VIEWS: [View, string][] = [['board', 'Board'], ['team', 'Team'], ['activity', 'Activity'], ['projects', 'All projects']];
+const VIEWS: [View, string][] = [['board', 'Board'], ['team', 'Team'], ['activity', 'Activity'], ['server', 'Server'], ['projects', 'All projects']];
 const RESULTS_SHOWN = 12;
 
 export function ChatSearch({ open, setOpen, projects, navigate, onOpenProject }: {

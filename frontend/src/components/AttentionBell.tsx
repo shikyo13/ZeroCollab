@@ -7,6 +7,7 @@ import { EVENTS, USER } from '../lib/constants';
 import { useProjectState, useRuntimeState } from '../lib/room';
 import type { RuntimeState } from '../lib/types';
 import type { ProjectSummary } from '../workspace/projectData';
+import { openServer } from '../workspace/useWorkspaceRoute';
 import type { View } from '../workspace/useWorkspaceRoute';
 import type { DeploymentFeed } from './Deployments';
 import { Icon } from './Icon';
@@ -105,7 +106,7 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
       title: `Release ${release.version || release.id} is ready to deploy`,
       detail: clip(release.title || release.subject || 'Reviewed and rehearsed; approve it when you are ready.'),
       action: 'Review deployment',
-      open: () => { navigate('activity'); reveal('.deploy-panel'); },
+      open: () => { openServer('updates'); reveal('.server-page .deploy-panel'); },
     });
   }
 

@@ -11,7 +11,7 @@ import type { View } from '../workspace/useWorkspaceRoute';
 import { Icon } from './Icon';
 import { GoalChip } from './WorkControls';
 
-const VIEW_TITLES: Record<View, string> = { projects: 'Projects', chat: 'Chat', board: 'Board', team: 'Team', activity: 'Activity' };
+const VIEW_TITLES: Record<View, string> = { projects: 'Projects', chat: 'Chat', board: 'Board', team: 'Team', activity: 'Activity', server: 'Server' };
 const STACK_SHOWN = 6;
 const NO_SESSIONS: { id: string; title: string; readonly?: boolean }[] = [];
 
@@ -128,9 +128,7 @@ function StopResume({ paused, refresh }: { paused: boolean; refresh: () => void 
   </div>;
 }
 
-export function HeaderBar({ view, projectName, onTeam, bell, follow }: {
-  view: View; projectName: string; onTeam: () => void; bell?: React.ReactNode; follow?: React.ReactNode;
-}) {
+export function HeaderBar({ view, projectName, onTeam, bell, follow }: { view: View; projectName: string; onTeam: () => void; bell?: React.ReactNode; follow?: React.ReactNode }) {
   const { data, refresh } = useRuntimeState();
   const channel = useActiveChannel();
   const left = legacy.header.querySelector<HTMLElement>('.header-left');

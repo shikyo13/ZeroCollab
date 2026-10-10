@@ -4,8 +4,17 @@ import { useCallback, useEffect, useState } from 'react';
 import { EVENTS } from '../lib/constants';
 import { legacy } from '../legacy';
 
-export const VIEWS = ['projects', 'chat', 'board', 'team', 'activity'] as const;
+export const VIEWS = ['projects', 'chat', 'board', 'team', 'activity', 'server'] as const;
 export type View = typeof VIEWS[number];
+
+export type ServerSection = 'status' | 'updates' | 'history';
+export function openServer(section: ServerSection = 'status') {
+  const url = new URL(location.href);
+  url.searchParams.set('view', 'server');
+  url.searchParams.set('server', section);
+  history.pushState({}, '', url);
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
 
 const DEFAULT_VIEW: View = 'chat';
 const validView = (value: string | null): View => (VIEWS.includes(value as View) ? (value as View) : DEFAULT_VIEW);
