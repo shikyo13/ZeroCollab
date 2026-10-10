@@ -278,7 +278,10 @@ class Browser:
             raise ValueError('Install Microsoft Edge, Google Chrome or Chromium to use the shared browser')
         self.profile = tempfile.TemporaryDirectory(prefix='zerocollab-browser-')
         try:
-            args = [binary, '--headless=new', '--disable-gpu', '--guest',
+            # An elevated Edge or Chrome otherwise relaunches itself de-elevated through the shell.
+            # That child escapes the kill-on-close job and, with Administrators deny-only, cannot
+            # write the mkdtemp profile (its 0o700 ACL is owned by Administrators), so it never starts.
+            args = [binary, '--headless=new', '--disable-gpu', '--guest', '--do-not-de-elevate',
                 '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0',
                 '--remote-debugging-address=127.0.0.1', '--disable-background-networking',
                 '--block-new-web-contents',

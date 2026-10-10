@@ -178,6 +178,44 @@ def overlaps(a, b):
     return a in ('', '.') or b in ('', '.') or a == b or a.startswith(b + '/') or b.startswith(a + '/')
 
 
+PATCH_OVERLAP_CHARS = 3000
+# The chat line room_task posts after a task change (room_runtime coordination); the board carries it.
+TASK_RECEIPT = re.compile(r'Task [0-9a-f]{8}: [^\n]* \| owner \S+ \| \w+')
+
+
+def patch_view(name, diff, reserved):
+    """A one-line summary of a peer worktree (files and line counts) and the hunks that touch the
+    reader's reserved (repository_key, path) scopes. Counts are lower bounds when the diff was capped."""
+    sections, current, key = [], None, ''
+    for text in diff.splitlines():
+        repository = re.fullmatch(r'\[Repository ([^\]]+)\]', text)
+        header = re.match(r'diff --git a/.* b/(.+)$', text) or re.fullmatch(r'New file (.+):', text)
+        if repository:
+            key, current = repository.group(1), None
+        elif header:
+            current = {'key': key, 'path': header.group(1), 'new': text.startswith('New file'), 'lines': [text], 'add': 0, 'del': 0}
+            sections.append(current)
+        elif current is not None:
+            current['lines'].append(text)
+            if current['new'] or (text.startswith('+') and not text.startswith('+++')):
+                current['add'] += 1
+            elif text.startswith('-') and not text.startswith('---'):
+                current['del'] += 1
+    if not sections:
+        # An unavailable checkout or unrecognised output: a short note, never raw bulk.
+        return {'name': name, 'files': [], 'summary': f"{name}: {clipped(diff, 300)}", 'overlap': ''}
+    label = lambda s: (s['key'] + ':' if s['key'] else '') + s['path'] + (' (new)' if s['new'] else '')
+    files = [label(s) for s in sections]
+    listed = ', '.join(files[:8]) + (f' and {len(files) - 8} more' if len(files) > 8 else '')
+    count = f"{len(files)} file{'s' if len(files) != 1 else ''}"
+    summary = f"{name}: {count}, +{sum(s['add'] for s in sections)}/-{sum(s['del'] for s in sections)}: {listed}"
+    touching = [s for s in sections if any((not s['key'] or not rk or s['key'] == rk) and overlaps(s['path'], p)
+                                           for rk, p in reserved)]
+    overlap = (f"{name}'s worktree:\n" + clipped('\n'.join('\n'.join(s['lines']) for s in touching), PATCH_OVERLAP_CHARS)
+               if touching else '')
+    return {'name': name, 'files': files, 'summary': summary, 'overlap': overlap}
+
+
 class ProjectRoom:
     def __init__(self, runtime):
         self.runtime = runtime
@@ -799,7 +837,27 @@ class ProjectRoom:
                 text += (f"\n  images={len(t['attachments'])}{f' (+{earlier} earlier)' if earlier else ''}"
                          " (room_task get for urls/notes; room_image to view)")
             return text
-        ledger = '\n'.join(line(t) for t in tasks)
+        def brief(t):
+            priority = f" priority={t['priority']}" if t.get('priority') else ''
+            paths = ','.join(t['paths'][:4]) + (f",+{len(t['paths']) - 4} more" if len(t['paths']) > 4 else '')
+            text = (f"{t['id']} [{t['status']}; {t['execution_state'].replace('_', ' ')}]{priority} "
+                    f"owner={t['owner'] or 'unclaimed'} paths={paths} {clipped(t['title'], 140)}")
+            if t.get('transfer'):
+                text += f" (transfer proposed to {t['transfer']['to']})"
+            if not t['owner'] and t.get('labels'):
+                text += f" labels={','.join(t['labels'])}"
+            return text
+        # Only this agent's tasks are spelled out. Other owners' work stays one line each, so it is
+        # visible for collision checks without reading as the agent's own (or costing a fifth of the prompt).
+        mine = [t for t in tasks if t['owner'] == run.name or (t.get('transfer') or {}).get('to') == run.name]
+        others = [t for t in tasks if t not in mine]
+        # Own tasks may use most of the board budget, but never all of it: other owners' lines are the
+        # collision check, so they keep the remainder even when the agent owns many detailed tasks.
+        own = 'Your tasks:\n' + '\n'.join(line(t) for t in mine) if mine else 'Your tasks: none'
+        own = clipped(own, int(task_limit * .6)) if others else own
+        rest = ('Other open tasks, one line each (room_task get for details):\n' + '\n'.join(brief(t) for t in others)
+                if others else '')
+        ledger = (own + ('\n' + clipped(rest, task_limit - len(own) - 1) if rest else '')) if tasks else ''
         # Only current decisions; superseded and resolved ones stay in room_read(section="memory").
         # References (caches, helper scripts, paths) stay listed while active, so nobody redoes setup.
         current = lambda kind: [n for n in self.state['notes'] if n['kind'] == kind and n.get('status', 'active') == 'active']
@@ -814,7 +872,23 @@ class ProjectRoom:
         messages = (self.runtime.host.store.get_since(cursor, channel=run.channel) if run.previous_session
                     else self.runtime.host.store.get_recent(40, channel=run.channel))
         latest_id = messages[-1]['id'] if messages else cursor
-        relevant = [m for m in messages if m['sender'] != 'system' and not (run.previous_session and m['sender'] == run.name)]
+        handle = (self.runtime.states.get(run.name) or {}).get('handle') or run.name
+        # Mentions by internal name or by public @handle both count; profiles allow them to differ.
+        to_reader = lambda text: addressed(text, run.name) or (handle != run.name and addressed(text, handle))
+        def routine(m):
+            # Another agent's mid-turn progress, task receipts and progress notes stay visible to the user,
+            # but the board and notes already carry them, so they do not use up peers' chat window. Markup,
+            # blockers, handoffs, decisions, references and review/follow-up posts are kept.
+            meta = m.get('metadata') or {}
+            if m['sender'] == run.name or m['sender'] not in self.runtime.states or to_reader(m['text']):
+                return False
+            if meta.get('phase') == 'commentary':
+                return True
+            tool_post = (meta.get('no_route') and not meta.get('phase') and not meta.get('coordination_ref')
+                         and not m.get('attachments'))
+            return bool(tool_post and (TASK_RECEIPT.fullmatch(m['text']) or m['text'].startswith('progress: ')))
+        relevant = [m for m in messages if m['sender'] != 'system' and not routine(m)
+                    and not (run.previous_session and m['sender'] == run.name)]
         request, in_request = self.request_text(run, min(8000, maximum // 3))
         # Keep whole messages, newest first, so a sender and message ID are never sliced off. Messages
         # addressed to this agent are not cut to an excerpt; the one being answered appears once, in full, below.
@@ -822,7 +896,7 @@ class ProjectRoom:
         for m in reversed(relevant[-12:]):
             if m['id'] in in_request:
                 entry = f"#{m['id']} {m['sender']}: [Addressed to you; full text under Current message below.]"
-            elif addressed(m['text'], run.name):
+            elif to_reader(m['text']):
                 entry = continued(m, self.origin(), max(1400, chat_limit // 2))
             else:
                 entry = clipped(message_text(m, self.origin()), 1400)
@@ -836,23 +910,33 @@ class ProjectRoom:
         history = '\n'.join(lines)
         if len(lines) < len(relevant):
             missed = [f"#{m['id']} {m['sender']}" for m in relevant
-                      if m['id'] not in shown and m['id'] not in in_request and addressed(m['text'], run.name)]
+                      if m['id'] not in shown and m['id'] not in in_request and to_reader(m['text'])]
             if missed:
                 history = (f"[Also addressed to you and not shown here: {', '.join(missed[-12:])}. Read them with "
                            f'room_read(section="messages", after_id={cursor}) before acting on older work.]\n' + history)
             history = f'[Older unread messages remain available via room_read(section="messages", after_id={cursor}).]\n' + history
         peer_limit = int(maximum * .12)
         changes = changes if changes is not None else {}
-        changed = [f"{name}'s worktree:\n{clipped(diff, max(200, peer_limit // max(1, len(changes))))}" for name, diff in changes.items() if diff]
-        patches = chr(10).join(changed)
+        # Every changed worktree is summarised; full hunks are kept only for files that overlap this
+        # agent's own reservations, instead of an equal, unreadable slice of every diff.
+        reserved = {(t.get('repository_key') or '', p) for t in mine for p in t['paths']}
+        views = [patch_view(name, diff, reserved) for name, diff in sorted(changes.items()) if diff and name != run.name]
+        summaries = '\n'.join(v['summary'] for v in views)
+        touching = '\n'.join(v['overlap'] for v in views if v['overlap'])
+        # Summaries first; overlapping hunks get what is left, so one large overlap cannot hide other worktrees.
+        patches = summaries + (('\nChanges overlapping your reserved paths:\n'
+                                + clipped(touching, max(400, peer_limit - len(summaries) - 60))) if touching else '')
         values = {'spec': self.state['spec'], 'tasks': ledger, 'memory': decisions, 'patches': patches,
                   'workspace': self.execution_context(run)}
         fingerprints = {name: hashlib.sha256(text.encode('utf-8')).hexdigest() for name, text in values.items()}
         # The pending request's age moves every minute; only a real change resends the block.
         fingerprints['workspace'] = hashlib.sha256(re.sub(r'\d+h?\d*m ago', '', values['workspace']).encode('utf-8')).hexdigest()
-        fingerprints['patches'] = hashlib.sha256(json.dumps(changes, sort_keys=True).encode('utf-8')).hexdigest()
+        # Relevance-scoped: line counts in an unrelated peer diff, or an unrelated task's check-in,
+        # do not invalidate the whole block for every resumed agent.
+        fingerprints['patches'] = hashlib.sha256(json.dumps([[v['name'], v['files'], v['overlap']] for v in views])
+                                                 .encode('utf-8')).hexdigest()
         # Relative ages change every minute; only real task changes or newly stale work count as new.
-        board = [(t['id'], t['updated'], t['stale'], t['execution_state']) for t in tasks]
+        board = [(t['id'], t['updated'], t['stale'], t['execution_state']) for t in mine] + [brief(t) for t in others]
         fingerprints['tasks'] = hashlib.sha256(json.dumps(board).encode('utf-8')).hexdigest()
         run.context_delivery = {**fingerprints, 'message_id': latest_id}
         def delivery(name, limit):
@@ -873,7 +957,7 @@ class ProjectRoom:
         if self.state['spec']:
             prompt += f"Optional shared spec ({len(self.state['spec'])} characters):\n{delivery('spec', spec_limit)}\n"
         if ledger:
-            prompt += f"Owned tasks:\n{delivery('tasks', task_limit)}\n"
+            prompt += f"Board:\n{delivery('tasks', task_limit)}\n"
         if decisions:
             prompt += f"Group notes and decisions:\n{delivery('memory', memory_limit)}\n"
         if patches:
