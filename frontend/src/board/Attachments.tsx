@@ -6,10 +6,13 @@ import { createPortal } from 'react-dom';
 import { annotateImage } from '../annotate';
 import { imageNotes, ImageViewer, uploadSource } from '../annotate/ImageViewer';
 import { RASTER_IMAGE_TYPES, runtime, uploadImage } from '../lib/api';
-import type { Task, TaskAttachment } from '../lib/types';
+import type { EarlierAttachment, Task, TaskAttachment } from '../lib/types';
 import { ErrorText, useAction } from './shared';
 
-export const MAX_ATTACHMENTS = 8;
+/** The card shows this many newest images; adding more moves older ones to earlier images (project_room.CARD_IMAGES). */
+export const CARD_IMAGES = 8;
+/** Images one save may send (project_room.ATTACHMENT_INPUT): the card plus earlier images. */
+export const ATTACHMENT_INPUT = 48;
 
 function imageFiles(list: FileList | DataTransferItemList | null | undefined): File[] {
   if (!list) return [];
@@ -109,46 +112,45 @@ export function ImageDropZone({
   );
 }
 
+const MOVED_REASON: Record<NonNullable<EarlierAttachment['reason']>, string> = {
+  superseded: 'Replaced by a newer annotation of the same image',
+  overflow: 'Moved off the card when newer images were added',
+};
+
 export function TaskAttachments({ task, channel }: { task: Task; channel: string }) {
-  const [expanded, setExpanded] = useState<TaskAttachment | null>(null);
-  const { run, busy, error, setError } = useAction();
+  const [expanded, setExpanded] = useState<{ list: TaskAttachment[]; url: string } | null>(null);
+  const { run, busy, error } = useAction();
   const attachments = task.attachments ?? [];
-  const room = MAX_ATTACHMENTS - attachments.length;
+  const earlier = task.earlier_attachments ?? [];
   // Uploads and the annotation dialog are async; save against the latest list, not the one from when they began.
   const latest = useRef(attachments);
   latest.current = attachments;
 
+  // The server never refuses for count: past CARD_IMAGES it moves older images to earlier images.
   const save = (next: TaskAttachment[]) => runtime('/tasks', { action: 'update', task_id: task.id, channel, attachments: next });
 
-  const add = (files: File[]) => {
-    if (files.length > room) {
-      setError(`A task holds up to ${MAX_ATTACHMENTS} images; remove one first.`);
-      return;
-    }
-    void run(async () => {
-      const uploaded = await uploadAll(files);
-      await save([...latest.current, ...uploaded]);
-    });
-  };
+  const add = (files: File[]) => void run(async () => {
+    const uploaded = await uploadAll(files);
+    await save([...latest.current, ...uploaded]);
+  });
 
   const annotate = async (attachment: TaskAttachment) => {
-    if (room < 1) {
-      setError(`A task holds up to ${MAX_ATTACHMENTS} images; remove one before saving an annotated copy.`);
-      return;
-    }
     const annotated = await annotateImage(uploadSource(attachment.source) || attachment.url, attachment.name);
     if (annotated) await run(() => save([...latest.current, annotated]));
   };
 
   const remove = (url: string) => void run(() => save(latest.current.filter(a => a.url !== url)));
+  const bringBack = (item: EarlierAttachment) =>
+    void run(() => save([...latest.current, { url: item.url, name: item.name, note: item.note, source: item.source }]));
+  const full = attachments.length >= CARD_IMAGES;
 
   return (
-    <ImageDropZone disabled={busy || room < 1} onFiles={add}>
+    <ImageDropZone disabled={busy} onFiles={add}>
       {attachments.length > 0 ? (
         <ul className="bd-gallery">
           {attachments.map(a => (
             <li key={a.url} className="bd-gallery-item">
-              <button type="button" className="bd-image-open" onClick={() => setExpanded(a)} title="Expand image and annotation notes">
+              <button type="button" className="bd-image-open" onClick={() => setExpanded({ list: attachments, url: a.url })} title="Expand image and annotation notes">
                 <img src={a.url} alt={a.name} loading="lazy" />
               </button>
               <div className="bd-gallery-meta">
@@ -175,9 +177,34 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
       ) : (
         <p className="bd-muted">No images. Screenshots and mockups added here are visible to the team; agents open them on demand.</p>
       )}
+      {full && <p className="bd-field-hint">The card shows the {CARD_IMAGES} newest images. Adding another moves an older one to Earlier images; nothing is deleted.</p>}
+      {earlier.length > 0 && (
+        <details className="bd-earlier">
+          <summary>Earlier images ({earlier.length})</summary>
+          <ul className="bd-gallery">
+            {earlier.map(a => (
+              <li key={a.url} className="bd-gallery-item bd-gallery-earlier">
+                <button type="button" className="bd-image-open" onClick={() => setExpanded({ list: earlier, url: a.url })} title="Expand image and annotation notes">
+                  <img src={a.url} alt={a.name} loading="lazy" />
+                </button>
+                <div className="bd-gallery-meta">
+                  <span className="bd-gallery-name" title={a.name}>{a.source ? 'Annotated: ' : ''}{a.name}</span>
+                  {a.reason && <span className="bd-field-hint">{MOVED_REASON[a.reason]}{a.moved ? ` · ${new Date(a.moved * 1000).toLocaleString()}` : ''}</span>}
+                  <div className="bd-actions">
+                    <button type="button" className="bd-btn bd-btn-quiet" disabled={busy} onClick={() => bringBack(a)}
+                      title={full ? 'Shows it on the card again; the oldest card image moves here' : 'Shows it on the card again'}>
+                      Bring back
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       {busy && <p className="bd-muted" role="status">Saving images...</p>}
       <ErrorText message={error} />
-      {expanded && attachments.length > 0 && createPortal(<ImageViewer images={attachments} initial={Math.max(0, attachments.findIndex(a => a.url === expanded.url))}
+      {expanded && expanded.list.length > 0 && createPortal(<ImageViewer images={expanded.list} initial={Math.max(0, expanded.list.findIndex(a => a.url === expanded.url))}
         onClose={() => setExpanded(null)} onAnnotate={attachment => void annotate(attachment)} />, document.body)}
     </ImageDropZone>
   );

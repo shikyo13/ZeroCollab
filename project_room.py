@@ -104,10 +104,16 @@ def upload_url(raw):
     return path
 
 
+# A task card shows its CARD_IMAGES newest images; older ones stay viewable as earlier images.
+CARD_IMAGES = 8
+EARLIER_IMAGES = 40
+ATTACHMENT_INPUT = CARD_IMAGES + EARLIER_IMAGES
+
+
 def task_attachments(values):
     # Images shown on the board card; prompts carry only a count, agents fetch details and pixels on demand.
-    if not isinstance(values, list) or len(values) > 8:
-        raise ValueError('attachments must be a list of up to 8 uploaded images')
+    if not isinstance(values, list) or len(values) > ATTACHMENT_INPUT:
+        raise ValueError(f'attachments must be a list of up to {ATTACHMENT_INPUT} uploaded images')
     result = []
     for value in values:
         item = {'url': value} if isinstance(value, str) else value
@@ -121,6 +127,45 @@ def task_attachments(values):
         if attachment['url'] not in [a['url'] for a in result]:
             result.append(attachment)
     return result
+
+
+def arrange_attachments(wanted, previous, earlier):
+    """Fit a task's images to the card without refusing any.
+
+    wanted is the new list in order (oldest first); previous and earlier are the stored card and
+    earlier lists. Images just added always stay on the card. When more than CARD_IMAGES remain,
+    older images move to earlier images: first an annotation whose original has a newer annotation
+    on the card (superseded), then the oldest. An image explicitly left out of wanted is removed,
+    not archived. Returns (card, earlier, moved), each moved image carrying why it moved."""
+    before = {a['url'] for a in previous}
+    added = [a for a in wanted if a['url'] not in before]
+    card = list(wanted)
+    moved = []
+
+    def move(item, reason, by=''):
+        card.remove(item)
+        moved.append({**item, 'moved': time.time(), 'reason': reason, **({'superseded_by': by} if by else {})})
+
+    # Many images added at once: only the newest CARD_IMAGES of them can stay.
+    for item in added[:max(0, len(added) - CARD_IMAGES)]:
+        move(item, 'overflow')
+    added = added[-CARD_IMAGES:]
+    while len(card) > CARD_IMAGES:
+        keep = {a['url'] for a in added}
+        older = [a for a in card if a['url'] not in keep]
+        newer_of = {}
+        for a in card:
+            if a.get('source'):
+                newer_of[a['source']] = a  # the last (newest) annotation of each original
+        superseded = next((a for a in older if a.get('source') and newer_of.get(a['source']) is not a), None)
+        if superseded:
+            move(superseded, 'superseded', newer_of[superseded['source']]['url'])
+        else:
+            move(older[0], 'overflow')
+    on_card = {a['url'] for a in card}
+    kept = [a for a in earlier if a['url'] not in on_card and a['url'] not in {m['url'] for m in moved}]
+    # Newest first; the record keeps EARLIER_IMAGES of them and the files themselves are never deleted.
+    return card, [*reversed(moved), *kept][:EARLIER_IMAGES], moved
 
 
 def overlaps(a, b):
@@ -187,6 +232,10 @@ class ProjectRoom:
         summary['history_entries'] = len(task['updates'])
         if task.get('attachments'):
             summary['images'] = len(task['attachments'])
+        if task.get('earlier_attachments'):
+            summary['earlier_images'] = len(task['earlier_attachments'])
+        if task.get('moved_to_earlier'):
+            summary['moved_to_earlier'] = task['moved_to_earlier']
         if check_in:
             latest = next((u for u in reversed(task['updates']) if not u.get('auto')), None)
             if latest:
@@ -369,13 +418,20 @@ class ProjectRoom:
             task['evidence'] = {**task.get('evidence', {}), **evidence}
         if labels is not None:
             task['labels'] = task_labels(labels)
+        moved_images = []
         if attachments is not None:
-            task['attachments'] = task_attachments(attachments)
+            wanted = task_attachments(attachments)
             store = getattr(getattr(self.runtime, 'host', None), 'store', None)
             upload_dir = getattr(store, 'upload_dir', None)
-            missing = [a['url'] for a in task['attachments'] if upload_dir and not (upload_dir / a['url'][len('/uploads/'):]).is_file()]
+            missing = [a['url'] for a in wanted if upload_dir and not (upload_dir / a['url'][len('/uploads/'):]).is_file()]
             if missing:
                 raise ValueError(f'Upload not found: {missing[0]}')
+            task['attachments'], earlier, moved_images = arrange_attachments(
+                wanted, (previous or {}).get('attachments', []), task.get('earlier_attachments', []))
+            if earlier:
+                task['earlier_attachments'] = earlier
+            else:
+                task.pop('earlier_attachments', None)
         if depends_on is not None:
             if not isinstance(depends_on, list) or any(not isinstance(x, str) for x in depends_on):
                 raise ValueError('depends_on must be a list of task IDs')
@@ -425,10 +481,15 @@ class ProjectRoom:
             events.append(f"moved to {task['status']}")
         before = {a['url'] for a in (previous or {}).get('attachments', [])}
         after = {a['url'] for a in task.get('attachments', [])}
-        if after - before:
-            events.append(f"attached {len(after - before)} image{'s' if len(after - before) > 1 else ''}")
-        if before - after:
-            events.append(f"removed {len(before - after)} image{'s' if len(before - after) > 1 else ''}")
+        moved_urls = {a['url'] for a in moved_images}
+        attached = (after | moved_urls) - before
+        removed = before - after - moved_urls
+        if attached:
+            events.append(f"attached {len(attached)} image{'s' if len(attached) > 1 else ''}")
+        if moved_images:
+            events.append(f"moved {len(moved_images)} older image{'s' if len(moved_images) > 1 else ''} to earlier images")
+        if removed:
+            events.append(f"removed {len(removed)} image{'s' if len(removed) > 1 else ''}")
         if update or events:
             entry = {'by': actor, 'text': str(update)[:1600] if update else '; '.join(events), 'time': time.time()}
             if events:
@@ -444,7 +505,12 @@ class ProjectRoom:
         else:
             tasks[tasks.index(next(t for t in tasks if t['id'] == task['id']))] = task
         self.save()
-        return self.task_view(task)
+        view = self.task_view(task)
+        if moved_images:
+            # Reported once, in this call's receipt; the stored record keeps them in earlier_attachments.
+            view['moved_to_earlier'] = [{'url': a['url'], 'reason': a['reason'],
+                                         **({'superseded_by': a['superseded_by']} if a.get('superseded_by') else {})} for a in moved_images]
+        return view
 
     def markup(self, actor, channel, chain, image, marks=None, summary='', task_id='', post=True):
         """Share an uploaded image, optionally with numbered marks drawn onto a new PNG."""
@@ -513,9 +579,13 @@ class ProjectRoom:
             task = next((t for t in self.state['tasks'] if t['id'] == task_id), None)
             if not task:
                 raise ValueError('Task was not found')
-            # task() applies ownership, the 8-image cap and history like any other attachment change.
-            self.task(actor, 'update', task_id=task_id, attachments=[*task.get('attachments', []), attachment])
+            # task() applies ownership, the card limit and history like any other attachment change.
+            updated = self.task(actor, 'update', task_id=task_id, attachments=[*task.get('attachments', []), attachment])
             result['task_id'] = task_id
+            if updated.get('moved_to_earlier'):
+                result['moved_to_earlier'] = updated['moved_to_earlier']
+                result['card_note'] = (f'The card shows the {CARD_IMAGES} newest images; the listed older ones moved to earlier images '
+                                       '(room_task get lists them). No file was deleted.')
         if post:
             text = attachment.get('note') or f"Shared {attachment['name']}"
             # Color metadata belongs to the attachment viewer, not the chat prose.
@@ -642,7 +712,8 @@ class ProjectRoom:
                 'repositories': self.project_record().get('repositories', []),
                 'spec_length': len(self.state['spec']), 'tasks': [
                 {**{k: t[k] for k in ('id', 'title', 'owner', 'status', 'paths')}, 'labels': t.get('labels', []),
-                 'images': len(t.get('attachments', []))}
+                 'images': len(t.get('attachments', [])),
+                 **({'earlier_images': len(t['earlier_attachments'])} if t.get('earlier_attachments') else {})}
                 for t in self.state['tasks'] if t['status'] != 'done'],
                 'limits': self.limits}, ensure_ascii=False)
         else:
@@ -711,7 +782,9 @@ class ProjectRoom:
             if t.get('labels'):
                 text += f"\n  labels={','.join(t['labels'])}"
             if t.get('attachments'):
-                text += f"\n  images={len(t['attachments'])} (room_task get for urls/notes; room_image to view)"
+                earlier = len(t.get('earlier_attachments', []))
+                text += (f"\n  images={len(t['attachments'])}{f' (+{earlier} earlier)' if earlier else ''}"
+                         " (room_task get for urls/notes; room_image to view)")
             return text
         ledger = '\n'.join(line(t) for t in tasks)
         # Only current decisions; superseded and resolved ones stay in room_read(section="memory").
@@ -914,7 +987,7 @@ def coordination_tools():
     return [
         definition('room_read', 'Read shared project state or your pending review/follow-up inbox. Filter tasks/reviews/followups by task_id, owner or status. limit/offset are characters; paginate with next_offset. Messages include attachments.',
                    {'section': {'type': 'string', 'enum': ['overview', 'spec', 'tasks', 'memory', 'messages', 'patches', 'participants', 'inbox', 'reviews', 'followups', 'review_artifact']}, 'offset': {'type': 'integer'}, 'limit': {'type': 'integer'}, 'query': string, 'after_id': {'type': 'integer'}, 'task_id': string, 'owner': string, 'status': string}),
-        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls, up to 8; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override.',
+        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override.',
                    {'action': {'type': 'string', 'enum': ['get', 'create', 'claim', 'update', 'delegate', 'accept', 'release']}, 'task_id': string, 'title': string, 'details': string, 'owner': string, 'status': string,
                     'paths': {'type': 'array', 'items': string}, 'depends_on': {'type': 'array', 'items': string}, 'labels': {'type': 'array', 'items': string},
                     'attachments': {'type': 'array', 'items': {'type': 'object', 'properties': {'url': string, 'name': string, 'note': string, 'source': string}, 'required': ['url']}},

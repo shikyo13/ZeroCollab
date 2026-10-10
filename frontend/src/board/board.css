@@ -293,3 +293,11 @@
 .bd-facts-row { display: contents; }
 .bd-ok { color: var(--bd-success); }
 .bd-note-retired > p { color: var(--bd-muted); text-decoration: line-through; }
+
+/* Earlier task images (Attachments.tsx): moved off the card, still viewable and restorable. */
+.bd-earlier { margin-top: 10px; }
+.bd-earlier > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--bd-muted); }
+.bd-earlier > summary:hover { color: var(--bd-text); }
+.bd-earlier .bd-gallery { margin-top: 8px; }
+.bd-gallery-earlier img { opacity: 0.8; }
+.bd-gallery-earlier .bd-field-hint { display: block; }

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { runtime } from '../lib/api';
 import type { Task, TaskAttachment } from '../lib/types';
-import { ImageDropZone, MAX_ATTACHMENTS, uploadAll } from './Attachments';
+import { ATTACHMENT_INPUT, ImageDropZone, uploadAll } from './Attachments';
 import { ErrorText, Field, LabelField, ParticipantOptions, StatusPill, splitLabels, splitPaths, useAction, type Agents } from './shared';
 import { sessionTitle } from '../lib/room';
 import { LIMITS } from '../lib/constants';
@@ -74,13 +74,13 @@ export function NewTaskForm({
       <div className="bd-field">
         <span className="bd-field-label">Images</span>
         <ImageDropZone
-          disabled={uploading || images.length >= MAX_ATTACHMENTS}
+          disabled={uploading || images.length >= ATTACHMENT_INPUT}
           onFiles={files =>
             void run(async () => {
               setUploading(true);
               try {
-                const uploaded = await uploadAll(files.slice(0, MAX_ATTACHMENTS - images.length));
-                setImages(cur => [...cur, ...uploaded].slice(0, MAX_ATTACHMENTS));
+                const uploaded = await uploadAll(files.slice(0, ATTACHMENT_INPUT - images.length));
+                setImages(cur => [...cur, ...uploaded].slice(0, ATTACHMENT_INPUT));
               } finally {
                 setUploading(false);
               }

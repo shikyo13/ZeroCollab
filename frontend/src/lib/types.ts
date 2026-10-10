@@ -27,6 +27,8 @@ export interface Task {
   /** Area tags such as frontend, backend or docs. Older tasks have none. */
   labels?: string[];
   attachments?: TaskAttachment[];
+  /** Images moved off the card when newer ones were added (project_room.arrange_attachments), newest first. */
+  earlier_attachments?: EarlierAttachment[];
   /** Observed by the server (coordination_state.execution_state); separate from the chosen status. */
   execution_state?: ExecutionState;
   /** No check-in for a while on unattended work; never set while waiting on the user. */
@@ -67,6 +69,13 @@ export interface TaskAttachment {
   name: string;
   note?: string;
   source?: string;
+}
+
+/** superseded: a newer annotation of the same original replaced it on the card; overflow: newer images took its place. */
+export interface EarlierAttachment extends TaskAttachment {
+  moved?: number;
+  reason?: 'superseded' | 'overflow';
+  superseded_by?: string;
 }
 
 export type ReviewStatus = 'pending' | 'approved' | 'changes_requested' | 'superseded' | 'cancelled';
