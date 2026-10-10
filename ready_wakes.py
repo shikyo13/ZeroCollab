@@ -124,7 +124,7 @@ class ReadyWakes:
 
     def history(self, task, text):
         """Visible on the task without touching 'updated', which pending record references compare."""
-        task.setdefault('updates', []).append({'by': 'system', 'text': text, 'time': time.time(), 'auto': True})
+        task.setdefault('updates', []).append({'by': 'system', 'text': text, 'event': text, 'time': time.time(), 'auto': True})
 
     def event(self, kind, **data):
         try:

@@ -87,6 +87,19 @@ class ReadyWakeTests(unittest.TestCase):
         self.drain()
         self.assertEqual(self.wakes.schedule(), [])
 
+    def test_wake_history_can_build_owner_turn_context(self):
+        self.ready()
+        self.assertEqual(self.wakes.schedule(), ['worker'])
+        request = self.drain()['requests'][0]
+        self.assertTrue(self.wakes.accepts(request))
+        latest = self.task()['updates'][-1]
+        self.r.host = SimpleNamespace(store=SimpleNamespace(get_recent=lambda *a, **k: []))
+        run = SimpleNamespace(name='worker', channel='general', previous_session={},
+                              entry={'chain': self.chain}, worktree=self.tmp.name, receipts=set())
+        context = self.room.context(run)
+        self.assertIn('last change', context)
+        self.assertIn(latest['text'], context)
+
     def test_release_then_claim_cannot_self_rearm(self):
         self.ready(); self.assertEqual(self.wakes.schedule(), ['worker']); self.drain()
         self.room.task('worker', 'release', task_id=self.task_id)
