@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -76,8 +77,12 @@ async def spawn(run, args, env_overrides=None, *, stream_limit=2**22):
 
 
 def room_environment(run):
+    # Child processes never receive the UI session token. The run's own capability token is
+    # accepted only on its coordination route and image upload, and dies when the run ends.
+    if not getattr(run, 'room_token', None):
+        run.room_token = secrets.token_urlsafe(32)
     return {'AGENT_ROOM_URL': f"http://127.0.0.1:{run.manager.cfg['server']['port']}",
-            'AGENT_ROOM_SESSION_TOKEN': run.manager.host.session_token, 'AGENT_ROOM_RUN_ID': run.id}
+            'AGENT_ROOM_SESSION_TOKEN': run.room_token, 'AGENT_ROOM_RUN_ID': run.id}
 
 
 def room_server(run):

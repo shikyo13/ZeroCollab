@@ -8,7 +8,7 @@ import time
 import uuid
 from coordination_records import TASK_HISTORY
 from pathlib import Path, PurePosixPath
-from coordination_records import CoordinationRecords
+from coordination_records import CoordinationRecords, bounded
 from coordination_queue import receipt_key
 from durable import atomic_write
 from coordination_state import update_execution, execution_state, pending_human_wait
@@ -127,7 +127,7 @@ def task_attachments(values):
             raise ValueError('Each attachment needs a url')
         attachment = {'url': upload_url(item.get('url', '')), 'name': str(item.get('name') or 'image')[:120]}
         if item.get('note'):
-            attachment['note'] = str(item['note']).strip()[:1000]
+            attachment['note'] = bounded(item['note'], 'attachment note')
         if item.get('source'):
             attachment['source'] = upload_url(item['source'])
         if attachment['url'] not in [a['url'] for a in result]:
@@ -399,19 +399,22 @@ class ProjectRoom:
         task = next((t for t in tasks if t['id'] == task_id), None)
         previous = task
         human = actor == 'user'
+        # Refuse over-limit text before any ownership or status change is applied.
+        title, details = bounded(title, 'title'), bounded(details, 'details')
+        update = bounded(update, 'update') if update else update
         if action == 'get':
             if not task:
                 raise ValueError('Task was not found')
             return {**self.task_view(task), 'reviews': [self.records.review_view(r) for r in self.state.get('reviews', []) if r['task_id'] == task_id],
                     'followups': [f for f in self.state.get('followups', []) if f['task_id'] == task_id]}
         if action == 'create':
-            duplicate = next((t for t in tasks if t['status'] != 'done' and t['title'].strip().casefold() == str(title).strip()[:120].casefold()), None)
+            duplicate = next((t for t in tasks if t['status'] != 'done' and t['title'].strip().casefold() == title.casefold()), None)
             if duplicate:
                 raise ValueError('Duplicate task; existing task: ' + json.dumps({k: duplicate[k] for k in ('id', 'title', 'owner', 'status')}))
-            if not str(title).strip() or len(tasks) >= 200:
+            if not title or len(tasks) >= 200:
                 raise ValueError('Provide a task title; the project supports up to 200 tasks')
-            task = {'id': uuid.uuid4().hex[:8], 'title': str(title).strip()[:120],
-                    'details': str(details).strip()[:3000], 'paths': [self.task_scope(p) for p in (paths or [])[:20]],
+            task = {'id': uuid.uuid4().hex[:8], 'title': title,
+                    'details': details, 'paths': [self.task_scope(p) for p in (paths or [])[:20]],
                     'repository_key': self.primary_repository_key(),
                     'owner': owner or ('' if human else actor), 'status': 'open', 'updates': [], 'updated': time.time()}
         elif not task:
@@ -450,9 +453,9 @@ class ProjectRoom:
                 task.pop('transfer', None)
             elif action == 'update':
                 if title:
-                    task['title'] = str(title).strip()[:120]
+                    task['title'] = title
                 if details:
-                    task['details'] = str(details).strip()[:3000]
+                    task['details'] = details
                 if status:
                     if status not in TASK_STATES:
                         raise ValueError('Choose open, working, blocked, review, or done')
@@ -541,7 +544,7 @@ class ProjectRoom:
         if removed:
             events.append(f"removed {len(removed)} image{'s' if len(removed) > 1 else ''}")
         if update or events:
-            entry = {'by': actor, 'text': str(update)[:1600] if update else '; '.join(events), 'time': time.time()}
+            entry = {'by': actor, 'text': update if update else '; '.join(events), 'time': time.time()}
             if events:
                 entry['event'] = '; '.join(events)
             if not update:
@@ -565,6 +568,7 @@ class ProjectRoom:
     def markup(self, actor, channel, chain, image, marks=None, summary='', task_id='', post=True):
         """Share an uploaded image, optionally with numbered marks drawn onto a new PNG."""
         url = upload_url(image)
+        summary = bounded(summary or '', 'markup')
         upload_dir = self.runtime.host.store.upload_dir
         source = upload_dir / url[len('/uploads/'):]
         if not source.is_file():
@@ -640,7 +644,7 @@ class ProjectRoom:
             text = attachment.get('note') or f"Shared {attachment['name']}"
             # Color metadata belongs to the attachment viewer, not the chat prose.
             text = re.sub(r' \[color=#[0-9a-fA-F]{6}\](?=\n|$)', '', text)
-            message = self.runtime.host.store.add(actor, text[:2000], channel=channel,
+            message = self.runtime.host.store.add(actor, text, channel=channel,
                 attachments=[dict(attachment)],
                 metadata={'no_route': True, 'chain': chain})
             result['message_id'] = message['id']
@@ -649,6 +653,7 @@ class ProjectRoom:
     def note(self, actor, kind, text, supersedes='', resolves=''):
         if kind not in ('progress', 'decision', 'reference', 'blocker', 'handoff') or not str(text).strip():
             raise ValueError('Provide a progress, decision, reference, blocker, or handoff update')
+        text = bounded(text, 'note')
         if supersedes and resolves:
             raise ValueError('Choose supersedes or resolves, not both')
         old = None
@@ -660,7 +665,7 @@ class ProjectRoom:
                 raise ValueError('Only the user can retire a user decision or reference')
             if kind != old['kind']:
                 raise ValueError('Replace or resolve a note with the same kind')
-        note = {'id': uuid.uuid4().hex[:8], 'by': actor, 'kind': kind, 'text': str(text).strip()[:1600], 'time': time.time()}
+        note = {'id': uuid.uuid4().hex[:8], 'by': actor, 'kind': kind, 'text': text, 'time': time.time()}
         if kind in ('decision', 'reference'):
             note['status'] = 'active'
         if old:
@@ -749,7 +754,7 @@ class ProjectRoom:
         elif section == 'memory':
             text = json.dumps(self.state['notes'], ensure_ascii=False)
         elif section == 'messages':
-            text = '\n'.join(message_text(m, self.origin()) for m in self.runtime.host.store.get_since(int(after_id), channel=run.channel))
+            text = '\n'.join(message_text(m, self.origin()) for m in self.visible(run, self.runtime.host.store.get_since(int(after_id), channel=run.channel)))
         elif section == 'patches':
             if changes is None:
                 raise ValueError('Patch collection must be supplied by the async caller')
@@ -776,7 +781,7 @@ class ProjectRoom:
         page = text[offset:offset+limit]
         # A clipped page must not acknowledge records/messages the model never received.
         if section == 'messages':
-            for m in self.runtime.host.store.get_since(int(after_id), channel=run.channel):
+            for m in self.visible(run, self.runtime.host.store.get_since(int(after_id), channel=run.channel)):
                 if message_text(m, self.origin()) in page:
                     self.observe_message(run, m)
         elif section in ('inbox', 'reviews', 'followups', 'tasks'):
@@ -799,6 +804,11 @@ class ProjectRoom:
         ref = message.get('metadata', {}).get('coordination_ref')
         if ref:
             run.receipts.add(receipt_key({'ref': ref}))
+
+    def visible(self, run, messages):
+        # Open team-decision positions stay hidden from other participants until the stage closes.
+        decisions = getattr(self.runtime, 'decisions', None)
+        return [m for m in messages if not (decisions and decisions.hidden(m, run.name))]
 
     def context(self, run, changes=None):
         maximum = self.limits['input_chars']
@@ -863,7 +873,7 @@ class ProjectRoom:
         recent_decisions = current('decision')[-8:]
         references = current('reference')[-12:]
         recent_updates = [n for n in self.state['notes'] if n['kind'] not in ('decision', 'reference')][-4:]
-        decisions = '\n'.join(f"{n['kind']}{' ' + n['id'] if n.get('id') else ''} {n['by']}: {n['text']}"
+        decisions = '\n'.join(f"{n['kind']}{' ' + n['id'] if n.get('id') else ''} {n['by']}: {clipped(n['text'], 1600)}"
                               for n in references + recent_decisions + recent_updates)
         chat_limit = int(maximum * .2)
         previous = run.previous_session.get('context', {})
@@ -871,6 +881,7 @@ class ProjectRoom:
         messages = (self.runtime.host.store.get_since(cursor, channel=run.channel) if run.previous_session
                     else self.runtime.host.store.get_recent(40, channel=run.channel))
         latest_id = messages[-1]['id'] if messages else cursor
+        messages = self.visible(run, messages)
         handle = (self.runtime.states.get(run.name) or {}).get('handle') or run.name
         # Mentions by internal name or by public @handle both count; profiles allow them to differ.
         to_reader = lambda text: addressed(text, run.name) or (handle != run.name and addressed(text, handle))
@@ -1008,9 +1019,16 @@ class ProjectRoom:
                          'mean the project has no source. Source paths named by the user or the spec can be read directly, '
                          'subject to your provider permissions.')
         if state.get('provider') in ROOM_TOOL_PROVIDERS or state.get('provider') == 'api':
+            native = state.get('provider') in ROOM_TOOL_PROVIDERS
             lines.append('- Room tools (room_read, room_task, room_update, room_review, room_followup, room_goal, room_repository, '
-                         'room_image, room_markup) are provided for this turn. If any is missing from your tool list, say so in '
-                         'the chat as a harness fault and name the action it blocks; do not report the action as done.')
+                         f"room_image, room_markup{', room_browser' if native else ''}) are provided for this turn. If any is "
+                         'missing from your tool list, say so in the chat as a harness fault and name the action it blocks; '
+                         'do not report the action as done.')
+            if native:
+                # MCP tools load deferred; a tool the prompt never names is effectively invisible.
+                lines.append("- room_browser is the user's Browser panel: claim it, open a local preview, inspect or "
+                             'screenshot what the user sees, then release. A screenshot returns an /uploads URL for '
+                             'room_markup and task attachments. Prefer it to a private headless browser for UI work.')
             if state.get('room_tools') == 'unconfirmed':
                 lines.append('- The room did not observe your room tools loading or being used last turn. Check your tool list '
                              'first; if any are missing, say so in the chat.')

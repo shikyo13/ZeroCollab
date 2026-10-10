@@ -3,6 +3,7 @@ import json
 import time
 import uuid
 
+from coordination_records import bounded
 from durable import atomic_write
 
 
@@ -64,7 +65,8 @@ class RoomGoals:
                 raise ValueError('This goal is already closed.')
             if not human and actor != self.goal['owner']:
                 raise ValueError('The goal lead records completion or blockers; coordinate with them.')
-            if action in ('complete', 'block') and not str(evidence).strip():
+            evidence = bounded(evidence, 'evidence')
+            if action in ('complete', 'block') and not evidence:
                 raise ValueError('Provide completion evidence or the concrete blocker.')
             states = dict(complete='complete', block='blocked', pause='paused', resume='active', cancel='cancelled')
             if action not in states:
@@ -78,7 +80,7 @@ class RoomGoals:
                         raise ValueError('Saved budget unavailable. Cancel and start a new scoped goal.')
                     self.runtime.project_room.chains[self.goal['chain']] = {
                         'id': self.goal['chain'], 'channel': self.goal['channel'], **self.goal['usage']}
-            self.goal.update(status=states[action], evidence=str(evidence).strip()[:2000], updated=time.time())
+            self.goal.update(status=states[action], evidence=evidence, updated=time.time())
             self.goal['revision'] += 1
         self.save()
         return self.goal

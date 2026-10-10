@@ -26,7 +26,7 @@ class RoomMCP(FastMCP):
         return tools
 
 
-mcp = RoomMCP('project_room', instructions='These tools operate the same durable project and kanban board visible to the user. Use room_task for ownership/dependencies, room_review for peer review, room_followup for tracked next actions, and room_read(section="inbox") at checkpoints. room_update leaves progress without waking peers. Native tools remain available; your final answer is published automatically.')
+mcp = RoomMCP('project_room', instructions='These tools operate the same durable project and kanban board visible to the user. Use room_task for ownership/dependencies, room_review for peer review, room_followup for tracked next actions, and room_read(section="inbox") at checkpoints. room_update leaves progress without waking peers. room_browser shows and drives the Browser panel the user sees (status, claim, open a local preview, inspect, screenshot, release); use it to check UI changes as the user sees them and to capture before and after screenshots. Native tools remain available; your final answer is published automatically.')
 
 
 def call(tool, arguments):
@@ -157,11 +157,26 @@ def room_team_builder(action: str = 'get', proposal_id: str = '', revision: int 
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
+def room_decision(action: str = 'get', decision_id: str = '', stage: str = '', revision: int = 0,
+                  epoch: int = 0, payload: dict | None = None) -> dict:
+    """Take part in a team decision you were asked to join. get returns the question, criteria and
+    the contributions you may see (other positions stay hidden until the positions stage closes).
+    submit records your contribution for the exact stage, revision and epoch from your request;
+    stale or unowed submissions are refused and nothing is recorded. The user starts, steers and
+    records discussions; a discussion grants no deploy, settings or credential authority.
+    """
+    return call('room_decision', dict(action=action, decision_id=decision_id, stage=stage,
+                                      revision=revision, epoch=epoch, payload=payload))
+
+
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
 def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
                  text: str = '', key: str = '', modifiers: int = 0,
                  x: float | None = None, y: float | None = None, delta: float = 500,
                  accept: bool = False) -> list:
-    """Use the Browser panel's shared local-preview page. status/inspect/screenshot observe it.
+    """See and drive the user's Browser panel: check a UI change the way the user sees it, and capture
+    before and after screenshots for mockups and reviews. screenshot also returns an /uploads URL to pass
+    to room_markup or task attachments. status/inspect/screenshot observe the page.
     claim control before open/click/type/key/scroll/reload/dialog/stop; release when finished.
     Another agent or the user may own it; never steal control. Agent control expires after 60s.
     open accepts local http(s) previews, excluding room and control ports. Pop-ups are blocked.

@@ -1,0 +1,27 @@
+/* Follow mode picture-in-picture (Pip.tsx). Fixed above the LIVE ticker, bottom right. */
+.fl-pip {
+  position: fixed; right: 24px; bottom: 72px; z-index: 30; width: min(420px, calc(100vw - 48px)); max-height: calc(100vh - 140px);
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; overflow: auto;
+  border: 1px solid var(--accent-border); border-radius: 10px; background: var(--bg-msg); box-shadow: var(--shadow-popover);
+  animation: fl-pip-in 0.25s ease-out;
+}
+.fl-pip-head { display: flex; align-items: center; gap: 8px; }
+.fl-pip-head p { flex: 1 1 auto; margin: 0; min-width: 0; font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.fl-pip-head strong { color: var(--text); }
+.fl-pip-avatar { flex: 0 0 auto; display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: #fff;
+  font-size: 10px; font-weight: 700; text-shadow: var(--avatar-text-shadow); }
+.fl-pip-btn { flex: 0 0 auto; padding: 2px 8px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--bg-elevated);
+  color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.fl-pip-btn[aria-pressed='true'] { border-color: var(--accent); color: var(--accent-text); }
+.fl-pip-btn:focus-visible, .fl-pip-link:focus-visible, .fl-pip a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fl-pip-figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.fl-pip-figure img { display: block; width: 100%; max-height: 260px; object-fit: contain; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.fl-pip-figure figcaption { font-size: 12px; color: var(--text-dim); }
+.fl-pip-empty { margin: 0; padding: 24px; text-align: center; color: var(--text-dim); font-size: 13px; border: 1px dashed var(--border); border-radius: 6px; }
+.fl-pip-legend { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-muted); }
+.fl-pip-legend li { display: flex; gap: 8px; align-items: baseline; }
+.fl-pip-key { flex: 0 0 auto; display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
+  color: #071518; font-size: 11px; font-weight: 700; }
+.fl-pip-link { padding: 0; border: 0; background: none; color: var(--accent-text); font: inherit; cursor: pointer; text-decoration: underline; }
+@keyframes fl-pip-in { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) { .fl-pip { animation: none; } }

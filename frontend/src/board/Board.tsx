@@ -18,8 +18,9 @@ import { isStale, waitInfo, type TaskFacts } from './TaskCard';
 import { TaskDetail } from './TaskDetail';
 import { useBoardPrefs, type Tab } from './useBoardPrefs';
 import { useChangeHighlights } from './useChangeHighlights';
-import { FollowBanner, FollowTicker, placeFollow, useFollowKeys, useReconcileRuns } from '../follow/Follow';
+import { FollowBanner, placeFollow, useFollowKeys, useReconcileRuns } from '../follow/Follow';
 import { useFollow } from '../follow/followStore';
+import { FollowPip } from '../follow/Pip';
 import './board.css';
 
 // The legacy chat lightbox can open the same annotation tool through window.ZeroAnnotate.
@@ -238,7 +239,7 @@ export default function Board() {
                 follows={follow.following ? placement.cards : undefined}
               />
             ))}
-          <FollowTicker tasks={project.tasks} agents={agents} onOpenTask={openTask} />
+          <FollowPip agents={agents} tasks={project.tasks} onOpenTask={openTask} />
         </div>
         {selectedTask && (
           <TaskDetail

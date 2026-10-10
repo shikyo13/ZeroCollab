@@ -67,9 +67,17 @@ function activity(entry: AgentLive): string {
 /** Board banner while following: who is live, the commentary of agents not pinned to a card, Pause and Stop. */
 export function FollowBanner({ unplaced, agents }: { unplaced: AgentLive[]; agents: Agents }) {
   const snap = useFollow();
+  const banner = useRef<HTMLElement>(null);
+  // Starting Follow leaves focus on the header toggle, where Space would press the button and stop
+  // following. Move focus to the banner instead, so Space pauses and Esc stops as advertised; only
+  // from the toggle itself, never taking focus from anything else.
+  useEffect(() => {
+    if (snap.following && document.activeElement?.closest?.('.fl-toggle')) banner.current?.focus({ preventScroll: true });
+  }, [snap.following]);
   if (!snap.following) return null;
   const all = Object.values(snap.live);
-  return <section className={`fl-banner${snap.paused ? ' is-paused' : ''}`} aria-label="Following the team">
+  return <section ref={banner} tabIndex={-1} className={`fl-banner${snap.paused ? ' is-paused' : ''}`}
+    aria-label="Following the team. Space pauses, Escape stops.">
     <div className="fl-banner-row">
       <p className="fl-banner-who" aria-live="polite">
         {snap.paused && <strong className="fl-paused">Paused · </strong>}
@@ -95,13 +103,43 @@ function clock(time: number): string {
   return new Date(time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-/** Bottom strip of recent events, newest first. Task names open the task. */
+/** Header strip of actual recent events. Native scrolling keeps every task link reachable.
+ * Motion freezes on Pause, hover, keyboard focus, background tabs and reduced motion. */
 export function FollowTicker({ tasks, agents, onOpenTask }: { tasks: Task[]; agents: Agents; onOpenTask: (id: string) => void }) {
   const snap = useFollow();
   const titles = useMemo(() => new Map(tasks.map(t => [t.id, t.title])), [tasks]);
+  const viewport = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const node = viewport.current;
+    if (!node || !snap.following || snap.paused) return;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let frame = 0;
+    let previous = 0;
+    let position = node.scrollLeft;
+    let holdUntil = 0;
+    const move = (time: number) => {
+      const held = reduced.matches || document.hidden || node.matches(':hover, :focus-within');
+      const elapsed = previous ? Math.min(time - previous, 64) : 0;
+      previous = time;
+      const end = node.scrollWidth - node.clientWidth;
+      if (held) position = node.scrollLeft;
+      else if (end > 0 && time >= holdUntil) {
+        position += elapsed * 0.032;
+        if (position >= end) {
+          position = 0;
+          holdUntil = time + 1400;
+        }
+        node.scrollLeft = position;
+      }
+      frame = window.requestAnimationFrame(move);
+    };
+    frame = window.requestAnimationFrame(move);
+    return () => window.cancelAnimationFrame(frame);
+  }, [snap.following, snap.paused, snap.ticker[0]?.id]);
   if (!snap.following) return null;
-  return <section className="fl-ticker" aria-label="Live events">
+  return <section className={`fl-ticker${snap.paused ? ' is-paused' : ''}`} aria-label="Live team events">
     <span className="fl-ticker-live">{snap.paused ? 'PAUSED' : 'LIVE'}</span>
+    <div className="fl-ticker-viewport" ref={viewport} tabIndex={0} role="region" aria-label="Recent team events. Hover or focus to hold scrolling; use arrow keys to scroll.">
     <ol className="fl-ticker-list">
       {snap.ticker.length === 0 && <li className="fl-ticker-empty">Waiting for the next event…</li>}
       {snap.ticker.slice(0, 12).map(item => <li key={item.id}>
@@ -110,6 +148,9 @@ export function FollowTicker({ tasks, agents, onOpenTask }: { tasks: Task[]; age
         {item.task && titles.has(item.task) && <> · <button type="button" className="fl-link" onClick={() => onOpenTask(item.task!)}>{titles.get(item.task)}</button></>}
       </li>)}
     </ol>
+    </div>
+    <button type="button" className="fl-ticker-pause" aria-label={snap.paused ? 'Resume team feed' : 'Pause team feed'}
+      title={snap.paused ? 'Resume team feed' : 'Pause team feed'} onClick={() => setPaused(!snap.paused)}>{snap.paused ? '▶' : 'Ⅱ'}</button>
   </section>;
 }
 
@@ -155,7 +196,13 @@ export function useFollowKeys(following: boolean, paused: boolean, onScreen: () 
         return;
       }
       // Board's own Esc (close the task panel) marks the event; check after it has run.
-      window.setTimeout(() => { if (!e.defaultPrevented && state.current.following) setFollowing(false); }, 0);
+      window.setTimeout(() => {
+        if (e.defaultPrevented || !state.current.following) return;
+        const fromBanner = !!(e.target as HTMLElement | null)?.closest?.('.fl-banner');
+        setFollowing(false);
+        // The banner unmounts; hand focus back to the toggle that started Follow.
+        if (fromBanner) document.querySelector<HTMLElement>('.fl-toggle')?.focus();
+      }, 0);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

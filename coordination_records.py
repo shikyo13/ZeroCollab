@@ -6,6 +6,27 @@ from pathlib import Path
 
 # Entries kept per task: check-ins, review/follow-up activity and automatic ownership/status events.
 TASK_HISTORY = 20
+# Free-text limits. Over-limit text is refused, never cut, so the author learns before the record is saved.
+LIMITS = dict(title=120, details=8000, update=4000, note=4000, request=4000, findings=8000,
+              cancellation=4000, followup=4000, result=4000, evidence=4000,
+              # Matches room_markup's summary limit. A markup note is up to two provenance lines,
+              # that summary and up to 20 mark lines of at most 358 characters: under 8500.
+              markup=1000, **{'attachment note': 9000})
+HISTORY_TEXT = 1600
+
+
+def bounded(text, kind):
+    """Return stripped text, or refuse it with the length and limit when it is too long."""
+    text, limit = str(text).strip(), LIMITS[kind]
+    if len(text) > limit:
+        raise ValueError(f'{kind.capitalize()} too long: {len(text)} characters; the limit is {limit}. '
+                         'Shorten it, or put the detail in a file and cite its path.')
+    return text
+
+
+def excerpt(text, limit=HISTORY_TEXT):
+    """History summaries repeat a record that is stored in full, so they are shortened visibly."""
+    return text if len(text) <= limit else text[:limit - 40] + ' [...] (full text in the record)'
 
 
 class CoordinationRecords:
@@ -30,7 +51,7 @@ class CoordinationRecords:
 
     def save(self, actor, task, text):
         if task:
-            task['updates'].append({'by': actor, 'text': text[:1600], 'time': time.time()})
+            task['updates'].append({'by': actor, 'text': excerpt(text), 'time': time.time()})
             task['updates'] = task['updates'][-TASK_HISTORY:]
             task['updated'] = time.time()
         self.room.save()
@@ -128,7 +149,7 @@ class CoordinationRecords:
             self.participant(reviewer)
             if reviewer == task['owner']:
                 raise ValueError('Choose a peer; an owner cannot approve their own work')
-            revision, text = str(revision).strip(), str(text).strip()
+            revision, text = str(revision).strip(), bounded(text, 'request')
             if not revision or len(revision) > 240 or not text:
                 raise ValueError('Provide a revision reference (up to 240 characters) and a concrete review question or scope')
             for item in reviews:
@@ -137,7 +158,7 @@ class CoordinationRecords:
             snapshot, blobs = self.capture(task, files)
             item = {'id': uuid.uuid4().hex[:8], 'task_id': task_id, 'requested_by': actor,
                     'owner': task['owner'], 'reviewer': reviewer, 'revision': revision,
-                    'request': text[:2400], 'status': 'pending', 'findings': '',
+                    'request': text, 'status': 'pending', 'findings': '',
                     'created': time.time(), 'updated': time.time()}
             item['snapshot'] = snapshot
             if blobs:
@@ -163,12 +184,13 @@ class CoordinationRecords:
                 raise ValueError('Respond with the exact revision reference you inspected')
             if verdict not in ('approved', 'changes_requested') or not str(text).strip():
                 raise ValueError('Provide approved or changes_requested with concrete findings and evidence')
+            findings = bounded(text, 'findings')
             changed = self.changed_files(item)
             if verdict == 'approved' and changed:
                 raise ValueError(f'Reviewed files changed: {changed}; request a new review revision')
-            if item['status'] == verdict and item['findings'] == str(text).strip()[:3000]:
+            if item['status'] == verdict and item['findings'] == findings:
                 return {'item': item, 'changed': False, 'notify': []}
-            item.update(status=verdict, findings=str(text).strip()[:3000], updated=time.time())
+            item.update(status=verdict, findings=findings, updated=time.time())
             summary = f"Review {item['id']} {verdict} by {actor} for {revision}: {text}"
             recipients = [task['owner'] or item['requested_by']]
         elif action == 'cancel':
@@ -178,29 +200,30 @@ class CoordinationRecords:
                 raise ValueError('Only the owner, requester or user can cancel a review')
             if not str(text).strip():
                 raise ValueError('Record why the review is being cancelled')
+            cancellation = bounded(text, 'cancellation')
             if item['status'] in ('cancelled', 'superseded'):
                 return {'item': item, 'changed': False, 'notify': []}
-            item.update(status='cancelled', cancellation=str(text).strip()[:2400], updated=time.time())
+            item.update(status='cancelled', cancellation=cancellation, updated=time.time())
             summary = f"Review {item['id']} cancelled by {actor}: {text}"
             recipients = [item['reviewer']]
         else:
             raise ValueError('Choose request, respond or cancel')
         self.save(actor, task, summary)
-        return {'item': item, 'changed': True, 'notify': recipients, 'summary': summary[:1600]}
+        return {'item': item, 'changed': True, 'notify': recipients, 'summary': excerpt(summary)}
 
     def followup(self, actor, action, followup_id='', task_id='', assigned_to='', text='', result=''):
         items = self.room.state.get('followups', [])
         if action == 'create':
             self.participant(assigned_to)
             task = self.task(task_id) if task_id else None
-            text = str(text).strip()
+            text = bounded(text, 'followup')
             if not text:
                 raise ValueError('Provide a concrete next action or question')
             for item in items:
-                if (item['created_by'], item['assigned_to'], item['task_id'], item['text'], item['status']) == (actor, assigned_to, task_id, text[:2400], 'open'):
+                if (item['created_by'], item['assigned_to'], item['task_id'], item['text'], item['status']) == (actor, assigned_to, task_id, text, 'open'):
                     return {'item': item, 'changed': False, 'notify': []}
             item = {'id': uuid.uuid4().hex[:8], 'task_id': task_id, 'created_by': actor,
-                    'assigned_to': assigned_to, 'text': text[:2400], 'status': 'open', 'result': '',
+                    'assigned_to': assigned_to, 'text': text, 'status': 'open', 'result': '',
                     'created': time.time(), 'updated': time.time()}
             self.room.state.setdefault('followups', []).append(item)
             summary = f"Follow-up {item['id']} for {assigned_to}: {text}"
@@ -212,17 +235,18 @@ class CoordinationRecords:
                 raise ValueError('Only the assignee, requester or user can resolve; only requester/user can cancel')
             if not str(result).strip():
                 raise ValueError('Record the result or cancellation reason')
+            result = bounded(result, 'result')
             if item['status'] != 'open':
                 return {'item': item, 'changed': False, 'notify': []}
             task = self.task(item['task_id']) if item['task_id'] else None
             item.update(status='resolved' if action == 'resolve' else 'cancelled',
-                        result=str(result).strip()[:2400], updated=time.time())
+                        result=result, updated=time.time())
             summary = f"Follow-up {item['id']} {item['status']} by {actor}: {result}"
             recipients = [item['assigned_to'] if action == 'cancel' or actor == item['created_by'] else item['created_by']]
         else:
             raise ValueError('Choose create, resolve or cancel')
         self.save(actor, task, summary)
-        return {'item': item, 'changed': True, 'notify': recipients, 'summary': summary[:1600]}
+        return {'item': item, 'changed': True, 'notify': recipients, 'summary': excerpt(summary)}
 
     def inbox(self, actor):
         reviews = self.room.state.get('reviews', [])

@@ -1,6 +1,7 @@
 """ZeroCollab - FastAPI web UI + agent auto-trigger."""
 
 import asyncio
+import hmac
 import json
 import re as _re
 import sys
@@ -39,6 +40,8 @@ WS_CLOSE_TIMEOUT_SECONDS = 1
 
 # --- Security: session token (set by configure()) ---
 session_token: str = ""
+# Set by room_runtime.install(); its running turns hold the run-scoped capability tokens.
+runtime = None
 
 # Room settings (persisted to data/settings.json)
 PRODUCT_TITLE = "ZeroCollab"
@@ -164,6 +167,21 @@ def _resolve_authenticated_agent(request: Request) -> dict | None:
 _PUBLIC_PREFIXES = ("/", "/static/")
 
 
+def _token_matches(supplied, expected: str) -> bool:
+    return bool(supplied is not None and expected
+                and hmac.compare_digest(supplied.encode(), expected.encode()))
+
+
+def _run_token_allows(token, method: str, path: str) -> bool:
+    """A run's capability token reaches only its own coordination route and image upload,
+    and only while that run is active. Everything else, including /ws, needs the UI token."""
+    if not token or method != "POST" or runtime is None:
+        return False
+    run = next((r for r in list(runtime.running.values())
+                if _token_matches(token, getattr(r, "room_token", None) or "")), None)
+    return run is not None and path in ("/api/upload", f"/api/runtime/coordination/{run.id}")
+
+
 def _install_security_middleware(token: str, cfg: dict):
     """Add token validation and origin checking middleware to the app."""
     import app as _self
@@ -215,7 +233,8 @@ def _install_security_middleware(token: str, cfg: dict):
                 request.headers.get("x-session-token")
                 or request.query_params.get("token")
             )
-            if req_token != _self.session_token:
+            if not _token_matches(req_token, _self.session_token) and not _self._run_token_allows(
+                    request.headers.get("x-session-token"), request.method, path):
                 return JSONResponse(
                     {"error": "forbidden: invalid or missing session token"},
                     status_code=403,
@@ -533,6 +552,17 @@ async def _handle_new_message(msg: dict):
 
     # System messages never trigger routing - prevents infinite callback loops
     if sender == "system":
+        return
+
+    # A live team-decision chat is driven by its flow: a human message there is new direction, and
+    # agent text never wakes anyone, so @mentions cannot bypass the flow's tokens and epochs.
+    if managed_runtime and not managed_runtime.decisions.routes(channel):
+        agent_names = set(managed_runtime.states) | set(config.get("agents", {}))
+        if registry:
+            agent_names.update(registry.get_all_names())
+        if sender not in agent_names:
+            async with managed_runtime.decisions.lock:
+                managed_runtime.decisions.human_message(channel, msg.get('id'))
         return
 
     known_agents = set(registry.get_all_names()) if registry else set()

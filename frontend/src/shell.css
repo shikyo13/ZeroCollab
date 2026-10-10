@@ -51,6 +51,17 @@
 .modern-workspace .header-left { min-width: 0; flex: 1; }
 .modern-workspace .header-left > :not(.ws-context), .modern-workspace #agent-status, .modern-workspace #settings-toggle { display: none; }
 .modern-workspace .header-right { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+.modern-workspace .workspace-toolbar header > .fl-ticker { order: 1; flex: 1 1 240px; }
+.modern-workspace .workspace-toolbar header:has(> .fl-ticker) .header-left { flex: none; width: max-content; max-width: 40%; }
+.modern-workspace .workspace-toolbar header:has(> .fl-ticker) .ws-context { width: 100%; }
+.modern-workspace .workspace-toolbar header:has(> .fl-ticker) .ws-title { flex: none; }
+.modern-workspace .workspace-toolbar header:has(> .fl-ticker) .ws-crumb { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.modern-workspace .workspace-toolbar header > .header-right { order: 2; flex: none; }
+@media (max-width: 1100px) {
+  .modern-workspace .workspace-toolbar header:has(> .fl-ticker) { flex-wrap: wrap; }
+  .modern-workspace .workspace-toolbar header:has(> .fl-ticker) .header-left { flex: 1; max-width: none; }
+  .modern-workspace .workspace-toolbar header > .fl-ticker { order: 3; flex-basis: 100%; }
+}
 .modern-workspace .header-right .ws-roster { order: 1; }
 .modern-workspace .header-right .ws-stop { order: 2; }
 .modern-workspace .header-right .companion-toggle { order: 3; }

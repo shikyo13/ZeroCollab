@@ -1,5 +1,6 @@
 """Managed agents for the ZeroCollab persistent workspace."""
 import asyncio
+import base64
 import contextlib
 import hashlib
 import json
@@ -31,6 +32,7 @@ from room_goals import RoomGoals
 import project_registry
 from agent_profiles import AgentProfiles
 from team_builder import TeamBuilder
+from decision_flow import DecisionFlow
 from local_protocol import visible_text, validate_calls
 from coordination_queue import WakeQueue, current_request
 from steering_delivery import SteeringDelivery
@@ -47,7 +49,7 @@ READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "We
                    "read_file", "file_glob_search", "grep_search", "get_info"}
 ROOM_SERVER = 'zerocollab_coordination'
 ROOM_TOOLS = {"room_read", "room_image", "room_task", "room_markup", "room_update", "room_review", "room_followup",
-              "room_repository", "room_goal", "room_team_builder", "room_browser"}
+              "room_repository", "room_goal", "room_team_builder", "room_decision", "room_browser"}
 
 
 def changing_tool(name, params):
@@ -57,7 +59,7 @@ def changing_tool(name, params):
     return not (name == 'mcpToolCall' and isinstance(params, dict) and params.get('server') == ROOM_SERVER)
 # Room tool actions that only read, with each tool's default action; every other room call can change records.
 ROOM_READS = {"room_read": None, "room_image": None, "room_task": ({"get"}, ''), "room_goal": ({"status"}, 'status'),
-              "room_team_builder": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status')}
+              "room_team_builder": ({"get"}, 'get'), "room_decision": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status')}
 
 
 def changes_room(tool, arguments):
@@ -518,6 +520,7 @@ class RoomRuntime:
         self.goals = RoomGoals(self)
         self.profiles = AgentProfiles(self)
         self.team_builder = TeamBuilder(self)
+        self.decisions = DecisionFlow(self)
         self.profile_lock = asyncio.Lock()
         self.deploy_held = {}
         self.deployment = None
@@ -593,6 +596,7 @@ class RoomRuntime:
         self.controls.values.clear(); self.controls.catalogs.clear()
         self.profiles.load(identity)
         self.team_builder.load()
+        self.decisions.load()
         for profile in self.profiles.items.values():
             workspace = self.workspace_for(profile['id'])
             self.activate_profile(profile, workspace)
@@ -1007,6 +1011,10 @@ class RoomRuntime:
         if self.states[name]["state"] in ("login_required", "blocked"):
             self.host.store.add("system", f"{name} cannot start: {self.states[name]['detail']}", channel=channel)
             return
+        if not (routing or {}).get('decision') and not self.decisions.routes(channel):
+            # A live team-decision chat runs only the flow's turns; other wakes (reviews, follow-ups,
+            # delegations) go to the project's default chat instead of joining the discussion.
+            channel, chain = self.default_channel(), None
         chain = chain or self.project_room.chain_for(channel)
         request = {'prompt': prompt or message, 'chain': chain, 'human': ref is None,
                    **(routing or {})}
@@ -1106,7 +1114,7 @@ class RoomRuntime:
             self.queues[name].merge_waiting(entry)
             receipts = self.project_room.state.get('receipts', {}).get(name + ':' + entry['channel'], [])
             requests = [r for r in entry['requests'] if not r.get('_steer_delivered') and current_request(r, name, self.project_room.state, receipts)
-                        and self.goals.accepts(r) and self.team_builder.accepts(r)]
+                        and self.goals.accepts(r) and self.team_builder.accepts(r) and self.decisions.accepts(r)]
             if not requests:
                 await self.emit('runtime_queue_pruned', {'agent': name, 'channel': entry['channel'],
                     'reason': 'Resolved, superseded or already delivered requests'}, persist=True)
@@ -1116,7 +1124,7 @@ class RoomRuntime:
             # Reviews, follow-ups and delegations carry a tracked record (ref); goals and team-builder
             # runs carry their own token and controls.
             handoffs = [r for r in requests if not r.get('human') and not r.get('ref')
-                        and not r.get('goal_token') and not r.get('team_builder')]
+                        and not r.get('goal_token') and not r.get('team_builder') and not r.get('decision')]
             entry['chain'] = (humans or requests)[-1]['chain']
             entry['requests'] = requests
             entry['prompt'] = '\n\n'.join(r['prompt'] for r in requests)
@@ -1136,6 +1144,7 @@ class RoomRuntime:
             self.states[name]['waiting'] = False
             if not admitted:
                 self.team_builder.turn_finished(entry)
+                self.decisions.turn_finished(name, entry)
                 await self.publish_status()
         self.deploy_held.pop(name, None)
         run = Run(self, name, entry)
@@ -1202,6 +1211,7 @@ class RoomRuntime:
                     self.approvals.pop(identifier, None)
             self.running.pop(name, None)
             self.team_builder.turn_finished(entry)
+            self.decisions.turn_finished(name, entry)
             await self.emit("runtime_end", {"run": run.id, "agent": name, "outcome": outcome}, persist=True)
             await self.publish_status()
 
@@ -1226,6 +1236,11 @@ class RoomRuntime:
                 await self.browser.publish_activity(run.id, run.name, action, 'failed')
                 raise
             await self.browser.publish_activity(run.id, run.name, action, 'done')
+            if action == 'screenshot' and result.get('image'):
+                # Saved as an upload so the agent can mark it up or attach it, like the user's own captures.
+                name = uuid.uuid4().hex[:8] + '.jpg'
+                (self.host.store.upload_dir / name).write_bytes(base64.b64decode(result['image']))
+                result['url'] = '/uploads/' + name
             return {**result, 'activity': self.browser.activity}
         if tool == 'room_team_builder':
             action = arguments.get('action', 'get')
@@ -1237,6 +1252,18 @@ class RoomRuntime:
                 result = self.team_builder.submit(run.name, arguments.get('proposal_id'),
                     arguments.get('revision'), arguments.get('payload'))
             await self.emit('team_builder', result)
+            return result
+        if tool == 'room_decision':
+            action = arguments.get('action', 'get')
+            if action == 'get':
+                return self.decisions.get(run.name, arguments.get('decision_id', ''))
+            if action != 'submit':
+                raise ValueError('Agents may only get or submit; the user starts, steers and records discussions')
+            async with self.decisions.lock:
+                result = self.decisions.submit(run.name, arguments.get('decision_id', ''), arguments.get('stage'),
+                    arguments.get('revision'), arguments.get('epoch'), arguments.get('payload'),
+                    fresh=not run.previous_session)
+            await self.decisions.publish(self.decisions.find(result['id']))
             return result
         if tool == 'room_goal':
             result = self.goals.change(run.name, **arguments)
@@ -1590,6 +1617,7 @@ class RoomRuntime:
             raise ValueError("Choose a registered agent")
         self.states[name]["paused"] = True
         self.team_builder.interrupt(name)
+        self.decisions.interrupt(name)
         if self.goals.goal and self.goals.goal['owner'] == name:
             self.goals.pause('Goal lead stopped by user.')
         self.save_project()
@@ -1602,6 +1630,7 @@ class RoomRuntime:
     async def stop(self):
         self.paused = True
         self.team_builder.interrupt()
+        self.decisions.interrupt()
         self.goals.pause('Room stopped by user.')
         self.save_project()
         for queue in self.queues.values():
@@ -1667,6 +1696,8 @@ def install(host):
     project_registry.install(host, runtime)
     import team_builder
     team_builder.install(host, runtime)
+    import decision_flow
+    decision_flow.install(host, runtime)
     import shared_browser
     shared_browser.install(host, runtime)
     provider_setup.install(host, runtime)

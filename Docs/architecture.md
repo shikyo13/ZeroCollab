@@ -48,6 +48,12 @@ Browser side:
         +--------- /api/* fetch with X-Session-Token (lib/api.ts)
 ```
 
+Credentials and authority:
+
+- The UI session token is minted per server start in `run.py` and embedded in `/`. It authorizes every `/api` route and `/ws`.
+- Agent processes never receive it. `native_adapters.room_environment` gives each run its own capability token in `AGENT_ROOM_SESSION_TOKEN`. `app._run_token_allows` accepts that token only as a header, only on `POST /api/runtime/coordination/{its run id}` and `POST /api/upload`, and only while the run is in `runtime.running`.
+- Limit: `/` is unauthenticated on loopback, and Codex sandboxes restrict writes and network, not reads. So the Python app cannot keep the UI token from an agent process that can reach loopback or read the user's files. Manual approval mode (`runtime.automatic_tool_approvals = false`) is therefore not a boundary for UI authority on this host. That boundary belongs to the desktop shell's IPC (`Docs/harness-contracts.md` 7.4).
+
 Launcher-driven agents (`windows/`, `macos-linux/`, `wrapper*.py`) are the older path: a visible terminal runs the CLI and `wrapper.py` types queued prompts into it from `<agent>_queue.jsonl`. Managed agents (`room_runtime.py`) are the default workspace path and run each turn as a fresh CLI invocation inside the agent's worktree.
 
 ## Flow 1: a chat message

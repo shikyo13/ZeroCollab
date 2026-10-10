@@ -45,12 +45,30 @@ export interface TaskMove {
   time: number;
 }
 
+/** The finished artifact the picture-in-picture shows. Markup is atomic: this is the completed
+ * annotation, never a live drawing. A browser item shows the shared preview as it is now. */
+export interface PipItem {
+  id: number;
+  kind: 'markup' | 'image' | 'browser';
+  actor: string;
+  time: number;
+  /** Upload url for markup and images; the preview page address for the browser. */
+  url: string;
+  /** The markup note: one line per numbered mark. */
+  note?: string;
+  task?: string;
+  /** Browser: the project the frame belongs to, and what the agent did. */
+  project?: string;
+  action?: string;
+}
+
 export interface FollowSnapshot {
   following: boolean;
   paused: boolean;
   live: Record<string, AgentLive>;
   ticker: TickerItem[];
   moves: Record<string, TaskMove>;
+  pip: PipItem | null;
 }
 
 const TEXT_TAIL = 180;
@@ -73,6 +91,10 @@ let tickerSerial = 0;
 let lastTasks: Map<string, Task> | null = null;
 let lastReviews: Map<string, Review> | null = null;
 let lastBrowserTime = 0;
+let pip: PipItem | null = null;
+let pipSerial = 0;
+// Upload urls already shown, so a markup posted to chat and attached to a task appears once.
+const pipSeen = new Set<string>();
 
 let shown: FollowSnapshot = snapshot();
 const listeners = new Set<() => void>();
@@ -86,8 +108,29 @@ function snapshot(): FollowSnapshot {
     live: Object.fromEntries([...live].map(([agent, entry]) => [agent, { ...entry, tool: entry.tool && { ...entry.tool } }])),
     ticker: ticker.slice(),
     moves: Object.fromEntries(moves),
+    pip: pip && { ...pip },
   };
 }
+
+function showPip(item: Omit<PipItem, 'id'>) {
+  pip = { ...item, id: ++pipSerial };
+}
+
+/** Close the picture-in-picture until the next artifact arrives. While paused, only the card goes:
+ * the rest of the frozen view (live entries, ticker, moves) must not advance. */
+export function closePip() {
+  if (paused) {
+    // A newer artifact that arrived during the pause still shows on resume.
+    if (pip?.id === shown.pip?.id) pip = null;
+    shown = { ...shown, pip: null };
+    listeners.forEach(listener => listener());
+    return;
+  }
+  pip = null;
+  publish(true);
+}
+
+const IMAGE_URL = /^\/uploads\/[\w.-]+\.(png|jpe?g|gif|webp)$/i;
 
 let publishTimer: number | null = null;
 
@@ -203,6 +246,15 @@ function onProjectState(event: RoomEvent) {
       } else if (before.owner !== task.owner && task.owner) {
         tick(task.owner, 'took', id, time);
       }
+      // A new image on a task (room_markup with task_id, or an attachment update).
+      const had = new Set((before.attachments ?? []).map(a => a.url));
+      const added = (task.attachments ?? []).filter(a => !had.has(a.url) && IMAGE_URL.test(a.url) && !pipSeen.has(a.url));
+      const last = added[added.length - 1];
+      if (last) {
+        pipSeen.add(last.url);
+        showPip({ kind: last.source ? 'markup' : 'image', actor: by, time, url: last.url, note: last.note, task: id });
+        tick(by, last.source ? 'annotated an image on' : 'attached an image to', id, time);
+      }
     }
   }
   if (lastReviews) {
@@ -224,6 +276,7 @@ function onProjectState(event: RoomEvent) {
 
 interface BrowserData {
   url?: string;
+  project?: string;
   activity?: { actor?: string; label?: string; action?: string; phase?: string; time?: number } | null;
 }
 
@@ -247,16 +300,53 @@ function onBrowser(event: RoomEvent) {
   if (!words || a.phase === 'started') return;
   const where = a.action === 'open' && d.url ? ` · ${d.url.replace(/^https?:\/\/(127\.0\.0\.1|localhost)/, '')}` : '';
   tick(a.actor ?? '', words + where, undefined, a.time);
+  // An agent acting in the shared preview: show the page as it is now. The user's own actions are not echoed.
+  if (a.actor && a.actor !== 'user' && a.action !== 'release' && d.project) {
+    showPip({ kind: 'browser', actor: a.actor, time: a.time, url: d.url ?? '', project: d.project, action: words });
+  }
   publish();
 }
 
+interface MessageData {
+  sender?: string;
+  channel?: string;
+  attachments?: { url: string; name?: string; note?: string; source?: string }[];
+}
+
+/** A live chat message with an image from an agent: room_markup posts its finished annotation this way. */
+function onMessage(event: RoomEvent) {
+  const m = event.data as MessageData;
+  if (!m?.sender || m.sender === 'user' || m.sender === 'system') return;
+  if (!knownAgents.has(m.sender) && !live.has(m.sender)) return;  // only agents, not people or system notices
+  const images = (m.attachments ?? []).filter(a => IMAGE_URL.test(a.url) && !pipSeen.has(a.url));
+  const last = images[images.length - 1];
+  if (!last) return;
+  pipSeen.add(last.url);
+  const time = now();
+  showPip({ kind: last.source ? 'markup' : 'image', actor: m.sender, time, url: last.url, note: last.note });
+  tick(m.sender, last.source ? 'annotated an image' : 'shared an image', undefined, time);
+  publish();
+}
+
+// Agent ids from runtime_state, which the room broadcasts on every status change.
+const knownAgents = new Set<string>();
+function onRuntimeState(event: RoomEvent) {
+  const agents = (event.data as { agents?: Record<string, unknown> } | undefined)?.agents;
+  if (agents) {
+    knownAgents.clear();
+    Object.keys(agents).forEach(name => knownAgents.add(name));
+  }
+}
+
 const HANDLERS: [string, Listener][] = [
+  ['runtime_state', onRuntimeState],
   ['runtime_start', onStart],
   ['runtime_delta', onDelta],
   ['runtime_tool', onTool],
   ['runtime_end', onEnd],
   ['project_state', onProjectState],
   ['browser_activity', onBrowser],
+  ['message', onMessage],
 ];
 
 function attach() {

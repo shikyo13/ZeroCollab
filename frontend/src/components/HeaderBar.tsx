@@ -4,12 +4,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { runtime, errorMessage } from '../lib/api';
-import { sessionTitle, useActiveChannel, useRuntimeState, useStoreValue } from '../lib/room';
+import { sessionTitle, useActiveChannel, useProjectState, useRuntimeState, useStoreValue } from '../lib/room';
 import type { RuntimeState } from '../lib/types';
 import { legacy } from '../legacy';
 import type { View } from '../workspace/useWorkspaceRoute';
 import { Icon } from './Icon';
 import { GoalChip } from './WorkControls';
+import { FollowTicker } from '../follow/Follow';
+import { EVENTS } from '../lib/constants';
 
 const VIEW_TITLES: Record<View, string> = { projects: 'Projects', chat: 'Chat', board: 'Board', team: 'Team', activity: 'Activity', server: 'Server' };
 const STACK_SHOWN = 6;
@@ -129,11 +131,20 @@ function StopResume({ paused, refresh }: { paused: boolean; refresh: () => void 
 
 export function HeaderBar({ view, projectName, onTeam, bell, follow }: { view: View; projectName: string; onTeam: () => void; bell?: React.ReactNode; follow?: React.ReactNode }) {
   const { data, refresh } = useRuntimeState();
+  const { data: project } = useProjectState();
   const channel = useActiveChannel();
   const left = legacy.header.querySelector<HTMLElement>('.header-left');
   const right = legacy.header.querySelector<HTMLElement>('.header-right');
   const title = view === 'chat' ? sessionTitle(channel) : VIEW_TITLES[view];
+  const openTask = (task: string) => {
+    const url = new URL(location.href);
+    url.searchParams.set('view', 'board');
+    history.pushState({}, '', url);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    window.dispatchEvent(new CustomEvent(EVENTS.openTask, { detail: { task } }));
+  };
   return <>
+    {createPortal(<FollowTicker tasks={project?.tasks ?? []} agents={data?.agents ?? {}} onOpenTask={openTask} />, legacy.header)}
     {left && createPortal(<div className="ws-context">
       <h1 className="ws-title">{title}</h1>
       {/* Keyed so switching chats (also by keyboard, with no outside click) drops an open menu or Clear confirmation. */}
