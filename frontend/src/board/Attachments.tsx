@@ -11,8 +11,23 @@ import { ErrorText, useAction } from './shared';
 
 /** The card shows this many newest images; adding more moves older ones to earlier images (project_room.CARD_IMAGES). */
 export const CARD_IMAGES = 8;
-/** Images one save may send (project_room.ATTACHMENT_INPUT): the card plus earlier images. */
+/** Images one save may send (project_room.ATTACHMENT_INPUT). */
 export const ATTACHMENT_INPUT = 48;
+/** New images per save, leaving room for the card it is sent with. */
+const NEW_PER_SAVE = ATTACHMENT_INPUT - CARD_IMAGES;
+
+/** Add any number of images: one save per NEW_PER_SAVE, each sent with the card the previous save
+ * returned, so every image is either on the card or in earlier images. Returns the last saved task. */
+export async function addInBatches(card: TaskAttachment[], added: TaskAttachment[],
+                                   save: (next: TaskAttachment[]) => Promise<Task>): Promise<Task | null> {
+  let current = card;
+  let saved: Task | null = null;
+  for (let i = 0; i < added.length; i += NEW_PER_SAVE) {
+    saved = await save([...current, ...added.slice(i, i + NEW_PER_SAVE)]);
+    current = saved.attachments ?? [];
+  }
+  return saved;
+}
 
 function imageFiles(list: FileList | DataTransferItemList | null | undefined): File[] {
   if (!list) return [];
@@ -121,17 +136,25 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
   const [expanded, setExpanded] = useState<{ list: TaskAttachment[]; url: string } | null>(null);
   const { run, busy, error } = useAction();
   const attachments = task.attachments ?? [];
-  const earlier = task.earlier_attachments ?? [];
+  // project_state carries the newest earlier images and their total; Show all loads the full record.
+  const [allEarlier, setAllEarlier] = useState<{ updated: number; list: EarlierAttachment[] } | null>(null);
+  const earlier = allEarlier?.updated === task.updated ? allEarlier.list : task.earlier_attachments ?? [];
+  const earlierTotal = Math.max(task.earlier_total ?? 0, earlier.length);
   // Uploads and the annotation dialog are async; save against the latest list, not the one from when they began.
   const latest = useRef(attachments);
   latest.current = attachments;
 
   // The server never refuses for count: past CARD_IMAGES it moves older images to earlier images.
-  const save = (next: TaskAttachment[]) => runtime('/tasks', { action: 'update', task_id: task.id, channel, attachments: next });
+  const save = (next: TaskAttachment[]) => runtime<Task>('/tasks', { action: 'update', task_id: task.id, channel, attachments: next });
 
   const add = (files: File[]) => void run(async () => {
     const uploaded = await uploadAll(files);
-    await save([...latest.current, ...uploaded]);
+    await addInBatches(latest.current, uploaded, save);
+  });
+
+  const showAll = () => void run(async () => {
+    const full = await runtime<Task>('/tasks', { action: 'get', task_id: task.id, channel });
+    setAllEarlier({ updated: full.updated, list: full.earlier_attachments ?? [] });
   });
 
   const annotate = async (attachment: TaskAttachment) => {
@@ -180,7 +203,13 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
       {full && <p className="bd-field-hint">The card shows the {CARD_IMAGES} newest images. Adding another moves an older one to Earlier images; nothing is deleted.</p>}
       {earlier.length > 0 && (
         <details className="bd-earlier">
-          <summary>Earlier images ({earlier.length})</summary>
+          <summary>Earlier images ({earlierTotal})</summary>
+          {earlierTotal > earlier.length && (
+            <p className="bd-field-hint">
+              Showing the newest {earlier.length}.{' '}
+              <button type="button" className="bd-link" disabled={busy} onClick={showAll}>Show all {earlierTotal}</button>
+            </p>
+          )}
           <ul className="bd-gallery">
             {earlier.map(a => (
               <li key={a.url} className="bd-gallery-item bd-gallery-earlier">

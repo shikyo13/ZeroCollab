@@ -105,15 +105,19 @@ def upload_url(raw):
 
 
 # A task card shows its CARD_IMAGES newest images; older ones stay viewable as earlier images.
+# Every earlier reference is kept; project_state carries the newest EARLIER_SHOWN of them plus the
+# total, and room_task get (or the Board's Show all) returns the rest.
 CARD_IMAGES = 8
-EARLIER_IMAGES = 40
-ATTACHMENT_INPUT = CARD_IMAGES + EARLIER_IMAGES
+EARLIER_SHOWN = 40
+# One save carries the card plus at most this many images in total; larger batches are split by the caller.
+ATTACHMENT_INPUT = CARD_IMAGES + 40
 
 
 def task_attachments(values):
     # Images shown on the board card; prompts carry only a count, agents fetch details and pixels on demand.
     if not isinstance(values, list) or len(values) > ATTACHMENT_INPUT:
-        raise ValueError(f'attachments must be a list of up to {ATTACHMENT_INPUT} uploaded images')
+        raise ValueError(f'attachments must be a list of up to {ATTACHMENT_INPUT} uploaded images per call; '
+                         'send larger batches in several calls (each keeps the card at its newest images)')
     result = []
     for value in values:
         item = {'url': value} if isinstance(value, str) else value
@@ -164,8 +168,8 @@ def arrange_attachments(wanted, previous, earlier):
             move(older[0], 'overflow')
     on_card = {a['url'] for a in card}
     kept = [a for a in earlier if a['url'] not in on_card and a['url'] not in {m['url'] for m in moved}]
-    # Newest first; the record keeps EARLIER_IMAGES of them and the files themselves are never deleted.
-    return card, [*reversed(moved), *kept][:EARLIER_IMAGES], moved
+    # Newest first. Every reference is kept, like the files themselves.
+    return card, [*reversed(moved), *kept], moved
 
 
 def overlaps(a, b):
@@ -207,7 +211,7 @@ class ProjectRoom:
     def snapshot(self):
         review_hashes = {}
         return {**{k: v for k, v in self.state.items() if k not in ('sessions', 'cursors', 'receipts')},
-                'tasks': [self.task_view(t) for t in self.state['tasks']],
+                'tasks': [self.broadcast_view(t) for t in self.state['tasks']],
                 'reviews': [self.records.review_view(r, review_hashes) for r in self.state.get('reviews', [])],
                 'limits': dict(self.limits), 'chains': list(self.chains.values())[-12:],
                 'stale_seconds': STALE_SECONDS}
@@ -220,6 +224,15 @@ class ProjectRoom:
         return {**task, 'repository_key': self.task_repository_key(task), 'execution_state': state, 'owner_activity': activity,
                 'observed_at': time.time(),
                 'stale': stale(task, time.time()) and not pending_human_wait(task, self.state)}
+
+    def broadcast_view(self, task):
+        """task_view for project_state: the newest EARLIER_SHOWN earlier images and their total."""
+        view = self.task_view(task)
+        earlier = task.get('earlier_attachments', [])
+        if len(earlier) > EARLIER_SHOWN:
+            view['earlier_attachments'] = earlier[:EARLIER_SHOWN]
+            view['earlier_total'] = len(earlier)
+        return view
 
     def task_summary(self, task, check_in=False):
         """An agent's receipt or inbox entry: state and next step without the history, details and
@@ -987,7 +1000,7 @@ def coordination_tools():
     return [
         definition('room_read', 'Read shared project state or your pending review/follow-up inbox. Filter tasks/reviews/followups by task_id, owner or status. limit/offset are characters; paginate with next_offset. Messages include attachments.',
                    {'section': {'type': 'string', 'enum': ['overview', 'spec', 'tasks', 'memory', 'messages', 'patches', 'participants', 'inbox', 'reviews', 'followups', 'review_artifact']}, 'offset': {'type': 'integer'}, 'limit': {'type': 'integer'}, 'query': string, 'after_id': {'type': 'integer'}, 'task_id': string, 'owner': string, 'status': string}),
-        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override.',
+        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override.',
                    {'action': {'type': 'string', 'enum': ['get', 'create', 'claim', 'update', 'delegate', 'accept', 'release']}, 'task_id': string, 'title': string, 'details': string, 'owner': string, 'status': string,
                     'paths': {'type': 'array', 'items': string}, 'depends_on': {'type': 'array', 'items': string}, 'labels': {'type': 'array', 'items': string},
                     'attachments': {'type': 'array', 'items': {'type': 'object', 'properties': {'url': string, 'name': string, 'note': string, 'source': string}, 'required': ['url']}},

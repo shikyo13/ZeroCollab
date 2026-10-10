@@ -29,6 +29,8 @@ export interface Task {
   attachments?: TaskAttachment[];
   /** Images moved off the card when newer ones were added (project_room.arrange_attachments), newest first. */
   earlier_attachments?: EarlierAttachment[];
+  /** project_state only: total earlier images when it carries just the newest ones. */
+  earlier_total?: number;
   /** Observed by the server (coordination_state.execution_state); separate from the chosen status. */
   execution_state?: ExecutionState;
   /** No check-in for a while on unattended work; never set while waiting on the user. */

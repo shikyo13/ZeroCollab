@@ -216,8 +216,11 @@ export function Providers({ reload }: { reload: number }) {
   const change = async (path: string, done: string) => {
     setChanging(true);
     try {
-      await runtime(path, {});
-      setNotice({ text: done });
+      const result = await runtime<{ catalog_error?: string }>(path, {});
+      // A restored connection whose server is down offers no models until Refresh connections finds it.
+      setNotice(result?.catalog_error
+        ? { text: `${done} ${result.catalog_error}. Use Refresh connections once its server is running.`, error: true }
+        : { text: done });
       setConfirming('');
       void loadDefs();
       void check();

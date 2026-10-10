@@ -219,11 +219,20 @@ class ProviderStore:
             catalog = await self.catalog(entry)
             if entry['provider'] == 'api':
                 self.runtime.controls.check(catalog, entry['model'], '')
+            self.gate()  # a deployment check may have started during the lookup
             name = self.new_id(entry['label'], body.get('id'))
             self.entries[name] = entry
             self.save()
             await self.apply(name, catalog)
             return {'id': name, **entry}
+
+    def ready_to_commit(self, name):
+        """Checked again after the last await, right before saving: turns are admitted without
+        profile_lock, so an agent on this connection can start while a model list is loading.
+        save() and apply() change nothing else before apply's first await, so check and commit
+        happen without another turn being admitted in between."""
+        self.gate()
+        self.idle(name)
 
     async def edit(self, name, body):
         async with self.runtime.profile_lock:
@@ -237,6 +246,7 @@ class ProviderStore:
             if entry['provider'] == 'api' and (entry['base_url'], entry['model']) != (current.get('base_url', '').rstrip('/'), current.get('model')):
                 catalog = await self.catalog(entry)
                 self.runtime.controls.check(catalog, entry['model'], '')
+            self.ready_to_commit(name)
             self.entries[name] = entry
             self.save()
             await self.apply(name, catalog)
@@ -265,15 +275,18 @@ class ProviderStore:
             if name not in self.base or name not in self.entries:
                 raise ValueError('Only an edited or removed config.toml connection can be reset')
             self.idle(name)
+            restored = self.base[name]
+            try:
+                catalog = await self.catalog(restored)
+            except ValueError as exc:
+                # Restored as configured even when its server is down. Never keep offering or
+                # validating the overridden server's models; Refresh connections reloads them.
+                catalog = empty_catalog(str(exc))
+            self.ready_to_commit(name)
             self.entries.pop(name)
             self.save()
-            catalog = None
-            try:
-                catalog = await self.catalog(self.base[name])
-            except ValueError:
-                pass  # restored as configured; Refresh connections reports the reason
             await self.apply(name, catalog)
-            return {'id': name, 'reset': True}
+            return {'id': name, 'reset': True, **({'catalog_error': catalog['error']} if catalog['error'] else {})}
 
 
 async def probe(body):
