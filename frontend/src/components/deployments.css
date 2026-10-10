@@ -3,6 +3,10 @@
 .deploy-heading h2 { margin: 6px 0; }
 .deploy-candidate { padding: 20px 0; border-block: 1px solid var(--border); margin-block: 20px; }
 .deploy-candidate h3 { font-size: 20px; margin-top: 0; }
+.deploy-changes h4 { margin: 20px 0 8px; }
+.deploy-panel .deploy-notes { max-width: 72ch; font-size: 1rem; line-height: 1.8; margin-bottom: 20px; }
+.deploy-technical { border-block: 1px solid var(--border); }
+.deploy-technical > summary { color: var(--accent); }
 .deploy-evidence { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 .deploy-evidence p, .deploy-notes { white-space: pre-wrap; overflow-wrap: anywhere; }
 .deploy-warning, .deploy-notice { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 16px; }

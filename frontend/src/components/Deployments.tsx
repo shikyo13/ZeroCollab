@@ -159,11 +159,20 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
       <p>Running release: <code>{data.current.version || data.current.id || 'Not recorded yet'}</code></p>
       {candidates.length > 1 && <label className="deploy-select">Prepared release<select value={candidate?.id ?? ''} onChange={e => { setSelected(e.target.value); setActionError(''); }}>{candidates.map(r => <option key={r.id} value={r.id}>{r.title || r.version || r.id}</option>)}</select></label>}
       {candidate ? <article className="deploy-candidate">
+        <p className="bd-muted">Release {releaseName(candidate)}</p>
         <h3>{candidate.title || candidate.subject || candidate.version || 'Prepared release'}</h3>
-        {candidate.notes && <p className="deploy-notes">{candidate.notes}</p>}
-        <p className="bd-muted">Candidate <code>{candidate.commit?.slice(0, 12)}</code> · {candidate.files?.length ?? 0} files · {candidate.deletions?.length ?? 0} removals</p>
-        <div className="deploy-evidence"><p><strong>Review</strong><br /><ReviewEvidence reviews={candidate.reviews} /></p><p><strong>Rehearsal</strong><br />{candidate.rehearsal || 'No rehearsal evidence recorded in this package.'}</p><p><strong>Recovery</strong><br />{candidate.rollback || 'The supervisor must verify recovery before reopening the room.'}</p></div>
-        <details><summary>Exact release and changed files</summary><dl><dt>Commit</dt><dd><code>{candidate.commit}</code></dd><dt>Package fingerprint</dt><dd><code>{candidate.manifest_sha}</code></dd></dl><ul className="deploy-files">{candidate.files?.map(f => <li key={f.path}>{f.path}</li>)}{candidate.deletions?.map(p => <li key={p}>Remove: {p}</li>)}</ul></details>
+        <section className="deploy-changes" aria-label="Release notes">
+          <h4>What changes</h4>
+          <p className="deploy-notes">{candidate.notes?.trim() ? candidate.notes : 'No release notes were provided for this package.'}</p>
+        </section>
+        <details key={candidate.id} className="deploy-technical">
+          <summary>Technical details: review, rehearsal and recovery</summary>
+          <p className="bd-muted">Candidate <code>{candidate.commit?.slice(0, 12)}</code> · {candidate.files?.length ?? 0} files · {candidate.deletions?.length ?? 0} removals</p>
+          <div className="deploy-evidence"><p><strong>Review</strong><br /><ReviewEvidence reviews={candidate.reviews} /></p><p><strong>Rehearsal</strong><br />{candidate.rehearsal || 'No rehearsal evidence recorded in this package.'}</p><p><strong>Recovery</strong><br />{candidate.rollback || 'The supervisor must verify recovery before reopening the room.'}</p></div>
+          <h4>Exact release and changed files</h4>
+          <dl><dt>Commit</dt><dd><code>{candidate.commit}</code></dd><dt>Package fingerprint</dt><dd><code>{candidate.manifest_sha}</code></dd></dl>
+          <ul className="deploy-files">{candidate.files?.map(f => <li key={f.path}>{f.path}</li>)}{candidate.deletions?.map(p => <li key={p}>Remove: {p}</li>)}</ul>
+        </details>
         <p className="deploy-warning">Approval waits up to 10 minutes for current turns to finish, then briefly takes the room offline. If turns cannot finish in time, deployment is cancelled.</p>
         {candidateReason && <p id="deployment-blocked-reason" className="deploy-warning" role="status" tabIndex={0}><strong>Approval unavailable:</strong> {candidateReason}</p>}
         <button className="bd-btn bd-btn-primary" aria-describedby={candidateReason ? 'deployment-blocked-reason' : undefined} disabled={!!candidateReason} onClick={() => void approve(candidate)}>{busy ? 'Submitting approval…' : 'Approve deployment when idle'}</button>
