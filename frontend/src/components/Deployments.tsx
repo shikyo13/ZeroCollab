@@ -27,6 +27,11 @@ function ReviewEvidence({ reviews }: { reviews?: BoardReview[] }) {
 const DEPLOY_POLL_ACTIVE_MS = 3000;
 const DEPLOY_POLL_IDLE_MS = 30000;
 const SETTLED_STATES = new Set(['idle', 'ready', 'running', '']);
+const SUPERVISOR_FRESH_MS = 15000;
+function heartbeatFresh(updated?: number, now = Date.now()): boolean {
+  return !!updated && Number.isFinite(updated) && updated * 1000 <= now
+    && now - updated * 1000 < SUPERVISOR_FRESH_MS;
+}
 
 function deploymentUnderway(state: State | null): boolean {
   if (!state) return false;
@@ -38,6 +43,16 @@ export function useDeploymentState(panelOpen: boolean) {
   const [data, setData] = useState<State | null>(null);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(false);
+  const [now, setNow] = useState(Date.now);
+  const updated = data?.supervisor.updated;
+  useEffect(() => {
+    setNow(Date.now());
+    const remaining = (updated ?? 0) * 1000 + SUPERVISOR_FRESH_MS - Date.now();
+    if (!updated || !Number.isFinite(updated) || updated * 1000 > Date.now() || remaining <= 0) return;
+    // Expire approval even between polls, or while the next request is stalled.
+    const timer = window.setTimeout(() => setNow(Date.now()), remaining + 1);
+    return () => window.clearTimeout(timer);
+  }, [updated]);
   const inFlight = useRef(false);
   const mounted = useRef(true);
   const refresh = useCallback(async () => {
@@ -67,9 +82,24 @@ export function useDeploymentState(panelOpen: boolean) {
   }, [refresh, delay]);
   // 'settings' is the first frame of every socket (re)connect, e.g. after a restart.
   useRoomEvent('settings', () => void refresh());
-  return { data, error, reload, refresh };
+  const fresh = heartbeatFresh(updated, Math.max(now, Date.now()));
+  const ready = !error && fresh && ['running', 'ready', 'idle'].includes(data?.supervisor.state ?? '');
+  return { data, error, reload, refresh, fresh, ready };
 }
 export type DeploymentFeed = ReturnType<typeof useDeploymentState>;
+
+export function SupervisorStatus({ feed }: { feed: DeploymentFeed }) {
+  const updated = feed.data?.supervisor.updated;
+  const validTime = !!updated && Number.isFinite(updated) && updated > 0 && updated * 1000 <= Date.now();
+  return <div>
+    <p role="status">{!feed.data && !feed.error ? 'Checking deployment supervisor…'
+      : feed.error || !feed.fresh ? 'Deployment supervisor unavailable'
+      : `Deployment supervisor: ${label(feed.data?.supervisor.state)}`}</p>
+    <p className="bd-muted">{validTime ? <>Last confirmation: <time dateTime={new Date(updated * 1000).toISOString()}>{new Date(updated * 1000).toLocaleString()}</time>.</>
+      : 'No supervisor heartbeat received.'} Approval requires a heartbeat less than 15 seconds old.</p>
+    {(feed.error || (feed.data && !feed.fresh)) && <p className="deploy-warning">Deployment status could not be confirmed. The backend can keep running while updates are unavailable. <button className="bd-btn" onClick={() => void feed.refresh()}>Refresh status</button></p>}
+  </div>;
+}
 
 export function DeploymentNotice({ feed, onOpen }: { feed: DeploymentFeed; onOpen: () => void }) {
   const gate = feed.data?.maintenance;
@@ -97,14 +127,21 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
   const [confirmedKey, setConfirmedKey] = useState('');
   const confirmed = !!rollbackKey && confirmedKey === rollbackKey;
   const supervisor = data?.supervisor;
-  const online = !!supervisor?.updated && Date.now() / 1000 - supervisor.updated < 15;
-  const ready = online && ['running', 'ready', 'idle'].includes(supervisor?.state ?? '');
   const pending = data?.pending?.[0];
   const completed = approved && data?.receipts.some(r => r.id === approved.id);
   const waiting = pending || (approved && !completed ? approved : null);
-  const blocked = !ready || !!error || busy || !!waiting || data?.maintenance.admission !== 'open';
+  const blockingReason = !data ? 'Deployment status is loading.'
+    : error ? 'Deployment status could not be refreshed. Refresh status before approving.'
+    : !feed.fresh ? 'The deployment supervisor has no recent heartbeat. Refresh status; approval stays blocked until it checks in.'
+    : !feed.ready ? `The deployment supervisor is ${label(supervisor?.state).toLowerCase()}. Wait until it is ready.`
+    : busy ? 'Approval is being submitted.'
+    : waiting ? 'A deployment approval is already queued. Wait for its result.'
+    : data.maintenance.admission !== 'open' || data.maintenance.writes === 'blocked' ? data.maintenance.reason || 'The room is temporarily closed for deployment.'
+    : '';
+  const candidateReason = blockingReason || (candidate && !candidate.rehearsal_passed ? 'This exact release has not passed rehearsal.' : '');
+  const rollbackReason = blockingReason || (!confirmed ? 'Confirm that you understand the rollback before approving.' : !rollbackTarget?.rehearsal_passed ? 'This exact release has not passed rehearsal.' : '');
   async function approve(target: Release | undefined, rollback = false) {
-    if (!target || busy || (rollback && !confirmed)) return;
+    if (!target || blockingReason || !heartbeatFresh(supervisor?.updated) || !target.rehearsal_passed || (rollback && !confirmed)) return;
     setBusy(true); setActionError('');
     try {
       const result = await runtime<{ id: string; release_id: string }>('/deployments/approve', { release_id: target.id, manifest_sha: target.manifest_sha, interrupt: false, drain_seconds: 600, rollback });
@@ -113,13 +150,13 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
     finally { setBusy(false); }
   }
   return <section className="deploy-panel bd-panel" aria-labelledby="deploy-title">
-    <div className="deploy-heading"><div><h2 id="deploy-title">Updates</h2></div><span className="bd-pill">{online ? label(supervisor?.state) : 'Supervisor offline'}</span></div>
+    <div className="deploy-heading"><div><h2 id="deploy-title">Updates</h2></div></div>
     <p className="bd-muted">Review a release and approve it here. The supervisor handles the restart and saves the result.</p>
+    <SupervisorStatus feed={feed} />
     {error && <p role="status" className="deploy-warning">{feed.reload ? 'The room restarted; reload to reconnect.' : 'Cannot refresh deployment status. Controls are disabled until the connection returns.'} <button className="bd-btn" onClick={() => feed.reload ? window.location.reload() : void refresh()}>{feed.reload ? 'Reload room' : 'Retry'}</button></p>}
     {!data && !error && <p role="status">Loading deployments…</p>}
     {data && <>
       <p>Running release: <code>{data.current.version || data.current.id || 'Not recorded yet'}</code></p>
-      {!online && <p className="deploy-warning">The external bootstrap must start this app under the supervisor before deployments can run here.</p>}
       {candidates.length > 1 && <label className="deploy-select">Prepared release<select value={candidate?.id ?? ''} onChange={e => { setSelected(e.target.value); setActionError(''); }}>{candidates.map(r => <option key={r.id} value={r.id}>{r.title || r.version || r.id}</option>)}</select></label>}
       {candidate ? <article className="deploy-candidate">
         <h3>{candidate.title || candidate.subject || candidate.version || 'Prepared release'}</h3>
@@ -128,7 +165,8 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
         <div className="deploy-evidence"><p><strong>Review</strong><br /><ReviewEvidence reviews={candidate.reviews} /></p><p><strong>Rehearsal</strong><br />{candidate.rehearsal || 'No rehearsal evidence recorded in this package.'}</p><p><strong>Recovery</strong><br />{candidate.rollback || 'The supervisor must verify recovery before reopening the room.'}</p></div>
         <details><summary>Exact release and changed files</summary><dl><dt>Commit</dt><dd><code>{candidate.commit}</code></dd><dt>Package fingerprint</dt><dd><code>{candidate.manifest_sha}</code></dd></dl><ul className="deploy-files">{candidate.files?.map(f => <li key={f.path}>{f.path}</li>)}{candidate.deletions?.map(p => <li key={p}>Remove: {p}</li>)}</ul></details>
         <p className="deploy-warning">Approval waits up to 10 minutes for current turns to finish, then briefly takes the room offline. If turns cannot finish in time, deployment is cancelled.</p>
-        <button className="bd-btn bd-btn-primary" disabled={blocked || !candidate.rehearsal_passed} onClick={() => void approve(candidate)}>{busy ? 'Submitting approval…' : 'Approve deployment when idle'}</button>
+        {candidateReason && <p id="deployment-blocked-reason" className="deploy-warning" role="status" tabIndex={0}><strong>Approval unavailable:</strong> {candidateReason}</p>}
+        <button className="bd-btn bd-btn-primary" aria-describedby={candidateReason ? 'deployment-blocked-reason' : undefined} disabled={!!candidateReason} onClick={() => void approve(candidate)}>{busy ? 'Submitting approval…' : 'Approve deployment when idle'}</button>
         <p className="bd-muted">Applies only to this exact release. Current turns will not be forcibly interrupted.</p>
       </article> : <p className="bd-muted">No newer release is staged. The team prepares and reviews a package before you can approve it.</p>}
       {rollbackTarget && <details className="deploy-rollback">
@@ -137,7 +175,8 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
         <p><strong>{rollbackTarget.title || rollbackTarget.subject || releaseName(rollbackTarget)}</strong><br /><span className="bd-muted">Built {String(rollbackTarget.created)} · <code>{rollbackTarget.commit?.slice(0, 12)}</code> · Review: <ReviewEvidence reviews={rollbackTarget.reviews} /></span></p>
         <p className="deploy-warning">Rolls the room back from {releaseName(data.current)} to {releaseName(rollbackTarget)}. Anything added since {releaseName(rollbackTarget)} disappears, and settings saved by newer releases may not load.</p>
         <label className="deploy-confirm"><input type="checkbox" checked={confirmed} onChange={e => setConfirmedKey(e.target.checked ? rollbackKey : '')} /> I understand this is a rollback to an older release</label>
-        <button className="bd-btn deploy-rollback-btn" disabled={blocked || !confirmed || !rollbackTarget.rehearsal_passed} onClick={() => void approve(rollbackTarget, true)}>{busy ? 'Submitting…' : `Roll back to ${releaseName(rollbackTarget)} when idle`}</button>
+        {rollbackReason && <p id="rollback-blocked-reason" className="deploy-warning" role="status" tabIndex={0}><strong>Rollback unavailable:</strong> {rollbackReason}</p>}
+        <button className="bd-btn deploy-rollback-btn" aria-describedby={rollbackReason ? 'rollback-blocked-reason' : undefined} disabled={!!rollbackReason} onClick={() => void approve(rollbackTarget, true)}>{busy ? 'Submitting…' : `Roll back to ${releaseName(rollbackTarget)} when idle`}</button>
       </details>}
       {actionError && <p role="alert" className="bd-error">{actionError}</p>}
       {waiting && <p role="status" className="deploy-warning">Approval recorded for <code>{waiting.release_id}</code>. {label(supervisor?.step || supervisor?.state)}. You can leave this page; the supervisor saves the result.</p>}

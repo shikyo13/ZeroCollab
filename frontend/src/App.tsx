@@ -31,8 +31,7 @@ export default function App() {
   const openProject = (id: string) => { setFocus(id); navigate('projects'); };
   return <div className="workspace-shell">
     <a className="workspace-skip" href="#workspace-content">Skip to workspace</a>
-    <Sidebar view={view} navigate={navigate} projects={projects.projects} active={projects.active} serverState={deployments.data?.supervisor.state}
-      serverUpdated={deployments.data?.supervisor.updated} serverError={!!deployments.error}
+    <Sidebar view={view} navigate={navigate} projects={projects.projects} active={projects.active} deployments={deployments}
       onOpenProject={openProject} onSearch={() => setSearch(true)} onHelp={() => setHelp(true)} />
     <div className="workspace-main">
       {/* One header row. Stop/Resume/Changes and the room mode line live on the Activity page

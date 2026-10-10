@@ -2,7 +2,8 @@
  * first, the views, then projects with the active project's chats nested under it.
  * The chat rows are channels.js's own list (rename, close, unread, closed & older), moved
  * here rather than re-implemented, so session behaviour stays in one place. */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import type { DeploymentFeed } from '../components/Deployments';
 import { openServer } from './useWorkspaceRoute';
 import { Icon } from '../components/Icon';
 import { LegacySlot } from '../components/LegacySlot';
@@ -15,11 +16,9 @@ import type { View } from './useWorkspaceRoute';
 
 const PROJECTS_SHOWN = 6;
 
-export function Sidebar({ view, navigate, projects, active, serverState, serverUpdated, serverError, onOpenProject, onSearch, onHelp }: {
+export function Sidebar({ view, navigate, projects, active, deployments, onOpenProject, onSearch, onHelp }: {
   view: View;
-  serverState?: string;
-  serverUpdated?: number;
-  serverError: boolean;
+  deployments: DeploymentFeed;
   navigate: (view: View) => void;
   projects: ProjectSummary[];
   active: ProjectSummary | undefined;
@@ -29,17 +28,9 @@ export function Sidebar({ view, navigate, projects, active, serverState, serverU
 }) {
   const { data } = useRuntimeState();
   const [chatsOpen, setChatsOpen] = useState(true);
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    setNow(Date.now());
-    const remaining = (serverUpdated ?? 0) * 1000 + 15000 - Date.now();
-    if (remaining <= 0) return;
-    // Expire the indicator even between polls, or while a status request is stalled.
-    const timer = window.setTimeout(() => setNow(Date.now()), remaining + 1);
-    return () => window.clearTimeout(timer);
-  }, [serverUpdated]);
-  const serverOnline = !!serverUpdated && now / 1000 - serverUpdated < 15;
-  const serverLabel = serverError ? 'Unreachable' : !serverOnline ? 'Offline' : serverState?.replaceAll('_', ' ') || 'Unknown';
+  const serverLabel = !deployments.data && !deployments.error ? 'Checking updates'
+    : deployments.error || !deployments.fresh ? 'Updates blocked'
+    : deployments.ready ? deployments.data?.pending.length || deployments.data?.maintenance.admission !== 'open' || deployments.data?.maintenance.writes === 'blocked' ? 'Updates busy' : 'Updates ready' : 'Updating';
   const agents = Object.values(data?.agents ?? {}).filter(a => !a.archived).length;
   const requests = data?.approvals?.length ?? 0;
   const busy = active ? active.tasks.working + active.tasks.review + active.tasks.blocked : 0;
@@ -82,8 +73,8 @@ export function Sidebar({ view, navigate, projects, active, serverState, serverU
       <button className="ws-nav-item ws-all" aria-current={view === 'projects' ? 'page' : undefined} onClick={() => onOpenProject('')}>All projects</button>
     </div>
     <div className="workspace-nav-bottom">
-      <button className="ws-nav-item backend-trigger" aria-current={view === 'server' ? 'page' : undefined} onClick={() => openServer('status')} title="Server">
-        <i className="backend-indicator" aria-hidden="true"><i className={`backend-dot ${!serverError && serverOnline && serverState === 'running' ? 'is-running' : ''}`} /></i>
+      <button className="ws-nav-item backend-trigger" aria-current={view === 'server' ? 'page' : undefined} onClick={() => openServer('status')} title={`Server: ${serverLabel}`} aria-label={`Server: ${serverLabel}`}>
+        <i className="backend-indicator" aria-hidden="true"><i className={`backend-dot ${deployments.ready ? 'is-running' : ''}`} /></i>
         <span>Server</span><small className="backend-status">{serverLabel}</small>
       </button>
       <button className="ws-nav-item" onClick={() => window.toggleSettings?.()} title="Settings"><Icon name="settings" size={18} /><span>Settings</span></button>

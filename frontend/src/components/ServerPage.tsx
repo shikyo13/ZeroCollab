@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BackendControls } from './BackendControls';
-import { Deployments, DeploymentHistory, type DeploymentFeed } from './Deployments';
+import { Deployments, DeploymentHistory, SupervisorStatus, type DeploymentFeed } from './Deployments';
 import { openServer, type ServerSection } from '../workspace/useWorkspaceRoute';
 import './server.css';
 
@@ -29,6 +29,7 @@ export function ServerPage({ deployments }: { deployments: DeploymentFeed }) {
         <p>{deployments.data?.current.version || deployments.data?.current.id || (deployments.error ? 'Status unavailable' : 'Loading…')}</p>
         <button className="bd-btn" onClick={() => openServer('updates')}>View updates</button></div>
       <BackendControls inline />
+      <div className="deploy-panel bd-panel"><h2>Deployment supervisor</h2><SupervisorStatus feed={deployments} /></div>
     </section>
     <section hidden={section !== 'updates'} aria-label="Server updates"><Deployments feed={deployments} /></section>
     <section hidden={section !== 'history'} aria-label="Server history"><DeploymentHistory feed={deployments} /></section>
