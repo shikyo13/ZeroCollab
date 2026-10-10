@@ -13,13 +13,15 @@ from coordination_queue import receipt_key
 from durable import atomic_write
 from coordination_state import update_execution, execution_state, pending_human_wait
 
-# chat_handoffs guards against agents @mentioning each other back and forth; 0 = no limit.
-# Tracked reviews, follow-ups and delegations never count (see RoomRuntime.run_turn).
-DEFAULT_LIMITS = {'input_chars': 16000, 'agent_turns': 0, 'chat_handoffs': 10,
+DEFAULT_LIMITS = {'input_chars': 16000, 'agent_turns': 0,
                   'turn_seconds': 0, 'turn_max_seconds': 0, 'parallel_agents': 0, 'local_tool_rounds': 3,
                   'native_tool_calls': 0,
                   'reported_token_budget': 0}
-LIMIT_RANGES = {'input_chars': (4000, 48000), 'agent_turns': (0, 32), 'chat_handoffs': (0, 50),
+# Retired limits: still accepted from stored settings and older clients, then ignored. The chat
+# @mention handoff cap was removed at the user's direction; agent turns per chain (agent_turns)
+# and the reported token budget remain the guards against runaway conversations.
+RETIRED_LIMITS = {'hops', 'chat_handoffs'}
+LIMIT_RANGES = {'input_chars': (4000, 48000), 'agent_turns': (0, 32),
                 'turn_seconds': (0, 3600), 'turn_max_seconds': (0, 14400), 'parallel_agents': (0, 64),
                 'local_tool_rounds': (0, 4), 'reported_token_budget': (0, 200000)}
 LIMIT_RANGES['native_tool_calls'] = (0, 64)
@@ -223,9 +225,6 @@ class ProjectRoom:
         self.limits = dict(DEFAULT_LIMITS)
         if self.limits_path.exists():
             stored = json.loads(self.limits_path.read_text('utf-8'))
-            # The old 'hops' limit also counted reviews and follow-ups, and its stored 4 was the
-            # old default and maximum, so it does not carry over to chat_handoffs.
-            stored.pop('hops', None)
             self.change_limits(stored, save=False)
         self.path = None
         self.state = {'spec': '', 'tasks': [], 'notes': []}
@@ -299,6 +298,8 @@ class ProjectRoom:
     def change_limits(self, updates, save=True):
         values = dict(self.limits)
         for name, value in updates.items():
+            if name in RETIRED_LIMITS:
+                continue
             if name not in LIMIT_RANGES or isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError('Choose integer values for supported room limits')
             low, high = LIMIT_RANGES[name]
@@ -310,8 +311,6 @@ class ProjectRoom:
         self.limits = values
         if save:
             write_json(self.limits_path, values)
-        if hasattr(self.runtime.host, 'router') and self.runtime.host.router:
-            self.runtime.host.router.max_hops = values['chat_handoffs']
         return dict(values)
 
     def set_spec(self, text):
@@ -351,12 +350,12 @@ class ProjectRoom:
         return True
 
     def handoffs_spent(self, identifier):
-        limit = self.limits['chat_handoffs']
-        return bool(limit) and self.chains.get(identifier, {}).get('handoffs', 0) >= limit
+        # The chat @mention handoff cap is retired; handoffs are still counted for the chain record.
+        return False
 
     def handoff(self, identifier):
         chain = self.chains.get(identifier)
-        if chain is None or chain['paused'] or self.handoffs_spent(identifier):
+        if chain is None or chain['paused']:
             return False
         chain['handoffs'] += 1
         return True

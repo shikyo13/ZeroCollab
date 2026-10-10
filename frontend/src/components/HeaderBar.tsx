@@ -18,8 +18,7 @@ const NO_SESSIONS: { id: string; title: string; readonly?: boolean }[] = [];
 /** Same wording as runtime.js's mode line, which now lives on the Activity page. */
 function roomMode(s: RuntimeState): string {
   const capacity = s.limits.parallel_agents_effective;
-  return `${s.paused ? 'Stopped' : 'Ready'} - ${capacity} agents can run together${s.limits.parallel_agents ? '' : ' (whole team)'}, `
-    + `${s.limits.chat_handoffs ? `${s.limits.chat_handoffs} chat handoffs` : 'no handoff limit'}${s.automatic_tool_approvals ? ' - automatic tool approvals' : ''}`;
+  return `${s.paused ? 'Stopped' : 'Ready'} - ${capacity} agents can run together${s.limits.parallel_agents ? '' : ' (whole team)'}${s.automatic_tool_approvals ? ' - automatic tool approvals' : ''}`;
 }
 
 function usePopover() {

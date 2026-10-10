@@ -39,6 +39,34 @@ LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
 FILE_TOOLS = {"read_file", "file_glob_search", "grep_search", "write_file", "edit_file", "get_info"}
 PRIVATE_PARTS = {".git", ".codex", ".claude", ".gemini", ".aws", ".ssh", ".env", ".agents"}
+# Native tools known to only read (Claude Code names, Codex item types, local file tools). Fail-safe:
+# every other native tool, including shells, subagents, unknown names and non-room MCP servers, counts
+# as able to change files or records.
+READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch", "TodoWrite", "ToolSearch",
+                   "BashOutput", "webSearch", "imageView", "todoList",
+                   "read_file", "file_glob_search", "grep_search", "get_info"}
+ROOM_SERVER = 'zerocollab_coordination'
+ROOM_TOOLS = {"room_read", "room_image", "room_task", "room_markup", "room_update", "room_review", "room_followup",
+              "room_repository", "room_goal", "room_team_builder", "room_browser"}
+
+
+def changing_tool(name, params):
+    """Room calls are classified where the room executes them (changes_room), so they are skipped here."""
+    if name in READ_ONLY_TOOLS or name in ROOM_TOOLS or str(name).startswith(f'mcp__{ROOM_SERVER}__'):
+        return False
+    return not (name == 'mcpToolCall' and isinstance(params, dict) and params.get('server') == ROOM_SERVER)
+# Room tool actions that only read, with each tool's default action; every other room call can change records.
+ROOM_READS = {"room_read": None, "room_image": None, "room_task": ({"get"}, ''), "room_goal": ({"status"}, 'status'),
+              "room_team_builder": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status')}
+
+
+def changes_room(tool, arguments):
+    if tool not in ROOM_READS:
+        return True
+    if ROOM_READS[tool] is None:
+        return False
+    reads, default = ROOM_READS[tool]
+    return ((arguments or {}).get('action') or default) not in reads
 
 
 def _parse_workspace(text):
@@ -298,6 +326,8 @@ class Run:
         self.coordination_calls = 0
         self.tools_listed = False
         self.native_tool_calls = 0
+        # Calls that could change files, run commands or change room records (changing_tool, changes_room).
+        self.changing_calls = 0
         self.native_tool_ids = set()
         self.stop_reason = ''
         self.deadline = None
@@ -423,7 +453,11 @@ class Run:
         self.touch()
         if self.text and self.message_phase != 'final_answer' and status in ('started', 'ACTIVE'):
             await self.finish_message(phase='commentary')
-        if self.manager.states[self.name]['provider'] != 'api' and status in ('started', 'ACTIVE'):
+        local = self.manager.states[self.name]['provider'] == 'api'
+        # Native tools report when they start; the local loop reports a file tool once it has run.
+        if (status == 'completed' if local else status in ('started', 'ACTIVE')) and changing_tool(name, params):
+            self.changing_calls += 1
+        if not local and status in ('started', 'ACTIVE'):
             identifier = params.get('id', params.get('_room_step')) if isinstance(params, dict) else None
             if identifier is None or str(identifier) not in self.native_tool_ids:
                 if identifier is not None:
@@ -1078,20 +1112,12 @@ class RoomRuntime:
                     'reason': 'Resolved, superseded or already delivered requests'}, persist=True)
                 return
             humans = [r for r in requests if r.get('human')]
-            # Only agent chat @mentions count as handoffs. Reviews, follow-ups and delegations carry a
-            # tracked record (ref); goals and team-builder runs carry their own token and controls.
+            # Agent chat @mentions are counted for usage only; there is no handoff limit (user #6302).
+            # Reviews, follow-ups and delegations carry a tracked record (ref); goals and team-builder
+            # runs carry their own token and controls.
             handoffs = [r for r in requests if not r.get('human') and not r.get('ref')
                         and not r.get('goal_token') and not r.get('team_builder')]
             entry['chain'] = (humans or requests)[-1]['chain']
-            if not humans and handoffs and self.project_room.handoffs_spent(entry['chain']):
-                limit = self.project_room.limits['chat_handoffs']
-                self.host.store.add('system', f'{name} was not woken by a chat @mention: agents have handed off {limit} times '
-                                    'since your last message. Reviews and follow-ups still go through. Send a message to continue, '
-                                    'or raise or turn off "Chat @mention handoffs" in Board > Limits & usage.', channel=entry['channel'])
-                requests = [r for r in requests if r not in handoffs]
-                handoffs = []
-                if not requests:
-                    return
             entry['requests'] = requests
             entry['prompt'] = '\n\n'.join(r['prompt'] for r in requests)
             if len(requests) > 1:
@@ -1130,10 +1156,15 @@ class RoomRuntime:
                 else:
                     await getattr(native, provider)(run, prompt)
             await run.finish_message(phase=run.message_phase or 'final_answer')
-            if not run.published_messages:
-                raise RuntimeError("Provider completed without a response")
+            silent = not run.published_messages
             self.project_room.complete(run)
             self.states[name].update(state="ready", detail="Last turn completed")
+            if silent:
+                try:
+                    await self.silent_turn(run)
+                except Exception:
+                    # Reporting must never turn a completed turn back into a blocking failure.
+                    LOGGER.exception('Silent-turn report failed for %s; the turn stays completed', name)
             self.check_room_tools(run)
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -1181,6 +1212,8 @@ class RoomRuntime:
             return {'ok': True}
         run.touch()
         run.coordination_calls += 1
+        if changes_room(tool, arguments):
+            run.changing_calls += 1
         arguments = self.profiles.recipient_arguments(arguments)
         if tool == 'room_browser':
             action = arguments.get('action', 'status')
@@ -1260,6 +1293,48 @@ class RoomRuntime:
         self.host.store.add(run.name, text, channel=run.channel, metadata={'no_route': True, 'chain': run.entry['chain']})
         await self.emit('project_state', self.project_room.snapshot())
         return result
+
+    async def silent_turn(self, run):
+        """Adapters return only after the provider's explicit normal completion (Codex turn/completed,
+        Claude result, Antigravity SUCCESS, Gemini stopReason, a final local round); errors, disconnects
+        and timeouts raise instead. A completed turn without a reply is therefore a valid outcome, often
+        an agent with nothing new to add, never a provider failure. It stays visible: its tool calls may
+        have changed files or records, and an answer it still owes must not go unnoticed."""
+        state = self.project_room.state
+        # Native counts already include room MCP calls; only the local loop counts room calls separately.
+        actions = run.native_tool_calls if self.states[run.name]['provider'] != 'api' else run.coordination_calls
+        handle = self.states[run.name].get('handle') or run.name
+        direct = re.compile(rf"@({re.escape(run.name)}|{re.escape(handle)})(?![\w-])", re.IGNORECASE)
+        owed = []
+        for request in run.entry['requests']:
+            ref = request.get('ref') or {}
+            if ref.get('collection') == 'reviews' and ref.get('action') == 'request':
+                item = next((r for r in state.get('reviews', []) if r['id'] == ref['id']), {})
+                if item.get('status') == 'pending' and item.get('reviewer') == run.name:
+                    owed.append(f"review {ref['id']}")
+            elif ref.get('collection') == 'followups' and ref.get('action') == 'create':
+                item = next((f for f in state.get('followups', []) if f['id'] == ref['id']), {})
+                if item.get('status') == 'open' and item.get('assigned_to') == run.name:
+                    owed.append(f"follow-up {ref['id']}")
+            elif request.get('human') and request.get('message_id') is not None:
+                # A message naming this agent is owed an answer; an @all broadcast is not.
+                message = self.host.store.get_by_id(request['message_id'])
+                if message and direct.search(message.get('text', '')):
+                    owed.append(f"#{request['message_id']}")
+        changes = run.changing_calls
+        summary = f"finished without replying ({actions} tool call{'' if actions == 1 else 's'}"
+        summary += f", {changes} that could change files or records)" if changes else ')'
+        # Always visible on the agent's status and in the persisted audit; its tool calls were shown live.
+        self.states[run.name]['detail'] = 'Last turn ' + summary
+        await self.emit('runtime_silent', {'run': run.id, 'agent': run.name, 'channel': run.channel,
+                                           'actions': actions, 'changing_calls': changes, 'unanswered': owed}, persist=True)
+        if owed or changes:
+            # A chat line only when an answer is owed or something may have changed: quiet, read-only
+            # replies to an @all must not become new noise.
+            note = f"{run.name} {summary}."
+            if owed:
+                note += f" Still unanswered: {', '.join(owed)}."
+            self.host.store.add('system', note, channel=run.channel, metadata={'no_route': True})
 
     def check_room_tools(self, run):
         """The room sees room tools load (the MCP server reports a listing) or get used. A turn with neither

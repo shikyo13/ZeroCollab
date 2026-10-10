@@ -32,11 +32,13 @@ class Router:
             rf"@({alternatives})(?![\w-])", re.IGNORECASE
         )
 
-    def parse_mentions(self, text: str) -> list[str]:
+    def parse_mentions(self, text: str, broadcast: bool = True) -> list[str]:
         mentions = set()
         for match in self._mention_re.finditer(text):
             name = match.group(1).lower()
             if name in ("both", "all"):
+                if not broadcast:
+                    continue
                 # Only tag online agents when using @all
                 if self._online_checker:
                     online = self._online_checker()
@@ -55,7 +57,10 @@ class Router:
         if sender.lower() == "system":
             return []  # Provider errors/status notices cannot reset the human's hop budget.
         ch = self._get_ch(channel)
-        mentions = self.parse_mentions(text)
+        # Only a human broadcast reaches everyone. Agents often name the human's broadcast in
+        # prose ("your @all message"), and each such reply would re-wake the whole team and use up
+        # the handoff budget; an agent hands off by naming the teammates who must act.
+        mentions = self.parse_mentions(text, broadcast=not self._is_agent(sender))
 
         if not self._is_agent(sender):
             # Human message resets hop counter and unpauses
@@ -70,17 +75,12 @@ class Router:
                 return [self.default_mention]
             return mentions
         else:
-            # Agent message: blocked while loop guard is active
-            if count_hop and ch["paused"]:
-                return []
-            # Only route if explicit @mention
+            # Only route if explicit @mention. The agent-to-agent hop cap was removed at the user's
+            # direction; hops are still counted for status, never used to block a handoff.
             if not mentions:
                 return []
             if count_hop:
                 ch["hop_count"] += 1
-            if count_hop and self.max_hops and ch["hop_count"] > self.max_hops:
-                ch["paused"] = True
-                return []
             # Don't route back to self
             return [m for m in mentions if m != sender]
 

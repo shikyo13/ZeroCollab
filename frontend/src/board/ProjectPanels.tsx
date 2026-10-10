@@ -145,7 +145,6 @@ export function MemoryPanel({ project, agents }: { project: ProjectState; agents
 
 const LIMIT_FIELDS: [keyof Limits, string, number, number, string][] = [
   ['parallel_agents', 'Agents running together', 0, 64, '0 = whole team'],
-  ['chat_handoffs', 'Chat @mention handoffs', 0, 50, '0 = no limit. Reviews and follow-ups never count'],
   ['input_chars', 'Shared context (characters)', 4000, 48000, 'Excludes native instructions and tools'],
   ['agent_turns', 'Agent-turn cap', 0, 32, '0 = off'],
   ['turn_seconds', 'Idle seconds per turn', 0, 3600, '0 = off'],
@@ -169,7 +168,6 @@ function ChainSummary({ chain, limits }: { chain: Chain; limits: Limits }) {
         <dt>Chat handoffs</dt>
         <dd>
           {chain.handoffs || 0}
-          {limits.chat_handoffs ? ` / ${limits.chat_handoffs}` : ' (no limit)'}
         </dd>
       </div>
       <div>

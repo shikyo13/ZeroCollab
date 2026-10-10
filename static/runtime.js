@@ -64,7 +64,7 @@
         for (const run of s.runs || []) for (const update of run.steering || [])
             showDelivery({...update, run: run.id, agent: run.agent, channel: run.channel});
         const capacity = s.limits.parallel_agents_effective ?? (s.limits.parallel_agents || Object.keys(s.agents).length);
-        document.getElementById('room-mode').textContent = (s.paused ? 'Stopped' : 'Ready') + ' - ' + capacity + (capacity === 1 ? ' agent can run' : ' agents can run together') + (s.limits.parallel_agents ? '' : ' (whole team)') + ', ' + (s.limits.chat_handoffs ? s.limits.chat_handoffs + ' chat handoffs' : 'no handoff limit') + (s.automatic_tool_approvals ? ' - automatic tool approvals' : '');
+        document.getElementById('room-mode').textContent = (s.paused ? 'Stopped' : 'Ready') + ' - ' + capacity + (capacity === 1 ? ' agent can run' : ' agents can run together') + (s.limits.parallel_agents ? '' : ' (whole team)') + (s.automatic_tool_approvals ? ' - automatic tool approvals' : '');
         document.getElementById('room-stop').disabled = s.paused;
         document.getElementById('room-resume').disabled = !s.paused;
         for (const pending of s.approvals || []) approval(pending);

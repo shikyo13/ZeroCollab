@@ -132,8 +132,6 @@ export interface Note {
 export interface Limits {
   input_chars: number;
   agent_turns: number;
-  /** Agent chat @mention handoffs per human message; 0 = no limit. */
-  chat_handoffs: number;
   parallel_agents: number;
   turn_seconds: number;
   turn_max_seconds: number;
