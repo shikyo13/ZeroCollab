@@ -83,13 +83,17 @@
 .ws-popover button { padding: 6px 12px; border: 1px solid var(--border-control); background: var(--bg-elevated); color: var(--text); font-size: 13px; }
 .ws-popover-actions { display: flex; gap: 8px; }
 .ws-popover .ws-danger { background: var(--danger-surface); color: var(--danger-text); border-color: var(--danger-border); font-weight: 650; }
-.ws-roster-menu { width: 320px; }
-.ws-roster-menu ul { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
-.ws-roster-menu li { display: flex; align-items: center; gap: 10px; }
+.ws-roster-menu { width: min(420px, calc(100vw - 112px)); max-width: none; max-height: calc(100dvh - 84px); overflow: auto; }
+.ws-roster-menu ul { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; max-height: 60dvh; overflow: auto; }
+.ws-roster-menu li { display: grid; grid-template-columns: 24px minmax(0, 1fr) minmax(0, 84px); align-items: center; gap: 10px; }
 .ws-roster-menu .ws-avatar { border-color: var(--bg-input); }
-.ws-roster-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-roster-name small, .ws-roster-state { color: var(--text-faint); font-size: 12px; margin-left: 6px; }
-.ws-roster-mode { color: var(--text-dim); font-size: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.ws-roster-name { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.ws-roster-name small { display: block; color: var(--text-faint); font-size: 12px; }
+.ws-roster-state { min-width: 0; color: var(--text-faint); font-size: 12px; text-align: right; overflow-wrap: anywhere; }
+.ws-roster-mode { color: var(--text-dim); font-size: 12px; border-top: 1px solid var(--border); padding-top: 10px; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .ws-roster-menu { position: fixed; top: 60px; right: 12px; width: calc(100vw - 24px); max-height: calc(100dvh - 72px); }
+}
 .workspace-goal-actions { display: flex; gap: 8px; margin: 10px 0; }
 
 /* Mention chips: one compact scrolling row instead of tall wrapping buttons. */
