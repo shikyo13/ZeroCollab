@@ -13,7 +13,7 @@ import { GoalChip } from './WorkControls';
 import { FollowTicker } from '../follow/Follow';
 import { EVENTS } from '../lib/constants';
 
-const VIEW_TITLES: Record<View, string> = { projects: 'Projects', chat: 'Chat', board: 'Board', live: 'Live view', team: 'Team', activity: 'Activity', server: 'Server' };
+const VIEW_TITLES: Record<View, string> = { projects: 'Projects', chat: 'Chat', board: 'Board', live: 'Live view', motion: 'Motion', team: 'Team', activity: 'Activity', server: 'Server' };
 const STACK_SHOWN = 6;
 const NO_SESSIONS: { id: string; title: string; readonly?: boolean }[] = [];
 

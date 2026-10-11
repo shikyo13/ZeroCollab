@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { EVENTS } from '../lib/constants';
 import { legacy } from '../legacy';
 
-export const VIEWS = ['projects', 'chat', 'board', 'live', 'team', 'activity', 'server'] as const;
+export const VIEWS = ['projects', 'chat', 'board', 'live', 'motion', 'team', 'activity', 'server'] as const;
 export type View = typeof VIEWS[number];
 
 export type ServerSection = 'status' | 'updates' | 'history';

@@ -2007,6 +2007,8 @@ def install(host):
     decision_flow.install(host, runtime)
     import shared_browser
     shared_browser.install(host, runtime)
+    import motion_studio
+    motion_studio.install(host, runtime)
     import coordination_records
     coordination_records.install(host, runtime)
     provider_setup.install(host, runtime)

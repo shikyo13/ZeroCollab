@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "m01",
+  "name": "Live Follow comparison",
+  "source": "design-review/motion-comparison/scene.json scene-r1 (synthetic)",
+  "duration_ms": 20000,
+  "layout": {
+    "title": "Live Follow  -  synthetic comparison scene (scene-r1)",
+    "agents": [
+      { "id": "builder", "name": "Builder", "x": 120, "y": 210 },
+      { "id": "reviewer", "name": "Reviewer", "x": 680, "y": 210 }
+    ],
+    "board": { "x": 120, "y": 520, "columns": ["Working", "Review", "Done"] },
+    "browser": { "title": "Shared browser  -  localhost:5173/preview", "nav": ["Chat", "Board", "Team", "Files"], "lines": 4 },
+    "cards": [
+      { "id": "task-m01", "title": "Panel change", "meta": "task-m01  -  owner Builder", "column": "Working" }
+    ]
+  },
+  "beats": [
+    { "at_ms": 0, "duration_ms": 220, "kind": "agent", "actor": "builder", "label": "Builder starts a turn", "state": "Running", "detail": "synthetic" },
+    { "at_ms": 3000, "duration_ms": 3000, "kind": "tool", "actor": "builder", "label": "read_file src/panel.tsx", "state": "Running", "target": "src/panel.tsx", "detail": "synthetic" },
+    { "at_ms": 6000, "duration_ms": 0, "kind": "tool", "actor": "builder", "label": "read_file src/panel.tsx", "state": "Completed", "target": "src/panel.tsx", "detail": "synthetic; a finished read, not a finished change" },
+    { "at_ms": 9000, "duration_ms": 600, "kind": "board", "actor": "builder", "label": "task-m01", "state": "Review", "detail": "Panel change enters Review; no review outcome" },
+    { "at_ms": 12000, "duration_ms": 500, "kind": "handoff", "actor": "builder", "label": "Review requested  -  scene-r1", "state": "Awaiting review", "target": "reviewer", "detail": "a request, not a reply or approval" },
+    { "at_ms": 15000, "duration_ms": 5000, "kind": "browser", "actor": "builder", "label": "Shared browser evidence (synthetic)", "state": "Captured evidence", "target": "panel", "detail": "artifact synthetic-preview; browser ownership unchanged" },
+    { "at_ms": 17000, "duration_ms": 3000, "kind": "caption", "actor": "builder", "label": "Ready for review. Agent work continues independently of motion.", "state": "Awaiting review" }
+  ]
+}

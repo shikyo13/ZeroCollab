@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "id": "check-moves",
+  "name": "Board moves check",
+  "source": "frontend review 1dc6462c cases: two moves of one card, one tool with no outcome",
+  "duration_ms": 5000,
+  "layout": {
+    "title": "Check: two board moves, one unpaired tool",
+    "agents": [{ "id": "builder", "name": "Builder", "x": 120, "y": 210 }],
+    "board": { "x": 120, "y": 520, "columns": ["Working", "Review", "Done"] },
+    "cards": [{ "id": "task-c", "title": "Check card", "column": "Working" }]
+  },
+  "beats": [
+    { "at_ms": 0, "duration_ms": 220, "kind": "agent", "actor": "builder", "label": "Builder", "state": "Running" },
+    { "at_ms": 500, "duration_ms": 1000, "kind": "tool", "actor": "builder", "label": "run_tests", "state": "Running" },
+    { "at_ms": 1000, "duration_ms": 600, "kind": "board", "actor": "builder", "label": "task-c", "state": "Review" },
+    { "at_ms": 3000, "duration_ms": 600, "kind": "board", "actor": "builder", "label": "task-c", "state": "Done" }
+  ]
+}
