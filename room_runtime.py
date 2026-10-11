@@ -1271,8 +1271,10 @@ class RoomRuntime:
                                 channel=self.default_channel(), metadata={'no_route': True})
             return False
         if self.paused:
+            # A stopped room answers any human message once per chat, @all included: otherwise nobody wakes and
+            # nothing says why (QA 1b85ae4c). Still once, not once per agent.
             self.wake_notice(f'room:{channel}', 'paused', "The room is stopped. Click Resume to let the team work.",
-                             channel, routing)
+                             channel, {**(routing or {}), 'broadcast': False})
             return
         if self.states[name].get("paused"):
             self.wake_notice(name, 'paused', f"{name} is stopped. Click its Resume agent button to wake it.",
