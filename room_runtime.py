@@ -385,6 +385,8 @@ class Run:
         self.published_messages = []
         self.last_commentary = ''
         self.withheld = False  # its answer to a human @all was held because it no longer owned the claim
+        self.public_stream = (None, False)  # (message id, may stream to chat), decided once per answer
+        self.public_streamed = None  # message id whose text already started streaming to the chat
         self.output_chars = 0
         self.process = self.stderr_task = None
         self.provider_session = None
@@ -500,8 +502,28 @@ class Run:
         self.output_chars += len(text)
         if self.output_chars > 48000:
             raise RuntimeError("Response exceeded room output limit")
-        await self.manager.emit("runtime_delta", {"run": self.id, "message": self.message_id,
-            "phase": self.message_phase, "agent": self.name, "channel": self.channel, "text": text})
+        base = {"run": self.id, "message": self.message_id, "phase": self.message_phase, "agent": self.name,
+                "channel": self.channel}
+        if self.streams_to_chat():
+            # The first public delta carries everything written so far, in case the phase arrived late.
+            first = self.public_streamed != self.message_id
+            self.public_streamed = self.message_id
+            await self.manager.emit("runtime_delta", {**base, "text": self.text if first else text})
+        else:
+            # Progress notes, unclassified text and answers this run may not post never stream into the
+            # chat (design 7da9d517, Zero #12872): they reach Activity at message end, or nowhere if held.
+            # runtime_draft keeps the live views informed.
+            await self.manager.emit("runtime_draft", {**base, "text": text})
+
+    def streams_to_chat(self):
+        """True only for a final answer this run may publish now: not a progress note, not text whose
+        phase is still unknown (Claude reports it at the end), and passing its answer claim.
+        Decided once per message, since the claim check reads the chat store."""
+        if self.message_phase != 'final_answer' or not self.message_id:
+            return False
+        if self.public_stream[0] != self.message_id:
+            self.public_stream = (self.message_id, not self.manager.response_claims.check(self))
+        return self.public_stream[1]
 
     async def begin_message(self, identifier, phase=None):
         if identifier in self.completed_messages:
@@ -673,7 +695,7 @@ class RoomRuntime:
                 "limits": {**self.project_room.limits, "parallel_agents_effective": self.parallel_capacity(), "queue_per_agent": 4},
                 "budgets": list(self.project_room.chains.values())[-12:], "goal": self.goals.goal,
                 "approvals": [a["display"] for a in self.approvals.values()],
-                "runs": [{"id": r.id, "agent": r.name, "channel": r.channel, "text": r.text,
+                "runs": [{"id": r.id, "agent": r.name, "channel": r.channel, "text": r.text if r.streams_to_chat() else '',
                           "message": r.message_id, "phase": r.message_phase,
                           "steering": [{'message_id': q.get('message_id'), 'ref': q.get('ref'), 'status': q.get('_steering')}
                                        for q in r.steering.pending[-8:]],
