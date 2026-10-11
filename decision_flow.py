@@ -471,10 +471,12 @@ class DecisionFlow:
         claims = r.response_claims
         chosen = claims.state.get('responders') or {}
         configured = chosen.get('lead') or (getattr(getattr(r, 'manager_wakes', None), 'record', None) or {}).get('manager')
+        if not configured:
+            return '', ''  # no manager: a saved backup alone is not one (systems 5afed85b)
         # The manager, or the backup chosen on Team while it is stopped; never anyone further down the roster.
         manager = next((n for n in (configured, chosen.get('backup')) if n and claims.available(n)), '')
         if not manager:
-            return configured or '', ''
+            return configured, ''
         tasks = {t['id']: t['title'] for t in d['record']['tasks'] if t.get('id')}
         prompt = (f'The user approved team decision {d["id"]}: {d["question"][:500]}\n'
                   f'Decision note {d["record"]["note_id"]}. It created {len(tasks)} unowned tasks:\n'
