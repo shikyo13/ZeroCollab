@@ -447,11 +447,40 @@ class DecisionFlow:
         d['choice']['announced'] = True
         tally, count = d['choice']['tally'], len(d['choice']['tasks'])
         said = {'approve': 'approved', 'reject': 'rejected'}[kind]
+        if kind == 'reject':
+            effect = '; no tasks were created.'
+        elif not count:
+            effect = '; nothing new to start.'
+        else:
+            manager = self.hand_off(d)
+            effect = (f'; {count} task{"" if count == 1 else "s"} created'
+                      + (f' and sent to {manager} to assign.' if manager else
+                         '. Choose a project manager on Team to have them assigned.'))
         self.runtime.host.store.add(
             'system', f'The user {said} the proposal for "{d["question"][:200]}" (team: {tally["agree"]} agree, '
-            f'{tally["dissent"]} against, {len(tally["missing"])} didn\'t answer)'
-            + (f'; {count} task{"" if count == 1 else "s"} created.' if kind == 'approve' else '; no tasks were created.'),
+            f'{tally["dissent"]} against, {len(tally["missing"])} didn\'t answer){effect}',
             channel=d['channel'], metadata={'no_route': True, 'decision': d['id']})
+
+    def hand_off(self, d):
+        """Approved tasks are created unowned, so the project manager is woken once to assign or take them
+        (Zero #13805: an approval should start the work). Returns who was woken, or '' when nobody is set."""
+        r = self.runtime
+        claims = r.response_claims
+        configured = (claims.state.get('responders') or {}).get('lead') or \
+            (getattr(getattr(r, 'manager_wakes', None), 'record', None) or {}).get('manager')
+        # The configured manager, or whoever answers for it while it is stopped (the backup first).
+        manager = configured and claims.responders()[0]
+        if not manager:
+            return ''
+        tasks = {t['id']: t['title'] for t in d['record']['tasks'] if t.get('id')}
+        prompt = (f'The user approved team decision {d["id"]}: {d["question"][:500]}\n'
+                  f'Decision note {d["record"]["note_id"]}. It created {len(tasks)} unowned tasks:\n'
+                  + ''.join(f'- {i}: {title}\n' for i, title in tasks.items())
+                  + 'As project manager, give each an owner (or take it), with dependencies and paths, so the work starts. '
+                    'Do not repeat the decision or ask the user to approve it again.')
+        queued = r.enqueue(manager, d['channel'], prompt=prompt, chain=r.project_room.new_chain(d['channel']),
+                           routing={'human': False, 'decision_tasks': d['id']})
+        return manager if queued else ''  # enqueue is True only when the wake was queued
 
     def post_conclusion(self, d):
         """The synthesiser's conclusion, posted once per round when it reaches review with its real outcome.
