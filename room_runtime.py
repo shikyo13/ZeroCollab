@@ -2368,7 +2368,14 @@ def install(host):
             if not isinstance(body, dict) or set(body) - {'lead', 'backup'} or any(
                     not isinstance(body.get(k, ''), str) for k in ('lead', 'backup')):
                 raise ValueError('Send lead and backup as participant names, or empty strings for the defaults')
+            before = (runtime.project_room.state.get('responders') or {}).get('lead', '')
             runtime.response_claims.set_responders(body.get('lead', ''), body.get('backup', ''))
+            after = runtime.project_room.state['responders']['lead']
+            # The chosen lead is the project manager (Zero #13091, reference 220a0b3c): automatic check-ins
+            # follow it in the same request, before anything awaits, so no check-in runs for the old one.
+            changed = getattr(runtime.manager_wakes, 'manager_changed', None)
+            if after != before and changed:
+                changed(after)
             await runtime.publish_status()  # every open window updates its lead badge at once
             return await responders_status()
         except ValueError as exc:
