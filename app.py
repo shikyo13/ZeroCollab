@@ -580,16 +580,17 @@ async def _handle_new_message(msg: dict):
         return
     managed_sender = managed_runtime and sender in managed_runtime.states
     raw_targets = router.get_targets(sender, text, channel, count_hop=not managed_sender)
-    # A human @all wakes one lead (response_claims.py): the claim is recorded before anyone is woken, and
-    # agents named directly in the same message are still woken. @everyone keeps the wake-everyone path.
+    # Zero #12950: a human message with no @tag goes to the lead (response_claims.py), who answers,
+    # delegates and wakes owners of actionable tasks; the claim is recorded before anyone is woken. A human
+    # @all wakes the whole team, as before 0.12.26, and an explicit @agent wakes that agent.
     claim = None
-    kind = router.broadcast_kind(text) if managed_runtime and not managed_sender and sender not in known_agents else None
-    if kind == 'all':
-        claim = managed_runtime.response_claims.open(channel, msg.get('id'))
-        raw_targets = router.named_mentions(text) + ([claim['owner']] if claim else [])
-    elif kind == 'everyone':
-        managed_runtime.response_claims.bump_scope(channel)
+    human = bool(managed_runtime) and not managed_sender and sender not in known_agents
+    if human and router.broadcast_kind(text) == 'all':
+        managed_runtime.response_claims.bump_scope(channel)  # the broadcast supersedes an open lead answer here
         managed_runtime.response_claims.save()
+    elif human and router.untagged(text):
+        claim = managed_runtime.response_claims.open(channel, msg.get('id'))
+        raw_targets = [claim['owner']] if claim else []
     # Resolve base family names to actual registered instances
     # e.g. 'claude' → 'claude-prime' when slot-1 was renamed
     targets = []
@@ -630,11 +631,12 @@ async def _handle_new_message(msg: dict):
             message = chat_msg
             if claim and target == claim['owner']:
                 routing.update(response_claim=claim['key'], generation=claim['generation'])
-                # The lead answers for the team and gets work moving: nobody else was woken (Zero #12872).
-                message = ("You are the lead for this @all. The rest of the team was not woken, so you answer for "
-                           "the team and restart work: check the open tasks listed in your context (room_task get for "
-                           "detail; never read the whole board), then give the one answer and mention each agent with an unblocked next step, one line each with that "
-                           "step. Mention nobody who has nothing to do.\n\n" + chat_msg)
+                # The lead answers for the team and gets work moving when that's called for (Zero #12950).
+                message = ("You are the lead: this message from the user names nobody, so it came to you and nobody "
+                           "else was woken. Give the one answer. If it means work should move, check the open tasks "
+                           "listed in your context (room_task get for detail; never read the whole board) and mention "
+                           "each agent with an unblocked next step, one line each with that step. Mention nobody who "
+                           "has nothing to do.\n\n" + chat_msg)
             queued = await agents.trigger(target, message=message, channel=channel, chain=chain, routing=routing)
             if queued is False:
                 store.add("system", f"Could not queue {target}'s wake. Retry the mention when its wrapper is available.",

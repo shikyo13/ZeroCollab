@@ -43,6 +43,17 @@ from steering_delivery import SteeringDelivery
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
+# Interim text that is only status narration ("I'm checking the board.") may stay in Activity. Anything
+# longer, on several lines, or not opening like narration posts: losing an answer is worse than one extra
+# line in chat (QA c0950fb6, Zero #12974).
+NARRATION_MAX = 160
+NARRATION_START = re.compile(r"(i'm|i am|i'll|i will|let me|now i|next,? i|first,? i|checking|looking|reading|"
+                             r"searching|running|opening|starting|loading|fetching|waiting)\b", re.IGNORECASE)
+
+
+def narration(text):
+    text = text.strip().replace('’', "'")
+    return len(text) <= NARRATION_MAX and '\n' not in text and bool(NARRATION_START.match(text))
 FILE_TOOLS = {"read_file", "file_glob_search", "grep_search", "write_file", "edit_file", "get_info"}
 PRIVATE_PARTS = {".git", ".codex", ".claude", ".gemini", ".aws", ".ssh", ".env", ".agents"}
 # Native tools known to only read (Claude Code names, Codex item types, local file tools). Fail-safe:
@@ -385,8 +396,6 @@ class Run:
         self.published_messages = []
         self.last_commentary = ''
         self.withheld = False  # its answer to a human @all was held because it no longer owned the claim
-        self.public_stream = (None, False)  # (message id, may stream to chat), decided once per answer
-        self.public_streamed = None  # message id whose text already started streaming to the chat
         self.output_chars = 0
         self.process = self.stderr_task = None
         self.provider_session = None
@@ -502,37 +511,10 @@ class Run:
         self.output_chars += len(text)
         if self.output_chars > 48000:
             raise RuntimeError("Response exceeded room output limit")
-        base = {"run": self.id, "message": self.message_id, "phase": self.message_phase, "agent": self.name,
-                "channel": self.channel}
-        was_public = self.public_streamed == self.message_id and self.public_stream == (self.message_id, True)
-        if self.streams_to_chat():
-            # The first public delta carries everything written so far, in case the phase arrived late.
-            first = self.public_streamed != self.message_id
-            self.public_streamed = self.message_id
-            await self.manager.emit("runtime_delta", {**base, "text": self.text if first else text})
-        else:
-            # Progress notes, unclassified text and answers this run may not post never stream into the
-            # chat (design 7da9d517, Zero #12872): they reach Activity at message end, or nowhere if held.
-            # runtime_draft keeps the live views informed.
-            await self.manager.emit("runtime_draft", {**base, "text": text})
-            if was_public:
-                # It lost its claim mid-answer: retract the text already shown (the snapshot now has none).
-                await self.manager.publish_status()
-
-    def streams_to_chat(self):
-        """True only for a final answer this run may publish now: not a progress note, not text whose
-        phase is still unknown (Claude reports it at the end), and passing its answer claim.
-        The full check, which scans the chat store, runs once per message; ownership, generation, status
-        and scope are re-checked on every emission and snapshot, so an answer whose claim is superseded
-        mid-stream stops streaming at once and stays stopped (frontend 6f6cb398)."""
-        if self.message_phase != 'final_answer' or not self.message_id:
-            return False
-        claims = self.manager.response_claims
-        if self.public_stream[0] != self.message_id:
-            self.public_stream = (self.message_id, not claims.check(self))
-        elif self.public_stream[1] and claims.check(self, scan=False):
-            self.public_stream = (self.message_id, False)
-        return self.public_stream[1]
+        # The chat shows finished messages only, so nothing that appeared there is taken back (QA c0950fb6,
+        # Zero #12950/#12974). Text being written goes to the Live and Follow views as runtime_draft.
+        await self.manager.emit("runtime_draft", {"run": self.id, "message": self.message_id,
+            "phase": self.message_phase, "agent": self.name, "channel": self.channel, "text": text})
 
     async def begin_message(self, identifier, phase=None):
         if identifier in self.completed_messages:
@@ -562,27 +544,37 @@ class Run:
         if content:
             final = self.message_phase == 'final_answer' and not partial
             if not final and not partial:
-                # Interim narration ("I'm checking...") belongs in Activity, not the conversation. The
-                # last one is kept: a turn that ends without a final answer still posts it (publish_last).
                 self.last_commentary = content
-                await self.manager.activity_note(self, 'commentary', content)
-                kept_in = 'activity'
+                if self.answers_human() and not narration(content):
+                    # Text for the user written before tool calls is often the answer itself: it posts
+                    # (unrouted) even when a different final message follows (QA c0950fb6).
+                    kept_in = 'chat' if await self.publish(content, identifier, False) else 'activity'
+                else:
+                    # Short status narration ("I'm checking...") stays in Activity. The last one is kept: a
+                    # turn that ends without posting anything still posts it (publish_last).
+                    await self.manager.activity_note(self, 'commentary', content)
+                    kept_in = 'activity'
             else:
                 kept_in = 'chat' if await self.publish(content, identifier, final, partial) else 'activity'
         self.completed_messages.add(identifier)
         self.text = ''
         self.message_id = self.message_phase = None
-        # kept_in tells the live view where the streamed text went, so a preview that became an Activity note
-        # can say so instead of vanishing from the chat (Zero #12872).
+        # kept_in tells the live views where the draft went: posted to chat, or kept in Activity.
         await self.manager.emit('runtime_message_end', {'run': self.id, 'message': identifier,
             'agent': self.name, 'channel': self.channel, 'kept_in': kept_in})
 
+    def answers_human(self):
+        """Woken by a message from the user (directly, or as the lead answering one)."""
+        return any(q.get('human') for q in self.entry.get('requests', []))
+
     async def publish(self, content, identifier, final, partial=False, route=True):
-        """Post one message to the chat. A final answer to a human @all goes through the response
-        claim: if this run no longer owns it, the reply is held in Activity and the chat stays quiet.
-        route=False posts without waking anyone its text mentions."""
+        """Post one message to the chat. Anything a run answering a user message under the response claim
+        posts goes through that claim: if this run no longer owns it (Stop, a newer message, the backup
+        took over), the text is held in Activity and the chat stays quiet. route=False posts without
+        waking anyone its text mentions; interim text never routes."""
         claims = self.manager.response_claims
-        if final:
+        gated = final or claims.grant(self) is not None
+        if gated:
             reason = claims.check(self)
             if reason:
                 self.withheld = True
@@ -593,12 +585,12 @@ class Run:
             'no_route': bool(self.manager_audit) or not final or not route,
             'worktree': str(self.worktree), 'settings': self.settings,
             'reported_settings': self.reported_settings, 'chain': self.entry['chain'],
-            **(claims.metadata(self) if final else {})}
+            **(claims.metadata(self) if gated else {})}
         if partial:
             metadata['outcome'] = 'partial'
         message = self.manager.host.store.add(self.name, content, channel=self.channel, metadata=metadata)
         self.published_messages.append(message['id'])
-        if final:
+        if gated:
             claims.published(self, message['id'])
         return message
 
@@ -704,7 +696,8 @@ class RoomRuntime:
                 "limits": {**self.project_room.limits, "parallel_agents_effective": self.parallel_capacity(), "queue_per_agent": 4},
                 "budgets": list(self.project_room.chains.values())[-12:], "goal": self.goals.goal,
                 "approvals": [a["display"] for a in self.approvals.values()],
-                "runs": [{"id": r.id, "agent": r.name, "channel": r.channel, "text": r.text if r.streams_to_chat() else '',
+                "responders": self.responders_view(),
+                "runs": [{"id": r.id, "agent": r.name, "channel": r.channel, "text": '',
                           "message": r.message_id, "phase": r.message_phase,
                           "steering": [{'message_id': q.get('message_id'), 'ref': q.get('ref'), 'status': q.get('_steering')}
                                        for q in r.steering.pending[-8:]],
@@ -721,6 +714,16 @@ class RoomRuntime:
         """A line for the Activity view (the runtime_tool feed it already shows), never the chat."""
         await self.emit("runtime_tool", {"run": run.id, "agent": run.name, "channel": run.channel, "tool": kind,
                                          "status": "note", "details": {"text": text[:4000]}}, persist=True)
+
+    def responders_view(self):
+        """Who answers an untagged human message now (lead) and who takes over (backup), plus what the user
+        chose (configured; '' means the default order). Display only: it grants no authority (Zero #12950)."""
+        if self.project_room.path is None:
+            return {'lead': None, 'backup': None, 'configured': {'lead': '', 'backup': ''}}
+        lead, backup = self.response_claims.responders()
+        configured = self.project_room.state.get('responders') or {}
+        return {'lead': lead, 'backup': backup,
+                'configured': {'lead': configured.get('lead', ''), 'backup': configured.get('backup', '')}}
 
     async def publish_status(self):
         await self.emit("runtime_state", self.snapshot())
@@ -2295,19 +2298,20 @@ def install(host):
 
     @host.app.get('/api/runtime/responders')
     async def responders_status():
-        lead, backup = runtime.response_claims.responders()
-        return {'configured': runtime.project_room.state.get('responders') or {}, 'lead': lead, 'backup': backup}
+        return runtime.responders_view()
 
     @host.app.post('/api/runtime/responders')
     async def responders_change(request: Request):
-        """Who answers a human @all first, and the one backup. Human only (UI token); empty values use the
-        defaults: the active goal lead, then the configured manager, then roster order."""
+        """Who answers an untagged human message first (the lead), and the one backup. Human only (UI
+        token); empty values use the defaults: the active goal lead, then the configured manager, then
+        roster order. Returns the same shape as GET and the runtime snapshot's responders field."""
         try:
             body = await request.json()
             if not isinstance(body, dict) or set(body) - {'lead', 'backup'} or any(
                     not isinstance(body.get(k, ''), str) for k in ('lead', 'backup')):
                 raise ValueError('Send lead and backup as participant names, or empty strings for the defaults')
             runtime.response_claims.set_responders(body.get('lead', ''), body.get('backup', ''))
+            await runtime.publish_status()  # every open window updates its lead badge at once
             return await responders_status()
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, 400)

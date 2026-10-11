@@ -27,7 +27,7 @@ class Router:
     def _build_pattern(self):
         # Sort longest-first so "gemini-2" is tried before "gemini"
         names = [re.escape(n) for n in sorted(self.agent_names | self.aliases.keys(), key=len, reverse=True)]
-        alternatives = "|".join(names + ["both", "all", "everyone"])
+        alternatives = "|".join(names + ["both", "all"])
         self._mention_re = re.compile(
             rf"@({alternatives})(?![\w-])", re.IGNORECASE
         )
@@ -36,7 +36,7 @@ class Router:
         mentions = set()
         for match in self._mention_re.finditer(text):
             name = match.group(1).lower()
-            if name in ("both", "all", "everyone"):
+            if name in ("both", "all"):
                 if not broadcast:
                     continue
                 # Only tag online agents when using @all
@@ -50,9 +50,13 @@ class Router:
         return list(mentions)
 
     def broadcast_kind(self, text: str) -> str | None:
-        """'everyone' (the human's explicit wake-everyone), 'all' (@all/@both: the lead answers first), or None."""
+        """'all' for @all/@both (the whole team, Zero #12950), else None."""
         names = {m.group(1).lower() for m in self._mention_re.finditer(text)}
-        return 'everyone' if 'everyone' in names else 'all' if names & {'all', 'both'} else None
+        return 'all' if names & {'all', 'both'} else None
+
+    def untagged(self, text: str) -> bool:
+        """No @agent, @all or @both anywhere: a human message like this goes to the lead (Zero #12950)."""
+        return self._mention_re.search(text or '') is None
 
     def named_mentions(self, text: str) -> list[str]:
         """Agents the message names directly, without expanding a broadcast."""
