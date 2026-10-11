@@ -33,6 +33,7 @@ import json
 import msvcrt
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -49,6 +50,9 @@ import release_pack
 LIVE = Path(__file__).resolve().parent
 DATA = LIVE / 'data'
 SPOOL = DATA / 'deploy'
+HANDBACK = SPOOL / 'handback.json'  # {kind}: the other app used the room's data last; the next room opens Stopped
+# Read as text by the desktop app with run.py's: both must declare it before desktop opens this room's data.
+ROOM_WRITER_PROTOCOL = 1
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 REQUEST_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # Data records snapshotted for an exact restore; everything else in data/ is left alone.
@@ -99,6 +103,28 @@ def room_port():
         if port:
             return int(port)
     return 8300
+
+
+def room_data():
+    """The data folder run.py writes, by the same rule as config_loader.room_paths: config.toml's
+    server.data_dir (or ZEROCOLLAB_DATA_DIR), relative to LIVE, resolved. Inlined so this file never depends
+    on a release-shipped helper's version; run.py checks the lease it adopts names the same folder."""
+    value = os.environ.get('ZEROCOLLAB_DATA_DIR') or ''
+    if not value:
+        try:
+            value = tomllib.loads((LIVE / 'config.toml').read_text(encoding='utf-8')).get('server', {}).get('data_dir', '')
+        except (OSError, ValueError):
+            value = ''
+    path = Path(value or './data')
+    return (path if path.is_absolute() else LIVE / path).resolve()
+
+
+def lease_holder(exc):
+    """Plain text naming who holds the room's data folder, from room_writer.RoomInUse."""
+    owner = getattr(exc, 'owner', None) or {}
+    who = {'desktop': 'the ZeroCollab desktop app', 'web': 'another ZeroCollab web room'}.get(owner.get('kind'), 'another program')
+    pid = f' (PID {owner["pid"]})' if isinstance(owner.get('pid'), int) else ''
+    return f'{room_data()} is in use by {who}{pid}. Quit it, then start the room again.'
 
 
 def processes():
@@ -161,13 +187,23 @@ def creation_utc(handle):
 class Supervisor:
     def __init__(self, nonce=''):
         self.url = f'http://127.0.0.1:{room_port()}'
+        # Where the user's browser opens the room; its sign-in cookie lives on this host name only.
+        self.room_url = f'http://zerocollab.localhost:{room_port()}'
         self.client = httpx.Client(base_url=self.url, timeout=20, trust_env=False)
+        # The UI token is made here and reaches the room only on its stdin: never a file, a log or an
+        # environment variable an agent could read. Browser sessions survive room restarts as hashes only.
+        self.ui_token = secrets.token_hex(32)
+        self.session_hashes = []
         self.child = None
         # nonce identifies this launch: the venv python.exe is a redirector, so the PID that
         # launched us is not os.getpid() and cannot be used to recognize our status file.
         self.status = {'supervisor_pid': os.getpid(), 'url': self.url, 'nonce': nonce}
         self.status_lock = threading.Lock()
         self.locks = []
+        # The data-folder lease (room_writer.py), held for this process's life so the desktop app can never
+        # open the room's data between child restarts or during a deployment. Each child gets a duplicate.
+        self.lease = None
+        self.start_stopped = None  # the other app that used the data last; only the first child opens Stopped
 
     # ----- records -----
     def set_status(self, state=None, **values):
@@ -194,13 +230,18 @@ class Supervisor:
         deadline = time.monotonic() + wait_seconds
         while True:
             try:
+                # A room started by this supervisor took the token from stdin.
+                self.client.headers['X-Session-Token'] = self.ui_token
+                if self.client.get('/api/runtime', timeout=5).status_code == 200:
+                    return
+                # An older room ignores stdin and still embeds its own token in the page.
                 page = self.client.get('/', timeout=5)
                 page.raise_for_status()
                 match = re.search(r'window\.__SESSION_TOKEN__="([^"]+)"', page.text)
                 if not match:
                     raise RuntimeError('Room session marker missing')
                 self.client.headers['X-Session-Token'] = match.group(1)
-                return page.text
+                return
             except (httpx.HTTPError, RuntimeError):
                 if self.child and self.child.poll() is not None:
                     raise RuntimeError(f'Room server exited with code {self.child.returncode}; see data/server-error.log')
@@ -250,17 +291,50 @@ class Supervisor:
     # ----- server process -----
     def start_child(self):
         DATA.mkdir(parents=True, exist_ok=True)
+        python, env = sys.executable, None
+        if self.lease:
+            # A venv's python.exe is a launcher that runs the real interpreter as its own child, so a handle
+            # duplicated into the launcher never reaches run.py. Start the real interpreter in the same venv
+            # the way the launcher does (__PYVENV_LAUNCHER__), so the Popen process is the room itself.
+            base = Path(getattr(sys, '_base_executable', '') or sys.executable)
+            if sys.prefix != sys.base_prefix and base.is_file() and base.resolve() != Path(sys.executable).resolve():
+                python, env = str(base), {**os.environ, '__PYVENV_LAUNCHER__': sys.executable}
         with open(DATA / 'server.log', 'ab') as out, open(DATA / 'server-error.log', 'ab') as err:
-            self.child = subprocess.Popen([sys.executable, '-X', 'utf8', '-u', str(LIVE / 'run.py')], cwd=LIVE,
-                                          stdin=subprocess.DEVNULL, stdout=out, stderr=err, creationflags=NO_WINDOW)
+            self.child = subprocess.Popen([python, '-X', 'utf8', '-u', str(LIVE / 'run.py')], cwd=LIVE, env=env,
+                                          stdin=subprocess.PIPE, stdout=out, stderr=err, creationflags=NO_WINDOW)
+        handoff = {'ui_token': self.ui_token, 'session_hashes': self.session_hashes}
+        if self.lease:
+            # The child waits on stdin before writing anything, so it adopts this duplicate first.
+            try:
+                handoff['room_writer'] = self.lease.duplicate_for_child(self.child)
+            except Exception:
+                self.child.kill()
+                raise
+            handoff['start_stopped'] = self.start_stopped
+        try:  # One line, then EOF. An older run.py never reads it; the line fits the pipe buffer.
+            self.child.stdin.write((json.dumps(handoff) + '\n').encode())
+            self.child.stdin.close()
+        except OSError:
+            pass  # The child already exited; session() below reports it.
         # Same fields Stop-Room has always checked, so its fallback still works if the supervisor dies.
         write_json(DATA / 'server-process.json', {'pid': self.child.pid, 'startUtc': creation_utc(self.child._handle),
                                                   'root': str(LIVE), 'supervisor_pid': os.getpid()})
         self.session(wait_seconds=90)
+        if handoff.get('start_stopped'):
+            # The room answers only after its startup ran, so it has opened Stopped and saved that state.
+            self.start_stopped = None
+            HANDBACK.unlink(missing_ok=True)
 
     def stop_child(self, graceful=True):
         """Stop the server by its handle and confirm it is gone. Returns True only when confirmed."""
         if self.child and self.child.poll() is None:
+            # Keep browsers signed in across the restart: hashes only, handed to the next room on stdin.
+            try:
+                sessions = self.client.get('/api/runtime/ui-sessions', timeout=5)
+                if sessions.status_code == 200:
+                    self.session_hashes = sessions.json().get('sessions', [])
+            except (httpx.HTTPError, ValueError):
+                pass  # An older room has no browser sessions to keep.
             if graceful:
                 try:
                     self.client.post('/api/runtime/stop', json={}, timeout=20)
@@ -315,10 +389,34 @@ class Supervisor:
             if not handle:
                 sys.exit(f'{path} is held: another supervisor or deployment helper is running.')
             self.locks.append(handle)
+        try:
+            import room_writer
+        except ImportError:  # Installed before the release that ships room_writer.py: run as before, unleased.
+            self.status['data_lease'] = 'unavailable: room_writer.py is not installed yet'
+            return
+        try:
+            self.lease = room_writer.open_room_writer(room_data(), kind='web', supervisor=True)
+        except room_writer.RoomInUse as exc:
+            text = lease_holder(exc)
+            self.set_status('data_in_use', error=text)
+            sys.exit(text)
+        except (OSError, ValueError) as exc:  # e.g. a damaged owner record: refuse rather than run unleased
+            text = f'Could not take ownership of {room_data()}: {exc}'
+            self.set_status('data_lease_failed', error=text[:1000])
+            sys.exit(text)
+        self.status['data_lease'] = 'held'
+        # Opening the lease records this supervisor as the owner, so keep "the other app used it last" in the
+        # spool until a room has started Stopped with it (bootstrap and recover take the lease too).
+        previous = (self.lease.previous or {}).get('kind')
+        kept = (read_json(HANDBACK) or {}).get('kind')
+        self.start_stopped = next((k for k in (previous, kept) if k not in (None, 'web')), None)
+        if self.start_stopped:
+            write_json(HANDBACK, {'kind': self.start_stopped, 'time': now()})
 
     def run(self):
         self.acquire()
         (SPOOL / 'stop.request').unlink(missing_ok=True)
+        (SPOOL / 'open.request').unlink(missing_ok=True)
         journal = read_json(SPOOL / 'journal.json')
         if journal and journal.get('phase') in ('taken', 'draining', 'gated'):
             # Crashed before the server was touched: reopen the room and record the abort.
@@ -351,6 +449,9 @@ class Supervisor:
                 if self.child.poll() is not None:
                     self.set_status('exited', exit_code=self.child.returncode)
                     return
+                if (SPOOL / 'open.request').exists():
+                    (SPOOL / 'open.request').unlink(missing_ok=True)
+                    self.open_browser()
                 for path in sorted((SPOOL / 'requests').glob('*.json')):
                     Deployment(self, path).run()
                     if self.child is None or self.child.poll() is not None:
@@ -422,6 +523,21 @@ class Supervisor:
             Deployment.finish_receipt(journal, 'rollback_failed', f'Bootstrap failed ({error}); files and data were restored, '
                                       f'but the previous release did not start ({exc}).')
             raise RuntimeError(f'Bootstrap rollback failed: {exc}')
+
+    def open_browser(self):
+        """Open the user's default browser on a single-use sign-in link. The code goes from the room to the
+        browser and nowhere else: whoever asked for the open never sees it, and it is never logged."""
+        url = self.url  # An older room still embeds its token in the page and has no launch codes.
+        try:
+            response = self.client.post('/api/runtime/launch-codes', json={}, timeout=10)
+            if response.status_code == 200:
+                url = f'{self.room_url}/launch#code={response.json()["code"]}'
+        except (httpx.HTTPError, ValueError, KeyError):
+            pass
+        try:
+            os.startfile(url)
+        except OSError:
+            pass  # No default browser; the room keeps running.
 
     def stop_requested(self, consume=False):
         """A stop request addressed to this supervisor. Only the main loop consumes it."""
@@ -743,6 +859,23 @@ def start(args):
              f'See {DATA / "supervisor.log"} and {DATA / "server-error.log"}.')
 
 
+def open_room(args):
+    """Ask the running supervisor to open the room in the default browser, signed in. Anyone may ask;
+    the sign-in link goes only to the browser the supervisor opens."""
+    status = read_json(SPOOL / 'status.json') or {}
+    pid = status.get('supervisor_pid')
+    if not supervisor_alive(pid):
+        print('No supervisor is running; start the room first.')
+        sys.exit(3)
+    write_json(SPOOL / 'open.request', {'pid': pid, 'time': now()})
+    deadline = time.monotonic() + args.wait
+    while time.monotonic() < deadline:
+        if not (SPOOL / 'open.request').exists():
+            return
+        time.sleep(0.25)
+    sys.exit(f'Supervisor {pid} did not open the room within {args.wait}s; see {SPOOL / "status.json"}.')
+
+
 def stop(args):
     status = read_json(SPOOL / 'status.json') or {}
     pid = status.get('supervisor_pid')
@@ -797,6 +930,8 @@ def bootstrap(args):
     print(f'Installed release {args.release_id} ({len(deployment.journal["plan"])} file changes); starting it behind the gate.')
     for handle in sup.locks:  # The supervisor started next takes these locks itself.
         handle.close()
+    if sup.lease:  # No child holds a duplicate yet, so it closes at once.
+        sup.lease.close()
     start(args)
 
 
@@ -835,13 +970,15 @@ def main():
     sub.add_parser('start').add_argument('--wait', type=int, default=120)
     sub.add_parser('run').add_argument('--nonce', default='')
     sub.add_parser('stop').add_argument('--wait', type=int, default=120)
+    sub.add_parser('open').add_argument('--wait', type=int, default=15)
     sub.add_parser('recover')
     b = sub.add_parser('bootstrap')
     b.add_argument('release_id')
     b.add_argument('--approved-by', required=True, help='Who approved this release in the room')
     b.add_argument('--wait', type=int, default=180)
     args = parser.parse_args()
-    {'start': start, 'run': lambda a: Supervisor(a.nonce).run(), 'stop': stop, 'recover': recover, 'bootstrap': bootstrap}[args.command](args)
+    {'start': start, 'run': lambda a: Supervisor(a.nonce).run(), 'stop': stop, 'open': open_room, 'recover': recover,
+     'bootstrap': bootstrap}[args.command](args)
 
 
 if __name__ == '__main__':

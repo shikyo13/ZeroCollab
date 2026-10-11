@@ -72,7 +72,7 @@ function linkifyUrls(html) {
 let serverPlatform = 'win32';  // default, updated on connect
 async function detectPlatform() {
     try {
-        const r = await fetch('/api/platform', { headers: { 'X-Session-Token': SESSION_TOKEN } });
+        const r = await fetch('/api/platform', { headers: { ...(SESSION_TOKEN ? { 'X-Session-Token': SESSION_TOKEN } : {}) } });
         const data = await r.json();
         serverPlatform = data.platform || 'win32';
     } catch (e) { /* fallback to win32 */ }
@@ -183,7 +183,7 @@ async function openFileExternally(detail, target) {
     try {
         const r = await fetch('/api/file-view/open', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
+            headers: { 'Content-Type': 'application/json', ...(SESSION_TOKEN ? { 'X-Session-Token': SESSION_TOKEN } : {}) },
             body: JSON.stringify({ ref: detail.ref, sender: detail.sender, root: detail.root, target }),
         });
         if (!r.ok) throw new Error((await r.json()).error || r.statusText);

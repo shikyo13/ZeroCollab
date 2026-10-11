@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { errorMessage, sessionToken } from '../lib/api';
+import { errorMessage, sessionHeaders } from '../lib/api';
 import type { BrowserState } from '../workspace/Browser';
 
 type Capture = { frame: string; time: number; project: string; url: string; title: string; ownerLabel: string; generation?: number };
@@ -30,7 +30,7 @@ export function useLiveBrowser(enabled: boolean) {
     const current = () => !stopped && active.current && !document.hidden;
     async function poll() {
       try {
-        const headers = { 'X-Session-Token': sessionToken() };
+        const headers = sessionHeaders();
         const response = await fetch('/api/runtime/browser', { headers, signal: abort.signal });
         if (!response.ok) throw new Error(`Browser status unavailable (${response.status})`);
         const next = await response.json() as BrowserState & { generation?: number };

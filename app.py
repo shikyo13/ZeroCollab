@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.requests import Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from store import MessageStore
@@ -40,6 +40,9 @@ WS_CLOSE_TIMEOUT_SECONDS = 1
 
 # --- Security: session token (set by configure()) ---
 session_token: str = ""
+# Browser sign-in for the web room (ui_sessions.BrowserSessions), or None: the desktop app keeps the
+# token-in-preload model and passes none.
+browser = None
 # Set by room_runtime.install(); its running turns hold the run-scoped capability tokens.
 runtime = None
 
@@ -182,19 +185,43 @@ def _run_token_allows(token, method: str, path: str) -> bool:
     return run is not None and path in ("/api/upload", f"/api/runtime/coordination/{run.id}")
 
 
-def _install_security_middleware(token: str, cfg: dict):
-    """Add token validation and origin checking middleware to the app."""
+def _install_security_middleware(token: str, cfg: dict, sessions=None):
+    """Add token validation and origin checking middleware to the app. With sessions (the web room),
+    browsers sign in by cookie at the room host instead of reading the token from the page."""
     import app as _self
+    if sessions is not None:
+        import ui_sessions  # web room only; the desktop app's file list need not carry it
     _self.session_token = token
+    _self.browser = sessions
     port = cfg.get("server", {}).get("port", 8300)
     allowed_origins = {
         f"http://127.0.0.1:{port}",
         f"http://localhost:{port}",
     }
+    loopback_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+    if sessions is not None:
+        allowed_origins.add(sessions.origin)
+
+    def forbidden(message):
+        return JSONResponse({"error": f"forbidden: {message}"}, status_code=403)
 
     class SecurityMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
             path = request.url.path
+            host = request.headers.get("host", "")
+
+            if sessions is not None:
+                # A browser opening the room by its address is sent to the room host, where its cookie lives.
+                # Only navigations: scripts such as Start-Room still read '/' here to recognise the room.
+                if (path == "/" and request.method == "GET" and host in loopback_hosts
+                        and request.headers.get("sec-fetch-mode") == "navigate"):
+                    return RedirectResponse(sessions.origin + "/", status_code=302)
+                if path == "/launch":
+                    if sessions.at_room(host):
+                        return await call_next(request)
+                    if request.method == "GET" and host in loopback_hosts:
+                        return RedirectResponse(sessions.origin + "/launch", status_code=302)
+                    return forbidden("sign in at the room address")
 
             # Static assets, index page, and uploaded images are public.
             # The index page injects the token client-side via same-origin script.
@@ -226,6 +253,23 @@ def _install_security_middleware(token: str, cfg: dict):
                     status_code=403,
                 )
 
+            # --- Browser session (web room only) ---
+            # Valid only at the exact room host, so a cookie replayed to 127.0.0.1 or another port never counts,
+            # and never for the routes that mint launch codes or list sessions (UI-token header only).
+            if (sessions is not None and sessions.at_room(host) and path not in ui_sessions.HEADER_ONLY_PATHS
+                    and sessions.valid(request.cookies.get(ui_sessions.COOKIE))):
+                origin_ok = origin == sessions.origin
+                if origin and not origin_ok:
+                    return forbidden("origin not allowed")
+                if request.method not in ("GET", "HEAD") and not origin_ok:
+                    return forbidden("missing origin")
+                # Same-site pages on the room host's other ports can send credentialed requests; only the
+                # room's own page counts, so even a GET from them is refused.
+                fetch_site = request.headers.get("sec-fetch-site")
+                if fetch_site and fetch_site != "same-origin":
+                    return forbidden("cross-site request")
+                return await call_next(request)
+
             # --- Token check ---
             # Allow registered agents to authenticate via Bearer token
             # for /api/messages and /api/send (no browser session needed).
@@ -235,9 +279,10 @@ def _install_security_middleware(token: str, cfg: dict):
                 if _self.registry and _self.registry.resolve_token(bearer):
                     return await call_next(request)
 
+            # The web room takes the token from the header only; a query parameter put it into URLs.
             req_token = (
                 request.headers.get("x-session-token")
-                or request.query_params.get("token")
+                or (None if sessions is not None else request.query_params.get("token"))
             )
             if not _token_matches(req_token, _self.session_token) and not _self._run_token_allows(
                     request.headers.get("x-session-token"), request.method, path):
@@ -269,14 +314,74 @@ def _install_security_middleware(token: str, cfg: dict):
                         'List the names or addresses other computers use, e.g. allowed_hosts = ["192.168.1.20", "studio.local"]', bind)
     elif bracket(bind) not in hosts:
         hosts.append(bracket(bind))
+    if sessions is not None:
+        hosts.append(ui_sessions.ROOM_HOST)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False)
 
 
-def configure(cfg: dict, session_token: str = ""):
+def _install_browser_routes(sessions):
+    """Launch codes and the sign-in exchange (web room only). Minting codes and listing session hashes
+    need the UI token in the header: the middleware never lets a cookie reach these two routes, and
+    they check the header again here."""
+    import ui_sessions
+
+    def header_token(request: Request) -> bool:
+        return _token_matches(request.headers.get("x-session-token"), session_token)
+
+    async def launch_codes(request: Request):
+        if not header_token(request):
+            return JSONResponse({"error": "forbidden: UI token required"}, status_code=403)
+        return {"code": sessions.mint(), "expires_in": ui_sessions.CODE_SECONDS}
+
+    async def ui_session_hashes(request: Request):
+        if not header_token(request):
+            return JSONResponse({"error": "forbidden: UI token required"}, status_code=403)
+        return {"sessions": sessions.hand_over()}
+
+    async def launch_page():
+        return HTMLResponse(ui_sessions.LAUNCH_HTML, headers=ui_sessions.LAUNCH_HEADERS)
+
+    async def launch_exchange(request: Request):
+        # The middleware admitted only the exact room host; the page itself must be the sender.
+        if request.headers.get("origin") != sessions.origin:
+            return JSONResponse({"error": ui_sessions.REFUSED}, status_code=403, headers={"Cache-Control": "no-store"})
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        secret = sessions.redeem(body.get("code") if isinstance(body, dict) else None)
+        if secret is None:
+            return JSONResponse({"error": ui_sessions.REFUSED}, status_code=403, headers={"Cache-Control": "no-store"})
+        response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+        # Host-only (no Domain) and no Max-Age/Expires: a session cookie at the room host only.
+        response.set_cookie(ui_sessions.COOKIE, secret, httponly=True, samesite="strict", path="/")
+        return response
+
+    app.add_api_route("/api/runtime/launch-codes", launch_codes, methods=["POST"])
+    app.add_api_route("/api/runtime/ui-sessions", ui_session_hashes, methods=["GET"])
+    app.add_api_route("/launch", launch_page, methods=["GET"])
+    app.add_api_route("/launch", launch_exchange, methods=["POST"])
+
+
+def _browser_alert(text: str):
+    """The revoke-on-reuse alert, in the room's main chat. It names no code or session."""
+    if store is None:
+        return
+    try:
+        channel = runtime.default_channel() if runtime is not None else "general"
+    except Exception:
+        channel = "general"
+    store.add("system", text, channel=channel, metadata={"no_route": True})
+
+
+def configure(cfg: dict, session_token: str = "", sessions=None):
     global store, router, agents, registry, config
     config = cfg
     # --- Security: store the session token and install middleware ---
-    _install_security_middleware(session_token, cfg)
+    _install_security_middleware(session_token, cfg, sessions)
+    if sessions is not None:
+        sessions.alert = _browser_alert
+        _install_browser_routes(sessions)
 
     data_dir = cfg.get("server", {}).get("data_dir", "./data")
     Path(data_dir).mkdir(parents=True, exist_ok=True)
@@ -752,8 +857,16 @@ _PING_ID = _re.compile(r'[A-Za-z0-9_-]{1,64}')
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     # --- Security: validate session token on WebSocket connect ---
+    # The desktop app's preload holds the token and passes it in the query; the web room's page signs in by
+    # cookie, valid only at the room host and only from the room's own page.
     token = websocket.query_params.get("token", "")
-    if token != session_token:
+    allowed = bool(token) and _token_matches(token, session_token)
+    if not allowed and browser is not None:
+        import ui_sessions
+        allowed = (browser.at_room(websocket.headers.get("host", ""))
+                   and websocket.headers.get("origin") == browser.origin
+                   and browser.valid(websocket.cookies.get(ui_sessions.COOKIE)))
+    if not allowed:
         # Must accept before closing so the browser receives the close frame.
         # Code 4003 triggers an auto-reload in the client to pick up the new token.
         await websocket.accept()

@@ -18,7 +18,7 @@ let soundPrefs = prefObject('zerocollab-sounds');
 const soundCache = {};
 
 function playSound(soundName) {
-    if (soundName === 'none') return;
+    if (soundName === 'none' || (!document.hasFocus() && prefGet('zerocollab-mute-unfocused-chat', '0') === '1')) return;
     soundCache[soundName] ||= new Audio(`/static/sounds/${soundName}.mp3`);
     const audio = soundCache[soundName];
     audio.currentTime = 0;

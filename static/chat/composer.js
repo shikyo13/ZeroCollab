@@ -231,7 +231,7 @@ async function uploadImage(file) {
     form.append('file', file);
 
     try {
-        const resp = await fetch('/api/upload', { method: 'POST', headers: { 'X-Session-Token': SESSION_TOKEN }, body: form });
+        const resp = await fetch('/api/upload', { method: 'POST', headers: { ...(SESSION_TOKEN ? { 'X-Session-Token': SESSION_TOKEN } : {}) }, body: form });
         const data = await resp.json();
 
         const attachment = { path: data.path, name: data.name, url: data.url };

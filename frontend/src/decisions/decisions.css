@@ -36,5 +36,75 @@
 .decision-root a { color: var(--accent-text); }
 @media(max-width:900px) { .decision-layout { grid-template-columns: minmax(0,1fr); } }
 @media(max-width:450px) { .decision-root { padding: 12px; }.decision-card { padding: 14px; }.decision-heading h2 { font-size: 20px; }.decision-stages li { min-width: 110px; } }
-.chat-decision-host {flex:0 0 auto; max-height:180px; overflow:auto; padding:10px 18px; border-bottom:1px solid var(--border); background:var(--bg-secondary);}.chat-decision-card {display:flex;align-items:center;gap:16px;justify-content:space-between;border-left:3px solid var(--accent);padding-left:12px;font-size:13px;}.chat-decision-card strong {display:block;overflow-wrap:anywhere;}.chat-decision-card p {margin:4px 0;}.chat-decision-card button {flex-shrink:0;}.decision-dock {padding:18px;overflow-wrap:anywhere;}.decision-dock h2 {font-size:20px;}.decision-dock .decision-contribution {margin:10px 0;}.decision-dock blockquote {margin:12px 0;padding:8px 12px;border-left:2px solid var(--accent);}.decision-dock a {display:block;}@media(max-width:600px){.chat-decision-host{padding:8px;max-height:210px;}.chat-decision-card{align-items:flex-start;gap:8px;flex-wrap:wrap;}.decision-dock{padding:12px;}}
-.chat-decision-card .bd-btn,.decision-dock .bd-btn {border:1px solid var(--border);border-radius:6px;padding:8px 12px;background:var(--bg-secondary);color:var(--text);cursor:pointer;}.chat-decision-card .bd-btn:focus-visible,.decision-dock .bd-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+/* Chat and user-opened decision details share the same real progress data. */
+.chat-decision-host {flex:0 0 auto;max-height:190px;overflow:auto;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--bg-secondary);}
+.chat-decision-card {display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border:1px solid var(--border);border-radius:10px;background:var(--bg-msg);padding:12px 14px;font-size:13px;animation:decision-card-enter 220ms cubic-bezier(.2,0,0,1) both;}
+.decision-card-content {min-width:0;flex:1;}
+.chat-decision-card strong {display:block;overflow-wrap:anywhere;font-size:15px;margin:3px 0 10px;}
+.decision-eyebrow > span {color:var(--text-dim);letter-spacing:normal;}
+.chat-decision-card p {margin:4px 0;}
+.chat-decision-card > button {flex-shrink:0;}
+.decision-step-row {display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0;}
+.decision-step-bar {display:flex;gap:4px;list-style:none;margin:0;padding:0;flex-shrink:0;}
+.decision-step-bar li {width:30px;height:4px;border-radius:2px;background:var(--border);position:relative;overflow:hidden;}
+.decision-step-bar .is-done {background:var(--accent);opacity:.55;}
+.decision-step-bar .is-current::after {content:'';position:absolute;inset:0;background:var(--accent);transform-origin:left;animation:decision-stage-fill 260ms cubic-bezier(.2,0,0,1) both;}
+.decision-stage-label {font-size:12px;overflow-wrap:anywhere;}
+.decision-stage-label > span {color:var(--text-dim);}
+.decision-participation {display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px;color:var(--text-dim);}
+.decision-participation p {margin:0;min-width:0;overflow-wrap:anywhere;}
+.decision-count {color:var(--text);font-variant-numeric:tabular-nums;display:inline-block;}
+.decision-count.is-new {animation:decision-count-enter 160ms cubic-bezier(.2,0,0,1);}
+.decision-avatar-stack {display:flex;flex-wrap:wrap;gap:3px;max-width:160px;flex-shrink:0;}
+.decision-avatar {width:22px;height:22px;flex:0 0 22px;border-radius:50%;display:inline-grid;place-items:center;font-size:11px;font-weight:700;position:relative;background:var(--agent-color);color:var(--text-on-accent);border:2px solid var(--bg-msg);}
+.decision-avatar.is-missing {background:transparent;color:var(--text-dim);border:1.5px dashed var(--border-strong);}
+.decision-avatar.is-submitted::after {content:'';position:absolute;right:-3px;bottom:-3px;width:8px;height:8px;border-radius:50%;background:var(--online,#4ade80);border:2px solid var(--bg-msg);}
+.decision-avatar.is-new {animation:decision-avatar-enter 180ms cubic-bezier(.2,0,0,1);}
+.decision-dock {padding:16px 18px;overflow-wrap:anywhere;}
+.decision-dock.is-active {animation:decision-dock-enter 200ms cubic-bezier(.2,0,0,1) both;}
+.decision-dock-title {display:flex;justify-content:space-between;align-items:center;gap:12px;}
+.decision-dock h2 {font-size:18px;line-height:1.35;margin:14px 0;}
+.decision-dock-progress {padding-bottom:14px;border-bottom:1px solid var(--border);}
+.decision-dock h3 {font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim);margin:18px 0 8px;}
+.decision-dock blockquote {margin:12px 0;padding:8px 12px;border-left:2px solid var(--accent);border-radius:0 8px 8px 0;background:var(--bg-msg);}
+.decision-dock blockquote strong {font-size:11px;font-weight:normal;color:var(--text-dim);}
+.decision-dock blockquote p {margin:4px 0;}
+.decision-people {padding:0;margin:0;list-style:none;display:grid;gap:6px;}
+.decision-people > li {display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-msg);}
+.decision-person-name {flex:1;min-width:70px;font-size:13px;}
+.decision-person-chips {display:flex;gap:5px;flex-wrap:wrap;max-width:100%;}
+.decision-person-chips.is-revealed {animation:decision-chip-enter 180ms cubic-bezier(.2,0,0,1) var(--reveal-delay,0ms) both;}
+.decision-chip {font-size:11px;border-radius:999px;padding:2px 8px;border:1px solid var(--border-strong);color:var(--text-dim);}
+.decision-chip.is-complete {color:var(--success-text);border-color:var(--success-border,var(--border-strong));}
+.decision-chip.is-owed {color:var(--warning);border-color:var(--warning-border,var(--border-strong));}
+.decision-dock .decision-contribution {margin:8px 0;font-size:13px;}
+.decision-dock summary {cursor:pointer;}
+.decision-dock a {color:var(--accent-text);}
+.decision-dock .decision-contribution a {display:block;}
+.decision-dock-footer {margin-top:18px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--text-dim);}
+.chat-decision-card .bd-btn,.decision-dock .bd-btn {border:1px solid var(--border);border-radius:6px;padding:7px 12px;background:var(--bg-secondary);color:var(--text);cursor:pointer;}
+.decision-dock .decision-close {font-size:12px;background:transparent;border-color:transparent;color:var(--text-dim);}
+.chat-decision-card button:focus-visible,.decision-dock :is(button,a,summary,h2):focus-visible {outline:2px solid var(--accent);outline-offset:2px;}
+@keyframes decision-card-enter {from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes decision-dock-enter {from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:none}}
+@keyframes decision-stage-fill {from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes decision-avatar-enter {from{transform:scale(.8)}to{transform:scale(1)}}
+@keyframes decision-count-enter {from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+@keyframes decision-chip-enter {from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce) {
+  .chat-decision-card,.decision-dock,.decision-step-bar .is-current::after,.decision-avatar.is-new,.decision-count.is-new,.decision-person-chips.is-revealed {animation:none;transition:none;}
+}
+@media(max-width:600px) {
+  .chat-decision-host {padding:8px;max-height:220px;}
+  .chat-decision-card {flex-wrap:wrap;gap:8px;padding:10px;}
+  .decision-step-bar li {width:22px;}
+  .decision-participation {align-items:flex-start;flex-wrap:wrap;}
+  .decision-avatar-stack {max-width:100%;}
+  .decision-dock {padding:12px;}
+  /* Decision details replace the message list only; the ordinary composer stays below. */
+  .companion-layout:has(.companion-body:not([hidden]) .decision-dock):has(.workspace-chat:not([hidden])) {flex-direction:column;}
+  .companion-layout:has(.companion-body:not([hidden]) .decision-dock):has(.workspace-chat:not([hidden])) > .companion-panel:not([hidden]) {position:relative;inset:auto;order:1;flex:1;min-height:0;border-left:0;width:100%!important;max-width:none;}
+  .companion-layout:has(.companion-panel:not([hidden]) .companion-body:not([hidden]) .decision-dock) > .workspace-content:has(.workspace-chat:not([hidden])) {order:2;flex:0 0 auto;}
+  .companion-layout:has(.companion-panel:not([hidden]) .companion-body:not([hidden]) .decision-dock) .workspace-chat #content-area {display:none;}
+  .companion-layout:has(.companion-panel:not([hidden]) .companion-body:not([hidden]) .decision-dock) :is(.workspace-chat,.workspace-chat-slot,#app) {height:auto;}
+}

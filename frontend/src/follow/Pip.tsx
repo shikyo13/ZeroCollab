@@ -5,7 +5,7 @@
  * - An agent acting in the shared browser shows the preview page as it is now, refreshed while open.
  * Everything comes from events the room already emits (followStore.ts). */
 import { useEffect, useRef, useState } from 'react';
-import { sessionToken } from '../lib/api';
+import { sessionHeaders } from '../lib/api';
 import type { Task } from '../lib/types';
 import { imageNotes } from '../annotate/ImageViewer';
 import { displayName, type Agents } from '../board/shared';
@@ -45,7 +45,7 @@ function useBrowserFrame(item: PipItem | null, paused: boolean, active: () => bo
         const controller = request.current = new AbortController();
         try {
           const response = await fetch('/api/runtime/browser/frame?project=' + encodeURIComponent(item.project!),
-            { headers: { 'X-Session-Token': sessionToken() }, signal: controller.signal });
+            { headers: sessionHeaders(), signal: controller.signal });
           if (response.ok && current()) {
             const body = await response.blob();
             if (current()) {  // the target may have changed, or Follow paused, while the body downloaded

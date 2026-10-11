@@ -128,7 +128,11 @@ if ($TrayOnly) { $form.Add_Shown({ $form.Hide() }) }
 
 function Invoke-Control([string]$command) {
     if ($script:worker) { return }
-    if ($command -eq 'Open') { Start-Process $script:url; return }
+    if ($command -eq 'Open') {
+        # The supervisor opens the browser on a single-use sign-in link; the page no longer carries the token.
+        Start-Process -FilePath $python -ArgumentList @('-X', 'utf8', "`"$supervisor`"", 'open') -WindowStyle Hidden
+        return
+    }
     if ($command -in @('Stop','Restart')) {
         $answer = [Windows.Forms.MessageBox]::Show("$command the ZeroCollab backend? Active agent turns will be interrupted. Saved chats and files remain.", 'ZeroCollab', 'YesNo', 'Warning', 'Button2')
         if ($answer -ne 'Yes') { return }

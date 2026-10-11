@@ -1,0 +1,28 @@
+.motion-page { padding: 24px; max-width: 1600px; margin: auto; }
+.motion-page h1 { margin: 0 0 8px; font-size: 28px; }
+.motion-page h2 { margin: 0 0 16px; font-size: 18px; }
+.motion-page p { line-height: 1.5; overflow-wrap: anywhere; }
+.motion-page button, .motion-page select { font: inherit; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+.motion-page button:not(:disabled) { cursor: pointer; }
+.motion-page button:disabled { opacity: .5; }
+.motion-page button:focus-visible, .motion-page select:focus-visible, .motion-page summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.motion-toolbar, .motion-actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.motion-toolbar { margin: 20px 0; }
+.motion-toolbar label { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.motion-grid { display: grid; grid-template-columns: minmax(170px, .65fr) minmax(0, 2fr) minmax(200px, .8fr); gap: 16px; align-items: start; }
+.motion-panel { min-width: 0; background: var(--bg-header); border: 1px solid var(--border); border-radius: 12px; padding: 18px; overflow-wrap: anywhere; }
+.motion-scenes button { display: block; width: 100%; text-align: left; margin: 0 0 10px; }
+.motion-scenes button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-surface); }
+.motion-scenes small { display: block; margin-top: 6px; color: var(--text-dim); line-height: 1.5; }
+.motion-frame { position: relative; padding-top: 56.25%; margin-bottom: 64px; }
+.motion-preview iframe { position: absolute; top: 0; display: block; width: 100%; height: calc(100% + 64px); border: 0; background: var(--bg); }
+.motion-muted { color: var(--text-dim); font-size: 13px; }
+.motion-error { color: var(--error, #ffb4c4); }
+.motion-page .motion-primary { color: var(--text-on-accent); background: var(--accent); }
+.motion-job { margin-top: 20px; border-top: 1px solid var(--border); }
+.motion-job progress { width: 100%; accent-color: var(--accent); }
+.motion-outputs { margin-top: 16px; }
+.motion-output { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); }
+.motion-output p { margin: 4px 0; }
+.motion-video video { display: block; width: 100%; max-width: 960px; }
+@media (max-width: 1000px) { .motion-grid { grid-template-columns: minmax(0, 1fr); } .motion-page { padding: 16px; } }

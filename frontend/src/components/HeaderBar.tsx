@@ -15,7 +15,7 @@ import { EVENTS } from '../lib/constants';
 import { leaderId, leaderName, syncChatLeader } from '../lib/responders';
 import './leader.css';
 
-const VIEW_TITLES: Record<View, string> = { projects: 'Projects', chat: 'Chat', board: 'Board', live: 'Live view', team: 'Team', activity: 'Activity', server: 'Server' };
+const VIEW_TITLES: Record<View, string> = { projects: 'Projects', chat: 'Chat', board: 'Board', live: 'Live view', motion: 'Motion', team: 'Team', activity: 'Activity', server: 'Server' };
 const STACK_SHOWN = 6;
 const NO_SESSIONS: { id: string; title: string; readonly?: boolean }[] = [];
 

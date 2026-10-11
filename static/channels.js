@@ -18,7 +18,7 @@ Object.defineProperty(window, 'activeProjectId', { get: () => _sessionProject })
 
 async function sessionRequest(path, body) {
     const response = await fetch('/api/runtime' + path, { method: 'POST',
-        headers: { 'X-Session-Token': window.__SESSION_TOKEN__, 'Content-Type': 'application/json' },
+        headers: { ...(window.__SESSION_TOKEN__ ? { 'X-Session-Token': window.__SESSION_TOKEN__ } : {}), 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...body, project_id: _sessionProject }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || response.statusText);

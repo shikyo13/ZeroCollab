@@ -18,6 +18,7 @@
     function renderConnection() {
         connectionNotice.hidden = connectionState === 'connected';
         connectionNotice.textContent = connectionState === 'connecting' ? 'Connecting to room…'
+            : connectionState === 'signed_out' ? 'Signed out; work status unknown. Your draft is preserved.'
             : 'Reconnecting to room; work status unknown. Streaming previews may be outdated.';
         for (const run of active.values()) run.header.textContent = run.label
             + (connectionState === 'connected' ? '' : ' · preview may be outdated');
@@ -76,7 +77,7 @@
     }
     const api = async (path, body) => {
         const response = await fetch('/api/runtime' + path, {method: body === undefined ? 'GET' : 'POST',
-            headers: {'X-Session-Token': window.__SESSION_TOKEN__, 'Content-Type': 'application/json'},
+            headers: {...(window.__SESSION_TOKEN__ ? {'X-Session-Token': window.__SESSION_TOKEN__} : {}), 'Content-Type': 'application/json'},
             ...(body === undefined ? {} : {body: JSON.stringify(body)})});
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || response.statusText);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { ApiError, runtime, sessionToken, errorMessage } from '../lib/api';
+import { ApiError, runtime, sessionHeaders, errorMessage } from '../lib/api';
 import { useRoomEvent } from '../lib/room';
 import './browser.css';
 
@@ -83,7 +83,7 @@ export default function Browser({ active, project, page, onState, choosePage, cl
         if (canonicalPending.current) {canonicalPending.current = false; setAddress(next.url || 'about:blank');}
         if (next.running) {
           const frameQuery = new URLSearchParams({project: next.project, ...page ? {page} : {}});
-          const response = await fetch('/api/runtime/browser/frame?' + frameQuery, {headers: {'X-Session-Token': sessionToken()}, signal: abort.signal});
+          const response = await fetch('/api/runtime/browser/frame?' + frameQuery, {headers: sessionHeaders(), signal: abort.signal});
           if (response.ok) {
             const blob = await response.blob();
             if (stopped) return;
@@ -148,7 +148,7 @@ export default function Browser({ active, project, page, onState, choosePage, cl
     try {
       const query = new URLSearchParams({project: project || state.project, ...page ? {page} : {}});
       const response = await fetch('/api/runtime/browser/file?' + query, {
-        method: 'POST', headers: {'X-Session-Token': sessionToken(), 'X-File-Name': encodeURIComponent(file.name)}, body: file,
+        method: 'POST', headers: {...sessionHeaders(), 'X-File-Name': encodeURIComponent(file.name)}, body: file,
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Upload failed');

@@ -6,7 +6,7 @@
 async function exportHistory() {
     try {
         const resp = await fetch('/api/export', {
-            headers: { 'X-Session-Token': SESSION_TOKEN },
+            headers: { ...(SESSION_TOKEN ? { 'X-Session-Token': SESSION_TOKEN } : {}) },
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
@@ -43,7 +43,7 @@ async function importHistory(input) {
         formData.append('file', file);
         const resp = await fetch('/api/import', {
             method: 'POST',
-            headers: { 'X-Session-Token': SESSION_TOKEN },
+            headers: { ...(SESSION_TOKEN ? { 'X-Session-Token': SESSION_TOKEN } : {}) },
             body: formData,
         });
         const data = await resp.json();

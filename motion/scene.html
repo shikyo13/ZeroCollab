@@ -1,0 +1,91 @@
+<!doctype html>
+<!--
+  ZeroCollab motion scene page: the in-app preview and the export target.
+  Template only. motion_studio.view_html() fills it into one self-contained page: a meta CSP that
+  pins the two inline scripts by hash (preview), the page options and the validated scene as JSON
+  data blocks, then motion.js and boot.js inline. The same page is the in-app preview (loaded into
+  a sandboxed srcdoc frame) and the export render target, so both show identical frames.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--ZM-CSP-->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZeroCollab motion kit</title>
+<style>
+  /* Tokens copied from frontend/src/styles.css so scenes match the product. */
+  :root {
+    --zm-bg: #0c0e10; --zm-panel: #171b1e; --zm-raised: #22282b; --zm-line: #343b3f;
+    --zm-text: #e8ecee; --zm-muted: #aab5ba; --zm-faint: #98a7af;
+    --zm-accent: #54d9ed; --zm-accent-text: #8ee8f4; --zm-accent-surface: #13292e; --zm-accent-border: #327b87;
+    --zm-on-accent: #071518; --zm-ok: #5fcf8f; --zm-danger: #d46a85;
+    --zm-font: 'Segoe UI', system-ui, sans-serif; --zm-mono: Consolas, 'Cascadia Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: #050607; color: var(--zm-text); font-family: var(--zm-font); }
+  body.render { overflow: hidden; }
+  .zm-frame { width: 1920px; height: 1080px; transform-origin: 0 0; }
+  .zm-stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: var(--zm-bg); }
+  .zm-title { position: absolute; left: 120px; top: 80px; font-size: 30px; font-weight: 600; color: var(--zm-muted); }
+
+  .zm-agent { position: absolute; width: 400px; min-height: 236px; padding: 26px 30px; border-radius: 16px;
+              background: var(--zm-panel); border: 2px solid var(--zm-line); }
+  .zm-agent-name { font-size: 34px; font-weight: 600; }
+  .zm-agent-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; font-size: 24px; color: var(--zm-muted); }
+  .zm-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--zm-muted); flex: none; }
+  .zm-states { position: relative; display: inline-grid; }
+  .zm-state { grid-area: 1 / 1; white-space: nowrap; }
+  .zm-tool { position: relative; margin-top: 22px; height: 70px; }
+  .zm-tool-row { position: absolute; inset: 0; opacity: 0; }
+  .zm-tool-label { font: 22px var(--zm-mono); color: var(--zm-text); }
+  .zm-tool-label { display: block; }
+  .zm-tool-status { margin-top: 4px; font-size: 20px; color: var(--zm-accent-text); }
+  .zm-bar { margin-top: 12px; height: 8px; border-radius: 4px; background: var(--zm-line); overflow: hidden; }
+  .zm-bar i { display: block; width: 100%; height: 100%; background: var(--zm-accent); transform-origin: 0 50%; transform: scaleX(0); }
+
+  .zm-board { position: absolute; display: flex; gap: 30px; }
+  .zm-col { width: 300px; height: 300px; padding: 20px; border-radius: 16px; background: var(--zm-panel); border: 2px solid var(--zm-line); }
+  .zm-col-title { font-size: 20px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--zm-muted); }
+  .zm-card { position: absolute; padding: 18px 20px; border-radius: 12px; background: var(--zm-raised); border: 2px solid var(--zm-line); }
+  .zm-card-title { font-size: 23px; font-weight: 600; line-height: 1.25; }
+  .zm-card-meta { margin-top: 8px; font-size: 18px; color: var(--zm-muted); }
+
+  .zm-browser { position: absolute; left: 1180px; top: 210px; width: 620px; height: 610px; border-radius: 16px; overflow: hidden;
+                background: var(--zm-panel); border: 2px solid var(--zm-line); }
+  .zm-browser-bar { padding: 16px 22px; font-size: 19px; color: var(--zm-muted); background: var(--zm-raised); border-bottom: 2px solid var(--zm-line); }
+  .zm-browser-app { display: flex; height: 100%; }
+  .zm-browser-nav { width: 190px; padding: 22px 16px; border-right: 2px solid var(--zm-line); }
+  .zm-browser-item { padding: 12px 14px; margin-bottom: 8px; border-radius: 8px; font-size: 21px; color: var(--zm-text); }
+  .zm-browser-item:first-child { background: var(--zm-accent-surface); color: var(--zm-accent-text); }
+  .zm-browser-body { flex: 1; padding: 28px 24px; }
+  .zm-browser-line { height: 18px; margin-bottom: 20px; border-radius: 9px; background: var(--zm-raised); }
+  .zm-browser-line:nth-child(2) { width: 70%; } .zm-browser-line:nth-child(4) { width: 50%; }
+
+  .zm-arrow { position: absolute; inset: 0; width: 1920px; height: 1080px; pointer-events: none; }
+  .zm-arrow path { fill: none; stroke: var(--zm-accent); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+  .zm-arrow-label { position: absolute; transform: translateX(-50%); padding: 8px 16px; border-radius: 999px; white-space: nowrap;
+                    font-size: 21px; color: var(--zm-accent-text); background: var(--zm-accent-surface); border: 2px solid var(--zm-accent-border); }
+  .zm-emphasis { position: absolute; border-radius: 14px; border: 4px solid var(--zm-accent); pointer-events: none;
+                 box-shadow: 0 0 0 6px #54d9ed33; }
+  .zm-emphasis-label { position: absolute; padding: 8px 16px; border-radius: 999px; white-space: nowrap; pointer-events: none;
+                       font-size: 21px; color: var(--zm-on-accent); background: var(--zm-accent); }
+  .zm-caption { position: absolute; left: 120px; top: 900px; max-width: 1680px; padding: 20px 30px; border-radius: 14px;
+                font-size: 36px; font-weight: 600; color: var(--zm-on-accent); background: var(--zm-accent); }
+
+  .zm-player { display: flex; align-items: center; gap: 16px; height: 64px; padding: 0 18px; font-size: 15px; }
+  .zm-player button { flex: none; min-width: 88px; padding: 8px 14px; border-radius: 8px; border: 1px solid #424d53; background: #22282b; color: inherit; font: inherit; cursor: pointer; }
+  /* min-width 0 lets the range shrink below its intrinsic width, so the time stays visible in narrow frames. */
+  .zm-player input { flex: 1; min-width: 0; accent-color: #54d9ed; }
+  .zm-player output { flex: none; min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
+  @media (max-width: 360px) {
+    .zm-player { gap: 10px; padding: 0 10px; }
+    .zm-player button { min-width: 0; }
+  }
+  .zm-error { padding: 24px; color: #ffb4c4; font: 16px var(--zm-mono); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="zm-frame" id="frame"><div class="zm-stage" id="stage"></div></div>
+<!--ZM-SCENE-->
+</body>
+</html>

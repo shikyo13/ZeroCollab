@@ -1,0 +1,12 @@
+.ws-bell .ws-popover.ws-bell-menu { max-width: calc(100vw - 76px); max-height: calc(100dvh - 140px); overflow: auto; }
+.ws-bell-menu ul { max-height: min(45vh, 400px); }
+.ws-bell-menu li { border-bottom: 1px solid var(--border); }
+.ws-popover.ws-bell-menu li .ws-notification-read { display: inline-flex; width: auto; margin: 0 10px 8px; padding: 5px 8px; color: var(--accent-text); border: 1px solid var(--border); }
+.ws-notification-read[aria-pressed="true"] { color: var(--text-dim) !important; }
+.ws-notification-mute { display: flex; align-items: flex-start; gap: 8px; margin: 12px 8px 4px; font-size: 13px; }
+.ws-notification-mute input { flex: none; margin-top: 2px; accent-color: var(--accent); }
+.ws-notification-mute span { overflow-wrap: anywhere; }
+.ws-bell-menu .ws-notification-help { margin: 4px 8px 8px; font-size: 12px; }
+@media (max-width: 900px) {
+  .ws-bell .ws-popover.ws-bell-menu { position: fixed; left: 68px; right: 8px; top: 100px; width: auto; max-width: none; max-height: calc(100dvh - 112px); }
+}

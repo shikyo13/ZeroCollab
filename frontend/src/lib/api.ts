@@ -1,5 +1,5 @@
-/* Fetch helpers for the existing FastAPI routes. The server injects
- * window.__SESSION_TOKEN__ into the page; every /api call must carry it. */
+/* Fetch helpers for the existing FastAPI routes. Web clients use the same-origin
+ * UI cookie; desktop clients also carry their preload-provided session token. */
 
 export class ApiError extends Error {
   /** field: the form field a refusal belongs to, when the route names one (provider forms). */
@@ -13,12 +13,17 @@ export function sessionToken(): string {
   return window.__SESSION_TOKEN__ ?? '';
 }
 
+export function sessionHeaders(): Record<string, string> {
+  const token = sessionToken();
+  return token ? { 'X-Session-Token': token } : {};
+}
+
 type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
 /** Call any /api route. A body implies POST unless a method is given. */
 export async function api<T = unknown>(path: string, body?: unknown, method?: Method): Promise<T> {
   const verb: Method = method ?? (body === undefined ? 'GET' : 'POST');
-  const headers: Record<string, string> = { 'X-Session-Token': sessionToken() };
+  const headers = sessionHeaders();
   let payload: BodyInit | undefined;
   if (body instanceof FormData) {
     payload = body;

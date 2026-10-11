@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { SessionNotice } from './components/SessionNotice';
 import Board from './board/Board';
 import Team from './team/Team';
 import { LegacySlot } from './components/LegacySlot';
@@ -21,6 +22,7 @@ import { ServerPage } from './components/ServerPage';
 import { openServer } from './workspace/useWorkspaceRoute';
 import { FollowToggle } from './follow/Follow';
 import LiveTeam from './live/LiveTeam';
+import MotionPage from './motion/MotionPage';
 import './shell.css';
 
 export default function App() {
@@ -43,6 +45,7 @@ export default function App() {
         bell={<AttentionBell projects={projects.projects} deployments={deployments} navigate={navigate} openProject={openProject} />} follow={<FollowToggle onStart={() => navigate('board')} />} />
       <LegacySlot node={legacy.approvals} className="workspace-approvals" />
       <WorkControls navigate={navigate} />
+      <SessionNotice />
       <DeploymentNotice feed={deployments} onOpen={() => openServer('updates')} />
       <SidePanel fileView={(request, active, close) => <FileView request={request} active={active} onClose={close} />}><main id="workspace-content" className="workspace-content" tabIndex={-1}>
         <section className="workspace-projects" hidden={view !== 'projects'} aria-label="Projects"><Projects {...projects} focus={focus} setFocus={setFocus} navigate={navigate}
@@ -50,6 +53,7 @@ export default function App() {
         <section className="workspace-chat" hidden={view !== 'chat'} aria-label="Shared chat"><LegacySlot node={legacy.chat} className="workspace-chat-slot" /></section>
         <section className="workspace-board" hidden={view !== 'board'} aria-label="Task board"><Board /></section>
         <section className="workspace-live" hidden={view !== 'live'} aria-label="Live view"><LiveTeam active={view === 'live'} navigate={navigate} /></section>
+        <section className="workspace-motion" hidden={view !== 'motion'} aria-labelledby="motion-title">{view === 'motion' && <MotionPage />}</section>
         <section className="workspace-team" hidden={view !== 'team'} aria-label="Team"><Team /></section>
         <section className="workspace-activity" hidden={view !== 'activity'} aria-labelledby="activity-title"><ActivityPage deployments={deployments} /></section>
         <section className="workspace-server" hidden={view !== 'server'} aria-labelledby="server-title"><ServerPage deployments={deployments} /></section>
