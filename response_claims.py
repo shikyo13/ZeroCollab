@@ -23,6 +23,7 @@ import time
 
 BACKUP_SECONDS = 120    # time the lead has to start or finish the answer before one backup takes over
 EXTEND_SECONDS = 30     # re-check interval while the claim's owner is actively running its turn
+BUSY_LIMIT_SECONDS = 600  # a lead busy with other work keeps a queued @all at most this long
 KEEP_CLAIMS = 100       # finished claims kept for the record; open ones are never pruned
 STORE_SCAN = 400        # recent chat messages checked for an already published answer
 
@@ -97,6 +98,8 @@ class ResponseClaims:
         lead, backup = self.responders()
         if not lead:
             self.save()
+            self.runtime.host.store.add('system', 'No one is available to answer this @all. Resume an agent, mention one '
+                                        'directly, or use @everyone.', channel=channel, metadata={'no_route': True})
             return None
         key = f'{channel}:{message_id}'
         now = time.time()
@@ -170,6 +173,12 @@ class ResponseClaims:
                 claim['deadline'] = now + EXTEND_SECONDS  # actively answering: wait for it
                 changed = True
                 continue
+            if run and self.waiting_for(owner, run, claim['key']) and now - claim['created'] < BUSY_LIMIT_SECONDS:
+                # The owner is mid-turn on other work and the @all waits in its queue or steering: it
+                # gives the better-informed answer once that turn ends, so don't hand it on yet.
+                claim['deadline'] = now + EXTEND_SECONDS
+                changed = True
+                continue
             backup = claim.get('backup')
             if claim['generation'] == 1 and backup and self.available(backup):
                 claim.update(owner=backup, generation=2, deadline=now + BACKUP_SECONDS)
@@ -184,6 +193,14 @@ class ResponseClaims:
                                             metadata={'no_route': True, 'response_claim': claim['key']})
         if changed:
             self.save()
+
+    def waiting_for(self, owner, run, key):
+        """True when owner still holds this claim's request: queued behind its current turn, or offered
+        to that turn as steering the provider has not accepted yet."""
+        queue = self.runtime.queues.get(owner)
+        queued = [r for batch in (list(queue._queue) if queue is not None else []) for r in batch.get('requests', [])]
+        steering = [r for r in getattr(run.steering, 'pending', []) if not r.get('_steer_delivered')]
+        return any(r.get('response_claim') == key for r in queued + steering)
 
     def wake(self, claim, name):
         message = self.runtime.host.store.get_by_id(claim['message_id']) or {}

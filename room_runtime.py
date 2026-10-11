@@ -524,9 +524,10 @@ class Run:
         await self.manager.emit('runtime_message_end', {'run': self.id, 'message': identifier,
             'agent': self.name, 'channel': self.channel})
 
-    async def publish(self, content, identifier, final, partial=False):
+    async def publish(self, content, identifier, final, partial=False, route=True):
         """Post one message to the chat. A final answer to a human @all goes through the response
-        claim: if this run no longer owns it, the reply is held in Activity and the chat stays quiet."""
+        claim: if this run no longer owns it, the reply is held in Activity and the chat stays quiet.
+        route=False posts without waking anyone its text mentions."""
         claims = self.manager.response_claims
         if final:
             reason = claims.check(self)
@@ -536,7 +537,7 @@ class Run:
                 return None
         metadata = {'run_id': self.id, 'provider_message_id': identifier,
             'phase': self.message_phase or ('final_answer' if final else 'commentary'),
-            'no_route': not final,
+            'no_route': not final or not route,
             'worktree': str(self.worktree), 'settings': self.settings,
             'reported_settings': self.reported_settings, 'chain': self.entry['chain'],
             **(claims.metadata(self) if final else {})}
@@ -550,10 +551,11 @@ class Run:
 
     async def publish_last(self):
         """End of a completed turn: an agent that put its answer in commentary and then only called
-        tools still has that answer posted once, as its reply."""
+        tools still has that answer posted once, as its reply. It stays unrouted, as commentary always
+        was: an "I'll ask @qa" line written before the agent sent its follow-up must not wake qa again."""
         if not self.published_messages and not self.withheld and self.last_commentary:
             self.message_phase = 'final_answer'
-            await self.publish(self.last_commentary, 'last-commentary', True)
+            await self.publish(self.last_commentary, 'last-commentary', True, route=False)
             self.message_phase = None
 
     async def tool_event(self, name, params, status):
