@@ -276,6 +276,7 @@ const SERVER_EVENTS = {
     },
     agent_renamed: onAgentRenamed,
     agents: event => applyAgentConfig(event.data),
+    runtime_state: event => applyConversationLeader(event.data?.responders),
     base_colors: event => { baseColors = event.data || {}; },
     status: event => updateStatus(event.data),
     typing: event => updateTyping(event.agent, event.active),
@@ -768,12 +769,36 @@ const SENDER_MESSAGES = '.message[data-id]:is(.join-msg, .self, .other)';
 
 // Sender label and color live on the message element: CSS derives the name, avatar,
 // bubble accent and join dot colors from --sender-color (style.css).
+let conversationLeaderId = '';
+function leaderBadge() {
+    const badge = document.createElement('span');
+    badge.className = 'conversation-leader-badge';
+    badge.textContent = 'Leader';
+    badge.title = 'Current conversation leader';
+    return badge;
+}
+function applyConversationLeader(responders) {
+    const id = responders?.configured?.lead || responders?.lead || '';
+    if (id === conversationLeaderId) return;
+    conversationLeaderId = id;
+    // Updating labels only preserves the message body, composer and reading position.
+    for (const el of document.querySelectorAll(SENDER_MESSAGES)) applySender(el);
+    for (const btn of document.querySelectorAll('.mention-toggle')) {
+        btn.querySelector('.conversation-leader-badge')?.remove();
+        if (btn.dataset.agent === id) btn.appendChild(leaderBadge());
+    }
+    if (typeof mentionMenuVisible !== 'undefined' && mentionMenuVisible) updateMentionMenu();
+}
+window.applyConversationLeader = applyConversationLeader;
+
 function applySender(el) {
     const name = el.dataset.sender;
     el.style.setProperty('--sender-color', getColor(name));
     const label = el.querySelector('.msg-sender, .join-text strong');
     label.textContent = getAgentDisplayName(name);
     label.title = '@' + (agentConfig[resolveAgent(name)]?.handle || name);
+    el.querySelector('.conversation-leader-badge')?.remove();
+    if (label.classList.contains('msg-sender') && resolveAgent(name) === conversationLeaderId) label.after(leaderBadge());
     const quote = el.querySelector('.reply-sender');
     if (quote) {
         const message = messageIndex.get(Number(el.dataset.id));
@@ -974,14 +999,15 @@ function buildMentionToggles() {
     }
 
     // @all comes first; on send it is prefixed like an agent chip and addresses the available agents.
-    const chips = [[MENTION_ALL, { handle: MENTION_ALL, label: 'Address the available agents' }],
+    const chips = [[MENTION_ALL, { handle: MENTION_ALL, label: 'Wake the whole team' }],
         ...Object.entries(agentConfig).filter(([, cfg]) => cfg.state !== 'pending')];  // skip pending instances
     for (const [name, cfg] of chips) {
         const btn = document.createElement('button');
         btn.className = 'mention-toggle' + (name === MENTION_ALL ? ' mention-all' : '');
         btn.dataset.agent = name;
         // The chip shows what you would type; the display name is the tooltip.
-        btn.textContent = `@${cfg.handle || name}`;
+        btn.textContent = name === MENTION_ALL ? '@all · Whole team' : `@${cfg.handle || name}`;
+        if (name === conversationLeaderId) btn.appendChild(leaderBadge());
         btn.title = cfg.label || name;
         if (name !== MENTION_ALL) btn.style.setProperty('--agent-color', colorOverrides[name] || cfg.color);
         // Restore active state for mentions that survived the rebuild

@@ -214,9 +214,17 @@ export interface RunInfo {
   input_chars: number;
 }
 
+/** Saved selection and server-selected available responders; ids, never display labels. */
+export interface Responders {
+  lead: string | null;
+  backup: string | null;
+  configured: { lead: string; backup: string };
+}
+
 /** GET /api/runtime and the `runtime_state` WS event. */
 export interface RuntimeState {
   agents: Record<string, AgentState>;
+  responders?: Responders;
   project: string;
   project_id?: string;
   paused: boolean;

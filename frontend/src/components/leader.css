@@ -1,0 +1,8 @@
+.conversation-leader-badge { display: inline-block; margin-left: 6px; padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--accent); font-size: 10px; font-weight: 600; line-height: 1.5; vertical-align: middle; white-space: nowrap; }
+.ws-leader-summary { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.ws-roster-name .conversation-leader-badge { font-size: 9px; }
+.mention-handle { color: var(--text-dim); font-size: 11px; margin-left: auto; }
+.mention-item { gap: 8px; }
+.tm-agent-text strong { overflow-wrap: anywhere; }
+.ws-roster-menu { max-width: calc(100vw - 24px); }
+@media (max-width: 650px) { .ws-roster-button .ws-avatars, .ws-roster-text { display: none; } .ws-leader-summary { max-width: 104px; } .mention-item { flex-wrap: wrap; } }

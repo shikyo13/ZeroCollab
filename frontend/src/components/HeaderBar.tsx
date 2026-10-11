@@ -12,6 +12,8 @@ import { Icon } from './Icon';
 import { GoalChip } from './WorkControls';
 import { FollowTicker } from '../follow/Follow';
 import { EVENTS } from '../lib/constants';
+import { leaderId, leaderName, syncChatLeader } from '../lib/responders';
+import './leader.css';
 
 const VIEW_TITLES: Record<View, string> = { projects: 'Projects', chat: 'Chat', board: 'Board', live: 'Live view', team: 'Team', activity: 'Activity', server: 'Server' };
 const STACK_SHOWN = 6;
@@ -42,26 +44,33 @@ function Roster({ state, onTeam }: { state: RuntimeState; onTeam: () => void }) 
   const agents = Object.entries(state.agents).filter(([, a]) => !a.archived);
   const working = agents.filter(([, a]) => a.state === 'working').length;
   const mode = roomMode(state);
+  const leader = leaderId(state.responders);
+  const name = leaderName(state, leader);
+  const fallback = state.responders?.lead && state.responders.lead !== leader ? state.responders.lead : null;
   return <div className="ws-roster" ref={root}>
     <button className="ws-roster-button" aria-expanded={open} aria-haspopup="dialog" title={mode}
-      aria-label={`Team: ${agents.length} agents, ${working} working`} onClick={() => setOpen(!open)}>
+      aria-label={`Team: ${agents.length} agents, ${working} working. ${state.responders ? `Leader: ${name}` : 'Loading leader'}`} onClick={() => setOpen(!open)}>
       <span className="ws-avatars" aria-hidden="true">
         {agents.slice(0, STACK_SHOWN).map(([id, a]) => <span key={id} className={`ws-avatar${a.state === 'working' ? ' is-working' : ''}`}
           style={{ '--agent-color': a.color || 'var(--accent)' } as React.CSSProperties}>{(a.label || id).charAt(0).toUpperCase()}</span>)}
         {agents.length > STACK_SHOWN && <span className="ws-avatar ws-avatar-more">+{agents.length - STACK_SHOWN}</span>}
       </span>
+      <span className="ws-leader-summary">{state.responders ? `Leader: ${name}` : 'Loading leader'}</span>
       <span className="ws-roster-text">{state.paused ? 'Stopped' : working ? `${working} working` : 'Idle'}</span>
     </button>
     {open && <div className="ws-popover ws-roster-menu" role="dialog" aria-label="Team status">
       <ul>
         {agents.map(([id, a]) => <li key={id}>
           <span className={`ws-avatar${a.state === 'working' ? ' is-working' : ''}`} style={{ '--agent-color': a.color || 'var(--accent)' } as React.CSSProperties} aria-hidden="true">{(a.label || id).charAt(0).toUpperCase()}</span>
-          <span className="ws-roster-name">{a.label || id}<small>@{a.handle || id}</small></span>
+          <span className="ws-roster-name">{a.label || id}{id === leader && <span className="conversation-leader-badge" title="Current conversation leader">Leader</span>}<small>@{a.handle || id}</small></span>
           <small className="ws-roster-state">{a.paused ? 'stopped' : a.state}{a.queued ? ` · ${a.queued} queued` : ''}</small>
         </li>)}
       </ul>
       <p className="ws-roster-mode">{mode}</p>
-      <button onClick={() => { setOpen(false); onTeam(); }}>Manage team</button>
+      {state.responders && !state.responders.configured.lead && <p className="ws-roster-mode">No leader selected; using the default order.</p>}
+      {fallback && <p className="ws-roster-mode">Available responder: {leaderName(state, fallback)}. The selected leader is unavailable.</p>}
+      {state.responders && !state.responders.lead && <p className="ws-roster-mode">No responder is available.</p>}
+      <button onClick={() => { setOpen(false); onTeam(); }}>Choose leader on Team</button>
     </div>}
   </div>;
 }
@@ -132,6 +141,7 @@ function StopResume({ paused, refresh }: { paused: boolean; refresh: () => void 
 export function HeaderBar({ view, projectName, onTeam, bell, follow }: { view: View; projectName: string; onTeam: () => void; bell?: React.ReactNode; follow?: React.ReactNode }) {
   const { data, refresh } = useRuntimeState();
   const { data: project } = useProjectState();
+  useEffect(() => { syncChatLeader(data?.responders); }, [data?.responders]);
   const channel = useActiveChannel();
   const left = legacy.header.querySelector<HTMLElement>('.header-left');
   const right = legacy.header.querySelector<HTMLElement>('.header-right');

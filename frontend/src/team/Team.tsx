@@ -4,8 +4,9 @@
  * /api/runtime/refresh, plus runtime_state/agents events. */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { errorMessage, runtime } from '../lib/api';
+import { leaderId, leaderName } from '../lib/responders';
 import { sessionTitle, useRoomEvent, useRuntimeState } from '../lib/room';
-import type { AgentState, RunInfo } from '../lib/types';
+import type { AgentState, RunInfo, RuntimeState, Responders } from '../lib/types';
 import { ErrorText, useAction } from '../board/shared';
 import '../board/board.css';
 import { ProfileEditor, type Profile, type ProfilesData } from './ProfileEditor';
@@ -42,6 +43,7 @@ function AgentRow({
   run,
   providerLabel,
   selected,
+  leader,
   onSelect,
   guarded,
   onProviders,
@@ -51,6 +53,7 @@ function AgentRow({
   run?: RunInfo;
   providerLabel: string;
   selected: boolean;
+  leader: boolean;
   onSelect: () => void;
   /** True when an unsaved edit must be saved or cancelled first (it warns instead). */
   guarded: () => boolean;
@@ -70,7 +73,7 @@ function AgentRow({
           {profile.name.slice(0, 2).toUpperCase()}
         </span>
         <span className="tm-agent-text">
-          <strong>{profile.name}</strong>
+          <strong>{profile.name}{leader && <span className="conversation-leader-badge" title="Current conversation leader">Leader</span>}</strong>
           <small>
             @{profile.handle || profile.id} · {providerLabel}
           </small>
@@ -96,6 +99,66 @@ function AgentRow({
   );
 }
 
+function ConversationLeader({ state, refresh }: { state: RuntimeState | null; refresh: () => Promise<unknown> }) {
+  const [saved, setSaved] = useState(state?.responders);
+  const [draft, setDraft] = useState(state?.responders?.configured.lead ?? '');
+  const [edited, setEdited] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const scope = state?.project_id ?? state?.project ?? '';
+  useEffect(() => {
+    setSaved(state?.responders); setDraft(state?.responders?.configured.lead ?? '');
+    setEdited(false); setError('');
+  }, [scope]);
+  useEffect(() => {
+    setSaved(state?.responders);
+    if (!edited) setDraft(state?.responders?.configured.lead ?? '');
+  }, [state?.responders]);
+  const dirty = !!saved && draft !== saved.configured.lead;
+  const leader = leaderId(saved);
+  const ids = Object.keys(state?.agents ?? {}).filter(id => !state?.agents[id].archived);
+  if (saved?.configured.lead && !ids.includes(saved.configured.lead)) ids.push(saved.configured.lead);
+  const save = async () => {
+    if (!saved) return;
+    setBusy(true); setError('');
+    try {
+      const next = await runtime<Responders>('/responders', { lead: draft, backup: draft && draft === saved.configured.backup ? '' : saved.configured.backup });
+      setSaved(next); setDraft(next.configured.lead); setEdited(false);
+      await refresh();
+    } catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(false); }
+  };
+  return <section className="tm-leader bd-panel" aria-labelledby="tm-leader-heading">
+    <div>
+      <h2 id="tm-leader-heading">Conversation leader</h2>
+      <p className="tm-leader-current" role="status">{!saved ? 'Loading leader' : saved.configured.lead
+        ? <>Current leader: <strong>{leaderName(state, saved.configured.lead)}</strong> <span className="conversation-leader-badge">Leader</span></>
+        : 'No leader selected'}</p>
+      {saved && !saved.configured.lead && <p className="bd-muted">Default responder: {leaderName(state, saved.lead)}</p>}
+      {saved?.configured.lead && state?.agents[leader ?? ''] && <p className="bd-muted">{state.agents[leader!].archived ? 'Archived' : state.agents[leader!].paused ? 'Stopped' : STATE_LABELS[state.agents[leader!].state] || state.agents[leader!].state}</p>}
+      {saved?.configured.lead && saved.lead !== saved.configured.lead && <p className="bd-muted">Selected leader unavailable. Available responder: {leaderName(state, saved.lead)}</p>}
+      <p className="bd-muted" id="tm-leader-help">Messages without an @ go to the available leader. @all wakes the whole team; @agent addresses that agent.</p>
+    </div>
+    <div className="tm-leader-controls">
+      <label htmlFor="tm-leader-select">Choose leader</label>
+      <select id="tm-leader-select" value={draft} disabled={!saved || busy} aria-describedby="tm-leader-help tm-leader-draft"
+        onChange={e => { setDraft(e.target.value); setEdited(true); setError(''); }}>
+        <option value="">Default order (no selected leader)</option>
+        {ids.map(id => <option key={id} value={id} disabled={!!state?.agents[id]?.archived}>
+          {leaderName(state, id)} · @{state?.agents[id]?.handle || id}{state?.agents[id]?.archived ? ' (archived)' : ''}
+        </option>)}
+      </select>
+      <p id="tm-leader-draft" className="bd-muted" role="status">{!saved ? 'Loading saved selection' : dirty ? 'Unsaved selection' : 'Saved selection'}</p>
+      {dirty && draft === saved?.configured.backup && <p className="bd-muted">This agent is the saved backup. Saving makes them leader and resets backup to the default order.</p>}
+      <div className="bd-actions">
+        <button type="button" className="bd-btn bd-btn-primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? 'Saving...' : 'Save leader'}</button>
+        <button type="button" className="bd-btn" disabled={!dirty || busy} onClick={() => { setDraft(saved?.configured.lead ?? ''); setEdited(false); setError(''); }}>Discard</button>
+      </div>
+      <ErrorText message={error} />
+    </div>
+  </section>;
+}
+
 export default function Team() {
   const [target, setTarget] = useState(suggestionTarget);
   useEffect(() => {
@@ -114,7 +177,7 @@ export default function Team() {
 }
 
 function TeamHome() {
-  const { data: runtimeState, error: runtimeError } = useRuntimeState();
+  const { data: runtimeState, error: runtimeError, refresh: refreshRuntime } = useRuntimeState();
   const [data, setData] = useState<ProfilesData | null>(null);
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
@@ -230,6 +293,7 @@ function TeamHome() {
         </div>
       </header>
       <ErrorText message={loadError || runtimeError || refreshAction.error} />
+      <ConversationLeader key={runtimeState?.project_id ?? runtimeState?.project} state={runtimeState} refresh={refreshRuntime} />
       <nav className="bd-tabs tm-sections" aria-label="Team sections">
         <button type="button" className="bd-tab" aria-current={section === 'agents' ? 'page' : undefined}
           onClick={() => guarded('Save or cancel your changes first.') || setSection('agents')}>Agents ({active})</button>
@@ -249,6 +313,7 @@ function TeamHome() {
                   run={runs.find(r => r.agent === p.id)}
                   providerLabel={providerLabel(p.template)}
                   onProviders={() => guarded('Save or cancel your changes first.') || setSection('providers')}
+                  leader={p.id === leaderId(runtimeState?.responders)}
                   selected={mode === 'edit' && p.id === selected}
                   onSelect={() => choose(p.id, 'edit')}
                   guarded={() => guarded()}

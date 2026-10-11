@@ -70,9 +70,9 @@ function getMentionCandidates() {
     for (const [name, cfg] of Object.entries(agentConfig)) {
         if (cfg.state === 'pending') continue;
         // Insert the public handle; the router maps it (and old handles) to the agent's id.
-        candidates.push({ name: cfg.handle || name, label: cfg.label || name, color: cfg.color });
+        candidates.push({ name: cfg.handle || name, label: cfg.label || name, color: cfg.color, leader: name === conversationLeaderId });
     }
-    candidates.push({ name: 'all agents', label: 'all agents', color: 'var(--accent)' });
+    candidates.push({ name: 'all', label: 'Whole team', color: 'var(--accent)' });
     return candidates;
 }
 
@@ -126,7 +126,7 @@ function updateMentionMenu() {
         const row = document.createElement('div');
         row.className = 'mention-item' + (i === mentionMenuIndex ? ' active' : '');
         row.dataset.name = item.name;
-        row.innerHTML = `<span class="mention-dot" style="--sender-color: ${escapeHtml(item.color)}"></span><span class="mention-name">${escapeHtml(item.label)}</span>`;
+        row.innerHTML = `<span class="mention-dot" style="--sender-color: ${escapeHtml(item.color)}"></span><span class="mention-name">${escapeHtml(item.label)}</span><span class="mention-handle">@${escapeHtml(item.name)}</span>${item.leader ? '<span class="conversation-leader-badge" title="Current conversation leader">Leader</span>' : ''}`;
         row.addEventListener('mousedown', (e) => {
             e.preventDefault();
             selectMention(item.name);
