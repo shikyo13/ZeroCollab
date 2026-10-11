@@ -303,9 +303,11 @@ class ProjectRoom:
 
     def snapshot(self):
         review_hashes = {}
+        live_tasks = {t['id'] for t in self.state['tasks'] if t.get('status') != 'done'}
         return {**{k: v for k, v in self.state.items() if k not in ('sessions', 'cursors', 'receipts', 'manager_audit')},
                 'tasks': [self.broadcast_view(t) for t in self.state['tasks']],
-                'reviews': [self.records.review_view(r, review_hashes) for r in self.state.get('reviews', [])],
+                'reviews': [self.records.review_view(r, review_hashes, self.records.drift, live_tasks)
+                            for r in self.state.get('reviews', [])],
                 'limits': dict(self.limits), 'chains': list(self.chains.values())[-12:],
                 'stale_seconds': STALE_SECONDS}
 

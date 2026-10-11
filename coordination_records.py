@@ -63,9 +63,46 @@ def git_location(root):
     return lines[2], lines[0], lines[1]
 
 
+class DriftCache:
+    """Board refreshes only (Zero #13117): every board broadcast re-checked every review's files, re-hashing
+    and re-resolving ~1,800 files and running git per changed file on the event loop. Hashes are reused
+    while a file's (mtime, size) is unchanged, resolved paths are kept, and git answers are reused for a
+    short while. Approval and done checks never use this cache; they always read fresh bytes."""
+    GIT_SECONDS = 60
+
+    def __init__(self):
+        self.paths, self.digests, self.git = {}, {}, {}
+
+    def resolve(self, text):
+        hit = self.paths.get(text)
+        if hit is None:
+            hit = self.paths[text] = Path(text).resolve()
+        return hit
+
+    def digest(self, path):
+        stat = path.stat()  # OSError: missing, which the caller treats as changed
+        key, mark = str(path), (stat.st_mtime_ns, stat.st_size)
+        hit = self.digests.get(key)
+        if hit and hit[0] == mark:
+            return hit[1]
+        with path.open('rb') as stream:
+            sha = hashlib.file_digest(stream, 'sha256').hexdigest()
+        self.digests[key] = (mark, sha)
+        return sha
+
+    def remember(self, key, compute):
+        now, hit = time.monotonic(), self.git.get(key)
+        if hit and now - hit[0] < self.GIT_SECONDS:
+            return hit[1]
+        value = compute()
+        self.git[key] = (now, value)
+        return value
+
+
 class CoordinationRecords:
     def __init__(self, room):
         self.room = room
+        self.drift = DriftCache()
 
     def task(self, task_id):
         task = next((t for t in self.room.state['tasks'] if t['id'] == task_id), None)
@@ -153,32 +190,41 @@ class CoordinationRecords:
                     return Path(root).resolve(), relative
         raise ValueError('Review repository workspace is unavailable; attach it or re-scope the task')
 
-    def changed_files(self, item, hashes=None):
+    def changed_files(self, item, hashes=None, drift=None):
         # Optional cache belongs to one response only. Approval calls omit it,
         # so subsequent changes are always checked against fresh file bytes.
+        # drift (a DriftCache) is for board refreshes only, never for approval or done checks.
         hashes = {} if hashes is None else hashes
         snapshot = item.get('snapshot', {})
         if not snapshot.get('root'):
             return []
         changed = []
         for entry in snapshot.get('files', []):
-            root = Path(entry.get('root', snapshot['root'])).resolve()
-            path = (root / entry.get('relative', entry['path'])).resolve()
+            root_text = entry.get('root', snapshot['root'])
+            if drift is not None:
+                root = drift.resolve(root_text)
+                path = drift.resolve(str(Path(root_text) / entry.get('relative', entry['path'])))
+            else:
+                root = Path(root_text).resolve()
+                path = (root / entry.get('relative', entry['path'])).resolve()
             if not path.is_relative_to(root):
                 changed.append(entry['path'])
                 continue
             try:
-                if path not in hashes:
-                    with path.open('rb') as stream:
-                        hashes[path] = hashlib.file_digest(stream, 'sha256').hexdigest()
-                matches = hashes[path] == entry['sha256']
+                if drift is not None:
+                    matches = drift.digest(path) == entry['sha256']
+                else:
+                    if path not in hashes:
+                        with path.open('rb') as stream:
+                            hashes[path] = hashlib.file_digest(stream, 'sha256').hexdigest()
+                    matches = hashes[path] == entry['sha256']
             except OSError:
                 matches = False
-            if not matches and not self.branch_holds(root, entry, hashes):
+            if not matches and not self.branch_holds(root, entry, hashes, drift):
                 changed.append(entry['path'])
         return changed
 
-    def branch_holds(self, root, entry, hashes):
+    def branch_holds(self, root, entry, hashes, drift=None):
         """True when the owner has since checked out another branch and the reviewed branch's tip still
         holds the reviewed bytes, so switching branches does not make an approval look stale. While the
         reviewed branch is checked out, its working copy decides, so uncommitted edits still count. The
@@ -186,17 +232,26 @@ class CoordinationRecords:
         branch, top, git_path = entry.get('branch'), entry.get('git_root'), entry.get('git_path')
         if not (branch and top and git_path):
             return False  # Snapshot taken before branches were recorded, or a detached HEAD.
-        if ('branch', top) not in hashes:
-            hashes[('branch', top)] = checked_out_branch(top)
-        if hashes[('branch', top)] == branch:
+        if drift is not None:
+            current = drift.remember(('branch', top), lambda: checked_out_branch(top))
+        else:
+            if ('branch', top) not in hashes:
+                hashes[('branch', top)] = checked_out_branch(top)
+            current = hashes[('branch', top)]
+        if current == branch:
             return False
         # Run from the worktree top with the path from the top: a subfolder root may not exist on the
         # branch now checked out, and a bare 'branch:path' always resolves from the top anyway.
         spec = f'{branch}:{git_path}'
         key = ('tip', top, spec)
-        if key not in hashes:
+
+        def tip():
             data = _git_bytes(top, 'cat-file', '--filters', spec)
-            hashes[key] = hashlib.sha256(data).hexdigest() if data is not None else None
+            return hashlib.sha256(data).hexdigest() if data is not None else None
+        if drift is not None:
+            return drift.remember(key, tip) == entry['sha256']
+        if key not in hashes:
+            hashes[key] = tip()
         return hashes[key] == entry['sha256']
 
     def artifact(self, review_id, path):
@@ -229,8 +284,12 @@ class CoordinationRecords:
         return {**result, 'kind': 'ok', 'encoding': 'utf-8', 'text': text[:ARTIFACT_TEXT],
                 'truncated': len(text) > ARTIFACT_TEXT}
 
-    def review_view(self, item, hashes=None):
-        return {**item, 'changed_files': self.changed_files(item, hashes),
+    def review_view(self, item, hashes=None, drift=None, live_tasks=None):
+        """drift/live_tasks: board refreshes only. History (superseded, cancelled) and approvals of tasks
+        that are done or archived skip the file check: their drift can no longer gate anything."""
+        settled = drift is not None and (item.get('status') in ('superseded', 'cancelled') or (
+            item.get('status') == 'approved' and live_tasks is not None and item.get('task_id') not in live_tasks))
+        return {**item, 'changed_files': [] if settled else self.changed_files(item, hashes, drift),
                 'fingerprinted': bool(item.get('snapshot', {}).get('files'))}
 
     def review(self, actor, action, task_id='', review_id='', reviewer='', revision='', text='', verdict='', files=None):

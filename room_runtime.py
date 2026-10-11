@@ -695,6 +695,7 @@ class RoomRuntime:
         self.profile_lock = asyncio.Lock()
         self.deploy_held = {}
         self.deployment = None
+        self.project_state_due = False  # a coalesced board snapshot is scheduled (project_state_soon)
         self.repository_transition = None
         self.repository_job = None
 
@@ -748,11 +749,29 @@ class RoomRuntime:
         await self.host.broadcast_status()
         if self.project_room.path is not None:
             # Task execution states (running, queued, idle) follow turns, not only board edits.
-            await self.emit('project_state', self.project_room.snapshot())
+            self.project_state_soon()
 
     def publish_soon(self):
         with contextlib.suppress(RuntimeError):
             asyncio.get_running_loop().create_task(self.publish_status())
+
+    def project_state_soon(self, delay=0.5):
+        """The board snapshot is several MB: building it and compressing it for every client on every
+        status change and room-tool call stalled the event loop for seconds (Zero #13117). Changes within
+        `delay` share one snapshot, built when it is sent, so it is always the latest state."""
+        if self.project_state_due:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self.project_state_due = True
+        loop.call_later(delay, lambda: loop.create_task(self.flush_project_state()))
+
+    async def flush_project_state(self):
+        self.project_state_due = False
+        if self.project_room.path is not None:
+            await self.emit('project_state', self.project_room.snapshot())
 
     def save_project(self):
         for name, state in self.states.items():
@@ -1573,7 +1592,7 @@ class RoomRuntime:
                     raise ValueError('While your position is sealed, attach the image to the position, not a task')
                 arguments = {**arguments, 'post': False}
             result = self.project_room.markup(run.name, run.channel, run.entry['chain'], **arguments)
-            await self.emit('project_state', self.project_room.snapshot())
+            self.project_state_soon()
             return result
         if tool == 'room_read':
             allowed = {'section', 'offset', 'limit', 'query', 'after_id', 'task_id', 'owner', 'status'}
@@ -1585,7 +1604,7 @@ class RoomRuntime:
             action = 'create a new repository at' if result['create'] else 'attach the repository'
             self.host.store.add(run.name, f"Repository request: {action} {result['path']}. {result['reason']}\nThe user can approve it in Projects.",
                                 channel=run.channel, metadata={'no_route': True, 'chain': run.entry['chain']})
-            await self.emit('project_state', self.project_room.snapshot())
+            self.project_state_soon()
             return {**result, 'status': 'Waiting for the user to approve the repository change; keep working meanwhile.'}
         if tool == 'room_task':
             before = next((t['status'] for t in self.project_room.state['tasks'] if t['id'] == arguments.get('task_id')), None)
@@ -1634,7 +1653,7 @@ class RoomRuntime:
             self.host.store.add(run.name, text, channel=run.channel, metadata={'no_route': True, 'chain': run.entry['chain']})
         if tool == 'room_task':
             self.ready_wakes.schedule()  # An arming event: a task changed.
-        await self.emit('project_state', self.project_room.snapshot())
+        self.project_state_soon()
         return result
 
     def signed_out(self, run, name, detail):
@@ -1894,7 +1913,7 @@ class RoomRuntime:
                     deliveries[recipient] = self.notify_participant(recipient, channel, chain,
                         text + '\nRead room_read(section="inbox") for the full request/findings and coordinate with the team.', ref)
         self.ready_wakes.schedule()
-        await self.emit('project_state', self.project_room.snapshot())
+        self.project_state_soon()
         return {'record': item, 'changed': True, 'deliveries': deliveries}
 
     async def ask(self, run, tool, params, reason, question=False):
@@ -2281,7 +2300,7 @@ def install(host):
                 await runtime.refresh()
             await runtime.publish_status()
             await host.broadcast_settings()
-            await runtime.emit('project_state', runtime.project_room.snapshot())
+            runtime.project_state_soon()
             return {"ok": True, "id": runtime.identity}
         except (ValueError, RuntimeError, KeyError) as exc:
             return JSONResponse({"error": str(exc)}, 400)
@@ -2330,7 +2349,7 @@ def install(host):
             body = await request.json()
             runtime.project_room.set_spec(body.get('text', ''))
             host.store.add('system', 'Optional shared spec saved. Ordinary chat remains available independently of the spec.', channel=runtime.default_channel())
-            await runtime.emit('project_state', runtime.project_room.snapshot())
+            runtime.project_state_soon()
             return {'ok': True}
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, 400)
@@ -2361,7 +2380,7 @@ def install(host):
             selected = runtime.project_room.change_limits(await request.json())
             runtime.ready_wakes.schedule()  # Turning ready_task_wakes on is an arming event.
             await runtime.publish_status()
-            await runtime.emit('project_state', runtime.project_room.snapshot())
+            runtime.project_state_soon()
             return {'ok': True, 'limits': selected}
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, 400)
@@ -2401,7 +2420,7 @@ def install(host):
                 runtime.enqueue(task['owner'], channel, prompt=f"Task {task['id']}: {task['title']}\n{task['details']}\nReserved paths: {', '.join(task['paths'])}",
                                 chain=chain, routing={'task_id': task['id']})
             runtime.ready_wakes.schedule()
-            await runtime.emit('project_state', runtime.project_room.snapshot())
+            runtime.project_state_soon()
             return task
         except (ValueError, TypeError) as exc:
             return JSONResponse({'error': str(exc)}, 400)

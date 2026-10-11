@@ -678,7 +678,7 @@ def install(host, runtime):
 
     async def announce():
         await host.broadcast_settings()
-        await runtime.emit('project_state', runtime.project_room.snapshot())
+        runtime.project_state_soon()
 
     @host.app.get('/api/runtime/projects')
     async def projects():
@@ -769,7 +769,7 @@ def install(host, runtime):
     async def dismiss(identity: str):
         try:
             result = dismiss_request(runtime, identity)
-            await runtime.emit('project_state', runtime.project_room.snapshot())
+            runtime.project_state_soon()
             return result
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, 400)
