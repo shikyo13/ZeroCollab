@@ -187,7 +187,7 @@ export function MemberCard({
             </dl>
             <pre>{member.background || 'No background written yet.'}</pre>
           </section> : <details className="tb-detail">
-            <summary>Working background · {plural(member.background.length, 'character')}</summary>
+            <summary>Expert background · {plural(member.background.length, 'character')}</summary>
             <p className="tb-background">{member.background || 'No background written yet.'}</p>
           </details>}
           {!suggestion && <small className="bd-muted">{providerSummary(member, providers)}</small>}

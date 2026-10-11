@@ -223,6 +223,9 @@ class TeamBuilder:
             if len(members) != 1:
                 raise ValueError('Return exactly the one member requested for revision')
             members[0]['member_id'] = p['revision_member']
+            # The revision keeps who suggested this member and why (harness c26b6322).
+            old = next(m for m in p['members'] if m['member_id'] == p['revision_member'])
+            members[0].update({k: old[k] for k in ('suggested_by', 'reason') if k in old})
             members = [members[0] if m['member_id'] == p['revision_member'] else m for m in p['members']]
         handles = [m['id'] for m in members]
         if len(set(handles)) != len(handles):
@@ -322,7 +325,9 @@ class TeamBuilder:
         wanted = (body or {}).get('member_id')
         member = next((m for m in p['members'] if (m['member_id'] == wanted if wanted else
                        m['status'] in ('proposed', 'approved'))), None)
-        if not member or member['status'] not in ('proposed', 'approved'):
+        if not member:
+            raise ValueError('No such member in this suggestion' if wanted else 'Nothing in this suggestion is waiting for review')
+        if member['status'] not in ('proposed', 'approved'):
             raise ValueError('A suggestion can be challenged only before it is added or declined')
         agent = (body or {}).get('agent')
         if agent == (member.get('suggested_by') or p['suggested_by']) or agent not in {a['id'] for a in self.agents()}:
