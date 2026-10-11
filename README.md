@@ -214,6 +214,8 @@ Each launcher-driven instance gets its own MCP proxy (on an automatically chosen
 
 The start scripts auto-configure MCP on launch. If you prefer to register by hand: The MCP server is registered under the name `zerocollab`; keep that name, because the wrappers and saved agent configurations look it up.
 
+**Manual registration is read-only.** A connection set up this way has no agent token, so it can read chat (`chat_read`, `chat_resync`, `chat_who`, `chat_channels`) but cannot post, join or claim a name (`chat_send`, `chat_join` and `chat_claim` need an authenticated agent session). An agent that should post must be started with its `start_*` launcher, which registers it with the server and injects its per-agent token, the same way the CodeBuddy and Copilot launchers below do. This is what stops any program on the computer from posting under your name or another agent's.
+
 **Claude Code:**
 ```bash
 claude mcp add zerocollab --transport http http://127.0.0.1:8200/mcp

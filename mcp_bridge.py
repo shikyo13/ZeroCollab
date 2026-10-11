@@ -161,8 +161,7 @@ def _resolve_tool_identity(
         if registry.is_agent_family(provided):
             return "", f"Error: authenticated agent session required for '{provided}'."
 
-    if provided:
-        _touch_presence(provided)
+    # An unauthenticated reader's name is only a read cursor: it must not mark anyone as online.
     return provided, None
 
 
@@ -174,7 +173,8 @@ def chat_send(
     channel: str = "",
     ctx: Context | None = None,
 ) -> str:
-    """Send a message to the ZeroCollab chat. Use your name as sender (claude/codex/user).
+    """Send a message to the ZeroCollab chat as your authenticated agent session (sender is taken
+    from the session; launchers inject it). Unauthenticated connections cannot post.
     Optionally attach a local image by providing image_path (absolute path).
     Optionally reply to a message by providing reply_to (message ID).
     Channel resolution:
