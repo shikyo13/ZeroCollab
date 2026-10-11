@@ -773,12 +773,12 @@ let conversationLeaderId = '';
 function leaderBadge() {
     const badge = document.createElement('span');
     badge.className = 'conversation-leader-badge';
-    badge.textContent = 'Leader';
-    badge.title = 'Current conversation leader';
+    badge.textContent = 'Project manager';
+    badge.title = 'Current project manager';
     return badge;
 }
 function applyConversationLeader(responders) {
-    const id = responders?.configured?.lead || responders?.lead || '';
+    const id = responders?.configured?.lead || '';
     if (id === conversationLeaderId) return;
     conversationLeaderId = id;
     // Updating labels only preserves the message body, composer and reading position.

@@ -1,309 +1,199 @@
-/* Project manager check-ins: the user's opt-in for systems' recurring manager audit (/api/runtime/manager-audit,
- * contract 5c85e933). The server owns scheduling, eligibility, the finite budget and the outcome record; this panel
- * shows its status and sends only the user's explicit enable, change, turn-off and renew actions (design 90e41648). */
+/* One saved Project manager identity. The server chooses its coordination task,
+ * chat and project scope; the Team form saves identity and automatic checks together. */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { runtime } from '../lib/api';
-import { sessionTitle } from '../lib/room';
+import { runtime, errorMessage } from '../lib/api';
+import { useRoomEvent } from '../lib/room';
+import { leaderName } from '../lib/responders';
+import type { Responders, RuntimeState } from '../lib/types';
 import { ErrorText, Field, RelativeTime, useAction } from './shared';
-
-export interface ManagerAuditConfig {
-  manager: string;
-  task_id: string;
-  channel: string;
-  interval_minutes: number;
-  planning_enabled?: boolean;
-  planning_paths?: string[];
-}
 
 export interface ManagerAuditStatus {
   project_id: string;
   enabled: boolean;
-  /** Opaque; sent back unchanged with renew so a stale page can't renew a replaced configuration. */
   generation: string | null;
-  config: ManagerAuditConfig | null;
+  config: { manager: string; task_id: string; channel: string; interval_minutes: number } | null;
+  selected_manager: { id: string | null; label: string; eligible: boolean; reason_code: string; reason_text: string };
+  task: { id: string; title: string } | null;
+  channel: { id: string; title: string } | null;
+  scope: { mode: 'project' | 'folders'; folders: string[]; excluded: string[] };
   options: {
     managers: { id: string; label: string; eligible: boolean; reason?: string }[];
-    tasks: { id: string; title: string; owner?: string }[];
-    channels: { id: string; title?: string }[];
     interval: { min: number; max: number; default: number };
   };
-  /** Fixed by the server; used includes reserved and uncertain starts and every downstream turn. */
   budget: { total: number; used: number; remaining: number; per_hour: number; shared_per_hour: number } | null;
   next_due: number | null;
-  last: { time: number; outcome: 'audited' | 'no_findings' | 'covered' | 'refused' | 'failed'; detail?: string } | null;
+  last: { time: number; outcome: string; detail?: string } | null;
   disabled_reason: string | null;
 }
 
-const OUTCOMES: Record<NonNullable<ManagerAuditStatus['last']>['outcome'], string> = {
-  audited: 'Checked in',
-  no_findings: 'Nothing needed attention; no agent turn started',
-  covered: 'Skipped: the manager was already working',
-  refused: 'Refused',
-  failed: 'Did not finish',
+const SAVED_EVENT = 'project-manager-saved';
+const OUTCOMES: Record<string, string> = {
+  audited: 'Checked in', no_findings: 'Nothing needed attention; no agent turn started',
+  covered: 'Skipped: the manager was already working', refused: 'Could not check in', failed: 'Did not finish',
 };
 
-const ERROR_ID = 'bd-manager-error';
-
-/** The saved configuration, or an empty draft: nothing is chosen for the user except the suggested interval. */
-function draftFrom(status: ManagerAuditStatus): ManagerAuditConfig {
-  return { ...(status.config ?? { manager: '', task_id: '', channel: '', interval_minutes: status.options.interval.default }),
-    planning_enabled: status.config?.planning_enabled ?? false, planning_paths: status.config?.planning_paths ?? [] };
-}
-
-function scopeError(paths: string[], enabled: boolean): string {
-  if (enabled && !paths.length) return 'Enter at least one allowed task path before enabling planning.';
-  if (paths.length > 20) return 'Enter at most 20 allowed task paths.';
-  if (paths.some(path => path.length > 512 || path.startsWith('/') || /[:\\]/.test(path)
-    || path.split('/').includes('..') || !path.split('/').some(part => part && part !== '.'))) {
-    return 'Use relative paths without a colon, backslash or ..; each path must be at most 512 characters.';
-  }
-  return '';
-}
-
-export function ManagerAuditPanel({ project }: { project: string }) {
+function useManagerStatus(project: string) {
   const [status, setStatus] = useState<ManagerAuditStatus | null>(null);
-  const [loadError, setLoadError] = useState('');
-  const [draft, setDraft] = useState<ManagerAuditConfig | null>(null);
-  const [dirty, setDirty] = useState(false);
-  const [pathText, setPathText] = useState('');
-  const [pending, setPending] = useState('');
-  const { run, busy, error } = useAction();
-
-  const apply = useCallback((next: ManagerAuditStatus, resetDraft: boolean) => {
-    setStatus(next);
-    if (resetDraft) {
-      setDraft(draftFrom(next));
-      setPathText((next.config?.planning_paths ?? []).join('\n'));
-      setDirty(false);
-    }
-  }, []);
-
-  // Read through a ref so editing doesn't refetch, and a refetch never overwrites unsaved choices.
-  const dirtyRef = useRef(false);
-  dirtyRef.current = dirty;
-  // The board remounts this panel per project (key), so status, draft and actions never carry over. A response for
-  // a different project than the one shown is refused instead of displayed (a late reply after a switch).
-  const forThisProject = (next: ManagerAuditStatus) => !project || next.project_id === project;
+  const [error, setError] = useState('');
+  const lastRead = useRef(0);
+  const sequence = useRef(0);
+  const scope = useRef(project);
+  scope.current = project;
   const load = useCallback(async () => {
+    const request = ++sequence.current;
+    lastRead.current = Date.now();
     try {
       const next = await runtime<ManagerAuditStatus>('/manager-audit');
-      if (!forThisProject(next)) {
-        setLoadError('The open project changed. Reload the board to see its check-ins.');
-        return;
-      }
-      apply(next, !dirtyRef.current);
-      setLoadError('');
-    } catch (e) {
-      setLoadError(e instanceof Error ? e.message : String(e));
-    }
-  }, [apply, project]); // eslint-disable-line react-hooks/exhaustive-deps -- forThisProject depends only on project
-
+      if (scope.current !== project || request !== sequence.current) return;
+      if (project && next.project_id !== project) throw new Error('The open project changed. Reload its manager settings.');
+      setStatus(next); setError('');
+    } catch (e) { if (scope.current === project && request === sequence.current) setError(errorMessage(e)); }
+  }, [project]);
+  useEffect(() => { setStatus(null); void load(); }, [load]);
   useEffect(() => {
-    void load();
+    const read = () => void load();
+    window.addEventListener(SAVED_EVENT, read);
+    return () => window.removeEventListener(SAVED_EVENT, read);
   }, [load]);
+  // Runtime snapshots can be frequent. Refresh this small status at most twice a minute.
+  useRoomEvent('runtime_state', () => { if (Date.now() - lastRead.current >= 30000) void load(); });
+  const apply = useCallback((next: ManagerAuditStatus) => { ++sequence.current; setStatus(next); setError(''); }, []);
+  return { status, setStatus: apply, error, load };
+}
 
-  // Actions go to the project whose status is shown, and the server refuses a project that is no longer open (409).
-  // Only a successful response changes the saved status; a refusal keeps every field as the user left it.
-  const send = async (label: string, body: Record<string, unknown>) => {
-    if (!status) return;
-    setPending(label);
-    await run(async () => {
-      const next = await runtime<ManagerAuditStatus>('/manager-audit', { project_id: status.project_id, ...body });
-      if (!forThisProject(next)) throw new Error('The open project changed. Reload the board to see its check-ins.');
-      apply(next, true);
-    });
-    setPending('');
-  };
+function openTeam() {
+  const url = new URL(location.href); url.searchParams.set('view', 'team');
+  history.pushState({}, '', url); window.dispatchEvent(new PopStateEvent('popstate'));
+}
 
-  if (!status || !draft) {
-    return (
-      <section className="bd-panel" aria-labelledby="bd-manager-heading">
-        <h3 id="bd-manager-heading">Project manager check-ins (optional)</h3>
-        {loadError ? <ErrorText message={loadError} /> : <p className="bd-muted" role="status">Loading check-in status…</p>}
-      </section>
-    );
-  }
-
-  const { options, budget } = status;
-  const manager = options.managers.find(m => m.id === draft.manager);
-  const tasks = draft.manager ? options.tasks.filter(t => t.owner === draft.manager) : [];
-  const interval = options.interval;
-  const intervalValid = Number.isInteger(draft.interval_minutes)
-    && draft.interval_minutes >= interval.min && draft.interval_minutes <= interval.max;
-  const planningError = scopeError(draft.planning_paths ?? [], !!draft.planning_enabled);
-  const complete = !!(manager?.eligible && draft.task_id && draft.channel && intervalValid && !planningError);
-  const set = (change: Partial<ManagerAuditConfig>) => {
-    setDraft(d => (d ? { ...d, ...change } : d));
-    setDirty(true);
-  };
-  const submit = (e: FormEvent) => {
+/** Team owns the single editable setup. A refused Save keeps both saved identity and draft. */
+export function ProjectManagerControls({ state, refresh }: { state: RuntimeState | null; refresh: () => Promise<unknown> }) {
+  const project = state?.project_id ?? state?.project ?? '';
+  const { status, setStatus, error: loadError, load } = useManagerStatus(project);
+  const [saved, setSaved] = useState(state?.responders);
+  const [draft, setDraft] = useState({ lead: '', enabled: false, interval: 30 });
+  const [edited, setEdited] = useState(false);
+  const { run, busy, error, setError } = useAction();
+  const submitted = useRef(false);
+  const chosen = state?.responders?.configured.lead ?? '';
+  useEffect(() => { if (state?.responders) setSaved(state.responders); }, [state?.responders]);
+  useEffect(() => { void load(); }, [chosen, load]);
+  useEffect(() => {
+    if (!edited && saved && status) setDraft({ lead: saved.configured.lead, enabled: status.enabled,
+      interval: status.config?.interval_minutes ?? status.options.interval.default });
+  }, [saved, status, edited]);
+  const dirty = !!saved && !!status && (draft.lead !== saved.configured.lead || draft.enabled !== status.enabled
+    || (draft.enabled && draft.interval !== (status.config?.interval_minutes ?? status.options.interval.default)));
+  const set = (change: Partial<typeof draft>) => { setDraft(d => ({ ...d, ...change })); setEdited(true); setError(''); };
+  const ids = [...new Set((status?.options.managers ?? []).map(m => m.id))];
+  if (saved?.configured.lead && !ids.includes(saved.configured.lead)) ids.push(saved.configured.lead);
+  const capability = status?.options.managers.find(m => m.id === draft.lead);
+  const reason = draft.lead === status?.selected_manager.id ? status.selected_manager.reason_text
+    : capability && !capability.eligible ? capability.reason : !draft.lead ? 'Choose a project manager before turning on automatic checks.' : '';
+  const intervalValid = !!status && Number.isInteger(draft.interval) && draft.interval >= status.options.interval.min
+    && draft.interval <= status.options.interval.max;
+  const save = async (e: FormEvent) => {
     e.preventDefault();
-    if (complete) void send(status.enabled ? 'Saving changes…' : 'Enabling check-ins…', { action: 'enable', ...draft });
+    if (!saved || !status || !dirty || submitted.current || (draft.enabled && !intervalValid)) return;
+    submitted.current = true;
+    await run(async () => {
+      const next = await runtime<Responders & { checkins: ManagerAuditStatus }>('/responders', {
+        lead: draft.lead, backup: draft.lead && draft.lead === saved.configured.backup ? '' : saved.configured.backup,
+        checkins: { enabled: draft.enabled, interval_minutes: draft.interval },
+      });
+      if (!next.checkins || next.checkins.project_id !== project) throw new Error('The open project changed. Reload its manager settings.');
+      setSaved(next); setStatus(next.checkins); setEdited(false);
+      setDraft({ lead: next.configured.lead, enabled: next.checkins.enabled,
+        interval: next.checkins.config?.interval_minutes ?? next.checkins.options.interval.default });
+      window.dispatchEvent(new Event(SAVED_EVENT));
+      // Save already succeeded. A failed snapshot refresh must not turn it into a refusal.
+      void refresh().catch(() => undefined);
+    });
+    submitted.current = false;
   };
-  const describedBy = error ? ERROR_ID : undefined;
+  return <section className="tm-leader bd-panel" aria-labelledby="tm-manager-heading">
+    <div>
+      <h2 id="tm-manager-heading">Project manager</h2>
+      <p className="tm-leader-current" role="status">{!saved ? 'Loading project manager' : saved.configured.lead
+        ? <>Current project manager: <strong>{leaderName(state, saved.configured.lead)}</strong></> : 'No project manager selected'}</p>
+      {saved?.configured.lead && state?.agents[saved.configured.lead]?.paused && <p className="bd-muted">This manager is stopped.</p>}
+      {saved && saved.lead !== saved.configured.lead && <p className="bd-muted">Available chat responder: {leaderName(state, saved.lead)}. Your project manager selection stays unchanged.</p>}
+      <p className="bd-muted" id="tm-manager-help">Your project manager replies to messages without an @ and coordinates the team's work. @all wakes the whole team; @agent addresses that agent.</p>
+      <p className="bd-muted">Automatic checks can find idle owners, assign up to two scoped tasks and wake their owners. Planning and those workers share the finite turn budget. Existing Stop and room limits still apply.</p>
+      <p className="bd-muted">The project supplies the coordination task, chat and work folders. You don't need to set them up.</p>
+      {status && <p className="bd-muted" role="status">Saved automatic checks: {status.enabled ? 'On' : 'Off'}{dirty && ' · Unsaved changes'}</p>}
+    </div>
+    <form className="tm-leader-controls bd-form" onSubmit={e => void save(e)}>
+      <label htmlFor="tm-manager-select">Project manager</label>
+      <select id="tm-manager-select" value={draft.lead} disabled={!saved || !status || busy} aria-describedby="tm-manager-help"
+        onChange={e => set({ lead: e.target.value })}>
+        <option value="">No project manager selected</option>
+        {ids.map(id => <option key={id} value={id} disabled={!!state?.agents[id]?.archived}>
+          {leaderName(state, id)} · @{state?.agents[id]?.handle || id}{state?.agents[id]?.archived ? ' (archived)' : ''}
+        </option>)}
+      </select>
+      <label className="bd-check">
+        <input type="checkbox" checked={draft.enabled} disabled={!status || busy} aria-describedby="tm-manager-reason"
+          onChange={e => set({ enabled: e.target.checked })} />
+        <span>Check on idle work automatically</span>
+      </label>
+      <p className="bd-muted" id="tm-manager-reason">{reason || 'Check unfinished project work and wake available owners when there is a next step.'}</p>
+      <Field label="Check every (minutes)" hint={status ? `${status.options.interval.min}–${status.options.interval.max} minutes. The first check waits one full interval.` : 'Loading interval'}>
+        <input type="number" min={status?.options.interval.min} max={status?.options.interval.max} step={1}
+          disabled={!draft.enabled || busy || !status} required={draft.enabled} value={Number.isFinite(draft.interval) ? draft.interval : ''}
+          onChange={e => set({ interval: e.target.value === '' ? Number.NaN : Number(e.target.value) })} />
+      </Field>
+      {dirty && draft.lead === saved?.configured.backup && <p className="bd-muted">This teammate is the backup. Saving makes them project manager and chooses a backup from the default order.</p>}
+      <div className="bd-actions">
+        <button type="submit" className="bd-btn bd-btn-primary" disabled={!dirty || busy || (draft.enabled && !intervalValid)}>{busy ? 'Saving...' : 'Save'}</button>
+        <button type="button" className="bd-btn" disabled={!dirty || busy} onClick={() => { setEdited(false); setError(''); }}>Discard</button>
+      </div>
+      {!status && !loadError && <p className="bd-muted" role="status">Loading saved automatic checks...</p>}
+      <ErrorText message={error || loadError} />
+    </form>
+  </section>;
+}
 
-  return (
-    <section className="bd-panel" aria-labelledby="bd-manager-heading">
-      <h3 id="bd-manager-heading">
-        Project manager check-ins (optional) <span className="bd-muted">{status.enabled ? 'On' : 'Off'}</span>
-      </h3>
-      <p className="bd-muted">
-        Periodically check this project's unfinished work for unassigned tasks, idle owners and unresolved handoffs. A
-        check with nothing to act on starts no agent turn.
-      </p>
-
-      <form className="bd-form" onSubmit={submit}>
-        <div className="bd-limits-grid">
-          <Field label="Project manager" hint={manager && !manager.eligible ? manager.reason : 'Choose a registered manager with a supported restricted runner.'}>
-            <select
-              value={draft.manager}
-              aria-describedby={describedBy}
-              required
-              // A different manager owns different tasks: the task and chat must be chosen again, never substituted.
-              onChange={e => set({ manager: e.target.value, task_id: '', channel: '' })}
-            >
-              <option value="">Choose a manager</option>
-              {options.managers.map(m => (
-                <option key={m.id} value={m.id} disabled={!m.eligible}>
-                  {m.label}
-                  {m.eligible ? '' : ' (not supported)'}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Coordination task" hint="An unfinished task owned by the selected manager, in this project.">
-            <select value={draft.task_id} aria-describedby={describedBy} required onChange={e => set({ task_id: e.target.value })}>
-              <option value="">{draft.manager ? 'Choose a task' : 'Choose a manager first'}</option>
-              {tasks.map(t => (
-                <option key={t.id} value={t.id}>
-                  {t.title} · {t.id}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Check-in chat" hint="An existing ordinary chat owned by the manager.">
-            <select value={draft.channel} aria-describedby={describedBy} required onChange={e => set({ channel: e.target.value })}>
-              <option value="">Choose a chat</option>
-              {options.channels.map(c => (
-                <option key={c.id} value={c.id}>
-                  {c.title || sessionTitle(c.id)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Check every (minutes)" hint={`${interval.min}-${interval.max} minutes, suggested ${interval.default}. First check waits one full interval.`}>
-            <input
-              type="number"
-              min={interval.min}
-              max={interval.max}
-              step={1}
-              required
-              aria-describedby={describedBy}
-              value={Number.isFinite(draft.interval_minutes) ? draft.interval_minutes : ''}
-              onChange={e => set({ interval_minutes: e.target.value === '' ? Number.NaN : Math.trunc(Number(e.target.value)) })}
-            />
-          </Field>
-        </div>
-        <div>
-          <label className="bd-check">
-            <input type="checkbox" checked={!!draft.planning_enabled} disabled={busy}
-              aria-describedby="bd-planning-help bd-planning-status"
-              onChange={e => set({ planning_enabled: e.target.checked })} />
-            <span>Allow this manager to plan and assign tasks</span>
-          </label>
-          <p className="bd-muted" id="bd-planning-help">
-            When eligible owners remain idle, the manager may create up to two tasks per planning check within the
-            selected coordination task and wake their owners. Planning and those workers share the existing finite turn budget.
-          </p>
-          <p className="bd-muted" id="bd-planning-status" role="status">
-            Saved planning setting: {status.config?.planning_enabled ? 'On' : 'Off'}{dirty && ' · Unsaved changes'}
-          </p>
-          {(draft.planning_enabled || planningError) && <Field label="Allowed task paths"
-            hint="Relative paths in this project's primary repository, one per line. New tasks must stay within these paths and still pass reservation checks.">
-            <textarea rows={3} value={pathText} disabled={busy} aria-invalid={!!planningError}
-              aria-describedby={planningError ? 'bd-planning-scope-error' : undefined}
-              onChange={e => { setPathText(e.target.value); set({ planning_paths: e.target.value.split('\n').map(line => line.trim()).filter(Boolean) }); }} />
-          </Field>}
-          {planningError && <p className="bd-error" id="bd-planning-scope-error" role="alert">{planningError}</p>}
-        </div>
-        <div className="bd-actions">
-          {(!status.enabled || dirty) && (
-            <button type="submit" className="bd-btn bd-btn-primary" disabled={busy || !complete}>
-              {status.enabled ? 'Save changes' : 'Enable check-ins'}
-            </button>
-          )}
-          {status.enabled && (
-            <button type="button" className="bd-btn" disabled={busy} onClick={() => void send('Turning off…', { action: 'disable' })}>
-              Turn off
-            </button>
-          )}
-          {dirty && (
-            <button type="button" className="bd-btn bd-btn-quiet" disabled={busy} onClick={() => { setDraft(draftFrom(status)); setPathText((status.config?.planning_paths ?? []).join('\n')); setDirty(false); }}>
-              Discard changes
-            </button>
-          )}
-          {pending && <span className="bd-muted" role="status">{pending}</span>}
-        </div>
-        {error && (
-          <p id={ERROR_ID} className="bd-error" role="alert">
-            {error}
-          </p>
-        )}
-      </form>
-
+/** Board retains status and budget actions, with setup on Team rather than a second manager form. */
+export function ManagerAuditPanel({ project }: { project: string }) {
+  const { status, setStatus, error: loadError, load } = useManagerStatus(project);
+  const { run, busy, error } = useAction();
+  const send = (body: Record<string, unknown>) => void run(async () => {
+    const next = await runtime<ManagerAuditStatus>('/manager-audit', { project_id: project, ...body });
+    if (next.project_id !== project) throw new Error('The open project changed. Reload its manager settings.');
+    setStatus(next); window.dispatchEvent(new Event(SAVED_EVENT));
+  });
+  return <section className="bd-panel" aria-labelledby="bd-manager-heading">
+    <h3 id="bd-manager-heading">Project manager</h3>
+    <ErrorText message={error || loadError} />
+    {!status ? <p className="bd-muted">Loading manager status...</p> : <>
+      <p><strong>{status.selected_manager.label || 'No project manager selected'}</strong> · Automatic checks {status.enabled ? 'On' : 'Off'}</p>
+      {!status.selected_manager.eligible && <p className="bd-muted">{status.selected_manager.reason_text}</p>}
+      <p className="bd-muted">Choose the project manager and automatic checks together on Team.</p>
+      <div className="bd-actions">
+        <button type="button" className="bd-btn" onClick={openTeam}>Open manager settings on Team</button>
+        <button type="button" className="bd-btn" onClick={() => void load()}>Refresh status</button>
+        {status.enabled && <button type="button" className="bd-btn" disabled={busy} onClick={() => send({ action: 'disable' })}>Turn off automatic checks</button>}
+      </div>
       <dl className="bd-stats">
-        <div>
-          <dt>Automatic-chain turns remaining</dt>
-          <dd>{budget ? `${budget.remaining} / ${budget.total}` : 'Not enabled yet'}</dd>
-        </div>
-        <div>
-          <dt>Next check</dt>
-          <dd>
-            {status.enabled && status.next_due
-              ? new Date(status.next_due * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              : 'Not scheduled'}
-          </dd>
-        </div>
-        <div>
-          <dt>Last result</dt>
-          <dd>{status.last ? <RelativeTime time={status.last.time} /> : 'None yet'}</dd>
-        </div>
+        <div><dt>Automatic turns remaining</dt><dd>{status.budget ? `${status.budget.remaining} / ${status.budget.total}` : 'Not enabled yet'}</dd></div>
+        <div><dt>Next check</dt><dd>{status.enabled && status.next_due ? new Date(status.next_due * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Not scheduled'}</dd></div>
+        <div><dt>Last result</dt><dd>{status.last ? <RelativeTime time={status.last.time} /> : 'None yet'}</dd></div>
       </dl>
-      <p className="bd-muted" role="status">
-        {status.last
-          ? `${OUTCOMES[status.last.outcome] ?? status.last.outcome}${status.last.detail ? `: ${status.last.detail}` : '.'}`
-          : 'No check-ins yet.'}
-      </p>
+      <p className="bd-muted" role="status">{status.last ? `${OUTCOMES[status.last.outcome] ?? status.last.outcome}${status.last.detail ? ': ' + status.last.detail : '.'}` : 'No check-ins yet.'}</p>
       {status.disabled_reason && <p className="bd-banner bd-banner-warn">{status.disabled_reason}</p>}
-      {budget && budget.remaining <= 0 && (
-        <p className="bd-banner bd-banner-warn">The check-in budget is used up. No more check-ins run until you renew it.</p>
-      )}
-      <p className="bd-muted">
-        {budget
-          ? `At most ${budget.per_hour} check-ins an hour, within the room's shared limit of ${budget.shared_per_hour} automatic turns an hour. `
-          : 'First enablement grants a finite budget of automatic-chain turns, including handoff recipients. '}
-        Turning check-ins off and on does not refill the budget. Room limits can stop it earlier. Stop all and manager pause
-        suppress check-ins; Resume waits a full interval and missed checks are not replayed. Deliberately deferred work
-        stays deferred.
-      </p>
-
-      {budget && status.config && status.generation && (
-        <details>
-          <summary>Renew check-in budget</summary>
-          <p className="bd-muted">
-            Replace the current budget with {budget.total} automatic-chain turns. Old queued check-ins are invalidated.
-            Renewing doesn't turn check-ins on or off; it only replaces the budget, and only when you ask.
-          </p>
-          <button
-            type="button"
-            className="bd-btn"
-            disabled={busy}
-            onClick={() => void send('Renewing budget…', { action: 'renew', generation: status.generation })}
-          >
-            Renew budget · {budget.total} turns
-          </button>
-        </details>
-      )}
-    </section>
-  );
+      {status.budget && status.budget.remaining <= 0 && <p className="bd-banner bd-banner-warn">The automatic-work budget is used up. Renew it to continue.</p>}
+      {status.budget && status.config && status.generation && <details>
+        <summary>Renew automatic-work budget</summary>
+        <p className="bd-muted">Planning and its workers share {status.budget.total} turns. Renewal replaces the budget and invalidates old queued checks. It does not turn checks on or off.</p>
+        <button type="button" className="bd-btn" disabled={busy} onClick={() => send({ action: 'renew', generation: status.generation })}>Renew budget · {status.budget.total} turns</button>
+      </details>}
+      <details><summary>Automatic check details</summary>
+        <p className="bd-muted">{status.task ? `Coordination: ${status.task.title}. ` : ''}{status.channel ? `Chat: ${status.channel.title}.` : ''}</p>
+        <p className="bd-muted">{status.scope.mode === 'folders' ? `Work stays within: ${status.scope.folders.join(', ')}.` : 'Work uses this project’s code folders.'}</p>
+        {!!status.scope.excluded.length && <p className="bd-muted">Excluded: {status.scope.excluded.join(', ')}.</p>}
+        <p className="bd-muted">Turning checks off and on does not refill the budget. Stop, pause and room limits still apply. Missed checks are not replayed; deliberately deferred work stays deferred.</p>
+      </details>
+    </>}
+  </section>;
 }

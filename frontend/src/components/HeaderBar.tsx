@@ -46,31 +46,31 @@ function Roster({ state, onTeam }: { state: RuntimeState; onTeam: () => void }) 
   const mode = roomMode(state);
   const leader = leaderId(state.responders);
   const name = leaderName(state, leader);
-  const fallback = state.responders?.lead && state.responders.lead !== leader ? state.responders.lead : null;
+  const fallback = leader && state.responders?.lead && state.responders.lead !== leader ? state.responders.lead : null;
   return <div className="ws-roster" ref={root}>
     <button className="ws-roster-button" aria-expanded={open} aria-haspopup="dialog" title={mode}
-      aria-label={`Team: ${agents.length} agents, ${working} working. ${state.responders ? `Leader: ${name}` : 'Loading leader'}`} onClick={() => setOpen(!open)}>
+      aria-label={`Team: ${agents.length} agents, ${working} working. ${state.responders ? `Manager: ${name}` : 'Loading manager'}`} onClick={() => setOpen(!open)}>
       <span className="ws-avatars" aria-hidden="true">
         {agents.slice(0, STACK_SHOWN).map(([id, a]) => <span key={id} className={`ws-avatar${a.state === 'working' ? ' is-working' : ''}`}
           style={{ '--agent-color': a.color || 'var(--accent)' } as React.CSSProperties}>{(a.label || id).charAt(0).toUpperCase()}</span>)}
         {agents.length > STACK_SHOWN && <span className="ws-avatar ws-avatar-more">+{agents.length - STACK_SHOWN}</span>}
       </span>
-      <span className="ws-leader-summary">{state.responders ? `Leader: ${name}` : 'Loading leader'}</span>
+      <span className="ws-leader-summary">{state.responders ? `Manager: ${name}` : 'Loading manager'}</span>
       <span className="ws-roster-text">{state.paused ? 'Stopped' : working ? `${working} working` : 'Idle'}</span>
     </button>
     {open && <div className="ws-popover ws-roster-menu" role="dialog" aria-label="Team status">
       <ul>
         {agents.map(([id, a]) => <li key={id}>
           <span className={`ws-avatar${a.state === 'working' ? ' is-working' : ''}`} style={{ '--agent-color': a.color || 'var(--accent)' } as React.CSSProperties} aria-hidden="true">{(a.label || id).charAt(0).toUpperCase()}</span>
-          <span className="ws-roster-name">{a.label || id}{id === leader && <span className="conversation-leader-badge" title="Current conversation leader">Leader</span>}<small>@{a.handle || id}</small></span>
+          <span className="ws-roster-name">{a.label || id}{id === leader && <span className="conversation-leader-badge" title="Current project manager">Project manager</span>}<small>@{a.handle || id}</small></span>
           <small className="ws-roster-state">{a.paused ? 'stopped' : a.state}{a.queued ? ` · ${a.queued} queued` : ''}</small>
         </li>)}
       </ul>
       <p className="ws-roster-mode">{mode}</p>
-      {state.responders && !state.responders.configured.lead && <p className="ws-roster-mode">No leader selected; using the default order.</p>}
-      {fallback && <p className="ws-roster-mode">Available responder: {leaderName(state, fallback)}. The selected leader is unavailable.</p>}
+      {state.responders && !state.responders.configured.lead && <p className="ws-roster-mode">No project manager selected; chat uses the default order.</p>}
+      {fallback && <p className="ws-roster-mode">Available responder: {leaderName(state, fallback)}. The project manager is unavailable.</p>}
       {state.responders && !state.responders.lead && <p className="ws-roster-mode">No responder is available.</p>}
-      <button onClick={() => { setOpen(false); onTeam(); }}>Choose leader on Team</button>
+      <button onClick={() => { setOpen(false); onTeam(); }}>Choose project manager on Team</button>
     </div>}
   </div>;
 }
