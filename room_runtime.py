@@ -43,6 +43,17 @@ from steering_delivery import SteeringDelivery
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
+# Interim text that is only status narration ("I'm checking the board.") may stay in Activity. Anything
+# longer, on several lines, or not opening like narration posts: losing an answer is worse than one extra
+# line in chat (QA c0950fb6, Zero #12974).
+NARRATION_MAX = 160
+NARRATION_START = re.compile(r"(i'm|i am|i'll|i will|let me|now i|next,? i|first,? i|checking|looking|reading|"
+                             r"searching|running|opening|starting|loading|fetching|waiting)\b", re.IGNORECASE)
+
+
+def narration(text):
+    text = text.strip().replace('’', "'")
+    return len(text) <= NARRATION_MAX and '\n' not in text and bool(NARRATION_START.match(text))
 FILE_TOOLS = {"read_file", "file_glob_search", "grep_search", "write_file", "edit_file", "get_info"}
 PRIVATE_PARTS = {".git", ".codex", ".claude", ".gemini", ".aws", ".ssh", ".env", ".agents"}
 # Native tools known to only read (Claude Code names, Codex item types, local file tools). Fail-safe:
@@ -500,8 +511,18 @@ class Run:
         self.output_chars += len(text)
         if self.output_chars > 48000:
             raise RuntimeError("Response exceeded room output limit")
-        await self.manager.emit("runtime_delta", {"run": self.id, "message": self.message_id,
-            "phase": self.message_phase, "agent": self.name, "channel": self.channel, "text": text})
+        # The chat shows finished messages only, so nothing that appeared there is taken back (QA c0950fb6,
+        # Zero #12950/#12974). Text being written goes to the Live and Follow views as runtime_draft; a sealed
+        # decision position sends no text at all.
+        await self.manager.emit("runtime_draft", {"run": self.id, "message": self.message_id,
+            "phase": self.message_phase, "agent": self.name, "channel": self.channel,
+            **({'text': '', 'sealed': True} if self.sealed else {'text': text})})
+
+    @property
+    def sealed(self):
+        """Writing a position that is still sealed: nothing it says reaches the chat, the live view or
+        Activity until the reveal (security 365efc14 D1). The position itself is in the decision record."""
+        return self.manager.decisions.sealing(self) is not None
 
     async def begin_message(self, identifier, phase=None):
         if identifier in self.completed_messages:
@@ -527,27 +548,45 @@ class Run:
             return
         identifier = self.message_id
         content = self.text.strip()
+        kept_in = ''
         if content:
             final = self.message_phase == 'final_answer' and not partial
             if not final and not partial:
-                # Interim narration ("I'm checking...") belongs in Activity, not the conversation. The
-                # last one is kept: a turn that ends without a final answer still posts it (publish_last).
                 self.last_commentary = content
-                await self.manager.activity_note(self, 'commentary', content)
+                if self.answers_human() and not narration(content):
+                    # Text for the user written before tool calls is often the answer itself: it posts
+                    # (unrouted) even when a different final message follows (QA c0950fb6).
+                    kept_in = 'chat' if await self.publish(content, identifier, False) else 'activity'
+                else:
+                    # Short status narration ("I'm checking...") stays in Activity. The last one is kept: a
+                    # turn that ends without posting anything still posts it (publish_last).
+                    await self.manager.activity_note(self, 'commentary', content)
+                    kept_in = 'activity'
             else:
-                await self.publish(content, identifier, final, partial)
+                kept_in = 'chat' if await self.publish(content, identifier, final, partial) else 'activity'
         self.completed_messages.add(identifier)
         self.text = ''
         self.message_id = self.message_phase = None
+        # kept_in tells the live views where the draft went: posted to chat, or kept in Activity.
         await self.manager.emit('runtime_message_end', {'run': self.id, 'message': identifier,
-            'agent': self.name, 'channel': self.channel})
+            'agent': self.name, 'channel': self.channel, 'kept_in': kept_in})
+
+    def answers_human(self):
+        """Woken by a message from the user (directly, or as the lead answering one)."""
+        return any(q.get('human') for q in self.entry.get('requests', []))
 
     async def publish(self, content, identifier, final, partial=False, route=True):
-        """Post one message to the chat. A final answer to a human @all goes through the response
-        claim: if this run no longer owns it, the reply is held in Activity and the chat stays quiet.
-        route=False posts without waking anyone its text mentions."""
+        """Post one message to the chat. Anything a run answering a user message under the response claim
+        posts goes through that claim: if this run no longer owns it (Stop, a newer message, the backup
+        took over), the text is held in Activity and the chat stays quiet. route=False posts without
+        waking anyone its text mentions; interim text never routes."""
         claims = self.manager.response_claims
-        if final:
+        if self.sealed:
+            self.withheld = True
+            await self.manager.activity_note(self, 'reply held', '')
+            return None
+        gated = final or claims.grant(self) is not None
+        if gated:
             reason = claims.check(self)
             if reason:
                 self.withheld = True
@@ -558,12 +597,12 @@ class Run:
             'no_route': bool(self.manager_audit) or not final or not route,
             'worktree': str(self.worktree), 'settings': self.settings,
             'reported_settings': self.reported_settings, 'chain': self.entry['chain'],
-            **(claims.metadata(self) if final else {})}
+            **(claims.metadata(self) if gated else {})}
         if partial:
             metadata['outcome'] = 'partial'
         message = self.manager.host.store.add(self.name, content, channel=self.channel, metadata=metadata)
         self.published_messages.append(message['id'])
-        if final:
+        if gated:
             claims.published(self, message['id'])
         return message
 
@@ -594,7 +633,8 @@ class Run:
                     self.stop_reason = 'Native tool-call budget reached. Send a new instruction to continue this bounded task.'
                     raise RuntimeError(self.stop_reason)
         await self.manager.emit("runtime_tool", {"run": self.id, "agent": self.name, "channel": self.channel,
-                                                  "tool": name, "status": status, "details": params}, persist=True)
+                                                  "tool": name, "status": status,
+                                                  "details": {'sealed': True} if self.sealed else params}, persist=True)
 
     async def approval(self, tool, params, reason):
         if self.automatic_tool_approvals and not self.manager_audit:
@@ -669,7 +709,8 @@ class RoomRuntime:
                 "limits": {**self.project_room.limits, "parallel_agents_effective": self.parallel_capacity(), "queue_per_agent": 4},
                 "budgets": list(self.project_room.chains.values())[-12:], "goal": self.goals.goal,
                 "approvals": [a["display"] for a in self.approvals.values()],
-                "runs": [{"id": r.id, "agent": r.name, "channel": r.channel, "text": r.text,
+                "responders": self.responders_view(),
+                "runs": [{"id": r.id, "agent": r.name, "channel": r.channel, "text": '',
                           "message": r.message_id, "phase": r.message_phase,
                           "steering": [{'message_id': q.get('message_id'), 'ref': q.get('ref'), 'status': q.get('_steering')}
                                        for q in r.steering.pending[-8:]],
@@ -684,8 +725,20 @@ class RoomRuntime:
 
     async def activity_note(self, run, kind, text):
         """A line for the Activity view (the runtime_tool feed it already shows), never the chat."""
+        if run.sealed:
+            text = 'Sealed: part of a team decision position, shown when the positions are revealed.'
         await self.emit("runtime_tool", {"run": run.id, "agent": run.name, "channel": run.channel, "tool": kind,
                                          "status": "note", "details": {"text": text[:4000]}}, persist=True)
+
+    def responders_view(self):
+        """Who answers an untagged human message now (lead) and who takes over (backup), plus what the user
+        chose (configured; '' means the default order). Display only: it grants no authority (Zero #12950)."""
+        if self.project_room.path is None:
+            return {'lead': None, 'backup': None, 'configured': {'lead': '', 'backup': ''}}
+        lead, backup = self.response_claims.responders()
+        configured = self.project_room.state.get('responders') or {}
+        return {'lead': lead, 'backup': backup,
+                'configured': {'lead': configured.get('lead', ''), 'backup': configured.get('backup', '')}}
 
     async def publish_status(self):
         await self.emit("runtime_state", self.snapshot())
@@ -1433,6 +1486,10 @@ class RoomRuntime:
         if changes_room(tool, arguments):
             run.changing_calls += 1
         arguments = self.profiles.recipient_arguments(arguments)
+        if run.sealed and changes_room(tool, arguments) and tool not in ('room_decision', 'room_markup', 'room_browser'):
+            # Board, chat and review records are public: a sealed position turn only submits its position.
+            raise ValueError('Your team decision position is sealed: submit it with room_decision first; '
+                             'board, chat and review changes wait until the positions are revealed')
         audit_receipt = None
         if run.manager_audit:
             if run.coordination_calls > 16:
@@ -1482,12 +1539,24 @@ class RoomRuntime:
             action = arguments.get('action', 'get')
             if action == 'get':
                 return self.decisions.get(run.name, arguments.get('decision_id', ''))
-            if action != 'submit':
-                raise ValueError('Agents may only get or submit; the user starts, steers and records discussions')
+            if action not in ('submit', 'open', 'reopen'):
+                raise ValueError('Agents may get, submit, open (on a user message) or reopen (as lead); '
+                                 'the user steers and records decisions')
             async with self.decisions.lock:
-                result = self.decisions.submit(run.name, arguments.get('decision_id', ''), arguments.get('stage'),
-                    arguments.get('revision'), arguments.get('epoch'), arguments.get('payload'),
-                    fresh=not run.previous_session)
+                if action == 'open':
+                    d, _ = self.decisions.open(run.name, {**arguments, 'channel': run.channel})
+                    # The flow token and the reader's own sealed text go to participants only.
+                    result = self.decisions.view(d, reader=run.name if run.name in d['participants'] else '')
+                    result.pop('actions', None)
+                elif action == 'reopen':
+                    d = self.decisions.find(arguments.get('decision_id', ''))
+                    self.decisions.reopen(run.name, d, arguments.get('reason'))
+                    result = self.decisions.view(d, reader=run.name)
+                else:
+                    result = self.decisions.submit(run.name, arguments.get('decision_id', ''), arguments.get('stage'),
+                        arguments.get('revision'), arguments.get('epoch'), arguments.get('payload'),
+                        fresh=not run.previous_session)
+                self.decisions.save()
             await self.decisions.publish(self.decisions.find(result['id']))
             return result
         if tool == 'room_goal':
@@ -1495,6 +1564,11 @@ class RoomRuntime:
             await self.publish_status()
             return result
         if tool == 'room_markup':
+            if run.sealed:
+                # A mockup for a sealed position is attached to the position, not shown before the reveal (D1b).
+                if arguments.get('task_id'):
+                    raise ValueError('While your position is sealed, attach the image to the position, not a task')
+                arguments = {**arguments, 'post': False}
             result = self.project_room.markup(run.name, run.channel, run.entry['chain'], **arguments)
             await self.emit('project_state', self.project_room.snapshot())
             return result
@@ -2260,19 +2334,20 @@ def install(host):
 
     @host.app.get('/api/runtime/responders')
     async def responders_status():
-        lead, backup = runtime.response_claims.responders()
-        return {'configured': runtime.project_room.state.get('responders') or {}, 'lead': lead, 'backup': backup}
+        return runtime.responders_view()
 
     @host.app.post('/api/runtime/responders')
     async def responders_change(request: Request):
-        """Who answers a human @all first, and the one backup. Human only (UI token); empty values use the
-        defaults: the active goal lead, then the configured manager, then roster order."""
+        """Who answers an untagged human message first (the lead), and the one backup. Human only (UI
+        token); empty values use the defaults: the active goal lead, then the configured manager, then
+        roster order. Returns the same shape as GET and the runtime snapshot's responders field."""
         try:
             body = await request.json()
             if not isinstance(body, dict) or set(body) - {'lead', 'backup'} or any(
                     not isinstance(body.get(k, ''), str) for k in ('lead', 'backup')):
                 raise ValueError('Send lead and backup as participant names, or empty strings for the defaults')
             runtime.response_claims.set_responders(body.get('lead', ''), body.get('backup', ''))
+            await runtime.publish_status()  # every open window updates its lead badge at once
             return await responders_status()
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, 400)

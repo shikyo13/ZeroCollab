@@ -168,15 +168,28 @@ def room_team_builder(action: str = 'get', proposal_id: str = '', revision: int 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
 def room_decision(action: str = 'get', decision_id: str = '', stage: str = '', revision: int = 0,
-                  epoch: int = 0, payload: dict | None = None) -> dict:
-    """Take part in a team decision you were asked to join. get returns the question, criteria and
-    the contributions you may see (other positions stay hidden until the positions stage closes).
-    submit records your contribution for the exact stage, revision and epoch from your request;
-    stale or unowed submissions are refused and nothing is recorded. The user starts, steers and
-    records discussions; a discussion grants no deploy, settings or credential authority.
+                  epoch: int = 0, payload: dict | None = None, message_id: int = 0, question: str = '',
+                  criteria: list | None = None, participants: list | None = None, inputs: list | None = None,
+                  task_id: str = '', reason: str = '') -> dict:
+    """Take part in a team decision. get returns the question, criteria and the contributions you may
+    see (other positions stay sealed until everyone has submitted). submit records your contribution
+    for the exact stage, revision and epoch from your request; stale or unowed submissions are refused.
+    Positions take payload {text, evidence, attachments: [{url: "/uploads/...", name}]} for mockups.
+    open (the lead or backup answering a user message): start a decision in this chat on message_id,
+    when a choice affects more than one owner or a shared interface, or the user asks to deliberate.
+    Give question, criteria, participants (2-8 agents, you lead) and inputs: the user's ideas as
+    [{quote: word for word from their message, message_id, kind: requirement|suggestion}]; optional
+    task_id. Opening the same message again returns the existing decision. reopen (lead only, with
+    reason) starts another round when the user asks to reconsider. The user records the outcome; a
+    decision grants no deploy, settings or credential authority.
     """
-    return call('room_decision', dict(action=action, decision_id=decision_id, stage=stage,
-                                      revision=revision, epoch=epoch, payload=payload))
+    args = dict(action=action, decision_id=decision_id, stage=stage, revision=revision, epoch=epoch, payload=payload)
+    if action == 'open':
+        args.update(message_id=message_id, question=question, criteria=criteria or [],
+                    participants=participants or [], inputs=inputs or [], task_id=task_id)
+    if action == 'reopen':
+        args['reason'] = reason
+    return call('room_decision', args)
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})

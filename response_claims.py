@@ -1,8 +1,9 @@
-"""Lead-first answers to a human @all (Zero #12480, decision 57bb7852).
+"""The lead answers untagged human messages (Zero #12950; first built for @all, Zero #12480).
 
-A human message to @all wakes one responder, the lead, instead of the whole roster; everyone else
-sees the message as ordinary chat context on their next turn. The room records a response claim
-before the wake and checks it again when the reply is published, so exactly one current answer
+A human message that names nobody wakes one responder, the lead, who answers, delegates and wakes
+owners of actionable tasks; everyone else sees the message as ordinary chat context on their next
+turn. @all wakes the whole team and an @agent wakes that agent, without a claim. The room records a
+response claim before the wake and checks it again before each post, so only a current answer
 reaches the chat:
 
 - The claim is keyed by channel and message id and carries a generation and the channel's scope
@@ -15,9 +16,9 @@ reaches the chat:
   once a message for that generation exists in the chat store, so a restart or a replayed wake
   never posts the answer twice.
 
-Only the public answer to the broadcast goes through the claim. Named @mentions, Stop and steering,
-review, follow-up, goal and task wakes reach agents exactly as before, and '@everyone' is the
-human's explicit wake-everyone.
+Only the lead's (or backup's) posts for that message go through the claim. Named @mentions, @all,
+Stop and steering, review, follow-up, goal and task wakes reach agents exactly as before. A human
+@all also raises the scope, so a lead answer still being written for an older message is held.
 """
 import time
 
@@ -66,18 +67,17 @@ class ResponseClaims:
                                     or state.get('state') in ('blocked', 'login_required'))
 
     def responders(self):
-        """(lead, backup). An explicit room setting wins; otherwise the active goal lead, then the
-        configured manager, then roster order. The backup is never the lead."""
+        """(lead, backup), the first two available in one order: the chosen lead, the chosen backup, the
+        active goal lead, the configured manager, then roster order. So an unavailable chosen lead hands
+        the answer to the chosen backup (QA 2d8e271c), never to whoever sorts first. Never the same agent."""
         r = self.runtime
         chosen = self.state.get('responders') or {}
         goal = getattr(r.goals, 'goal', None) or {}
         manager = (getattr(getattr(r, 'manager_wakes', None), 'record', None) or {}).get('manager')
-        candidates = [chosen.get('lead'), goal.get('owner') if goal.get('status') == 'active' else None,
-                      manager, *sorted(r.states)]
-        lead = next((n for n in candidates if n and self.available(n)), None)
-        backups = [chosen.get('backup'), manager, *sorted(r.states)]
-        backup = next((n for n in backups if n and n != lead and self.available(n)), None)
-        return lead, backup
+        order = [chosen.get('lead'), chosen.get('backup'), goal.get('owner') if goal.get('status') == 'active' else None,
+                 manager, *sorted(r.states)]
+        picked = list(dict.fromkeys(n for n in order if n and self.available(n)))
+        return (picked + [None, None])[0], (picked + [None, None])[1]
 
     def set_responders(self, lead, backup):
         """Human-only setting (the HTTP route checks the UI token); empty values return to the defaults."""
@@ -92,14 +92,14 @@ class ResponseClaims:
 
     # ----- the claim lifecycle -----
     def open(self, channel, message_id):
-        """Record the claim for a human @all before anyone is woken. Returns it, or None when no
-        participant can answer. A newer broadcast supersedes every open claim in the channel."""
+        """Record the claim for an untagged human message before anyone is woken. Returns it, or None when
+        no participant can answer. A newer message supersedes every open claim in the channel."""
         self.bump_scope(channel)
         lead, backup = self.responders()
         if not lead:
             self.save()
-            self.runtime.host.store.add('system', 'No one is available to answer this @all. Resume an agent, mention one '
-                                        'directly, or use @everyone.', channel=channel, metadata={'no_route': True})
+            self.runtime.host.store.add('system', 'No one is available to answer this message. Resume an agent, mention '
+                                        'one directly, or use @all.', channel=channel, metadata={'no_route': True})
             return None
         key = f'{channel}:{message_id}'
         now = time.time()
@@ -119,8 +119,9 @@ class ResponseClaims:
         return (request['response_claim'], request.get('generation', 1)) if request else None
 
     def check(self, run):
-        """'' when this run may publish its answer to the claim it was woken for, else the reason it
-        may not. Called just before publication."""
+        """'' when this run may publish to the claim it was woken for, else the reason it may not. Called
+        just before each post; the same run may post more than once (text before tool calls, then its
+        final message)."""
         grant = self.grant(run)
         if not grant:
             return ''
@@ -188,8 +189,8 @@ class ResponseClaims:
             else:
                 claim.update(status='expired', ended=now)
                 changed = True
-                self.runtime.host.store.add('system', 'Nobody answered this @all in time. Mention the agent you need directly, '
-                                            'or use @everyone to wake the whole team.', channel=claim['channel'],
+                self.runtime.host.store.add('system', 'Nobody answered this message in time. Mention the agent you need '
+                                            'directly, or use @all to wake the whole team.', channel=claim['channel'],
                                             metadata={'no_route': True, 'response_claim': claim['key']})
         if changed:
             self.save()
@@ -208,6 +209,8 @@ class ResponseClaims:
         routing = {'message_id': claim['message_id'], 'human': True, 'response_claim': claim['key'],
                    'generation': claim['generation']}
         if claim['generation'] > 1:
-            text = ("You are the backup for this @all: the lead did not answer in time. Give the one answer, and "
-                    "mention only the agents who must act.\n\n" + text)
+            text = ("You are the backup for this message: the lead did not answer in time and nobody else was "
+                    "woken. Give the one answer. If it means work should move, check the open tasks listed in your "
+                    "context (room_task get for detail) and mention each agent with an unblocked next step, one "
+                    "line each with that step. Mention nobody who has nothing to do.\n\n" + text)
         self.runtime.enqueue(name, claim['channel'], text, chain=None, routing=routing)
