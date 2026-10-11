@@ -649,7 +649,7 @@ async def claude(run, prompt):
         "--append-system-prompt", run.instructions]
     if audit:
         args += ['--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--disallowedTools',
-                 'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent']
+                 'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent', '--no-session-persistence']
     if run.previous_session:
         args += ['--resume', run.previous_session['id']]
     if run.settings['model']:
@@ -718,15 +718,22 @@ async def claude(run, prompt):
             if audit:
                 mode, tools = msg.get('permissionMode'), msg.get('tools')
                 if mode != 'manual' or not isinstance(tools, list) or any(
-                        t not in ('Read', 'Grep', 'Glob') and not t.startswith('mcp__zerocollab_coordination__') for t in tools):
+                        not isinstance(t, str) or (t not in ('Read', 'Grep', 'Glob', 'EndConversation')
+                        and not t.startswith('mcp__zerocollab_coordination__')) for t in tools):
                     raise ValueError('Audit Claude permissions/tool inventory not verified')
                 audit_permissions = True
                 await run.report_permissions({'permission_mode': mode, 'loaded_tools': tools})
             else:
                 await run.report_permissions({'permission_mode': msg.get('permissionMode')})
         elif kind == "control_response" and not sent:
-            if audit and not audit_permissions:
-                raise ValueError('Claude audit refused: no runner permission/tool inventory before model input')
+            response = msg.get('response', {})
+            if response.get('request_id') != 'room-init':
+                return False
+            if response.get('subtype') == 'error':
+                raise RuntimeError('Claude initialization failed')
+            # Claude emits system/init after the first user message, unlike Codex's
+            # pre-input thread response. Launch flags retain read-only tools; room
+            # operations are checked again by the server's manager claim middleware.
             sent = True
             await send({"type": "user", "session_id": "", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": None})
             open_for_input = True
@@ -745,7 +752,13 @@ async def claude(run, prompt):
             request = msg.get("request", {})
             allowed = False
             if request.get("subtype") == "can_use_tool":
-                allowed = await run.approval(request.get("tool_name", "Claude tool"), request.get("input", {}), "Official Claude permission request")
+                tool = request.get('tool_name', '')
+                if audit:
+                    allowed = audit_permissions and tool in {'Read', 'Grep', 'Glob'} | {
+                        'mcp__zerocollab_coordination__' + name
+                        for name in ('room_read', 'room_task', 'room_update', 'room_followup')}
+                else:
+                    allowed = await run.approval(tool or "Claude tool", request.get("input", {}), "Official Claude permission request")
             response = {"behavior": "allow", "updatedInput": request.get("input", {})} if allowed else {"behavior": "deny", "message": "Denied by user"}
             await send({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": response}})
         elif kind == "stream_event":
