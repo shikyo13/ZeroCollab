@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { SessionNotice } from './components/SessionNotice';
 import Board from './board/Board';
 import Team from './team/Team';
 import { LegacySlot } from './components/LegacySlot';
@@ -44,6 +45,7 @@ export default function App() {
         bell={<AttentionBell projects={projects.projects} deployments={deployments} navigate={navigate} openProject={openProject} />} follow={<FollowToggle onStart={() => navigate('board')} />} />
       <LegacySlot node={legacy.approvals} className="workspace-approvals" />
       <WorkControls navigate={navigate} />
+      <SessionNotice />
       <DeploymentNotice feed={deployments} onOpen={() => openServer('updates')} />
       <SidePanel fileView={(request, active, close) => <FileView request={request} active={active} onClose={close} />}><main id="workspace-content" className="workspace-content" tabIndex={-1}>
         <section className="workspace-projects" hidden={view !== 'projects'} aria-label="Projects"><Projects {...projects} focus={focus} setFocus={setFocus} navigate={navigate}

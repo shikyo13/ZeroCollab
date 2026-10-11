@@ -1,7 +1,6 @@
 /* ZeroCollab - WebSocket client */
 
-// Session token injected by the server into the HTML page.
-// Sent with every API call and WebSocket connection to authenticate.
+// Desktop preload supplies a token. Web browsers use the same-origin UI cookie.
 const SESSION_TOKEN = window.__SESSION_TOKEN__ || "";
 
 let ws = null;
@@ -50,7 +49,7 @@ Object.defineProperty(window, 'autoScroll', { get() { return autoScroll; } });
 
 // Timings (ms), distances (px) and counts used across the chat client.
 const CONFIG = {
-    sessionRejectedCode: 4003,  // websocket close code for a stale session token: reload the page
+    sessionRejectedCode: 4003,  // signed out: preserve the page and stop reconnecting
     reconnectDelayMs: 2000,     // wait before reconnecting a dropped websocket
     connectionProbeMs: 25000,  // application ping; requires the matching server pong seam
     connectionTimeoutMs: 10000,
@@ -185,7 +184,7 @@ function renderHistoryBatch() {
         pendingLiveEvents = [];
         for (const event of events) handleServerEvent(event);
         if (autoScroll) scrollToBottom(true);
-        setRoomConnection('connected');
+        if (roomConnectionState !== 'signed_out') setRoomConnection('connected');
         Hub.emit('history_complete', {type: 'history_complete'});
     }
 }
@@ -449,7 +448,7 @@ function watchConnection(socket) {
 }
 
 function reconnectSocket(socket) {
-    if (socket !== ws) return;
+    if (socket !== ws || roomConnectionState === 'signed_out') return;
     clearInterval(connectionWatch);
     connectionProbe = null;
     // Don't wait for a dead transport's closing handshake, or accept its late events.
@@ -470,6 +469,7 @@ function reconnectSocket(socket) {
 }
 
 function connectWebSocket() {
+    if (roomConnectionState === 'signed_out') return;
     historyGeneration++;
     historyScheduled = false;
     historyLoading = true;
@@ -477,7 +477,8 @@ function connectWebSocket() {
     pendingHistory = [];
     pendingLiveEvents = [];
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}`);
+    const auth = SESSION_TOKEN ? `?token=${encodeURIComponent(SESSION_TOKEN)}` : '';
+    const socket = ws = new WebSocket(`${proto}://${location.host}/ws${auth}`);
 
     ws.onopen = () => {
         if (socket !== ws) return;
@@ -501,11 +502,24 @@ function connectWebSocket() {
 
     ws.onclose = (e) => {
         if (socket !== ws) return;
-        // Server sends 4003 when session token is invalid (server restarted).
-        // Auto-reload to pick up the fresh token from the new HTML page.
+        // A cookie can be missing or revoked. Reloading would loop and lose drafts.
         if (e.code === CONFIG.sessionRejectedCode) {
-            console.warn('Session token rejected (server restarted?) — reloading page...');
-            location.reload();
+            clearInterval(connectionWatch);
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+            connectionProbe = null;
+            setRoomConnection('signed_out');
+            if (!document.body.classList.contains('modern-workspace')) {
+                let notice = document.getElementById('room-session-notice');
+                if (!notice) {
+                    notice = document.createElement('p');
+                    notice.id = 'room-session-notice';
+                    notice.className = 'workspace-load-error';
+                    notice.setAttribute('role', 'alert');
+                    document.getElementById('app').prepend(notice);
+                }
+                notice.textContent = "This browser isn't signed in. Open ZeroCollab from the tray or Start-Room.";
+            }
             return;
         }
         reconnectSocket(socket);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, errorMessage, runtime } from '../lib/api';
+import { ApiError, errorMessage, runtime, sessionToken } from '../lib/api';
 import { useRoomEvent } from '../lib/room';
 import './deployments.css';
 
@@ -55,22 +55,35 @@ export function useDeploymentState(panelOpen: boolean) {
   }, [updated]);
   const inFlight = useRef(false);
   const mounted = useRef(true);
+  const authBlocked = useRef(false);
+  const [signedOut, setSignedOut] = useState(false);
+  const stopForSignOut = useCallback(() => {
+    authBlocked.current = true;
+    setSignedOut(true); setData(null); setError(''); setReload(false);
+  }, []);
   const refresh = useCallback(async () => {
-    if (inFlight.current) return;
+    if (inFlight.current || authBlocked.current) return;
     inFlight.current = true;
     try {
       const next = await runtime<State>('/deployments');
-      if (mounted.current) { setData(next); setError(''); setReload(false); }
+      if (mounted.current && !authBlocked.current) { setData(next); setError(''); setReload(false); }
     } catch (e) {
-      if (mounted.current) { setError(errorMessage(e)); setReload(e instanceof ApiError && [401, 403].includes(e.status)); }
+      if (mounted.current && !authBlocked.current) {
+        const rejected = e instanceof ApiError && [401, 403].includes(e.status);
+        // Cookie sessions survive restarts. Rejection means sign-in is required,
+        // not that reloading can restore the connection.
+        if (rejected && !sessionToken()) stopForSignOut();
+        else { setError(errorMessage(e)); setReload(rejected); }
+      }
     } finally { inFlight.current = false; }
-  }, []);
+  }, [stopForSignOut]);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
   const delay = panelOpen || reload || deploymentUnderway(data) ? DEPLOY_POLL_ACTIVE_MS : DEPLOY_POLL_IDLE_MS;
   useEffect(() => {
+    if (signedOut) return;
     void refresh();
     let timer: number | null = null;
     const start = () => { if (timer === null && !document.hidden) timer = window.setInterval(() => void refresh(), delay); };
@@ -79,11 +92,17 @@ export function useDeploymentState(panelOpen: boolean) {
     start();
     document.addEventListener('visibilitychange', onVisibility);
     return () => { stop(); document.removeEventListener('visibilitychange', onVisibility); };
-  }, [refresh, delay]);
+  }, [refresh, delay, signedOut]);
+  useRoomEvent('chat_connection', event => {
+    if ((event as unknown as { state?: string }).state === 'signed_out' && !sessionToken()) stopForSignOut();
+  });
+  useEffect(() => {
+    if ((window as Window & { roomConnectionState?: string }).roomConnectionState === 'signed_out' && !sessionToken()) stopForSignOut();
+  }, [stopForSignOut]);
   // 'settings' is the first frame of every socket (re)connect, e.g. after a restart.
   useRoomEvent('settings', () => void refresh());
   const fresh = heartbeatFresh(updated, Math.max(now, Date.now()));
-  const ready = !error && fresh && ['running', 'ready', 'idle'].includes(data?.supervisor.state ?? '');
+  const ready = !signedOut && !error && fresh && ['running', 'ready', 'idle'].includes(data?.supervisor.state ?? '');
   return { data, error, reload, refresh, fresh, ready };
 }
 export type DeploymentFeed = ReturnType<typeof useDeploymentState>;
