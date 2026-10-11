@@ -373,11 +373,25 @@ def configure(cfg: dict, session_token: str = ""):
                                 else:
                                     mcp_bridge._activity[name] = False  # auto-expire
 
+                    # Room-managed agents are owned by the runtime, not by a wrapper heartbeat (room_runtime
+                    # touches them every 3 s). A stalled event loop must not make the whole team look offline,
+                    # nor deregister them as crashed (harness 62f2ad53; they are registry instances too).
+                    managed = set()
+                    runtime_now = _runtime()
+                    if runtime_now:
+                        try:
+                            managed = {n for n, s in list(runtime_now.states.items()) if not s.get('archived')}
+                        except RuntimeError:
+                            pass  # states changed mid-copy; the next pass catches up
+                    currently_online |= managed
+
                     # Crash timeout: if a wrapper hasn't heartbeated for 60s,
                     # it's dead — deregister it to free the slot.
                     _CRASH_TIMEOUT = 15
                     registered = set(registry.get_all_names())
                     for name in registered:
+                        if name in managed:
+                            continue
                         with mcp_bridge._presence_lock:
                             last_seen = mcp_bridge._presence.get(name, 0)
                         if last_seen > 0 and now - last_seen > _CRASH_TIMEOUT:
