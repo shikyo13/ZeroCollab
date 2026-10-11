@@ -51,7 +51,7 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `login_gemini` | native_adapters | - |
 | `mcp_bridge` | durable | mcp |
 | `mcp_proxy` | - | - |
-| `native_adapters` | - | jsonschema |
+| `native_adapters` | provider_keys | jsonschema |
 | `project_registry` | project_room, room_runtime | fastapi |
 | `project_room` | coordination_queue, coordination_records, coordination_state, durable, project_registry, room_markup | - |
 | `provider_controls` | durable, native_adapters, provider_keys, provider_store | httpx |
@@ -106,7 +106,7 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `project_registry` | app, coordination_records, decision_flow, project_room, room_runtime, team_builder |
 | `project_room` | agent_profiles, decision_flow, project_registry, provider_store, room_runtime, team_builder |
 | `provider_controls` | agent_profiles, room_runtime |
-| `provider_keys` | provider_controls, provider_relay, provider_setup, provider_store, room_runtime |
+| `provider_keys` | native_adapters, provider_controls, provider_relay, provider_setup, provider_store, room_runtime |
 | `provider_prices` | provider_keys, provider_store |
 | `provider_relay` | provider_setup |
 | `provider_setup` | provider_store, room_runtime |

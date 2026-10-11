@@ -12,7 +12,13 @@ while reading its token usage for the cost view. Gates, in order:
      on every request (identity for usage comes only from that run);
   5. the connection is on and its stored origin matches (provider_keys.headers);
   6. the method and path are on the vendor's allowlist; only allowlisted query keys pass.
-Headers and bodies are never logged. Only allowlisted request and response headers cross."""
+Headers and bodies are never logged. Only allowlisted request and response headers cross.
+
+A local model through Codex uses the same relay and gates 1-4 and 6, with no key: the upstream is the
+connection's loopback server, re-checked on every request (provider_keys.local_codex_url). Codex sends
+MCP tools as Responses `namespace` groups, which local servers drop, so the relay offers the room's own
+tools as plain functions named mcp__zerocollab_coordination__<tool> and turns the model's calls back into
+that namespace; other namespaces and server-side tools are not offered (LocalTools)."""
 import hmac
 import json
 import re
@@ -169,6 +175,123 @@ class Meter:
         return {**counts, 'tier': tier[:40]} if tier else counts
 
 
+class LocalTools:
+    """Codex <-> a local Responses server, for one request. On the way in: the room's MCP namespace as plain
+    functions, Codex's own function and custom tools as they are, nothing else offered. On the way out
+    (security 63af0447): only calls to a tool offered in this request reach Codex, room calls back in their
+    namespace; any other call (another namespace, an unoffered name, a server-side call type) is dropped
+    with all its stream events, so a prompt-injected model or server can't reach the user's own MCP tools."""
+    NAMESPACE = 'mcp__zerocollab_coordination'
+    PREFIX = NAMESPACE + '__'
+    CALLS = {'function_call': 'function', 'custom_tool_call': 'custom'}
+    KEPT = {'message', 'reasoning'}
+
+    def __init__(self):
+        self.offered, self.streamed, self.buffer, self.dropped = set(), True, b'', set()
+
+    def request(self, body):
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return body
+        if not isinstance(data, dict):
+            return body
+        tools = []
+        for tool in data.get('tools') or []:
+            if not isinstance(tool, dict):
+                continue
+            if tool.get('type') in ('function', 'custom') and isinstance(tool.get('name'), str):
+                tools.append(tool)
+            elif tool.get('type') == 'namespace' and tool.get('name') == self.NAMESPACE:
+                tools += [{**t, 'name': self.PREFIX + t['name']} for t in tool.get('tools') or []
+                          if isinstance(t, dict) and t.get('type') == 'function' and isinstance(t.get('name'), str)]
+            # Any other namespace (the user's own MCP servers, connectors) and server-side tools are not offered.
+        if 'tools' in data:
+            data['tools'] = tools
+        self.offered = {(t['type'], t['name']) for t in tools}
+        for item in data.get('input') or []:
+            if isinstance(item, dict) and item.get('type') == 'function_call' and item.get('namespace'):
+                item['name'] = f"{item.pop('namespace')}__{item.get('name', '')}"
+        return json.dumps(data).encode()
+
+    def allowed(self, item):
+        """Puts an offered room call back in its namespace; False for an output item Codex must not see."""
+        kind = item.get('type')
+        if kind in self.KEPT:
+            return True
+        if kind not in self.CALLS:
+            return False
+        name, namespace = item.get('name'), item.get('namespace')
+        if not isinstance(name, str) or namespace not in (None, self.NAMESPACE):
+            return False
+        flat = self.PREFIX + name if namespace else name
+        if (self.CALLS[kind], flat) not in self.offered:
+            return False
+        if kind == 'function_call' and flat.startswith(self.PREFIX):
+            item['name'], item['namespace'] = flat[len(self.PREFIX):], self.NAMESPACE
+        return True
+
+    def outputs(self, items):
+        kept = []
+        for item in items:
+            if isinstance(item, dict) and self.allowed(item):
+                kept.append(item)
+            elif isinstance(item, dict) and item.get('id'):
+                self.dropped.add(item['id'])
+        return kept
+
+    def event(self, data):
+        """The event rewritten, or None to drop it."""
+        if not isinstance(data, dict):
+            return data
+        if data.get('item_id') in self.dropped:
+            return None
+        if isinstance(data.get('item'), dict):
+            item = data['item']
+            if not self.allowed(item):
+                if item.get('id'):
+                    self.dropped.add(item['id'])
+                return None
+        if isinstance(data.get('response'), dict) and isinstance(data['response'].get('output'), list):
+            data['response']['output'] = self.outputs(data['response']['output'])
+        if isinstance(data.get('output'), list):
+            data['output'] = self.outputs(data['output'])
+        return data
+
+    def start(self, streamed):
+        self.streamed, self.buffer = streamed, b''
+
+    def feed(self, chunk):
+        """Whole lines out, checked and rewritten; a partial line waits for the next chunk."""
+        self.buffer += chunk
+        if not self.streamed:
+            return b''
+        *lines, self.buffer = self.buffer.split(b'\n')
+        return b''.join(out + b'\n' for out in map(self.line, lines) if out is not None)
+
+    def line(self, line):
+        """An SSE line, rewritten; None drops a data line, and the stream's blank separators carry on."""
+        if not line.startswith(b'data:'):
+            return line
+        try:
+            data = json.loads(line[5:])
+        except ValueError:
+            return line  # e.g. "data: [DONE]"
+        data = self.event(data)
+        return None if data is None else b'data: ' + json.dumps(data).encode()
+
+    def finish(self):
+        rest, self.buffer = self.buffer, b''
+        if self.streamed:
+            out = self.line(rest)
+            return out or b''
+        try:
+            data = self.event(json.loads(rest))
+            return json.dumps(data).encode() if data is not None else b'{}'
+        except ValueError:
+            return rest
+
+
 async def relay(request: Request, connection: str, path: str):
     if request.headers.get('origin') is not None:
         return refuse(403, 'The relay refuses browser requests.')
@@ -190,19 +313,29 @@ async def relay(request: Request, connection: str, path: str):
     # Identity comes only from the token's run; the agent's connection is read again for each request.
     cfg = RUNTIME.cfg['agents'].get(run.name, {})
     provider = cfg.get('provider')
+    local = provider == 'codex' and bool(cfg.get('local'))
     supplied = token_of(request, provider) if provider in ROUTES else None  # in the vendor's own header
-    if (cfg.get('key_target') != connection or not supplied
+    if ((cfg.get('local_target') if local else cfg.get('key_target')) != connection or not supplied
             or not hmac.compare_digest(supplied.encode(), (getattr(run, 'relay_token', None) or '').encode())):
         return refuse(403, 'This relay token is for another connection.')
     if (request.method, path) not in ROUTES[provider]:
         return refuse(404, f'{request.method} /{path} is not relayed.', 'not_found_error')
-    base = provider_keys.VENDORS[provider]['origin']
-    vendor = {**cfg, 'base_url': base}
-    try:
-        auth = provider_keys.headers(vendor)
-    except provider_keys.KeyProblem as exc:
-        run.relay_problem = str(exc)
-        return refuse(403, str(exc))
+    if local:
+        # No key; the model server must still be on this computer and not the room itself.
+        try:
+            base = provider_keys.local_codex_url(cfg.get('base_url', ''), provider_keys.room_ports(RUNTIME.cfg)).removesuffix('/v1')
+        except ValueError as exc:
+            run.relay_problem = str(exc)
+            return refuse(403, str(exc))
+        auth = {}
+    else:
+        base = provider_keys.VENDORS[provider]['origin']
+        vendor = {**cfg, 'base_url': base}
+        try:
+            auth = provider_keys.headers(vendor)
+        except provider_keys.KeyProblem as exc:
+            run.relay_problem = str(exc)
+            return refuse(403, str(exc))
     # The slot is taken before the first await, so requests arriving together can't all pass the cap.
     if getattr(run, 'relay_in_flight', 0) >= MAX_IN_FLIGHT:
         return refuse(429, 'Too many relay requests at once for this turn.', 'rate_limit_error')
@@ -236,6 +369,9 @@ async def relay(request: Request, connection: str, path: str):
             if len(body) > MAX_BODY:
                 await release()
                 return refuse(413, 'The request is too large for the relay.', 'request_too_large')
+        tools = LocalTools() if local and path == 'v1/responses' else None
+        if tools:
+            body = tools.request(body)
         query = [(k, v) for k, v in request.query_params.multi_items() if k in QUERY[provider]]
         sent = {k: request.headers[k] for k in REQUEST_HEADERS if k in request.headers}
         # identity: the meter reads the body as it passes, and the CLI gets it exactly as labelled.
@@ -254,8 +390,13 @@ async def relay(request: Request, connection: str, path: str):
         raise
     kept = {k: v for k, v in reply.headers.items()
             if k.lower() in RESPONSE_HEADERS or k.lower().startswith(RESPONSE_PREFIXES)}
-    if reply.status_code == 200 and path in METERED:
-        meter = Meter(provider, 'text/event-stream' in reply.headers.get('content-type', ''))
+    streamed = 'text/event-stream' in reply.headers.get('content-type', '')
+    if reply.status_code == 200 and path in METERED and not local:  # local use costs nothing to record
+        meter = Meter(provider, streamed)
+    if tools and reply.status_code == 200:
+        tools.start(streamed)
+    else:
+        tools = None
 
     async def stream():
         async for chunk in reply.aiter_bytes():  # decoded, so content-encoding is never passed on
@@ -263,7 +404,13 @@ async def relay(request: Request, connection: str, path: str):
                 meter.feed(chunk)
             elif reply.status_code >= 400 and len(error) < ERROR_BODY:
                 error.extend(chunk)
+            if tools:
+                chunk = tools.feed(chunk)
+                if not chunk:
+                    continue
             yield chunk
+        if tools:
+            yield tools.finish()
 
     return Relayed(stream(), release, status_code=reply.status_code, headers=kept)
 

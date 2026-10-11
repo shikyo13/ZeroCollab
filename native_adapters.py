@@ -25,7 +25,30 @@ CODEX_MESSAGE_LIMIT = 32 * 1024 * 1024
 
 
 def subscription_env():
+    """The user's environment without provider keys: for the user's own sign-in windows and status checks."""
     return {k: v for k, v in os.environ.items() if k.upper() not in API_ENV}
+
+
+# What an agent's CLI may inherit (security bfc14da6): the system basics, proxy and certificate settings
+# the CLIs need behind a proxy, and the CLI homes. Nothing else, so the user's own tokens and keys never
+# reach an agent or its tool shells; API_ENV is still removed as a second check.
+AGENT_ENV = {
+    'PATH', 'PATHEXT', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR',
+    'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
+    'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
+    'OS', 'USERNAME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'TERM',
+    # macOS and Linux sessions: the keychain or secret service and the display for sign-in prompts.
+    'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'DBUS_SESSION_BUS_ADDRESS',
+    'DISPLAY', 'WAYLAND_DISPLAY',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS', 'REQUESTS_CA_BUNDLE',
+    'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+}
+
+
+def agent_env():
+    """An agent CLI's environment: only AGENT_ENV names (any case) and LC_* locale settings."""
+    return {k: v for k, v in os.environ.items()
+            if (k.upper() in AGENT_ENV or k.upper().startswith('LC_')) and k.upper() not in API_ENV}
 
 
 def command(provider):
@@ -58,10 +81,12 @@ def command(provider):
     raise RuntimeError(f"{provider} official CLI is not installed or discoverable")
 
 
-async def spawn(run, args, env_overrides=None, *, stream_limit=2**22):
+async def spawn(run, args, env_overrides=None, *, stream_limit=2**22, room_env=False):
+    """room_env: only Codex needs the room variables in its own process (it forwards them to the room MCP
+    server through env_vars). Claude and Antigravity get them in their MCP configuration instead."""
     opts = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
-    child_env = subscription_env()
-    if hasattr(run, 'manager'):
+    child_env = agent_env()
+    if room_env and hasattr(run, 'manager'):
         child_env.update(room_environment(run))
     child_env.update(env_overrides or {})
     proc = await asyncio.create_subprocess_exec(*args, cwd=str(run.worktree), env=child_env,
@@ -103,8 +128,48 @@ def relay_setup(run, provider):
     args = ['-c', 'model_provider="zerocollab_relay"']
     for key, value in provider_config.items():
         args += ['-c', f'model_providers.zerocollab_relay.{key}={json.dumps(value)}']
-    # The name contains TOKEN, so Codex's default shell environment policy keeps it from tool shells.
+    # Tool shells don't see it: codex() turns on Codex's default KEY/SECRET/TOKEN excludes (security bfc14da6;
+    # codex-cli 0.160 otherwise keeps them).
     return {'ZEROCOLLAB_RELAY_TOKEN': run.relay_token}, args
+
+
+def local_setup(run):
+    """A local model through Codex: Codex's own tools drive a model server on this computer, through the
+    room relay (provider_relay: local servers drop Codex's MCP tool namespaces, so the relay offers the
+    room tools as plain functions). Returns (env, -c arguments), or None for any other agent. Decided from
+    the agent's connection, never from model output:
+    - L1: automatic approvals are off for this run, so the thread is workspace-write with on-request
+      approvals and every escalation goes to the user, whatever the room setting;
+    - L2: the address is re-checked at launch, and by the relay on every request (loopback, own port, /v1);
+    - L3: no user key: the only credential is this run's relay token, which dies with the run; tool
+      shells drop KEY, SECRET and TOKEN variables, as for every Codex agent (codex());
+    - L4: Codex's default workspace-write network policy (off) is kept; web search and connectors are off;
+    - L5: the room MCP server and run token are the same as any agent's (codex() adds them)."""
+    import provider_keys
+    cfg = run.manager.cfg['agents'].get(run.name, {}) if hasattr(run, 'manager') else {}
+    if cfg.get('provider') != 'codex' or not cfg.get('local') or not cfg.get('local_target'):
+        return None
+    provider_keys.local_codex_url(cfg.get('base_url', ''), provider_keys.room_ports(run.manager.cfg))
+    run.automatic_tool_approvals = False
+    run.relay_token = secrets.token_urlsafe(32)
+    base = f"http://127.0.0.1:{run.manager.cfg['server']['port']}/relay/{cfg['local_target']}/v1"
+    args = ['-c', 'model_provider="zerocollab_local"']
+    for key, value in {'name': 'Local model server', 'base_url': base, 'wire_api': 'responses',
+                       'env_key': 'ZEROCOLLAB_RELAY_TOKEN'}.items():
+        args += ['-c', f'model_providers.zerocollab_local.{key}={json.dumps(value)}']
+    args += ['-c', 'web_search="disabled"', '-c', 'features.apps=false']
+    if os.name == 'nt':
+        # Without a Windows sandbox choice Codex runs workspace-write threads read-only; unelevated needs no
+        # administrator setup (the user's own home may use the elevated one).
+        args += ['-c', 'windows.sandbox="unelevated"']
+    if isinstance(cfg.get('context_tokens'), int):
+        # Codex has no metadata for local model names; without this it assumes a default window.
+        args += ['-c', f'model_context_window={cfg["context_tokens"]}']
+    # Its own Codex home: no sign-in is needed, so none of the user's Codex configuration applies (their MCP
+    # servers, connectors, global instructions or [shell_environment_policy.set] values). Threads persist here.
+    home = Path(run.manager.data) / 'codex-local-home'
+    home.mkdir(parents=True, exist_ok=True)
+    return {'ZEROCOLLAB_RELAY_TOKEN': run.relay_token, 'CODEX_HOME': str(home)}, args
 
 
 def room_server(run):
@@ -317,6 +382,7 @@ async def codex(run, prompt):
 
     server = room_server(run)
     args = command('codex') + ['app-server', '--stdio']
+    local_args = local_setup(run)  # before the approval flags: a local model run never auto-approves
     if run.automatic_tool_approvals:
         args += ['-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"']
     # required: Codex otherwise gives optional MCP servers a 1s grace and starts the turn without the room
@@ -326,9 +392,14 @@ async def codex(run, prompt):
                        'env_vars': list(room_environment(run)), 'required': True,
                        'startup_timeout_sec': 30}.items():
         args += ['-c', 'mcp_servers.zerocollab_coordination.' + key + '=' + json.dumps(value)]
-    relay_env, relay_args = relay_setup(run, 'codex')
+    relay_env, relay_args = local_args or relay_setup(run, 'codex')
     args += relay_args
-    proc = await spawn(run, args, relay_env, stream_limit=CODEX_MESSAGE_LIMIT)
+    # Codex's process holds the room variables to forward them to the room server (env_vars above); its
+    # tool shells drop every KEY, SECRET and TOKEN variable, room and relay tokens included (security bfc14da6).
+    # Values the user's own config.toml sets in [shell_environment_policy.set] are still added for a
+    # subscription agent, which needs that CODEX_HOME to sign in; a local-model agent has its own home.
+    args += ['-c', 'shell_environment_policy.ignore_default_excludes=false']
+    proc = await spawn(run, args, relay_env, stream_limit=CODEX_MESSAGE_LIMIT, room_env=True)
     rpc = Rpc(run, proc, notify, incoming)
     try:
         await rpc.request("initialize", {"clientInfo": {"name": "zerocollab_local", "version": "0.1.0"},
@@ -338,9 +409,11 @@ async def codex(run, prompt):
                          "approvalPolicy": "never" if run.automatic_tool_approvals else "on-request",
                          "sandbox": "danger-full-access" if run.automatic_tool_approvals else "workspace-write",
                          "ephemeral": False, "developerInstructions": run.instructions}
-        if run.settings['model']:
-            thread_params['model'] = run.settings['model']
-        if run.settings['effort']:
+        model = run.settings['model'] or (run.manager.cfg['agents'][run.name].get('local_model') if local_args else '')
+        if model:
+            # A local connection's own model when the agent has none selected: Codex's default is an OpenAI model.
+            thread_params['model'] = model
+        if run.settings['effort'] and not local_args:
             thread_params['config'] = {'model_reasoning_effort': run.settings['effort']}
         method = 'thread/start'
         if run.previous_session:
@@ -353,7 +426,7 @@ async def codex(run, prompt):
         await run.report_settings(model=thread.get('model'), effort=thread.get('reasoningEffort'))
         run.provider_session = thread["thread"]["id"]
         turn_params = {"threadId": run.provider_session, "input": [{"type": "text", "text": prompt}]}
-        if run.settings['effort']:
+        if run.settings['effort'] and not local_args:
             turn_params['effort'] = run.settings['effort']
         started = await rpc.request("turn/start", turn_params)
         active_turn = started['turn']['id']
@@ -437,7 +510,9 @@ async def antigravity(run, prompt):
         args += ["--model", selected_model]
     if run.settings['effort']:
         args += ['--effort', run.settings['effort']]
-    proc = await spawn(run, args)
+    # room_env kept: the room server's env is also in .agents/mcp_config.json, but whether agy passes a
+    # config env to its MCP servers instead of inheriting its own is unverified.
+    proc = await spawn(run, args, room_env=True)
     proc.stdin.write((json.dumps({"event": "user", "message": {"content": run.instructions + "\n\n" + prompt}}) + "\n").encode())
     await proc.stdin.drain()
     proc.stdin.close()

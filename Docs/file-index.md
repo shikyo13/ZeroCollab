@@ -64,15 +64,15 @@ Every source file, with its line count and the purpose its own header states. Th
 | `login_gemini.py` | 12 | Open the official Gemini sign-in UI without inheriting API-key billing settings. |
 | `mcp_bridge.py` | 618 | MCP server for agent chat tools - runs alongside the web server. |
 | `mcp_proxy.py` | 336 | Per-instance MCP identity proxy. |
-| `native_adapters.py` | 640 | Official, locally authenticated CLI protocols. No credential handling. |
+| `native_adapters.py` | 715 | Official, locally authenticated CLI protocols. No credential handling. |
 | `project_registry.py` | 834 | Index of every project this room has worked in: board, team, goal, chats and repository. |
 | `project_room.py` | 1181 | Durable project coordination and bounded room context, without model calls. |
-| `provider_controls.py` | 193 | Room-local model/effort preferences and official, read-only provider catalogs. |
-| `provider_keys.py` | 452 | API keys for OpenAI-compatible servers (Docs/providers.md, slice S5a). |
+| `provider_controls.py` | 200 | Room-local model/effort preferences and official, read-only provider catalogs. |
+| `provider_keys.py` | 480 | API keys for OpenAI-compatible servers (Docs/providers.md, slice S5a). |
 | `provider_prices.py` | 100 | Built-in API prices for Anthropic and OpenAI key connections (Docs/providers.md, S5b). |
-| `provider_relay.py` | 289 | Room-side relay for Claude Code and Codex on the user's Anthropic and OpenAI API keys (Docs/providers.md, slice S5b; security d807412d). |
-| `provider_setup.py` | 469 | Provider setup for Team > Providers (Docs/providers.md, slices S1 and S2). |
-| `provider_store.py` | 716 | In-app provider connections (Docs/providers.md, slice S3). |
+| `provider_relay.py` | 436 | Room-side relay for Claude Code and Codex on the user's Anthropic and OpenAI API keys (Docs/providers.md, slice S5b; security d807412d). |
+| `provider_setup.py` | 510 | Provider setup for Team > Providers (Docs/providers.md, slices S1 and S2). |
+| `provider_store.py` | 827 | In-app provider connections (Docs/providers.md, slice S3). |
 | `queue_file.py` | 75 | Coordinate JSONL queue producers, consumers and explicit clears across processes. |
 | `ready_wakes.py` | 251 | Ready-task wakes: wake an idle owner once for authorised, actionable work it already owns. |
 | `registry.py` | 824 | Runtime Registry - single source of truth for all live agent state. |
@@ -81,7 +81,7 @@ Every source file, with its line count and the purpose its own header states. Th
 | `room_goals.py` | 164 | Explicit shared goals. Event-driven continuation, never a background model poll. |
 | `room_markup.py` | 96 | Bounded raster markup shared by agent tools; no network or chat side effects. |
 | `room_mcp.py` | 217 | Run-scoped local coordination tools for official native CLIs. |
-| `room_runtime.py` | 2147 | Managed agents for the ZeroCollab persistent workspace. |
+| `room_runtime.py` | 2159 | Managed agents for the ZeroCollab persistent workspace. |
 | `router.py` | 108 | Message routing based on @mentions with per-channel loop guard. |
 | `run.py` | 221 | Entry point - starts MCP server (port 8200) + web UI (port 8300). |
 | `shared_browser.py` | 814 | One disposable, project-scoped Chromium browser shared by the user and room agents: one page by default, more only on an explicit new_page request. |
@@ -185,9 +185,9 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 | `team/builder/MemberCard.tsx` | 249 | Step 2: one proposed member, with approve / edit / revise / decline decisions. |
 | `team/builder/Summary.tsx` | 112 | Step 3: the proposed team at a glance, and adding the approved members. |
 | `team/ProfileEditor.tsx` | 386 | Agent profile form, ported from static/profiles.js with the same validation hints, handle generation, model/effort catalogs and archive semantics. |
-| `team/ProviderForm.tsx` | 198 | Add or edit a provider connection (Team > Providers, provider_store.py). Subscription connections have a name and color; a local OpenAI-compatible server also has its address, model and maximum response length. |
-| `team/Providers.tsx` | 356 | Team > Providers: which provider apps are installed and signed in, and which local model servers are running (GET /api/runtime/providers/status, provider_setup.py). |
-| `team/team.css` | 99 | Team page. Reuses the board primitives (.bd-btn, .bd-field, .bd-panel, tokens). |
+| `team/ProviderForm.tsx` | 225 | Add or edit a provider connection (Team > Providers, provider_store.py). Subscription connections have a name and color; a local OpenAI-compatible server also has its address, model and maximum response length. |
+| `team/Providers.tsx` | 357 | Team > Providers: which provider apps are installed and signed in, and which local model servers are running (GET /api/runtime/providers/status, provider_setup.py). |
+| `team/team.css` | 104 | Team page. Reuses the board primitives (.bd-btn, .bd-field, .bd-panel, tokens). |
 | `team/Team.tsx` | 308 | Team page: named agent profiles (static/profiles.js) and their live runtime controls (static/runtime.js provider cards) in one place. |
 | `team/teamBuilder.css` | 106 | Team builder (approved mockup final.html). Reuses board tokens and buttons. |
 | `team/TeamBuilder.tsx` | 230 | Team builder: Brief > Review team > Add approved members. Implements the user-approved design (task ccc5fbdb, mockup final.html 5783b87f5e0f1949). |

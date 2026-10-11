@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { runtime, errorMessage } from '../lib/api';
-import type { ProjectState, RoomEvent, RuntimeState } from '../lib/types';
+import type { ProjectState, RoomEvent, RuntimeState, TaskStatus } from '../lib/types';
+import { STATUS_LABELS } from '../board/shared';
+import type { MotionCueData } from './MotionCue';
 
 export interface LiveSource {
   id: string; actor: string; title: string; text: string; time: number; kind: string;
   task?: string; channel?: string; run?: string; revision?: string; to?: string; ref?: string;
   image?: string; count: number; fresh: boolean;
+  motion?: MotionCueData;
 }
 export interface LiveModel {
   room: RuntimeState | null; project: ProjectState | null; sources: LiveSource[];
@@ -35,16 +38,18 @@ export function useLiveTeam(active: boolean) {
       state.sources = [{ ...source, count: (old?.count ?? 0) + 1, fresh }, ...state.sources.filter(s => s.id !== source.id)].slice(0, 40);
       state.received = now(); publish();
     };
-    const taskSource = (task: ProjectState['tasks'][number], fresh: boolean) => {
+    const taskSource = (task: ProjectState['tasks'][number], fresh: boolean, previousStatus?: TaskStatus) => {
       const last = task.updates[task.updates.length - 1];
       add({ id: `task:${task.id}:${task.updated}`, actor: last?.by || task.owner, title: task.title,
-        text: last?.text || `Task is ${task.status}`, kind: 'Task', task: task.id, time: task.updated }, fresh);
+        text: last?.text || `Task is ${task.status}`, kind: 'Task', task: task.id, time: task.updated,
+        motion: { version: 1, event: 'task_status', state: STATUS_LABELS[task.status], from: previousStatus && previousStatus !== task.status ? STATUS_LABELS[previousStatus] : undefined } }, fresh);
     };
     const reviewSource = (review: NonNullable<ProjectState['reviews']>[number], fresh: boolean) => {
       add({ id: `review:${review.id}:${review.updated}`, actor: review.status === 'pending' ? review.requested_by : review.reviewer,
         to: review.status === 'pending' ? review.reviewer : undefined, title: review.status === 'pending' ? `Review requested from ${review.reviewer}` : `Review ${review.status.replaceAll('_', ' ')}`,
         text: review.status === 'pending' ? review.request : review.findings || review.cancellation || review.status,
-        kind: 'Review', ref: review.id, task: review.task_id, revision: review.revision, time: review.updated }, fresh);
+        kind: 'Review', ref: review.id, task: review.task_id, revision: review.revision, time: review.updated,
+        motion: { version: 1, event: review.status === 'pending' ? 'review_request' : 'caption', state: review.status === 'pending' ? 'Awaiting review' : review.status.replaceAll('_', ' ') } }, fresh);
     };
     function project(next: ProjectState, baseline = false) {
       if (!Array.isArray(next?.tasks)) return;
@@ -52,14 +57,15 @@ export function useLiveTeam(active: boolean) {
       if (previous) {
         for (const task of next.tasks) {
           const before = previous.tasks.find(t => t.id === task.id);
-          if (!before || before.updated !== task.updated) taskSource(task, true);
+          if (!before || before.updated !== task.updated) taskSource(task, true, before?.status);
           for (const image of task.attachments ?? []) {
             const url = uploadImage(image.url);
             if (url && !before?.attachments?.some(a => a.url === url)) add({ id: `image:${task.id}:${url}`, actor: task.owner,
               kind: 'Task attachment', task: task.id, title: image.name, text: image.note || task.title, image: url, time: task.updated });
           }
           if (before?.owner && task.owner && before.owner !== task.owner) add({ id: `handoff:${task.id}:${task.updated}`, actor: before.owner, to: task.owner,
-            title: 'Task ownership changed', text: task.title, task: task.id, kind: 'Handoff', time: task.updated });
+            title: 'Task ownership changed', text: task.title, task: task.id, kind: 'Handoff', time: task.updated,
+            motion: { version: 1, event: 'caption', state: 'Ownership changed' } });
         }
         for (const review of next.reviews ?? []) {
           if (!previous.reviews?.some(r => r.id === review.id && r.updated === review.updated)) reviewSource(review, true);
@@ -124,19 +130,20 @@ export function useLiveTeam(active: boolean) {
         if (type === 'runtime_start') {
           // Only an explicit start or current snapshot can create a live run.
           if (!run) state.room = { ...state.room, runs: [...state.room.runs, { id: d.run, agent: d.agent, channel: d.channel || '', text: '', settings: {}, reported_settings: {}, reported_tokens: 0, input_chars: 0 }] };
-          add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title: 'Started a turn', text: 'Waiting for the next visible action.', kind: 'Turn', time: now() });
+          add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title: 'Started a turn', text: 'Waiting for the next visible action.', kind: 'Turn', time: now(), motion: { version: 1, event: 'wake', state: 'Running' } });
         } else if (type === 'runtime_delta') {
           let stream = streams.get(d.run);
           if (!stream || stream.message !== (d.message ?? '')) stream = { message: d.message ?? '', text: '' };
           stream.text = (stream.text + (d.text || '')).slice(-1080); streams.set(d.run, stream);
-          add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title: 'Writing a reply', text: tail(stream.text), kind: 'Reply', time: now() });
+          add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title: 'Writing a reply', text: tail(stream.text), kind: 'Reply', time: now(), motion: { version: 1, event: 'caption', state: 'Writing a reply' } });
         } else if (type === 'runtime_tool') {
-          add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title: d.tool || 'Using a tool', text: d.status || 'Tool activity reported', kind: 'Tool', time: now() });
+          add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title: d.tool || 'Using a tool', text: d.status || 'Tool activity reported', kind: 'Tool', time: now(),
+            motion: { version: 1, event: ['completed', 'failed', 'cancelled'].includes(d.status || '') ? 'tool_end' : ['started', 'running'].includes(d.status || '') ? 'tool_start' : 'caption', state: d.status || 'Tool activity reported' } });
         } else {
           ended.add(d.run); streams.delete(d.run);
           state.room = { ...state.room, runs: state.room.runs.filter(r => r.id !== d.run) };
           const last = state.sources.find(s => s.run === d.run);
-          add({ id: `run:${d.run}`, actor: d.agent, channel: last?.channel || d.channel, run: d.run, title: `Turn ${d.outcome || 'ended'}`, text: last?.text || 'No visible reply was reported.', kind: 'Turn', time: now() });
+          add({ id: `run:${d.run}`, actor: d.agent, channel: last?.channel || d.channel, run: d.run, title: `Turn ${d.outcome || 'ended'}`, text: last?.text || 'No visible reply was reported.', kind: 'Turn', time: now(), motion: { version: 1, event: 'caption', state: `Turn ${d.outcome || 'ended'}` } });
         }
       }] as [string, (event: RoomEvent) => void]),
       ['message', event => {
@@ -144,14 +151,15 @@ export function useLiveTeam(active: boolean) {
         const d = event.data as { id?: string | number; sender?: string; text?: string; channel?: string; project_id?: string; timestamp?: number; attachments?: {url: string}[] };
         if (!d.sender || d.sender === 'system' || d.project_id && state.room?.project_id && d.project_id !== state.room.project_id) return;
         const image = d.attachments?.map(a => uploadImage(a.url)).find(Boolean);
-        add({ id: `message:${d.id ?? ++serial}`, ref: d.id === undefined ? undefined : String(d.id), actor: d.sender, channel: d.channel, title: image ? 'Shared an artifact' : 'Posted a message', text: tail(d.text || ''), image, kind: 'Chat', time: d.timestamp || now() });
+        add({ id: `message:${d.id ?? ++serial}`, ref: d.id === undefined ? undefined : String(d.id), actor: d.sender, channel: d.channel, title: image ? 'Shared an artifact' : 'Posted a message', text: tail(d.text || ''), image, kind: 'Chat', time: d.timestamp || now(), motion: { version: 1, event: 'caption', state: image ? 'Shared artifact' : 'Message received' } });
       }],
       ['browser_activity', event => {
         if (!accept()) return;
         const d = event.data as { activity?: {actor: string; label: string; action: string; phase: string; time: number} };
         const a = d.activity;
         if (!a || ['status', 'inspect'].includes(a.action)) return;
-        add({ id: `browser:${a.actor}:${a.time}:${a.action}:${a.phase}`, actor: a.label || 'Unknown', title: `Browser ${a.action}`, text: a.phase === 'working' ? 'Action in progress' : a.phase === 'failed' ? 'Action failed' : `Action ${a.phase}`, kind: 'Browser', time: a.time });
+        add({ id: `browser:${a.actor}:${a.time}:${a.action}:${a.phase}`, actor: a.label || 'Unknown', title: `Browser ${a.action}`, text: a.phase === 'working' ? 'Action in progress' : a.phase === 'failed' ? 'Action failed' : `Action ${a.phase}`, kind: 'Browser', time: a.time,
+          motion: { version: 1, event: 'browser_emphasis', state: `Action ${a.phase} · target not reported` } });
       }],
     ];
     const attach = () => { if (!window.Hub || attached) return; attached = true; handlers.forEach(([type, fn]) => window.Hub!.on(type, fn)); };

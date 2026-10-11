@@ -10,6 +10,7 @@ Profiles copy their template when activated (AgentProfiles.config), so a change 
 only when it is reapplied here. Changes are refused while an agent on that connection is mid-turn,
 so an in-flight turn's config is never touched. Ids never change; renaming edits only the label."""
 import copy
+import os
 import json
 import re
 import time
@@ -48,6 +49,18 @@ KEY_FIELDS = ('key_target', 'key_hint', 'enabled', 'prices', 'limit')
 LIMIT_MAX = 1_000_000  # USD per month; an upper bound on what a typo can set
 PRICE_LIMIT = 10_000  # USD per million tokens, an upper bound on what a typo can claim
 MAX_PRICED_MODELS = 50
+# A local model through Codex: Codex's instructions and tool definitions measured about 15.6k tokens per
+# request (codex-cli 0.160, llama.cpp, 2026-10-10), so a smaller window leaves no room for work.
+CODEX_OVERHEAD_TOKENS = 16_000
+LOCAL_CODEX_MIN_CONTEXT = 24_576
+
+
+def local_codex_limits():
+    """What Codex's workspace-write sandbox actually does for a local-model agent (security 11154). Measured
+    on Windows with codex-cli 0.160, unelevated and elevated: reads anywhere the user can, writes outside the
+    agent folder refused, and network NOT blocked although Codex reports networkAccess false."""
+    text = 'can read files on this computer · writes only in its folder · asks before changes elsewhere'
+    return text + (' · network not blocked on Windows' if os.name == 'nt' else '')
 
 
 class FieldError(ValueError):
@@ -166,10 +179,11 @@ class ProviderStore:
                          'base_url': cfg.get('base_url', ''), 'model': cfg.get('model', ''),
                          'max_tokens': cfg.get('max_tokens', DEFAULT_OUTPUT_TOKENS) if cfg.get('provider') == 'api' else None,
                          'context_tokens': cfg.get('context_tokens'), 'context_source': cfg.get('context_source', ''),
-                         'tool_check': cfg.get('tool_check'), **self.key_view(name, cfg)})
+                         'tool_check': cfg.get('tool_check'), 'local': bool(cfg.get('local')),
+                         'limits': local_codex_limits() if cfg.get('local') else '', **self.key_view(name, cfg)})
         hidden = [{'id': name, 'label': cfg.get('label', name)} for name, cfg in self.base.items()
                   if self.entries.get(name, {}).get('removed')]
-        connected = {cfg.get('provider') for cfg in templates.values() if not cfg.get('key_target')}
+        connected = {cfg.get('provider') for cfg in templates.values() if not cfg.get('key_target') and not cfg.get('local')}
         return {'providers': rows, 'removed': hidden, 'error': self.error,
                 'available': [{'provider': kind, 'label': info['label']} for kind, info in SUBSCRIPTIONS.items() if kind not in connected]}
 
@@ -210,6 +224,11 @@ class ProviderStore:
         if not isinstance(color, str) or not COLOR.fullmatch(color):
             raise ValueError('Choose a six-digit hex color')
         out = {'provider': kind, 'label': label.strip(), 'color': color.lower()}
+        local = bool(body.get('local', (current or {}).get('local')))
+        if current and local != bool(current.get('local')):
+            raise ValueError('A connection keeps its kind; add a new connection instead')
+        if local:
+            return self.local_fields(body, current, out)
         if kind != 'api':
             out['command'] = defaults['command']
             if current and current.get('key_target'):
@@ -241,6 +260,59 @@ class ProviderStore:
             # The key is bound to its origin; a different server needs its own connection and key.
             raise ValueError('An API key connection keeps its server. To use another server, add a new API key')
         return out
+
+    def local_fields(self, body, current, out):
+        """A local model through Codex: Codex's own tools and sandbox drive a model on this computer. The
+        address is loopback only and never one of the room's ports (provider_keys.local_codex_url); no key.
+        The context window is required, because Codex sizes its history by it."""
+        if out['provider'] != 'codex':
+            raise ValueError('Only Codex can run a local model with its own tools')
+        current = current or {}
+        base_url = provider_keys.local_codex_url(body.get('base_url', current.get('base_url', '')),
+                                                 provider_keys.room_ports(self.runtime.cfg))
+        model = body.get('model', current.get('model', ''))
+        if not isinstance(model, str) or not 1 <= len(model) <= 200:
+            raise FieldError('Choose a model the server serves', 'model')
+        # local_model survives AgentProfiles.config, which sets each agent's own model (possibly empty).
+        out.update(command=SUBSCRIPTIONS['codex']['command'], local=True, base_url=base_url, model=model, local_model=model)
+        context = body.get('context_tokens', current.get('context_tokens'))
+        if context is not None:
+            if isinstance(context, bool) or not isinstance(context, int) or not CONTEXT_TOKENS[0] <= context <= CONTEXT_TOKENS[1]:
+                raise FieldError(f'Context window must be {CONTEXT_TOKENS[0]:,} to {CONTEXT_TOKENS[1]:,} tokens, or left empty to read it from the server', 'context_tokens')
+            out['context_tokens'] = context
+            entered = 'context_tokens' in body and body['context_tokens'] != current.get('context_tokens')
+            out['context_source'] = 'entered by you' if entered else current.get('context_source', 'entered by you')
+        for key in ('tool_check', 'local_target'):
+            if key in current:
+                out[key] = current[key]
+        return out
+
+    async def local_checked(self, entry):
+        """Check a local Codex connection being saved: a Responses tool call to exactly this address and
+        model, and its context window (entered, or read from the server). Records the check on the entry."""
+        import provider_setup
+        tool = await provider_setup.responses_tool_check(entry['base_url'], entry['model'])
+        if not tool['ok']:
+            raise FieldError(f'Tool-call check failed for {entry["model"]}: {tool["detail"]}', 'model')
+        entry['tool_check'] = {**tool, 'base_url': entry['base_url'], 'model': entry['model'], 'checked': time.time()}
+        if 'context_tokens' not in entry:
+            context = await provider_setup.server_context(entry['base_url'], entry['model'])
+            if context['tokens']:
+                entry['context_tokens'] = context['tokens']
+                entry['context_source'] = f'read from the server ({context["source"]}); approximate'
+        return self.local_note(entry)
+
+    @staticmethod
+    def local_note(entry):
+        tokens = entry.get('context_tokens')
+        if not tokens:
+            raise FieldError('This server did not report its context window. Enter it in the form: the context the server '
+                             'runs this model with (llama.cpp -c, Ollama num_ctx, LM Studio context length).', 'context_tokens')
+        if tokens < LOCAL_CODEX_MIN_CONTEXT:
+            raise FieldError(f'Codex needs a context window of at least {LOCAL_CODEX_MIN_CONTEXT:,} tokens: its own instructions '
+                             f'and tools use about {CODEX_OVERHEAD_TOKENS // 1000}k. Restart the server with a larger context.', 'context_tokens')
+        return (f'About {(tokens - CODEX_OVERHEAD_TOKENS) // 1000}k tokens for the work after Codex\'s own instructions '
+                f'and tools (about {CODEX_OVERHEAD_TOKENS // 1000}k). Runs with Codex: {local_codex_limits()}')  # the form adds the period
 
     async def server_check(self, entry, headers=None):
         """S4 check for exactly this address and model: structured tool calls, and the context window the
@@ -309,8 +381,10 @@ class ProviderStore:
                 items = json.loads(path.read_text('utf-8'))
             except (OSError, ValueError) as exc:
                 raise ValueError(f'Could not read the team of project {path.parent.name} ({exc}); not removing a connection it may use') from exc
-            users.update(p.get('name') or p.get('id', '?') for p in items.values() if isinstance(p, dict) and p.get('template') == name)
-        users.update(self.runtime.profiles.items[pid]['name'] for pid in self.members(name))
+            users.update((p.get('name') or p.get('id', '?')) + (' (archived)' if p.get('archived') else '')
+                         for p in items.values() if isinstance(p, dict) and p.get('template') == name)
+        users.update(self.runtime.profiles.items[pid]['name'] + (' (archived)' if self.runtime.profiles.items[pid].get('archived') else '')
+                     for pid in self.members(name))
         return sorted(users)
 
     # ----- changes -----
@@ -351,9 +425,9 @@ class ProviderStore:
             self.gate()
             entry = self.fields(body)
             templates = self.runtime.profiles.templates
-            if entry['provider'] != 'api':
+            if entry['provider'] != 'api' and not entry.get('local'):
                 existing = next((cfg.get('label', n) for n, cfg in templates.items()
-                                 if cfg.get('provider') == entry['provider'] and not cfg.get('key_target')), None)
+                                 if cfg.get('provider') == entry['provider'] and not cfg.get('key_target') and not cfg.get('local')), None)
                 if existing:
                     raise ValueError(f'{SUBSCRIPTIONS[entry["provider"]]["label"]} is already connected as {existing}')
             catalog = await self.catalog(entry)
@@ -361,8 +435,13 @@ class ProviderStore:
             if entry['provider'] == 'api':
                 self.runtime.controls.check(catalog, entry['model'], '')
                 note = await self.checked(entry)
+            elif entry.get('local'):
+                self.runtime.controls.check(catalog, entry['model'], '')
+                note = await self.local_checked(entry)
             self.gate()  # a deployment check may have started during the lookup
             name = self.new_id(entry['label'], body.get('id'))
+            if entry.get('local'):
+                entry['local_target'] = name  # the relay path a run on it may use (provider_relay)
             self.entries[name] = entry
             self.save()
             await self.apply(name, catalog)
@@ -423,6 +502,19 @@ class ProviderStore:
                     note = await self.checked(entry)
                 else:
                     note = self.budget_note(entry)
+            elif entry.get('local'):
+                if (entry['base_url'], entry['model']) != (current.get('base_url'), current.get('model')):
+                    # A previous check or read context belongs to the old address and model.
+                    entry.pop('tool_check', None)
+                    if 'context_tokens' not in body and entry.get('context_source', '').startswith('read from the server'):
+                        entry.pop('context_tokens', None)
+                        entry.pop('context_source', None)
+                if not entry.get('tool_check'):
+                    catalog = await self.catalog(entry)
+                    self.runtime.controls.check(catalog, entry['model'], '')
+                    note = await self.local_checked(entry)
+                else:
+                    note = self.local_note(entry)
             self.ready_to_commit(name)
             self.entries[name] = entry
             self.save()
@@ -434,6 +526,8 @@ class ProviderStore:
         model without saving anything. Generates one request on that server, so the same gates apply."""
         self.gate()
         body = body if isinstance(body, dict) else {}
+        if body.get('local'):
+            return await self.local_check(body)
         entry = self.fields({**body, 'provider': 'api', 'label': body.get('label') or 'check'})
         current = self.runtime.profiles.templates.get(body.get('id')) if isinstance(body.get('id'), str) else None
         if current and current.get('key_target'):
@@ -446,6 +540,25 @@ class ProviderStore:
             entry['context_tokens'] = context['tokens']
         try:
             note, fits = self.budget_note(entry), True
+        except ValueError as exc:
+            note, fits = str(exc), False
+        return {'tool_check': tool, 'context': context, 'budget_note': note, 'fits': fits}
+
+    async def local_check(self, body):
+        """Check for a local model through Codex: the same model list, Responses tool call and context
+        reading as saving, without saving anything."""
+        import provider_setup
+        entry = self.fields({**body, 'provider': 'codex', 'local': True, 'label': body.get('label') or 'check'})
+        catalog = await self.catalog(entry)
+        self.runtime.controls.check(catalog, entry['model'], '')
+        tool = await provider_setup.responses_tool_check(entry['base_url'], entry['model'])
+        context = {'tokens': entry.get('context_tokens'), 'source': 'entered by you'}
+        if not context['tokens']:
+            context = await provider_setup.server_context(entry['base_url'], entry['model'])
+            if context['tokens']:
+                entry['context_tokens'] = context['tokens']
+        try:
+            note, fits = self.local_note(entry), True
         except ValueError as exc:
             note, fits = str(exc), False
         return {'tool_check': tool, 'context': context, 'budget_note': note, 'fits': fits}
@@ -618,7 +731,9 @@ class ProviderStore:
             self.idle(name)
             users = self.used_by(name)
             if users:
-                raise ValueError('Used by ' + ', '.join(users) + '. Archive or remove those agents in every project first')
+                # Agents keep their history, so archived ones still count; archiving doesn't free a connection.
+                raise ValueError('Used by ' + ', '.join(users) + '. Edit each of those agents to use another connection first, '
+                                 'in every project. Archived agents count too, because they keep their history and settings.')
             keyed = (self.entries.get(name) or {}).get('key_target')
             if name in self.base:
                 self.entries[name] = {'removed': True}

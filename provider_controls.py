@@ -119,7 +119,7 @@ class ProviderControls:
         cwd is where an official CLI runs its model listing (an agent's worktree, or the room data
         folder for a provider no agent uses yet). headers: a key being checked before it is saved;
         otherwise a saved key is attached after its origin check (provider_keys)."""
-        if provider != 'api':
+        if provider != 'api' and not cfg.get('local'):
             try:
                 models = await cli_catalog(provider, cwd)
             except Exception:
@@ -136,14 +136,17 @@ class ProviderControls:
             if provider == 'antigravity':
                 note = 'Effort selects the matching preset in this Gemini model family. Provider default uses the preset shown in the model name.'
         else:
+            # A local OpenAI-compatible server, or one a local-model Codex connection drives (no effort:
+            # Codex's reasoning settings are for OpenAI models).
             base = cfg['base_url'].rstrip('/')
             efforts = cfg.get('effort_options', [])
+            local_codex = provider == 'codex'
             headers = provider_keys.headers(cfg) if headers is None else headers
             async with httpx.AsyncClient(timeout=5, trust_env=False, headers=headers) as client:
                 response = await client.get(base + '/models')
                 response.raise_for_status()
                 ids = [m['id'] for m in response.json().get('data', [])]
-                if not efforts:
+                if not efforts and not local_codex:
                     try:
                         response = await client.get(base.removesuffix('/v1') + '/props')
                         if response.status_code == 200 and response.json().get('chat_template_caps', {}).get('supports_reasoning_effort'):
@@ -157,7 +160,11 @@ class ProviderControls:
             models = [{'value': value, 'label': value, 'efforts': efforts} for value in ids]
             source = 'Connected endpoint /models'
             note = 'The server exposes one loaded model.' if len(models) == 1 else 'Only models served by this endpoint are shown.'
-            note += ' Effort is supported by its chat template.' if efforts else ' This endpoint has not advertised reasoning-effort support.'
+            if local_codex:
+                import provider_store
+                note += f' Codex runs this model with its own tools: it {provider_store.local_codex_limits()}.'
+            else:
+                note += ' Effort is supported by its chat template.' if efforts else ' This endpoint has not advertised reasoning-effort support.'
         if not models:
             raise RuntimeError('Provider returned no model choices')
         return {'models': models, 'error': '', 'loading': False, 'source': source, 'effort_note': note}

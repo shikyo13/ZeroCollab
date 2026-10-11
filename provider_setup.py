@@ -227,6 +227,46 @@ async def tool_call_check(base_url, model, request_options=None, max_tokens=1024
     return {'ok': False, 'detail': 'Answered without calling the tool. Choose a model with tool calling support.'}
 
 
+RESPONSES_TOOL = {'type': 'function', 'name': 'report_ready', 'description': 'Report that you can call tools.',
+                  'parameters': {'type': 'object', 'properties': {'ready': {'type': 'boolean'}}, 'required': ['ready']}}
+
+
+async def responses_tool_check(base_url, model):
+    """A local model through Codex: Codex speaks only the Responses API and drives every action through
+    tool calls, so one tiny Responses request with one tool, to exactly this address and model, must come
+    back as a function call. Catches a server without /responses and a model the server won't give tools
+    (Ollama refuses tools for models whose template lacks them). Local and free; nothing is saved."""
+    payload = {'model': model, 'input': 'Call the report_ready tool with ready set to true. Do not answer in text.',
+               'tools': [RESPONSES_TOOL], 'tool_choice': 'auto', 'max_output_tokens': 1024, 'stream': False}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(CHECK_TIMEOUT, connect=3), trust_env=False) as client:
+            response = await client.post(base_url.rstrip('/') + '/responses', json=payload)
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        return {'ok': False, 'detail': 'The server is not running at this address'}
+    except httpx.TimeoutException:
+        return {'ok': False, 'detail': f'No reply within {CHECK_TIMEOUT} seconds; the model may still be loading. Check again.'}
+    except httpx.HTTPError as exc:
+        return {'ok': False, 'detail': f'Could not reach the server ({type(exc).__name__})'}
+    if response.status_code in (404, 405):
+        return {'ok': False, 'detail': 'This server has no Responses API (/v1/responses), which Codex needs. Update it, or use llama.cpp llama-server.'}
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if response.status_code != 200 or not isinstance(body, dict):
+        error = body.get('error') if isinstance(body, dict) else None
+        message = error.get('message') if isinstance(error, dict) else error if isinstance(error, str) else ''
+        hint = ' For Ollama, choose a model listed with tool support, or serve the same file with llama.cpp --jinja.' if 'tools' in str(message) else ''
+        return {'ok': False, 'detail': (f'The server refused a Responses tool request (HTTP {response.status_code})'
+                                        + (f': {str(message)[:200]}' if message else '') + '.' + hint)}
+    items = body.get('output') if isinstance(body.get('output'), list) else []
+    if any(isinstance(i, dict) and i.get('type') == 'function_call' and i.get('name') == 'report_ready' for i in items):
+        return {'ok': True, 'detail': 'Returned a structured tool call through the Responses API, as Codex uses it'}
+    if 'report_ready' in json.dumps(items):
+        return {'ok': False, 'detail': MARKUP_FIX}
+    return {'ok': False, 'detail': 'Answered without calling the tool. Choose a model with tool calling support.'}
+
+
 async def server_context(base_url, model, headers=None):
     """The context window the server runs this model with, from the server's own reports. Returns
     {'tokens': int | None, 'source': str}. Values are approximate: servers may round or cap them.
@@ -353,9 +393,10 @@ async def status(runtime):
     templates = runtime.profiles.templates
     # Key connections for Claude or Codex (S5b) report their key, not the CLI's sign-in.
     vendors = {name: cfg for name, cfg in templates.items() if cfg.get('key_target') and cfg.get('provider') in provider_keys.VENDORS}
-    providers = sorted({cfg.get('provider', name) for name, cfg in templates.items() if name not in vendors} - {'api'})
+    # A local model through Codex reports its server, like an OpenAI-compatible connection, not a CLI sign-in.
+    providers = sorted({cfg.get('provider', name) for name, cfg in templates.items() if name not in vendors and not cfg.get('local')} - {'api'})
     async with httpx.AsyncClient(timeout=httpx.Timeout(2, connect=1), trust_env=False) as client:
-        configured = {name: cfg for name, cfg in templates.items() if cfg.get('provider') == 'api' and cfg.get('base_url')}
+        configured = {name: cfg for name, cfg in templates.items() if (cfg.get('provider') == 'api' or cfg.get('local')) and cfg.get('base_url')}
         listed = listed_servers()
         bases = list(dict.fromkeys(base for _, _, base, _ in listed))
         cli_results, configured_results, local_results, vendor_results = await asyncio.gather(
@@ -371,7 +412,7 @@ async def status(runtime):
         catalog = runtime.controls.catalogs.get(next((p for p, prof in runtime.profiles.items.items() if prof['template'] == name), ''), {})
         row = {'template': name, 'provider': provider, 'label': cfg.get('label', name),
                'models': {'loading': bool(catalog.get('loading')), 'count': len(catalog.get('models', [])), 'error': catalog.get('error', '')}}
-        if provider == 'api' or name in vendors:
+        if provider == 'api' or name in vendors or cfg.get('local'):
             row['server'] = {'base_url': cfg['base_url'], **by_template.get(name, {'reachable': False, 'detail': 'No base_url'})}
         else:
             row['cli'] = by_provider[provider]

@@ -48,6 +48,34 @@ def loopback(url):
     return host(url) in ('127.0.0.1', 'localhost', '::1')
 
 
+ROOM_DEFAULT_PORTS = {8300, 8200, 8201}  # config.toml defaults: a desktop or preview room may run beside the live one
+
+
+def room_ports(cfg):
+    """ZeroCollab's own ports: this room's web, MCP HTTP and SSE ports (the deploy supervisor talks to the
+    web port), and the default ports a live room uses when this one runs elsewhere."""
+    return ROOM_DEFAULT_PORTS | {p for p in (cfg.get('server', {}).get('port'), cfg.get('mcp', {}).get('http_port'),
+                                             cfg.get('mcp', {}).get('sse_port')) if isinstance(p, int)}
+
+
+def local_codex_url(value, reserved=()):
+    """A local model server for Codex (security L2): http on 127.0.0.1 or [::1] with an explicit port,
+    ending at /v1, and not one of the room's own ports. Checked when the connection is saved and again
+    at every launch, so an edited providers.json can't point Codex at another host or at the room."""
+    parts = urlsplit(value.strip()) if isinstance(value, str) else None
+    try:
+        port = parts.port if parts else None
+    except ValueError:
+        port = None
+    if not parts or parts.scheme != 'http' or parts.hostname not in ('127.0.0.1', '::1') or not port:
+        raise ValueError('Enter the model server on this computer as http://127.0.0.1:port/v1')
+    if parts.username or parts.password or parts.query or parts.fragment or parts.path.rstrip('/') not in ('', '/v1'):
+        raise ValueError('Enter the address as http://127.0.0.1:port/v1, with nothing after /v1')
+    if port in reserved:
+        raise ValueError(f'Port {port} is ZeroCollab itself; enter the port your model server listens on')
+    return f"http://{'[::1]' if parts.hostname == '::1' else '127.0.0.1'}:{port}/v1"
+
+
 def check_key(key):
     if not isinstance(key, str) or not KEY.fullmatch(key):
         raise ValueError('Paste the API key exactly: 8 to 512 characters, with no spaces, quotes or line breaks')

@@ -52,6 +52,12 @@ READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "We
 ROOM_SERVER = 'zerocollab_coordination'
 # One automatic retry for a turn that failed before producing any output (task 33f0aa98).
 STARTUP_RETRY_SECONDS = 5
+# A subscription CLI's saved sign-in revoked or expired: Codex reports 'workspace routing discovery
+# unauthorized (401)' and logs refresh_token_invalidated; both CLIs ask to sign in again.
+SIGNED_OUT = re.compile(r'refresh[_ ]token[_ ](?:invalidated|was revoked|expired)|routing discovery unauthorized|'
+                        r'please (?:log out and )?sign in again', re.I)
+# A bare 401 counts only in the turn's own error: in the CLI's log it can be an MCP server's auth failure.
+SIGNED_OUT_DETAIL = re.compile(SIGNED_OUT.pattern + r'|401 unauthorized', re.I)
 ROOM_TOOLS = {"room_read", "room_image", "room_task", "room_markup", "room_update", "room_review", "room_followup",
               "room_repository", "room_goal", "room_team_builder", "room_decision", "room_browser"}
 
@@ -965,6 +971,18 @@ class RoomRuntime:
                 else:
                     executable = native.command(provider)
                     cfg = self.cfg["agents"][name]
+                    if cfg.get("local"):
+                        # A local model through Codex: no sign-in; the server must be on this computer and serve the model.
+                        base = provider_keys.local_codex_url(cfg.get("base_url", ""), provider_keys.room_ports(self.cfg))
+                        async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                            response = await client.get(base + "/models")
+                            response.raise_for_status()
+                            ids = [m["id"] for m in response.json().get("data", [])]
+                        model = self.controls.values[name]['model'] or cfg.get("local_model")
+                        if model not in ids:
+                            raise RuntimeError(f"Selected model {model} is not served at {base}")
+                        state.update(state="ready", detail=f"Local model {model} through Codex · {provider_store.local_codex_limits()}")
+                        continue
                     if cfg.get("key_target"):
                         # An Anthropic or OpenAI API key (S5b): no sign-in; the key must be on, present and
                         # bound to its vendor, and the vendor must accept it (listing models is free).
@@ -1293,7 +1311,9 @@ class RoomRuntime:
                 diagnostic = re.sub(r'(?i)(?:bearer\s+|(?:token|api[-_]?key|password|secret)\s*[=:]\s*)\S+', '[redacted]', run.stderr)
                 diagnostic = re.sub(r'\b(?:sk-|hf_)[A-Za-z0-9_-]+', '[redacted]', diagnostic)
                 detail += ": " + diagnostic[-1200:]
-            if self.retry_startup(run, exc, detail):
+            if self.signed_out(run, name, detail):
+                pass
+            elif self.retry_startup(run, exc, detail):
                 self.host.store.add("system", f"{name} failed to start; retrying once in {STARTUP_RETRY_SECONDS} s: {detail[:600]}",
                                     channel=run.channel, metadata={'no_route': True})
             else:
@@ -1433,6 +1453,28 @@ class RoomRuntime:
             self.ready_wakes.schedule()  # An arming event: a task changed.
         await self.emit('project_state', self.project_room.snapshot())
         return result
+
+    def signed_out(self, run, name, detail):
+        """A subscription CLI whose saved sign-in was revoked or expired (Codex: 'workspace routing discovery
+        unauthorized (401)' with 'refresh_token_invalidated' on stderr) can't start until the user signs in
+        again, while its own status command still says signed in. Retrying only repeats the failure, so the
+        agent shows Sign in again and the work waits in its queue for the next Refresh connections."""
+        state, cfg = self.states[name], self.cfg['agents'].get(name, {})
+        if state['provider'] not in ('codex', 'claude') or cfg.get('key_target') or cfg.get('local'):
+            return False
+        if run.text or run.published_messages or run.native_tool_calls or run.coordination_calls:
+            return False
+        if not (SIGNED_OUT_DETAIL.search(detail) or SIGNED_OUT.search(run.stderr or '')):
+            return False
+        label = 'Codex' if state['provider'] == 'codex' else 'Claude'
+        state.update(state='login_required', detail=f'{label} sign-in on this computer expired or was revoked. '
+                     'Use Sign in again on Team > Providers, then Refresh connections.')
+        run.entry.pop('startup_retry', None)
+        self.queues[name].retry(run.entry)  # kept at the front; the worker waits while login_required
+        self.host.store.add('system', f"{name} can't start: the {label} sign-in on this computer expired or was revoked. "
+                            f"Sign in again (Team > Providers, or `{state['provider']} login` in a terminal), then Refresh connections. "
+                            'Its work is kept.', channel=run.channel, metadata={'no_route': True})
+        return True
 
     def retry_startup(self, run, exc, detail):
         """A failure before the provider produced anything (no text, message, tool or room call) is usually a

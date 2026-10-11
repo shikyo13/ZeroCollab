@@ -57,8 +57,11 @@ function cliLine(row: ProviderRow): Line {
       return { label: 'Signed in, API billing', tone: 'warn', details: [...details, 'Agents using this provider bill that API account'],
                action: sign.command ? { label: 'Change sign-in' } : undefined };
     }
-    if (sign.billing === 'subscription') return { label: 'Signed in', tone: 'ok', details };
-    return { label: 'Signed in, billing unknown', tone: 'warn', details };
+    // A saved sign-in can be revoked while the CLI still reports it (Codex: refresh token invalidated), so
+    // signing in again stays available; agents that hit it show 'sign-in expired or was revoked'.
+    const again = sign.command ? { label: 'Sign in again' } : undefined;
+    if (sign.billing === 'subscription') return { label: 'Signed in', tone: 'ok', details, action: again };
+    return { label: 'Signed in, billing unknown', tone: 'warn', details, action: again };
   }
   if (sign?.state === 'signed_out') return { label: 'Signed out', tone: 'danger', details: [app, run], action: signIn };
   // Unknown stays unknown: a model list shows the CLI answers, not how it is signed in or billed.
@@ -97,11 +100,12 @@ function localLine(local: LocalServer): Line {
 /** manage: the connection's own controls (source, Edit, Remove, Reset), after the row's action. */
 /** S4 facts for a local connection: its approximate context window and its last tool-call check. */
 function connectionFacts(def: ProviderDef | undefined): string[] {
-  if (!def || def.provider !== 'api') return [];
+  if (!def || (def.provider !== 'api' && !def.local)) return [];
   const context = def.context_tokens ? `Context about ${def.context_tokens.toLocaleString()} tokens (${def.context_source || 'source not recorded'})`
     : 'Context window unknown: the room uses its standard prompt budget';
   const check = def.tool_check?.ok ? `Tool calls checked for ${def.tool_check.model}` : 'Tool calls not checked yet: Edit and save to check';
-  return [context, check];
+  // A local model run inside Codex says what its sandbox actually allows (provider_store.local_codex_limits).
+  return def.local ? [`Runs with Codex · ${def.limits ?? ''}`, context, check] : [context, check];
 }
 
 type RowProps ={ name: string; line: Line; note?: string; busy?: boolean; onAction?: () => void; manage?: React.ReactNode };
@@ -196,7 +200,9 @@ export function Providers({ reload }: { reload: number }) {
   }, [status, pending]);
 
   /** reports: the CLI has a status command (provider capability, not the latest answer), so the page can wait for it. */
-  const signIn = useCallback(async (provider: string, from: string | null, reports: boolean) => {
+  /** again: Sign in again on a CLI that already reports signed in. Its status won't change, so the page
+   * doesn't wait for it (security 2e977d81 N2); the user finishes in the window and refreshes. */
+  const signIn = useCallback(async (provider: string, from: string | null, reports: boolean, again = false) => {
     if (pendingRef.current[provider]) return;  // one sign-in per provider; the button is held from the click
     const opening: Pending = { until: Date.now() + WAIT_MS, from, polling: false, message: 'Opening the sign-in window…' };
     pendingRef.current = { ...pendingRef.current, [provider]: opening };
@@ -211,6 +217,8 @@ export function Providers({ reload }: { reload: number }) {
       const opened = result.already_open ? 'The sign-in window is already open.' : 'A sign-in window opened.';
       if (!result.launched && !result.already_open) {
         finish(`No terminal could be opened here. Run ${result.command} in a terminal, then use Refresh connections.`);
+      } else if (again) {
+        finish(`${opened} Finish signing in there, then use Refresh connections. Agents waiting for the sign-in start again then.`);
       } else if (!reports) {
         finish(`${opened} This CLI cannot report its sign-in here: once its prompt appears you are signed in. Close it, then use Refresh connections.`);
       } else {
@@ -289,8 +297,11 @@ export function Providers({ reload }: { reload: number }) {
         <ul className="pv-list">
           {subscriptions.map(row => (
             <Row key={row.template} name={row.label} line={cliLine(row)} busy={row.provider in pending} manage={manage(defById.get(row.template))}
-                 note={pending[row.provider]?.message || notes[row.provider]} onAction={() => void signIn(row.provider, row.cli?.sign_in?.state === 'signed_in' ? row.cli.sign_in.method || '' : null,
-                   row.cli?.sign_in?.reports === true)} />
+                 note={pending[row.provider]?.message || notes[row.provider]} onAction={() => void signIn(row.provider,
+                   // Change sign-in (API billing) waits for a different method; Sign in again doesn't wait (see signIn).
+                   row.cli?.sign_in?.state === 'signed_in' && row.cli.sign_in.billing === 'api' ? row.cli.sign_in.method || '' : null,
+                   row.cli?.sign_in?.reports === true,
+                   row.cli?.sign_in?.state === 'signed_in' && row.cli.sign_in.billing !== 'api')} />
           ))}
         </ul>
         {editable && !!defs?.available.length && (
@@ -329,7 +340,7 @@ export function Providers({ reload }: { reload: number }) {
         {editable && (
           <div className="pv-add">
             <button type="button" className="bd-btn" onClick={() => setForm({ mode: 'create', provider: 'api', label: '' })}>Add another server…</button>
-            <span className="pv-note">Any OpenAI-compatible address, on this computer or your network</span>
+            <span className="pv-note">Any OpenAI-compatible address, on this computer or your network. Codex can run models on this computer only.</span>
           </div>
         )}
       </section>

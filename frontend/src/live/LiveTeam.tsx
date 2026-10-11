@@ -5,6 +5,7 @@ import type { View } from '../workspace/useWorkspaceRoute';
 import { useLiveTeam, type LiveSource } from './useLiveTeam';
 import { useLiveBrowser } from './useLiveBrowser';
 import './live.css';
+import { MotionCue, useLiveCardMotion } from './MotionCue';
 
 const timeLabel = (time: number) => new Date(time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
@@ -18,10 +19,12 @@ export default function LiveTeam({ active, navigate }: { active: boolean; naviga
   const [animationAfter, setAnimationAfter] = useState(() => Date.now() / 1000);
   const focusButton = useRef<HTMLButtonElement>(null), focusHeading = useRef<HTMLHeadingElement>(null);
   const root = useRef<HTMLDivElement>(null);
+  const bubbleRoot = useRef<HTMLDivElement>(null);
   const latest = model.sources[0];
   const selected = pinned || latest;
   const reduced = motion === 'reduced' || systemReduced;
   const animate = active && model.connected && model.ready && !paused && !reduced;
+  useLiveCardMotion(bubbleRoot, animate);
   const browser = useLiveBrowser(active && model.connected && model.ready && !pinned && !paused);
   const agents = Object.entries(model.room?.agents ?? {}).filter(([, a]) => !a.archived);
   const label = (id: string) => model.room?.agents[id]?.label || (id === 'user' ? 'You' : id || 'Unknown');
@@ -65,8 +68,8 @@ export default function LiveTeam({ active, navigate }: { active: boolean; naviga
     <div className="lt-heading">
       <div><span className="workspace-eyebrow">A SHARED VIEW OF THE WORK</span><h1>Live view</h1><p>Replies, handoffs and finished artifacts, as they happen.</p></div>
       <div className="lt-controls">
-        <button aria-pressed={paused} onClick={() => setPaused(v => !v)}>{paused ? 'Resume motion' : 'Pause motion'}</button>
-        <label className="lt-motion-control">Motion <select aria-label="Motion preference" value={motion} onChange={e => setMotion(e.target.value as typeof motion)}><option value="system">System preference</option><option value="reduced">Reduced motion</option></select></label>
+        <button aria-pressed={paused} onClick={() => { setAnimationAfter(Date.now() / 1000); setPaused(v => !v); }}>{paused ? 'Resume motion' : 'Pause motion'}</button>
+        <label className="lt-motion-control">Motion <select aria-label="Motion preference" value={motion} onChange={e => { setAnimationAfter(Date.now() / 1000); setMotion(e.target.value as typeof motion); }}><option value="system">System preference</option><option value="reduced">Reduced motion</option></select></label>
         <button ref={focusButton} aria-pressed={focus} onClick={() => setFocus(v => !v)}>{focus ? 'Exit focus view' : 'Focus view'}</button>
       </div>
     </div>
@@ -91,11 +94,13 @@ export default function LiveTeam({ active, navigate }: { active: boolean; naviga
       </section>
       <section className="lt-panel lt-stage" aria-labelledby="lt-stage-heading">
         <div className="lt-panel-head"><h2 id="lt-stage-heading">Collaboration</h2><span>{stateLabel}</span></div>
-        <div className="lt-bubbles">
-          {bubbles.map(source => <button key={source.id} className={`lt-bubble${source.fresh && source.time > animationAfter && now - source.time < 8 ? ' lt-new' : ''}${selected?.id === source.id ? ' lt-selected' : ''}`} onClick={() => select(source)} style={{ '--lt-agent': model.room?.agents[source.actor]?.color || 'var(--accent)' } as CSSProperties}>
+        <div className="lt-bubbles" ref={bubbleRoot}>
+          {bubbles.map(source => <button key={source.id} data-live-source={source.id} className={`lt-bubble${source.fresh && source.time > animationAfter && now - source.time < 8 ? ' lt-new' : ''}${selected?.id === source.id ? ' lt-selected' : ''}`} onClick={() => select(source)} style={{ '--lt-agent': model.room?.agents[source.actor]?.color || 'var(--accent)' } as CSSProperties}>
             <small><i aria-hidden="true" />{label(source.actor)} · {source.kind}</small>
             {source.to && <div className="lt-handoff"><strong>{label(source.actor)}</strong><span className="lt-transfer" aria-hidden="true">→</span><strong>{label(source.to)}</strong></div>}
-            <strong>{source.title}</strong><p>{source.text}</p><span className="lt-source-meta">{timeLabel(source.time)} · {source.task ? `Task ${source.task}` : source.channel ? sessionTitle(source.channel) : source.kind}{source.count > 1 ? ` · ${source.count} updates` : ''}</span>
+            <strong>{source.title}</strong>
+            {source.motion && <MotionCue cue={source.motion} cueKey={`${source.id}:${source.motion.event}:${source.motion.state}`} animate={animate && source.fresh && source.time > animationAfter && now - source.time < 8} />}
+            <p>{source.text}</p><span className="lt-source-meta">{timeLabel(source.time)} · {source.task ? `Task ${source.task}` : source.channel ? sessionTitle(source.channel) : source.kind}{source.count > 1 ? ` · ${source.count} updates` : ''}</span>
           </button>)}
           {!bubbles.length && <div className="lt-quiet"><span aria-hidden="true">◇</span><h3>{model.ready ? 'Room for the next action' : 'Connecting to the team'}</h3><p>Current agent states appear on the left. New replies and handoffs will enter here.</p></div>}
         </div>
