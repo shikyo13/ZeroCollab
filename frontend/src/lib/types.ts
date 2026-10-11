@@ -148,6 +148,8 @@ export interface Chain {
   reported_tokens: number;
   input_chars: number;
   paused: boolean;
+  /** 'manager_audit' for the manager check-ins' own budget chain (systems f394c1c); absent for chat conversations. */
+  kind?: string;
 }
 
 /** GET /api/runtime/project-state and the `project_state` WS event. */

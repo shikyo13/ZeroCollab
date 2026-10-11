@@ -6,6 +6,7 @@ import { sendChatMessage, sessionTitle } from '../lib/room';
 import type { Chain, Limits, ProjectState } from '../lib/types';
 import { ErrorText, Field, RelativeTime, useAction, type Agents, displayName } from './shared';
 import { LIMITS } from '../lib/constants';
+import { ManagerAuditPanel } from './ManagerAuditPanel';
 
 export function SpecPanel({ project, channel, refresh }: { project: ProjectState; channel: string; refresh: () => Promise<void> }) {
   const { run, busy, error } = useAction();
@@ -193,7 +194,8 @@ export function LimitsPanel({ project, channel, refresh }: { project: ProjectSta
   useEffect(() => {
     if (!dirty) setValues(project.limits);
   }, [project.limits, dirty]);
-  const chain = [...(project.chains ?? [])].reverse().find(c => c.channel === channel);
+  // The manager check-ins keep their own finite budget chain in the same chat; it is shown in their panel, not here.
+  const chain = [...(project.chains ?? [])].reverse().find(c => c.channel === channel && c.kind !== 'manager_audit');
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -220,6 +222,8 @@ export function LimitsPanel({ project, channel, refresh }: { project: ProjectSta
           <p className="bd-empty">No agent work started in this channel yet.</p>
         )}
       </section>
+      {/* Keyed by project: switching projects remounts it, so no status, draft or action carries over. */}
+      <ManagerAuditPanel key={window.activeProjectId || ''} project={window.activeProjectId || ''} />
       <section className="bd-panel" aria-labelledby="bd-limits-heading">
         <h3 id="bd-limits-heading">Execution controls (optional)</h3>
         <p className="bd-muted">Zero disables optional cutoffs and lets the whole team run together.</p>
