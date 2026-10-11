@@ -695,6 +695,7 @@ class RoomRuntime:
         self.profile_lock = asyncio.Lock()
         self.deploy_held = {}
         self.wake_notices = {}  # agent (or room:chat) -> the unavailable state last announced in chat
+        self.notice_lines = {}  # the same keys -> that announcement's chat message id, removed once it no longer applies
         self.deployment = None
         self.project_state_due = False  # a coalesced board snapshot is scheduled (project_state_soon)
         self.repository_transition = None
@@ -1250,7 +1251,15 @@ class RoomRuntime:
         if self.wake_notices.get(key) == state:
             return
         self.wake_notices[key] = state
-        self.host.store.add("system", text, channel=channel, metadata={'no_route': True})
+        self.notice_lines[key] = self.host.store.add("system", text, channel=channel, metadata={'no_route': True})['id']
+
+    async def clear_notice(self, key):
+        """A notice that no longer applies leaves the chat once the agent works again or is resumed, so an old line
+        never reads as a current problem (Zero #13960). The Activity note keeps the record."""
+        self.wake_notices.pop(key, None)
+        msg_id = self.notice_lines.pop(key, None)
+        if msg_id is not None and self.host.store.delete([msg_id]):
+            await self.host._broadcast(json.dumps({'type': 'delete', 'ids': [msg_id]}))
 
     @staticmethod
     def plain_failure(name, detail):
@@ -1260,7 +1269,7 @@ class RoomRuntime:
             return (f"{name} couldn't start because its Codex conversation is open somewhere else, such as the Codex app. "
                     "Close it there, then click Refresh connections on Team.")
         # A failed agent is blocked until Refresh connections; Team shows the reason beside it (Zero #13960).
-        return f"{name} stopped after an error. Team shows why; click Refresh connections there to let it work again."
+        return f"{name} hit an error. Team shows why; click Refresh connections there to let it work again."
 
     def enqueue(self, name, channel="general", message="", prompt="", chain=None, routing=None, ref=None):
         if self.deployment and self.deployment.rehearsal:
@@ -1491,7 +1500,7 @@ class RoomRuntime:
             self.project_room.complete(run)
             stop_note = getattr(run, 'stop_note', '')
             self.states[name].update(state="ready", detail=stop_note or "Last turn completed")
-            self.wake_notices.pop(name, None)  # working again: a later problem is worth telling
+            await self.clear_notice(name)  # working again: its old notice goes, and a later problem is worth telling
             if silent and not stop_note:
                 try:
                     await self.silent_turn(run)
@@ -1536,9 +1545,10 @@ class RoomRuntime:
                 # (Zero #13960, harness fde473e3), and the agent stays ready.
                 key = f"{self.states[name]['state']}:{detail[:200]}"
                 if not run.manager_audit and self.wake_notices.get(name) != key:
+                    await self.clear_notice(name)  # one current line per agent
                     self.wake_notices[name] = key
-                    self.host.store.add("system", self.plain_failure(name, detail), channel=run.channel,
-                                        metadata={'no_route': True})
+                    self.notice_lines[name] = self.host.store.add(
+                        "system", self.plain_failure(name, detail), channel=run.channel, metadata={'no_route': True})['id']
             await run.finish_message(partial=True)
         finally:
             # First, so nothing below (shutdown grace, a failing close) leaves the relay usable after the turn.
@@ -2272,8 +2282,8 @@ def install(host):
     @host.app.post("/api/runtime/resume")
     async def resume():
         runtime.paused = False
-        for key in [k for k in runtime.wake_notices if k.startswith('room:')]:
-            del runtime.wake_notices[key]
+        for key in [k for k in {**runtime.wake_notices, **runtime.notice_lines} if k.startswith('room:')]:
+            await runtime.clear_notice(key)
         runtime.save_project()
         await runtime.publish_status()
         return {"ok": True}
@@ -2327,7 +2337,7 @@ def install(host):
         if runtime.states[name].get('archived'):
             return JSONResponse({'error': 'Restore this profile in Team before resuming it'}, 400)
         runtime.states[name]["paused"] = False
-        runtime.wake_notices.pop(name, None)
+        await runtime.clear_notice(name)
         runtime.save_project()
         await runtime.publish_status()
         return {"ok": True}
