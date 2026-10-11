@@ -207,6 +207,7 @@ class ResponseClaims:
         routing = {'message_id': claim['message_id'], 'human': True, 'response_claim': claim['key'],
                    'generation': claim['generation']}
         if claim['generation'] > 1:
-            text = ("You are the backup for this @all: the lead did not answer in time. Give the one answer, and "
-                    "mention only the agents who must act.\n\n" + text)
+            text = ("You are the backup for this @all: the lead did not answer in time and nobody else was woken. "
+                    "Check the board (room_read tasks), give the one answer and mention each agent with an "
+                    "unblocked next step, one line each with that step. Mention nobody who has nothing to do.\n\n" + text)
         self.runtime.enqueue(name, claim['channel'], text, chain=None, routing=routing)

@@ -527,6 +527,7 @@ class Run:
             return
         identifier = self.message_id
         content = self.text.strip()
+        kept_in = ''
         if content:
             final = self.message_phase == 'final_answer' and not partial
             if not final and not partial:
@@ -534,13 +535,16 @@ class Run:
                 # last one is kept: a turn that ends without a final answer still posts it (publish_last).
                 self.last_commentary = content
                 await self.manager.activity_note(self, 'commentary', content)
+                kept_in = 'activity'
             else:
-                await self.publish(content, identifier, final, partial)
+                kept_in = 'chat' if await self.publish(content, identifier, final, partial) else 'activity'
         self.completed_messages.add(identifier)
         self.text = ''
         self.message_id = self.message_phase = None
+        # kept_in tells the live view where the streamed text went, so a preview that became an Activity note
+        # can say so instead of vanishing from the chat (Zero #12872).
         await self.manager.emit('runtime_message_end', {'run': self.id, 'message': identifier,
-            'agent': self.name, 'channel': self.channel})
+            'agent': self.name, 'channel': self.channel, 'kept_in': kept_in})
 
     async def publish(self, content, identifier, final, partial=False, route=True):
         """Post one message to the chat. A final answer to a human @all goes through the response

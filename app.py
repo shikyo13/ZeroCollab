@@ -630,8 +630,11 @@ async def _handle_new_message(msg: dict):
             message = chat_msg
             if claim and target == claim['owner']:
                 routing.update(response_claim=claim['key'], generation=claim['generation'])
-                message = ("You are the lead for this @all: give the one answer, and mention only the agents who "
-                           "must act. The rest of the team was not woken.\n\n" + chat_msg)
+                # The lead answers for the team and gets work moving: nobody else was woken (Zero #12872).
+                message = ("You are the lead for this @all. The rest of the team was not woken, so you answer for "
+                           "the team and restart work: check the board (room_read tasks), then give the one "
+                           "answer and mention each agent with an unblocked next step, one line each with that "
+                           "step. Mention nobody who has nothing to do.\n\n" + chat_msg)
             queued = await agents.trigger(target, message=message, channel=channel, chain=chain, routing=routing)
             if queued is False:
                 store.add("system", f"Could not queue {target}'s wake. Retry the mention when its wrapper is available.",
