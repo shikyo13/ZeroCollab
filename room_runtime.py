@@ -512,9 +512,17 @@ class Run:
         if self.output_chars > 48000:
             raise RuntimeError("Response exceeded room output limit")
         # The chat shows finished messages only, so nothing that appeared there is taken back (QA c0950fb6,
-        # Zero #12950/#12974). Text being written goes to the Live and Follow views as runtime_draft.
+        # Zero #12950/#12974). Text being written goes to the Live and Follow views as runtime_draft; a sealed
+        # decision position sends no text at all.
         await self.manager.emit("runtime_draft", {"run": self.id, "message": self.message_id,
-            "phase": self.message_phase, "agent": self.name, "channel": self.channel, "text": text})
+            "phase": self.message_phase, "agent": self.name, "channel": self.channel,
+            **({'text': '', 'sealed': True} if self.sealed else {'text': text})})
+
+    @property
+    def sealed(self):
+        """Writing a position that is still sealed: nothing it says reaches the chat, the live view or
+        Activity until the reveal (security 365efc14 D1). The position itself is in the decision record."""
+        return self.manager.decisions.sealing(self) is not None
 
     async def begin_message(self, identifier, phase=None):
         if identifier in self.completed_messages:
@@ -573,6 +581,10 @@ class Run:
         took over), the text is held in Activity and the chat stays quiet. route=False posts without
         waking anyone its text mentions; interim text never routes."""
         claims = self.manager.response_claims
+        if self.sealed:
+            self.withheld = True
+            await self.manager.activity_note(self, 'reply held', '')
+            return None
         gated = final or claims.grant(self) is not None
         if gated:
             reason = claims.check(self)
@@ -621,7 +633,8 @@ class Run:
                     self.stop_reason = 'Native tool-call budget reached. Send a new instruction to continue this bounded task.'
                     raise RuntimeError(self.stop_reason)
         await self.manager.emit("runtime_tool", {"run": self.id, "agent": self.name, "channel": self.channel,
-                                                  "tool": name, "status": status, "details": params}, persist=True)
+                                                  "tool": name, "status": status,
+                                                  "details": {'sealed': True} if self.sealed else params}, persist=True)
 
     async def approval(self, tool, params, reason):
         if self.automatic_tool_approvals and not self.manager_audit:
@@ -712,6 +725,8 @@ class RoomRuntime:
 
     async def activity_note(self, run, kind, text):
         """A line for the Activity view (the runtime_tool feed it already shows), never the chat."""
+        if run.sealed:
+            text = 'Sealed: part of a team decision position, shown when the positions are revealed.'
         await self.emit("runtime_tool", {"run": run.id, "agent": run.name, "channel": run.channel, "tool": kind,
                                          "status": "note", "details": {"text": text[:4000]}}, persist=True)
 
@@ -1471,6 +1486,10 @@ class RoomRuntime:
         if changes_room(tool, arguments):
             run.changing_calls += 1
         arguments = self.profiles.recipient_arguments(arguments)
+        if run.sealed and changes_room(tool, arguments) and tool not in ('room_decision', 'room_markup', 'room_browser'):
+            # Board, chat and review records are public: a sealed position turn only submits its position.
+            raise ValueError('Your team decision position is sealed: submit it with room_decision first; '
+                             'board, chat and review changes wait until the positions are revealed')
         audit_receipt = None
         if run.manager_audit:
             if run.coordination_calls > 16:
@@ -1520,12 +1539,22 @@ class RoomRuntime:
             action = arguments.get('action', 'get')
             if action == 'get':
                 return self.decisions.get(run.name, arguments.get('decision_id', ''))
-            if action != 'submit':
-                raise ValueError('Agents may only get or submit; the user starts, steers and records discussions')
+            if action not in ('submit', 'open', 'reopen'):
+                raise ValueError('Agents may get, submit, open (on a user message) or reopen (as lead); '
+                                 'the user steers and records decisions')
             async with self.decisions.lock:
-                result = self.decisions.submit(run.name, arguments.get('decision_id', ''), arguments.get('stage'),
-                    arguments.get('revision'), arguments.get('epoch'), arguments.get('payload'),
-                    fresh=not run.previous_session)
+                if action == 'open':
+                    d, _ = self.decisions.open(run.name, {**arguments, 'channel': run.channel})
+                    result = self.decisions.view(d, reader=run.name)
+                elif action == 'reopen':
+                    d = self.decisions.find(arguments.get('decision_id', ''))
+                    self.decisions.reopen(run.name, d, arguments.get('reason'))
+                    result = self.decisions.view(d, reader=run.name)
+                else:
+                    result = self.decisions.submit(run.name, arguments.get('decision_id', ''), arguments.get('stage'),
+                        arguments.get('revision'), arguments.get('epoch'), arguments.get('payload'),
+                        fresh=not run.previous_session)
+                self.decisions.save()
             await self.decisions.publish(self.decisions.find(result['id']))
             return result
         if tool == 'room_goal':
@@ -1533,6 +1562,11 @@ class RoomRuntime:
             await self.publish_status()
             return result
         if tool == 'room_markup':
+            if run.sealed:
+                # A mockup for a sealed position is attached to the position, not shown before the reveal (D1b).
+                if arguments.get('task_id'):
+                    raise ValueError('While your position is sealed, attach the image to the position, not a task')
+                arguments = {**arguments, 'post': False}
             result = self.project_room.markup(run.name, run.channel, run.entry['chain'], **arguments)
             await self.emit('project_state', self.project_room.snapshot())
             return result
