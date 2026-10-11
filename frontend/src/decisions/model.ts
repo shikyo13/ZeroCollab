@@ -7,12 +7,18 @@ export interface Contribution {
   agreed?: string[]; dissent?: {point: string; by: string[]}[]; unresolved?: string[]; would_change?: string[];
   answers?: {challenge_id: string; status: string; note: string}[];
   tasks?: {title: string; details: string}[];
+  round?: number; sealed?: boolean; attachments?: {url: string; name?: string}[];
 }
 export interface Summary {
   id: string; question: string; stage: Stage; channel: string; participants: string[]; lead: string;
   updated: number; interrupted: string; outcome: 'agreed' | 'dissent' | 'unresolved';
 }
 export interface Decision extends Summary {
+  round?: number; in_place?: boolean; origin?: [string, number]; task_id?: string;
+  phase?: 'draft' | 'discussing' | 'candidate' | 'review_ready' | 'recorded' | 'stopped';
+  coverage?: {submitted: string[]; invited: string[]; missing: string[]};
+  inputs?: {quote: string; kind: 'requirement' | 'suggestion'; message_id: number; author: string}[];
+  rounds?: {round: number; revealed: boolean; concluded: boolean; outcome: string; proposal_id: string; reason: string}[];
   criteria: string[]; revision: number; epoch: number; returns_used: number; edits_used: number; deadline?: number;
   contributions: Contribution[]; superseded?: string[];
   turns: Record<string, {state: 'queued' | 'no_response' | 'submitted'; detail?: string}>;

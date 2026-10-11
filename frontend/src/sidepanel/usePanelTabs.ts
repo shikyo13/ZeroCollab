@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { readStored, writeStored } from '../lib/storage';
 
-export type PanelRequest = Record<string, unknown> & {tab?: 'file' | 'browser' | 'review' | 'changes'};
-export type ResourceKind = 'browser' | 'file' | 'review' | 'changes';
+export type PanelRequest = Record<string, unknown> & {tab?: 'file' | 'browser' | 'review' | 'changes' | 'decision'};
+export type ResourceKind = 'browser' | 'file' | 'review' | 'changes' | 'decision';
 export type ResourceTab = {id: string; kind: ResourceKind; label: string; request: PanelRequest};
 const initial: ResourceTab[] = [{id: 'browser', kind: 'browser', label: 'Shared browser', request: {tab: 'browser'}}];
 
 function resource(request: PanelRequest): ResourceTab {
   const kind = request.tab!;
+  if(kind==='decision')return {id:'decision:'+String(request.decision_id),kind,label:'Decision',request};
   if (kind === 'browser') return typeof request.page === 'string' && request.page
     ? {id: 'browser:' + request.page, kind, label: 'Browser', request: {tab: 'browser', page: request.page}}
     : initial[0];
@@ -32,10 +33,10 @@ export function usePanelTabs(project: string) {
       for (const raw of data.tabs) {
         // Old versions stored the chooser as a tab. It is now transient UI only.
         if (raw?.tab === 'new') continue;
-        if (!raw || !['file', 'browser', 'review', 'changes'].includes(raw.tab)) continue;
+        if (!raw || !['file', 'browser', 'review', 'changes', 'decision'].includes(raw.tab)) continue;
         const request: PanelRequest = {tab: raw.tab};
         // Store descriptors only. Root indices are transient: reopening must choose their source again.
-        for (const field of ['ref','sender','at','review_id','path','agent','page']) if (typeof raw[field] === 'string') request[field] = raw[field].slice(0, 2000);
+        for (const field of ['ref','sender','at','review_id','path','agent','page','decision_id']) if (typeof raw[field] === 'string') request[field] = raw[field].slice(0, 2000);
         if (raw.source_required === true) request.source_required = true;
         if (typeof raw.time === 'number') request.time = raw.time;
         const next = resource(request);
@@ -50,7 +51,7 @@ export function usePanelTabs(project: string) {
     if (!project) return;
     const descriptors = tabs.map(t => {
       const r = t.request, safe: PanelRequest = {tab: r.tab};
-      for (const field of ['ref','sender','at','review_id','path','agent','time','page']) if (r[field] !== undefined) safe[field] = r[field];
+      for (const field of ['ref','sender','at','review_id','path','agent','time','page','decision_id']) if (r[field] !== undefined) safe[field] = r[field];
       if (r.root != null || r.source_required) safe.source_required = true;
       return safe;
     });

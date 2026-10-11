@@ -9,6 +9,7 @@ import { usePanelTabs, type PanelRequest, type ResourceTab } from './usePanelTab
 import NewPanelTab from './NewPanelTab';
 import ChangesView from './ChangesView';
 import ReviewFileView from './ReviewFileView';
+import { DecisionPanel } from '../decisions/ChatDecision';
 import './sidepanel.css';
 
 export type { PanelRequest } from './usePanelTabs';
@@ -119,7 +120,7 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
   useEffect(() => {
     const listener = (event: Event) => {
       const request = (event as CustomEvent<PanelRequest>).detail;
-      if (!request || !['file','browser','review','changes'].includes(request.tab || '')) return;
+      if (!request || !['file','browser','review','changes','decision'].includes(request.tab || '')) return;
       event.preventDefault(); openResource(request, false);
     };
     window.addEventListener('workspace-side-panel', listener);
@@ -135,6 +136,7 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
   }, [expanded, open, setExpanded]);
   const identity = (tab: ResourceTab) => {
+    if(tab.kind==='decision')return `Decision · ${project} · ${tab.request.decision_id}`;
     if (tab.kind === 'browser') {
       const page = browser?.pages?.find(p => p.id === tab.request.page);
       return `Browser · ${project} · Page ${tab.request.page || 'current'} · ${page?.title || (!tab.request.page ? browser?.title : '') || 'Untitled'} · ${page?.url || ''}`;
@@ -167,6 +169,8 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
     setAnnouncement(`Closed ${label(tabs.tabs[index])} viewer.`); tabs.closeTab(id);
     if (tabs.tabs.length === 1) {setChoosing(false); hide();}
     else focusTab(wasSelected ? next?.id || '' : tabs.selected);
+    const opener=tabs.tabs[index].request.opener;
+    if(tabs.tabs[index].kind==='decision'&&opener instanceof HTMLElement&&opener.isConnected)requestAnimationFrame(()=>opener.focus());
   };
   const chooser = () => {chooserOpener.current = document.activeElement as HTMLElement; setChoosing(true); show(); requestAnimationFrame(() => chooserClose.current?.focus()); setAnnouncement('Choose what to open beside chat.');};
   const cancelChooser = () => {setChoosing(false); if (tabs.tabs.length) requestAnimationFrame(() => chooserOpener.current?.isConnected ? chooserOpener.current.focus() : focusTab(tabs.selected)); else hide();};
@@ -187,7 +191,7 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
                 const next=e.key === 'Home' ? 0 : e.key === 'End' ? tabs.tabs.length-1 : (index+(e.key === 'ArrowRight' ? 1 : -1)+tabs.tabs.length)%tabs.tabs.length;
                 select(tabs.tabs[next]); focusTab(tabs.tabs[next].id);
               } else if (e.key === 'Delete') {e.preventDefault(); closeTab(tab.id);}
-            }}><span aria-hidden="true" className="companion-kind">{({browser:'◎',file:'▧',review:'✓',changes:'±'})[tab.kind]}</span><span className="companion-tab-title">{label(tab)}</span>{isUnavailable(tab) && <span className="companion-tab-state">Closed</span>}</button>
+            }}><span aria-hidden="true" className="companion-kind">{({browser:'◎',file:'▧',review:'✓',changes:'±',decision:'◇'})[tab.kind]}</span><span className="companion-tab-title">{label(tab)}</span>{isUnavailable(tab) && <span className="companion-tab-state">Closed</span>}</button>
           <button className="companion-tab-close" tabIndex={-1} aria-label={`Close ${accessibleLabel(tab)} viewer`} onClick={() => closeTab(tab.id)}>×</button>
         </div>)}
       </div>
@@ -205,6 +209,7 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
     {tabs.tabs.map(tab => {
       const active = open && !choosing && tabs.selected === tab.id;
       const renderers: Record<ResourceTab['kind'], () => ReactNode> = {
+        decision:()=> <DecisionPanel id={String(tab.request.decision_id)} project={project} active={active} close={()=>closeTab(tab.id)}/>,
         browser: () => <Browser active={active} project={project} page={typeof tab.request.page === 'string' ? tab.request.page : undefined} onState={onBrowser} choosePage={chooser} closeViewer={() => closeTab(tab.id)} onUnavailable={value => setUnavailable(previous => previous[tab.id] === value ? previous : {...previous, [tab.id]: value})} />,
         file: () => fileView ? fileView(tab.request, active, hide) : <p className="companion-empty">File preview is unavailable.</p>,
         review: () => <ReviewFileView project={project} request={tab.request} active={active} review={board?.reviews?.find(r => r.id === tab.request.review_id)} />,

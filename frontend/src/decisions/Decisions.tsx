@@ -3,10 +3,10 @@ import { api, errorMessage } from '../lib/api';
 import { useRoomEvent } from '../lib/room';
 import type { Agents } from '../board/shared';
 import type { RunInfo } from '../lib/types';
-import { legacy } from '../legacy';
 import { openDecision, type Decision, type Draft, type Listing } from './model';
 import Setup from './Setup';
 import DecisionDetail from './DecisionDetail';
+import ChatDecision from './ChatDecision';
 import './decisions.css';
 
 export default function Decisions({project, active, channel, agents, runs, onTask}: {
@@ -20,7 +20,7 @@ export default function Decisions({project, active, channel, agents, runs, onTas
   const receive = useCallback((d: Decision) => {
     if (!alive.current || d.updated < (versions.current.get(d.id) ?? 0)) return;
     versions.current.set(d.id, d.updated);
-    setListing(list => list ? {...list, decisions: [d, ...list.decisions.filter(x => x.id !== d.id)]} : list);
+    setListing(list => ({...(list || {available:[]}), decisions: [d, ...(list?.decisions || []).filter(x => x.id !== d.id)]}));
     if (selectedRef.current === d.id) setData(d);
   }, []);
   useRoomEvent<Decision>('decision', e => receive(e.data));
@@ -47,14 +47,8 @@ export default function Decisions({project, active, channel, agents, runs, onTas
       .catch(e => {if (current) setError(errorMessage(e));});
     return () => {current = false;};
   }, [selected, refresh, receive]);
-  const transcript = listing?.decisions.find(d => d.channel && d.channel === channel);
-  useEffect(() => {
-    if (!transcript) return;
-    const button = document.createElement('button'); button.type = 'button'; button.className = 'ws-icon-button decision-chat-link';
-    button.textContent = 'Review decision'; button.title = 'Open Board > Decisions'; button.onclick = () => openDecision(transcript.id);
-    (legacy.header.querySelector('.header-right') || legacy.header).append(button);
-    return () => button.remove();
-  }, [transcript?.id]);
+  const matching = listing?.decisions.filter(d => d.channel && d.channel === channel).sort((a,b)=>b.updated-a.updated) || [];
+  const transcript = matching.find(d=>!['recorded','stopped'].includes(d.stage)) || matching[0];
   const select = (id: string) => {
     if (id) openDecision(id);
     else {const url = new URL(location.href); url.searchParams.delete('decision'); history.pushState({},'',url.pathname + url.search); window.dispatchEvent(new PopStateEvent('popstate'));}
@@ -66,7 +60,7 @@ export default function Decisions({project, active, channel, agents, runs, onTas
       if (!alive.current) return false; versions.current.set(d.id,d.updated); setListing(l => l ? {...l,decisions:[d,...l.decisions]} : l); select(d.id); setData(d); setAnnouncement('Draft saved. No participant work has started.'); return true;
     } catch (e) {if (alive.current) setError(errorMessage(e)); return false;} finally {creating.current = false; if (alive.current) setBusy(false);}
   };
-  return <section className="decision-root" aria-label="Team decisions">
+  return <><section className="decision-root" aria-label="Team decisions">
     <header className="decision-heading"><div><p className="decision-eyebrow">TEAM DISCUSSION</p><h2>Decisions</h2><p>A bounded discussion with attributed contributions and a recorded outcome.</p></div><div className="decision-actions">
       {selected && <button className="bd-btn" onClick={() => select('')}>Back to discussions</button>}
       <button className="bd-btn" onClick={() => {setError(''); setRefresh(n => n + 1);}}>Refresh decisions</button></div></header>
@@ -77,5 +71,5 @@ export default function Decisions({project, active, channel, agents, runs, onTas
         {!listing && !error && <p>Loading discussions...</p>}{listing?.decisions.length === 0 && <p>No saved discussions yet.</p>}
         {listing?.decisions.map(d => <button className="decision-list-item" key={d.id} onClick={() => select(d.id)}><strong>{d.question}</strong><small>{d.stage.replace(/_/g,' ')} · {d.stage === 'recorded' ? 'Recorded' : d.outcome} · {d.participants.join(', ')}</small></button>)}
       </section></div>}
-  </section>;
+  </section>{transcript&&<ChatDecision key={`${project}:${transcript.id}`} project={project} summary={transcript}/>}</>;
 }
