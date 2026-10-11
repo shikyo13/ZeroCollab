@@ -114,6 +114,42 @@ def _parse_args():
     return parser.parse_args()
 
 
+# The data-folder lease, held for this process's whole life; the OS releases it if the process dies.
+_writer = None
+# The desktop app reads this assignment from the installed run.py and supervisor.py (as text, never by
+# running them) and opens a web room's data only when both declare it: older files ignore the lease.
+ROOM_WRITER_PROTOCOL = 1
+APP_NAMES = {'desktop': 'the ZeroCollab desktop app', 'web': 'another ZeroCollab web room'}
+
+
+def handback_notice(kind):
+    """The announcement when the room opens Stopped because the other app used this data last."""
+    return (f"Room opened stopped: {APP_NAMES.get(kind, kind)} used this room since the web room last ran, "
+            "so nothing queued there runs here on its own.")
+
+
+def _take_room_writer(data_dir, handoff):
+    """The web room's lease on its data folder: the supervisor's, duplicated into this process and named on
+    stdin, or its own when started directly. Exits with plain text when the desktop app or another room
+    holds the folder. Returns (lease, kind of the other app to open Stopped for, or None)."""
+    import room_writer
+    try:
+        if handoff.get("room_writer"):
+            # The supervisor holds the folder across restarts and decides whether its first room opens Stopped.
+            return room_writer.adopt_room_writer(data_dir, handoff["room_writer"], kind="web"), handoff.get("start_stopped")
+        lease = room_writer.open_room_writer(data_dir, kind="web")
+    except room_writer.RoomInUse as exc:
+        owner = exc.owner or {}
+        who = APP_NAMES.get(owner.get("kind"), "another program")
+        pid = f" (PID {owner['pid']})" if isinstance(owner.get("pid"), int) else ""
+        sys.exit(f"Error: {data_dir} is in use by {who}{pid}. Quit it, then start the web room again.")
+    except (OSError, ValueError, RuntimeError) as exc:
+        # A damaged owner record, a handle for another folder, or no lease support on this system: never start unleased.
+        sys.exit(f"Error: could not take ownership of {data_dir} ({exc}). Nothing was started.")
+    previous = (lease.previous or {}).get("kind")
+    return lease, previous if previous not in (None, "web") else None
+
+
 def main():
     for name in ("uvicorn.error", "uvicorn.access"):
         logging.getLogger(name).addFilter(SessionLogFilter())
@@ -137,6 +173,9 @@ def main():
         sys.exit(1)
 
     config = load_config(ROOT)
+    # Absolute data and upload folders, the same ones the supervisor and the desktop app name.
+    from config_loader import pin_room_paths
+    paths = pin_room_paths(config, ROOT)
 
     # --- Security: the UI token (in memory only) ---
     # The supervisor generates it and hands it over on stdin with the browser-session hashes, so it is
@@ -148,12 +187,18 @@ def main():
     port = int(config.get("server", {}).get("port", 8300))
     browser_sessions = ui_sessions.BrowserSessions(port, handoff.get("session_hashes"))
 
+    # --- One writer per data folder (room_writer.py) ---
+    # Before anything writes: the web room and the desktop app never run on the same data at once.
+    global _writer
+    _writer, start_stopped = _take_room_writer(paths["data"], handoff)
+
     # Configure the FastAPI app (creates shared store)
     from app import app, configure, set_event_loop, store as _store_ref
     configure(config, session_token=session_token, sessions=browser_sessions)
     import app as room_app
     from room_runtime import install
     runtime = install(room_app)
+    runtime.start_stopped = handback_notice(start_stopped) if start_stopped else None
 
     # Share stores with the MCP bridge
     from app import store, room_settings, registry, router as app_router, agents as app_agents
@@ -166,7 +211,7 @@ def main():
     mcp_bridge.agents = app_agents
 
     # Enable cursor persistence across restarts
-    data_dir = ROOT / config.get("server", {}).get("data_dir", "./data")
+    data_dir = paths["data"]
     mcp_bridge._CURSORS_FILE = data_dir / "mcp_cursors.json"
     mcp_bridge._load_cursors()
 

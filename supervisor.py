@@ -50,6 +50,9 @@ import release_pack
 LIVE = Path(__file__).resolve().parent
 DATA = LIVE / 'data'
 SPOOL = DATA / 'deploy'
+HANDBACK = SPOOL / 'handback.json'  # {kind}: the other app used the room's data last; the next room opens Stopped
+# Read as text by the desktop app with run.py's: both must declare it before desktop opens this room's data.
+ROOM_WRITER_PROTOCOL = 1
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 REQUEST_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # Data records snapshotted for an exact restore; everything else in data/ is left alone.
@@ -100,6 +103,28 @@ def room_port():
         if port:
             return int(port)
     return 8300
+
+
+def room_data():
+    """The data folder run.py writes, by the same rule as config_loader.room_paths: config.toml's
+    server.data_dir (or ZEROCOLLAB_DATA_DIR), relative to LIVE, resolved. Inlined so this file never depends
+    on a release-shipped helper's version; run.py checks the lease it adopts names the same folder."""
+    value = os.environ.get('ZEROCOLLAB_DATA_DIR') or ''
+    if not value:
+        try:
+            value = tomllib.loads((LIVE / 'config.toml').read_text(encoding='utf-8')).get('server', {}).get('data_dir', '')
+        except (OSError, ValueError):
+            value = ''
+    path = Path(value or './data')
+    return (path if path.is_absolute() else LIVE / path).resolve()
+
+
+def lease_holder(exc):
+    """Plain text naming who holds the room's data folder, from room_writer.RoomInUse."""
+    owner = getattr(exc, 'owner', None) or {}
+    who = {'desktop': 'the ZeroCollab desktop app', 'web': 'another ZeroCollab web room'}.get(owner.get('kind'), 'another program')
+    pid = f' (PID {owner["pid"]})' if isinstance(owner.get('pid'), int) else ''
+    return f'{room_data()} is in use by {who}{pid}. Quit it, then start the room again.'
 
 
 def processes():
@@ -175,6 +200,10 @@ class Supervisor:
         self.status = {'supervisor_pid': os.getpid(), 'url': self.url, 'nonce': nonce}
         self.status_lock = threading.Lock()
         self.locks = []
+        # The data-folder lease (room_writer.py), held for this process's life so the desktop app can never
+        # open the room's data between child restarts or during a deployment. Each child gets a duplicate.
+        self.lease = None
+        self.start_stopped = None  # the other app that used the data last; only the first child opens Stopped
 
     # ----- records -----
     def set_status(self, state=None, **values):
@@ -262,12 +291,28 @@ class Supervisor:
     # ----- server process -----
     def start_child(self):
         DATA.mkdir(parents=True, exist_ok=True)
+        python, env = sys.executable, None
+        if self.lease:
+            # A venv's python.exe is a launcher that runs the real interpreter as its own child, so a handle
+            # duplicated into the launcher never reaches run.py. Start the real interpreter in the same venv
+            # the way the launcher does (__PYVENV_LAUNCHER__), so the Popen process is the room itself.
+            base = Path(getattr(sys, '_base_executable', '') or sys.executable)
+            if sys.prefix != sys.base_prefix and base.is_file() and base.resolve() != Path(sys.executable).resolve():
+                python, env = str(base), {**os.environ, '__PYVENV_LAUNCHER__': sys.executable}
         with open(DATA / 'server.log', 'ab') as out, open(DATA / 'server-error.log', 'ab') as err:
-            self.child = subprocess.Popen([sys.executable, '-X', 'utf8', '-u', str(LIVE / 'run.py')], cwd=LIVE,
+            self.child = subprocess.Popen([python, '-X', 'utf8', '-u', str(LIVE / 'run.py')], cwd=LIVE, env=env,
                                           stdin=subprocess.PIPE, stdout=out, stderr=err, creationflags=NO_WINDOW)
+        handoff = {'ui_token': self.ui_token, 'session_hashes': self.session_hashes}
+        if self.lease:
+            # The child waits on stdin before writing anything, so it adopts this duplicate first.
+            try:
+                handoff['room_writer'] = self.lease.duplicate_for_child(self.child)
+            except Exception:
+                self.child.kill()
+                raise
+            handoff['start_stopped'] = self.start_stopped
         try:  # One line, then EOF. An older run.py never reads it; the line fits the pipe buffer.
-            self.child.stdin.write((json.dumps({'ui_token': self.ui_token,
-                                                'session_hashes': self.session_hashes}) + '\n').encode())
+            self.child.stdin.write((json.dumps(handoff) + '\n').encode())
             self.child.stdin.close()
         except OSError:
             pass  # The child already exited; session() below reports it.
@@ -275,6 +320,10 @@ class Supervisor:
         write_json(DATA / 'server-process.json', {'pid': self.child.pid, 'startUtc': creation_utc(self.child._handle),
                                                   'root': str(LIVE), 'supervisor_pid': os.getpid()})
         self.session(wait_seconds=90)
+        if handoff.get('start_stopped'):
+            # The room answers only after its startup ran, so it has opened Stopped and saved that state.
+            self.start_stopped = None
+            HANDBACK.unlink(missing_ok=True)
 
     def stop_child(self, graceful=True):
         """Stop the server by its handle and confirm it is gone. Returns True only when confirmed."""
@@ -340,6 +389,29 @@ class Supervisor:
             if not handle:
                 sys.exit(f'{path} is held: another supervisor or deployment helper is running.')
             self.locks.append(handle)
+        try:
+            import room_writer
+        except ImportError:  # Installed before the release that ships room_writer.py: run as before, unleased.
+            self.status['data_lease'] = 'unavailable: room_writer.py is not installed yet'
+            return
+        try:
+            self.lease = room_writer.open_room_writer(room_data(), kind='web', supervisor=True)
+        except room_writer.RoomInUse as exc:
+            text = lease_holder(exc)
+            self.set_status('data_in_use', error=text)
+            sys.exit(text)
+        except (OSError, ValueError) as exc:  # e.g. a damaged owner record: refuse rather than run unleased
+            text = f'Could not take ownership of {room_data()}: {exc}'
+            self.set_status('data_lease_failed', error=text[:1000])
+            sys.exit(text)
+        self.status['data_lease'] = 'held'
+        # Opening the lease records this supervisor as the owner, so keep "the other app used it last" in the
+        # spool until a room has started Stopped with it (bootstrap and recover take the lease too).
+        previous = (self.lease.previous or {}).get('kind')
+        kept = (read_json(HANDBACK) or {}).get('kind')
+        self.start_stopped = next((k for k in (previous, kept) if k not in (None, 'web')), None)
+        if self.start_stopped:
+            write_json(HANDBACK, {'kind': self.start_stopped, 'time': now()})
 
     def run(self):
         self.acquire()
@@ -858,6 +930,8 @@ def bootstrap(args):
     print(f'Installed release {args.release_id} ({len(deployment.journal["plan"])} file changes); starting it behind the gate.')
     for handle in sup.locks:  # The supervisor started next takes these locks itself.
         handle.close()
+    if sup.lease:  # No child holds a duplicate yet, so it closes at once.
+        sup.lease.close()
     start(args)
 
 

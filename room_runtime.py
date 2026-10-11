@@ -591,6 +591,9 @@ class RoomRuntime:
         self.states, self.queues, self.workers, self.running, self.approvals = {}, {}, {}, {}, {}
         self.loop = None
         self.paused = False
+        # Set by the launcher before start() when the other app (web or desktop) used this room's data last:
+        # the room then opens Stopped, so nothing queued over there runs here until the user clicks Resume.
+        self.start_stopped = None
         self.project = None
         self.identity = None
         self.audit = self.data / "runtime_events.jsonl"
@@ -952,6 +955,9 @@ class RoomRuntime:
                 self.states[name]['paused'] = True
         self.save_project()
         self.restore_deploy_queue()
+        if self.start_stopped:
+            # Before the heartbeat exists, so no queued entry, ready wake, goal step or manager check-in runs first.
+            await self.stop(notice=self.start_stopped)
         self.heartbeat = asyncio.create_task(self.beat())
         await self.refresh()
 
@@ -1933,7 +1939,8 @@ class RoomRuntime:
         self.host.store.add("system", f"{name} stopped. Its queued work was cleared; the other agents can continue.", channel=self.default_channel())
         await self.publish_status()
 
-    async def stop(self):
+    async def stop(self, notice=None):
+        """Stop the room (user's Stop). notice replaces the announcement when the room opens Stopped instead."""
         self.paused = True
         self.manager_wakes.invalidate('Room stopped')
         self.team_builder.interrupt()
@@ -1953,7 +1960,8 @@ class RoomRuntime:
                 failed_clears.append(path.name)
         detail = (' Some wrapper queues could not be cleared: ' + ', '.join(failed_clears)
                   if failed_clears else ' Queues cleared.')
-        self.host.store.add("system", "Room stopped. Active turns cancelled." + detail + " Click Resume when ready.", channel=self.default_channel())
+        text = (notice + detail if notice else "Room stopped. Active turns cancelled." + detail) + " Click Resume when ready."
+        self.host.store.add("system", text, channel=self.default_channel())
         await self.publish_status()
 
     def save_deploy_queue(self):

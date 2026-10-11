@@ -135,3 +135,30 @@ def load_config(root: Path | None = None) -> dict:
     _apply_env_overrides(config)
 
     return config
+
+
+def room_paths(config: dict, root: Path | None = None) -> dict:
+    """The room's mutable folders as absolute, resolved paths: {'data': Path, 'uploads': Path}.
+
+    Relative values in config.toml resolve against root, the folder that holds config.toml, never the
+    current directory, so the web room, its supervisor and the desktop app (which runs from its own
+    bundle folder) all name the same folders. Everything the room writes lives under these two: chats,
+    board, projects, team, worktrees, settings and uploads. config.toml itself is only read.
+    """
+    root = Path(root or ROOT).resolve()
+
+    def absolute(value):
+        path = Path(value)
+        return (path if path.is_absolute() else root / path).resolve()
+
+    return {'data': absolute(config.get('server', {}).get('data_dir', './data')),
+            'uploads': absolute(config.get('images', {}).get('upload_dir', './uploads'))}
+
+
+def pin_room_paths(config: dict, root: Path | None = None) -> dict:
+    """Write room_paths() back into config as absolute strings, so every module that reads
+    server.data_dir or images.upload_dir later gets the same folder whatever its current directory."""
+    paths = room_paths(config, root)
+    config.setdefault('server', {})['data_dir'] = str(paths['data'])
+    config.setdefault('images', {})['upload_dir'] = str(paths['uploads'])
+    return paths

@@ -124,8 +124,11 @@ LAUNCH_HEADERS = {
 
 
 def read_handoff(stream):
-    """The supervisor's one JSON line on stdin: {"ui_token": str, "session_hashes": [...]}. Empty when
-    stdin is a terminal (development) or carries nothing (an older supervisor gives DEVNULL)."""
+    """The supervisor's one JSON line on stdin: {"ui_token": str, "session_hashes": [...],
+    "room_writer": int, "start_stopped": "desktop"}. room_writer is the supervisor's data-folder lease,
+    duplicated into this process (room_writer.py); start_stopped names the other app that used the data last,
+    so the room opens Stopped. Empty when stdin is a terminal (development) or carries nothing (an older
+    supervisor gives DEVNULL)."""
     if stream is None or stream.isatty():
         return {}
     try:
@@ -137,5 +140,9 @@ def read_handoff(stream):
         return {}
     token = data.get('ui_token')
     hashes = data.get('session_hashes')
+    writer = data.get('room_writer')
+    stopped = data.get('start_stopped')
     return {'ui_token': token if isinstance(token, str) and len(token) >= 32 else None,
-            'session_hashes': hashes if isinstance(hashes, list) else []}
+            'session_hashes': hashes if isinstance(hashes, list) else [],
+            'room_writer': writer if isinstance(writer, int) and not isinstance(writer, bool) and writer > 0 else None,
+            'start_stopped': stopped if stopped in ('desktop',) else None}
