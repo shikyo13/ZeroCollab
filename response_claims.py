@@ -17,8 +17,8 @@ reaches the chat:
   never posts the answer twice.
 
 Only the lead's (or backup's) posts for that message go through the claim. Named @mentions, @all,
-Stop and steering, review, follow-up, goal and task wakes reach agents exactly as before. A human
-@all also raises the scope, so a lead answer still being written for an older message is held.
+Stop and steering, review, follow-up, goal and task wakes reach agents exactly as before. Only Stop and
+a newer untagged message raise the scope; an @all has no competing answer, so it supersedes nothing.
 """
 import time
 
