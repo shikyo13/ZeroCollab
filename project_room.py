@@ -619,10 +619,17 @@ class ProjectRoom:
                 raise ValueError('Resolve pending ownership transfer or human wait before marking done')
             unfinished = [t['id'] for t in tasks if t['id'] in task.get('depends_on', []) and t['status'] != 'done']
             reviews = [r['id'] for r in self.state.get('reviews', []) if r['task_id'] == task['id'] and r['status'] in ('pending', 'changes_requested')]
-            changed_reviews = [r['id'] for r in self.state.get('reviews', []) if r['task_id'] == task['id'] and r['status'] == 'approved' and self.records.changed_files(r)]
-            reviews += changed_reviews
-            if unfinished or reviews:
-                raise ValueError(f'Resolve requested reviews {reviews} and unfinished dependencies {unfinished} before marking done; the user can override')
+            # An approval whose files moved on afterwards blocks, unless the task names the release it shipped in:
+            # then the approved work is what was installed and the later bytes belong to newer work (opus 64b79f99).
+            shipped = bool((task.get('evidence') or {}).get('installation', '').strip())
+            changed_reviews = [] if shipped else [
+                r['id'] for r in self.state.get('reviews', []) if r['task_id'] == task['id']
+                and r['status'] == 'approved' and self.records.changed_files(r)]
+            if unfinished or reviews or changed_reviews:
+                hint = (f' Approvals {changed_reviews} were given before their files changed: record evidence.installation '
+                        'if that work shipped, or ask for a re-review.') if changed_reviews else ''
+                raise ValueError(f'Resolve requested reviews {reviews + changed_reviews} and unfinished dependencies '
+                                 f'{unfinished} before marking done; the user can override.{hint}')
         if task['owner'] and task['owner'] not in self.runtime.states:
             raise ValueError('Choose a registered project participant as owner')
         if not human and task['owner'] == actor and task['status'] in ('working', 'review') and not task['paths']:
