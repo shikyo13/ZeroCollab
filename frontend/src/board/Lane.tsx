@@ -47,7 +47,7 @@ export function Lane({
           return (
             <section key={status} className={`bd-column bd-column-${status}`} aria-labelledby={headId}>
               <h3 id={headId} className="bd-column-head">
-                {STATUS_LABELS[status]} <span className="bd-count">{list.length}</span>
+                {STATUS_LABELS[status]} <span key={list.length} className="bd-count bd-count-roll">{list.length}</span>
               </h3>
               <div className="bd-column-body">
                 {shown.map(task => (

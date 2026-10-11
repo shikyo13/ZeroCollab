@@ -11,6 +11,7 @@ import { STORAGE_KEYS } from '../lib/constants';
 
 export interface LiveTool {
   name: string;
+  label?: string;
   status: string;
   time: number;
 }
@@ -20,6 +21,8 @@ export interface AgentLive {
   agent: string;
   run: string;
   channel: string;
+  /** Explicit association supplied with this run; never inferred from a room reference. */
+  task?: string;
   /** Tail of the agent's latest streamed message; kept after the message ends until the next one. */
   text: string;
   /** Last tool the agent's provider reported in this turn. */
@@ -56,6 +59,8 @@ export interface PipItem {
   url: string;
   /** The markup note: one line per numbered mark. */
   note?: string;
+  source?: string;
+  page?: string;
   task?: string;
   /** Browser: the project the frame belongs to, and what the agent did. */
   project?: string;
@@ -69,6 +74,7 @@ export interface FollowSnapshot {
   ticker: TickerItem[];
   moves: Record<string, TaskMove>;
   pip: PipItem | null;
+  pips: PipItem[];
 }
 
 const TEXT_TAIL = 180;
@@ -93,6 +99,8 @@ let lastReviews: Map<string, Review> | null = null;
 let lastBrowserTime = 0;
 let pip: PipItem | null = null;
 let pipSerial = 0;
+const pips: PipItem[] = [];
+let currentProject = "";
 // Upload urls already shown, so a markup posted to chat and attached to a task appears once.
 const pipSeen = new Set<string>();
 
@@ -109,20 +117,31 @@ function snapshot(): FollowSnapshot {
     ticker: ticker.slice(),
     moves: Object.fromEntries(moves),
     pip: pip && { ...pip },
+    pips: pips.map(item => ({...item})),
   };
 }
 
 function showPip(item: Omit<PipItem, 'id'>) {
-  pip = { ...item, id: ++pipSerial };
+  pip = { project: currentProject, ...item, id: ++pipSerial };
+  pips.unshift(pip);
+  pips.length = Math.min(pips.length, 12);
 }
 
 /** Close the picture-in-picture until the next artifact arrives. While paused, only the card goes:
  * the rest of the frozen view (live entries, ticker, moves) must not advance. */
-export function closePip() {
+export function closePip(id?: number) {
+  if (id !== undefined) {
+    const index = pips.findIndex(item => item.id === id); if (index >= 0) pips.splice(index, 1);
+    if (pip?.id === id) pip = pips[0] || null;
+    if (paused) { shown = {...shown, pips: shown.pips.filter(item => item.id !== id), pip: shown.pip?.id === id ? null : shown.pip}; listeners.forEach(listener => listener()); }
+    else publish(true);
+    return;
+  }
+  pips.length = 0;
   if (paused) {
     // A newer artifact that arrived during the pause still shows on resume.
     if (pip?.id === shown.pip?.id) pip = null;
-    shown = { ...shown, pip: null };
+    shown = { ...shown, pip: null, pips: [] };
     listeners.forEach(listener => listener());
     return;
   }
@@ -175,6 +194,8 @@ interface RuntimeData {
   text?: string;
   message?: string;
   tool?: string;
+  label?: string;
+  task_id?: string;
   status?: string;
   outcome?: string;
   sealed?: boolean;
@@ -185,7 +206,8 @@ const streams = new Map<string, { message: string; text: string; draft: boolean 
 
 function onStart(event: RoomEvent) {
   const d = event.data as RuntimeData;
-  ensure(d.agent, d.run, d.channel ?? '');
+  const entry = ensure(d.agent, d.run, d.channel ?? '');
+  if (d.task_id) entry.task = d.task_id;
   tick(d.agent, 'started a turn', undefined);
   publish();
 }
@@ -193,6 +215,7 @@ function onStart(event: RoomEvent) {
 function onDelta(event: RoomEvent) {
   const d = event.data as RuntimeData;
   const entry = ensure(d.agent, d.run, d.channel ?? '');
+  if (d.task_id) entry.task = d.task_id;
   const draft = event.type === 'runtime_draft';
   let stream = streams.get(d.run);
   // The first public delta repeats the full message after a draft, rather than continuing its chunks.
@@ -211,7 +234,7 @@ function onDelta(event: RoomEvent) {
 function onTool(event: RoomEvent) {
   const d = event.data as RuntimeData;
   const entry = ensure(d.agent, d.run, d.channel ?? '');
-  entry.tool = { name: d.tool ?? 'tool', status: d.status ?? '', time: now() };
+  entry.tool = { name: d.tool ?? 'tool', label: d.label, status: d.status ?? '', time: now() };
   entry.updated = now();
   publish();
 }
@@ -231,8 +254,12 @@ function onEnd(event: RoomEvent) {
 }
 
 function onProjectState(event: RoomEvent) {
-  const state = event.data as ProjectState;
+  const state = event.data as ProjectState & {project_id?: string};
   if (!state || !Array.isArray(state.tasks)) return;
+  if (state.project_id && currentProject && state.project_id !== currentProject) {
+    lastTasks = null; lastReviews = null; moves.clear(); ticker.length = 0; pips.length = 0; pip = null; pipSeen.clear();
+  }
+  currentProject = state.project_id || currentProject;
   const tasks = new Map(state.tasks.map(t => [t.id, t]));
   const reviews = new Map((state.reviews ?? []).map(r => [r.id, r]));
   const time = now();
@@ -261,7 +288,7 @@ function onProjectState(event: RoomEvent) {
       const last = added[added.length - 1];
       if (last) {
         pipSeen.add(last.url);
-        showPip({ kind: last.source ? 'markup' : 'image', actor: by, time, url: last.url, note: last.note, task: id });
+        showPip({ kind: last.source ? 'markup' : 'image', actor: by, time, url: last.url, note: last.note, source: last.source, task: id });
         tick(by, last.source ? 'annotated an image on' : 'attached an image to', id, time);
       }
     }
@@ -286,7 +313,10 @@ function onProjectState(event: RoomEvent) {
 interface BrowserData {
   url?: string;
   project?: string;
-  activity?: { actor?: string; label?: string; action?: string; phase?: string; time?: number } | null;
+  page?: string;
+  active_page?: string;
+  pages?: {id: string; url: string}[];
+  activity?: { actor?: string; label?: string; action?: string; phase?: string; time?: number; page?: string } | null;
 }
 
 // Actions worth a ticker line; status checks and inspection are background noise.
@@ -319,7 +349,9 @@ function onBrowser(event: RoomEvent) {
   tick(who, words + where, undefined, a.time);
   // An agent acting in the shared preview: show the page as it is now. The user's own actions are not echoed.
   if (who !== 'user' && a.action !== 'release' && d.project) {
-    showPip({ kind: 'browser', actor: who, time: a.time, url: d.url ?? '', project: d.project, action: words });
+    const page = a.page || d.page || d.active_page;
+    const url = d.pages?.find(p => p.id === page)?.url || (!a.page || a.page === d.page ? d.url : '') || '';
+    showPip({ kind: 'browser', actor: who, time: a.time, url, project: d.project, page, action: words });
   }
   publish();
 }
@@ -340,7 +372,7 @@ function onMessage(event: RoomEvent) {
   if (!last) return;
   pipSeen.add(last.url);
   const time = now();
-  showPip({ kind: last.source ? 'markup' : 'image', actor: m.sender, time, url: last.url, note: last.note });
+  showPip({ kind: last.source ? 'markup' : 'image', actor: m.sender, time, url: last.url, note: last.note, source: last.source });
   tick(m.sender, last.source ? 'annotated an image' : 'shared an image', undefined, time);
   publish();
 }
@@ -348,7 +380,13 @@ function onMessage(event: RoomEvent) {
 // Agent ids from runtime_state, which the room broadcasts on every status change.
 const knownAgents = new Set<string>();
 function onRuntimeState(event: RoomEvent) {
-  const agents = (event.data as { agents?: Record<string, unknown> } | undefined)?.agents;
+  const data = event.data as { agents?: Record<string, unknown>; project_id?: string } | undefined;
+  if (data?.project_id && data.project_id !== currentProject) {
+    currentProject = data.project_id; lastTasks = null; lastReviews = null; lastBrowserTime = 0;
+    live.clear(); streams.clear(); ended.clear(); moves.clear(); ticker.length = 0; pips.length = 0; pip = null; pipSeen.clear();
+    paused = false; publish(true);
+  }
+  const agents = data?.agents;
   if (agents) {
     knownAgents.clear();
     Object.keys(agents).forEach(name => knownAgents.add(name));

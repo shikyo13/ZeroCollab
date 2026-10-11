@@ -1,141 +1,127 @@
-/* Follow mode F2: a picture-in-picture of the latest finished artifact while following.
- * - An annotation (room_markup) shows the completed image with its numbered legend. Markup is
- *   atomic, so this is the finished result, never a live drawing.
- * - An image an agent shares or attaches shows as is.
- * - An agent acting in the shared browser shows the preview page as it is now, refreshed while open.
- * Everything comes from events the room already emits (followStore.ts). */
+/* Existing Follow evidence, kept in a reserved lane. Saved images are immutable;
+ * browser frames update only while their own page is visible and not being read. */
 import { useEffect, useRef, useState } from 'react';
 import { sessionHeaders } from '../lib/api';
 import type { Task } from '../lib/types';
 import { imageNotes } from '../annotate/ImageViewer';
-import { displayName, type Agents } from '../board/shared';
+import type { Agents } from '../board/shared';
+import { followName } from './Follow';
 import { closePip, useFollow, type PipItem } from './followStore';
 import './pip.css';
 
-const HIDE_AFTER_MS = 30000;
-const FRAME_REFRESH_MS = 1500;
+type Pane = {key:number; item:PipItem; pinned:boolean; held:boolean; graceUntil:number; heldCollapsed:boolean; collapsed:boolean|null; opened:boolean; updates:number};
+type Frame = {src:string; received:number};
 
-function headline(item: PipItem): string {
-  if (item.kind === 'markup') return 'annotated an image';
-  if (item.kind === 'image') return 'shared an image';
-  return item.action || 'is using the shared browser';
-}
-
-/** The shared browser's current frame, fetched with the session token like the Browser panel does.
- * Fetches only while active() is true (Follow running, card on screen, page visible); otherwise the
- * last frame stays frozen and no request is made. A new target starts blank, and anything that
- * arrives after the target changed or the card closed is discarded, never shown under the wrong caption. */
-function useBrowserFrame(item: PipItem | null, paused: boolean, active: () => boolean) {
-  const [frame, setFrame] = useState('');
-  const activeRef = useRef(active);
-  activeRef.current = active;
-  const request = useRef<AbortController | null>(null);
-  // Pausing keeps the same target, so the effect below does not rerun: abort the request in flight here.
-  useEffect(() => { if (paused) request.current?.abort(); }, [paused]);
-  useEffect(() => {
-    setFrame('');
-    if (!item || item.kind !== 'browser' || !item.project) return;
-    let stopped = false;
-    let objectUrl = '';
-    let timer = 0;
-    // A body that lands after Follow paused or the card went off screen must not change the frozen frame.
-    const current = () => !stopped && activeRef.current();
-    const load = async () => {
-      if (activeRef.current()) {
-        const controller = request.current = new AbortController();
-        try {
-          const response = await fetch('/api/runtime/browser/frame?project=' + encodeURIComponent(item.project!),
-            { headers: sessionHeaders(), signal: controller.signal });
-          if (response.ok && current()) {
-            const body = await response.blob();
-            if (current()) {  // the target may have changed, or Follow paused, while the body downloaded
-              const fresh = URL.createObjectURL(body);
-              if (objectUrl) URL.revokeObjectURL(objectUrl);
-              objectUrl = fresh;
-              setFrame(fresh);
+function useBrowserFrame(item:PipItem, frozen:boolean, hardFrozen:boolean, active:()=>boolean) {
+  const [frame,setFrame]=useState<Frame|null>(null),activeRef=useRef(active),frozenRef=useRef(frozen);
+  activeRef.current=active;frozenRef.current=frozen;
+  const request=useRef<AbortController|null>(null),hasFrame=useRef(false),hardRef=useRef(hardFrozen);hardRef.current=hardFrozen;
+  useEffect(()=>{if(hardFrozen || frozen&&hasFrame.current)request.current?.abort();},[frozen,hardFrozen]);
+  useEffect(()=>{
+    setFrame(null);hasFrame.current=false;if(item.kind!=='browser'||!item.project)return;
+    let stopped=false,objectUrl='',timer=0;
+    const current=()=>!stopped&&!hardRef.current&&(!frozenRef.current||!hasFrame.current)&&activeRef.current();
+    const load=async()=>{
+      if(current()){
+        const controller=request.current=new AbortController();
+        try{
+          const query=new URLSearchParams({project:item.project!});if(item.page)query.set('page',item.page);
+          const response=await fetch('/api/runtime/browser/frame?'+query,{headers:sessionHeaders(),signal:controller.signal});
+          if(response.ok&&current()){
+            const body=await response.blob();if(current()){
+              const fresh=URL.createObjectURL(body);if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=fresh;
+              hasFrame.current=true;setFrame({src:fresh,received:Date.now()/1000});
             }
           }
-        } catch { /* aborted, or the browser closed; keep the last frame */ }
+        }catch{/* Keep the last successful frame on pause, close or temporary unavailability. */}
       }
-      if (!stopped) timer = window.setTimeout(load, FRAME_REFRESH_MS);
+      if(!stopped)timer=window.setTimeout(load,1500);
     };
-    void load();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-      request.current?.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [item?.id, item?.kind, item?.project]);
+    void load();return()=>{stopped=true;clearTimeout(timer);request.current?.abort();if(objectUrl)URL.revokeObjectURL(objectUrl);};
+  },[item.kind,item.project,item.page]);
   return frame;
 }
 
-export function FollowPip({ agents, tasks, onOpenTask }: { agents: Agents; tasks: Task[]; onOpenTask: (id: string) => void }) {
-  const snap = useFollow();
-  // Pinned keeps the current artifact on screen while newer ones arrive.
-  const [pinned, setPinned] = useState<PipItem | null>(null);
-  const [hovered, setHovered] = useState(false);
-  const [focused, setFocused] = useState(false);
-  const root = useRef<HTMLElement>(null);
-  const item = snap.following ? pinned ?? snap.pip : null;
-  // Paused freezes the frame like the rest of Follow; a hidden Board or background tab makes no requests.
-  // The card is position: fixed, so offsetParent is always null; a hidden ancestor leaves it without boxes.
-  const frame = useBrowserFrame(item, snap.paused, () =>!snap.paused && !document.hidden && !!root.current?.getClientRects().length);
+function Preview({pane,collapsed,paused,agents,tasks,onChange,onClose,onOpenTask,onNew}:{pane:Pane;collapsed:boolean;paused:boolean;agents:Agents;tasks:Task[];onChange:(patch:Partial<Pane>)=>void;onClose:()=>void;onOpenTask:(id:string)=>void;onNew:()=>void}) {
+  const {item}=pane,root=useRef<HTMLElement>(null),dialog=useRef<HTMLDialogElement>(null),opener=useRef<HTMLElement|null>(null);
+  const [visible,setVisible]=useState(true),[original,setOriginal]=useState(false),[expanded,setExpanded]=useState(false),[now,setNow]=useState(Date.now()/1000);
+  const closeRef=useRef(onClose);closeRef.current=onClose;
+  const frozen=paused||pane.held||pane.pinned||expanded||now<pane.graceUntil;
+  const frame=useBrowserFrame(item,frozen,paused||pane.pinned||expanded,()=>!collapsed&&visible&&!document.hidden&&!!root.current?.getClientRects().length);
+  useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()/1000),1000);return()=>clearInterval(timer);},[]);
+  useEffect(()=>{const node=root.current;if(!node)return;const observer=new IntersectionObserver(entries=>setVisible(entries[0].isIntersecting));observer.observe(node);return()=>observer.disconnect();},[]);
+  useEffect(()=>{
+    if(paused||pane.pinned||pane.held||expanded||now<pane.graceUntil)return;
+    const timer=setTimeout(()=>closeRef.current(),12000);return()=>clearTimeout(timer);
+  },[item.id,paused,pane.pinned,pane.held,expanded,now<pane.graceUntil]);
+  useEffect(()=>{
+    if(!expanded)return;dialog.current?.showModal();return()=>{dialog.current?.close();if(opener.current?.isConnected)opener.current.focus();};
+  },[expanded]);
+  const hold=(held:boolean)=>onChange({held,heldCollapsed:collapsed,graceUntil:held?0:Date.now()/1000+10});
+  const image=item.kind==='browser'?frame?.src:original&&item.source?item.source:item.url;
+  const notes=item.kind==='markup'?imageNotes(item.note):null;
+  const title=item.kind==='browser'?'Browser':item.kind==='markup'?'Annotation':'Screenshot';
+  const time=new Date(item.time*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  const caption=item.kind==='browser'?frame?`${pane.pinned?'Pinned browser frame':'Live browser'} · received ${Math.max(0,Math.floor(now-frame.received))}s ago${pane.held||expanded?' · held while reading':''}`:'Waiting for a browser frame':`${title} · ${time}`;
+  const task=item.task?tasks.find(t=>t.id===item.task):undefined;
+  return <article ref={root} className={`fl-preview${collapsed?' is-collapsed':''}`} style={{'--preview-color':agents[item.actor]?.color || 'var(--accent)'} as React.CSSProperties}
+    data-preview-id={item.id} aria-label={`${followName(item.actor,agents)} ${title} preview`} onPointerEnter={()=>hold(true)} onPointerLeave={()=>{if(!root.current?.contains(document.activeElement))hold(false);}}
+    onFocus={()=>hold(true)} onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node|null)&&!e.currentTarget.matches(':hover'))hold(false);}}>
+    <header className="fl-preview-head"><strong>{followName(item.actor,agents)} · {title}</strong><div className="fl-preview-actions">
+      <button className="fl-pip-btn" aria-expanded={!collapsed} onClick={()=>onChange({collapsed:!collapsed,heldCollapsed:!collapsed,opened:collapsed})}>{collapsed?'Show':'Fold'}</button>
+      <button className="fl-pip-btn" aria-pressed={pane.pinned} disabled={item.kind==='browser'&&!frame&&!pane.pinned} onClick={()=>onChange({pinned:!pane.pinned})}>{pane.pinned?'Unpin':'Pin'}</button>
+      <button className="fl-pip-btn" aria-label={`Close ${followName(item.actor,agents)} ${title} preview`} onClick={onClose}>Close</button>
+    </div><p className="fl-preview-source"><strong>{task?.title || 'Team activity'}</strong><span>{item.kind==='browser'?item.url || 'Shared browser':item.source?'Saved annotation · original available':'Saved screenshot'}</span></p></header>
+    {!collapsed&&<div className="fl-preview-body">
+      <p className="fl-preview-caption">{caption}</p>
+      {item.kind==='markup'&&item.source&&<div className="fl-preview-actions" aria-label="Annotation version"><button className="fl-pip-btn" aria-pressed={!original} onClick={()=>setOriginal(false)}>Marked</button><button className="fl-pip-btn" aria-pressed={original} onClick={()=>setOriginal(true)}>Original</button></div>}
+      {image?<button className="fl-preview-image" aria-label={`Expand ${title} image`} onClick={e=>{opener.current=e.currentTarget;setExpanded(true);}}><img src={image} alt={notes?.summary || `${title} evidence`}/></button>:<p className="fl-pip-empty">Waiting for the shared browser…</p>}
+      {notes&&!original&&<ol className="fl-pip-legend">{notes.marks.map(mark=><li key={mark.number}><span className="fl-pip-key" style={{background:mark.color || 'var(--accent)'}}>{mark.number}</span>{mark.text}</li>)}</ol>}
+      {task&&<button className="fl-pip-link" onClick={()=>onOpenTask(task.id)}>{task.title}</button>}
+      {!!pane.updates&&<button className="fl-pip-btn fl-preview-new" onClick={onNew}>{pane.updates} new previews</button>}
+    </div>}
+    {expanded&&<dialog ref={dialog} className="fl-preview-dialog" aria-label={`${title} image inspection`} onCancel={e=>{e.preventDefault();setExpanded(false);}} onClose={()=>setExpanded(false)}>
+      <header><strong>{followName(item.actor,agents)} · {title}</strong><button className="fl-pip-btn" aria-label="Close image inspection" onClick={()=>setExpanded(false)}>Close</button></header>
+      {image&&<img src={image} alt={notes?.summary || `${title} evidence`}/>}<p>{caption}</p>
+    </dialog>}
+  </article>;
+}
 
-  // A newer artifact hides itself after a while unless paused, pinned, hovered or focused. The timer
-  // re-arms when focus or the pointer leaves, so a card that was focused when it expired still goes.
-  useEffect(() => {
-    if (!item || snap.paused || pinned || hovered || focused) return;
-    const timer = window.setTimeout(() => closePip(), HIDE_AFTER_MS);
-    return () => window.clearTimeout(timer);
-  }, [item?.id, snap.paused, pinned, hovered, focused]);
-  useEffect(() => { if (!snap.following) setPinned(null); }, [snap.following]);
-
-  const close = () => {
-    const hadFocus = !!root.current?.contains(document.activeElement);
-    setPinned(null);
-    closePip();
-    // The card unmounts; keep keyboard users on Follow: the visible toggle, else the banner.
-    if (hadFocus) [...document.querySelectorAll<HTMLElement>('.fl-toggle, .fl-banner')].find(el => el.offsetParent)?.focus();
+export function FollowPip({agents,tasks,onOpenTask,onPreviewsChange,projectId}:{agents:Agents;tasks:Task[];onOpenTask:(id:string)=>void;onPreviewsChange?:(items:PipItem[])=>void;projectId:string}) {
+  const snap=useFollow(),[panes,setPanes]=useState<Pane[]>([]),seen=useRef(0),wasFollowing=useRef(false),rail=useRef<HTMLElement>(null);
+  useEffect(()=>{
+    if(!snap.following){setPanes([]);wasFollowing.current=false;seen.current=0;return;}
+    const incoming=(wasFollowing.current?snap.pips:snap.pips.slice(0,1)).filter(item=>item.id>seen.current&&(!item.project||item.project===projectId));
+    wasFollowing.current=true;if(!incoming.length)return;
+    seen.current=Math.max(seen.current,...incoming.map(item=>item.id));
+    setPanes(previous=>{
+      let next=previous.map(p=>({...p,updates:p.pinned||p.held||Date.now()/1000<p.graceUntil?p.updates+incoming.length:p.updates}));
+      for(const item of [...incoming].reverse()){
+        const same=next.findIndex(p=>item.kind==='browser'&&p.item.kind==='browser'&&p.item.project===item.project&&p.item.page===item.page&&!p.pinned&&!p.held&&Date.now()/1000>=p.graceUntil);
+        if(same>=0){next[same]={...next[same],item};continue;}
+        const pane:Pane={key:item.id,item,pinned:false,held:false,graceUntil:0,heldCollapsed:false,collapsed:null,opened:false,updates:0};
+        // Incoming media never displaces a pinned/read surface. Its update chip leads to the new item.
+        if (next.some(p=>p.pinned||p.held||Date.now()/1000<p.graceUntil)) next.push(pane); else next.unshift(pane);
+      }
+      return next;
+    });
+  },[snap.following,snap.pips,projectId]);
+  useEffect(()=>{onPreviewsChange?.(panes.map(p=>p.item));},[panes,onPreviewsChange]);
+  const close=(id:number)=>{
+    const focused = rail.current?.querySelectorAll<HTMLElement>('.fl-preview');
+    const removed = [...focused || []].find(node => node.dataset.previewId === String(id) && node.contains(document.activeElement));
+    setPanes(previous=>previous.filter(p=>p.item.id!==id));closePip(id);
+    if (removed) requestAnimationFrame(()=>{(rail.current?.querySelector<HTMLElement>('button') || document.querySelector<HTMLElement>('.fl-toggle'))?.focus();});
   };
-
-  if (!item) return null;
-  const notes = item.kind === 'markup' ? imageNotes(item.note) : null;
-  const task = item.task ? tasks.find(t => t.id === item.task) : undefined;
-  const time = new Date(item.time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const color = agents[item.actor]?.color || 'var(--accent)';
-  return (
-    <aside ref={root} className="fl-pip" aria-label="Latest team artifact" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
-      onFocus={() => setFocused(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false); }}>
-      <header className="fl-pip-head">
-        <span className="fl-pip-avatar" style={{ background: color }} aria-hidden="true">{displayName(item.actor, agents).slice(0, 2).toUpperCase()}</span>
-        <p><strong>{displayName(item.actor, agents)}</strong> {headline(item)} · {time}</p>
-        <button type="button" className="fl-pip-btn" aria-pressed={!!pinned} title={pinned ? 'Unpin: show newer artifacts' : 'Pin: keep this one on screen'}
-          onClick={() => setPinned(pinned ? null : item)}>{pinned ? 'Unpin' : 'Pin'}</button>
-        <button type="button" className="fl-pip-btn" aria-label="Close" title="Close until the next artifact"
-          onClick={close}>✕</button>
-      </header>
-      {item.kind === 'browser' ? (
-        <figure className="fl-pip-figure">
-          {frame ? <img src={frame} alt="The shared browser preview as it is now" /> : <p className="fl-pip-empty">Waiting for the shared browser…</p>}
-          <figcaption>Shared browser now{item.url ? ` · ${item.url.replace(/^https?:\/\/(127\.0\.0\.1|localhost)/, '')}` : ''}</figcaption>
-        </figure>
-      ) : (
-        <figure className="fl-pip-figure">
-          <a href={item.url} target="_blank" rel="noreferrer" title="Open the full image"><img src={item.url} alt={notes?.summary || 'Shared image'} /></a>
-          {notes && notes.marks.length > 0 && (
-            <ol className="fl-pip-legend">
-              {notes.marks.map(mark => (
-                <li key={mark.number}><span className="fl-pip-key" style={{ background: mark.color || 'var(--accent)' }}>{mark.number}</span>{mark.text}</li>
-              ))}
-            </ol>
-          )}
-          <figcaption>
-            {item.kind === 'markup' ? 'Finished annotation, shown once it was saved' : 'Shared image'}
-            {task && <> · <button type="button" className="fl-pip-link" onClick={() => onOpenTask(task.id)}>{task.title}</button></>}
-          </figcaption>
-        </figure>
-      )}
-    </aside>
-  );
+  if(!snap.following||!panes.length)return null;
+  return <aside ref={rail} className="fl-preview-rail" aria-label="Team previews"><h2>Team previews</h2>{panes.map((pane,index)=>{
+    const collapsed=pane.held||Date.now()/1000<pane.graceUntil?pane.heldCollapsed:pane.collapsed ?? (index>=2&&!pane.pinned&&!pane.opened);
+    return <Preview key={pane.key} pane={pane} collapsed={collapsed} paused={snap.paused} agents={agents} tasks={tasks} onOpenTask={onOpenTask}
+      onChange={patch=>setPanes(previous=>previous.map(p=>p.item.id===pane.item.id?{...p,...patch}:p))} onClose={()=>close(pane.item.id)}
+      onNew={()=>{
+        const newest=Math.max(...panes.map(p=>p.item.id));
+        setPanes(previous=>previous.map(p=>({...p,updates:0,...p.item.id===newest?{collapsed:false,opened:true,heldCollapsed:false}:{}})));
+        requestAnimationFrame(()=>rail.current?.querySelector<HTMLElement>(`[data-preview-id="${newest}"]`)?.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'}));
+      }}/>;
+  })}</aside>;
 }

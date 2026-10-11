@@ -2,6 +2,7 @@
  * so reloads, links and the browser Back button land on the same page. */
 import { useCallback, useEffect, useState } from 'react';
 import { EVENTS } from '../lib/constants';
+import { setFollowing } from '../follow/followStore';
 import { legacy } from '../legacy';
 
 export const VIEWS = ['projects', 'chat', 'board', 'live', 'motion', 'team', 'activity', 'server'] as const;
@@ -17,7 +18,7 @@ export function openServer(section: ServerSection = 'status') {
 }
 
 const DEFAULT_VIEW: View = 'chat';
-const validView = (value: string | null): View => value === 'activity' ? 'server' : (VIEWS.includes(value as View) ? (value as View) : DEFAULT_VIEW);
+const validView = (value: string | null): View => value === 'live' ? 'board' : value === 'activity' ? 'server' : (VIEWS.includes(value as View) ? (value as View) : DEFAULT_VIEW);
 const param = (name: string) => new URL(location.href).searchParams.get(name);
 
 export function useWorkspaceRoute() {
@@ -26,6 +27,7 @@ export function useWorkspaceRoute() {
   const [historySession, setHistorySession] = useState(() => param('history') || '');
 
   const navigate = useCallback((next: View) => {
+    if (next === 'live') { setFollowing(true); next = 'board'; }
     const activity = next === 'activity';
     if (activity) next = 'server';
     setView(next);
@@ -64,6 +66,10 @@ export function useWorkspaceRoute() {
   useEffect(() => {
     // Back/Forward: the entry's URL is the source of truth for both the view and the project.
     const back = () => {
+      if (param('view') === 'live') {
+        setFollowing(true);
+        const url = new URL(location.href); url.searchParams.set('view', 'board'); history.replaceState({}, '', url);
+      }
       if (param('view') === 'activity') {
         const url = new URL(location.href); url.searchParams.set('view', 'server'); url.searchParams.set('server', 'activity'); history.replaceState({}, '', url);
       }

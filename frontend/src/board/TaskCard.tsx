@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import type { Followup, ProjectState, Review, Task } from '../lib/types';
-import { CardFollowLayer, type CardFollow } from '../follow/Follow';
+import { CardFollowLayer, followName, type CardFollow } from '../follow/Follow';
 import { CardThumbnails } from './Attachments';
 import { AgentChip, LabelChips, RelativeTime, displayName, type Agents } from './shared';
 import { USER } from '../lib/constants';
@@ -16,6 +16,7 @@ export interface TaskFacts {
   changed: boolean;
   /** The request to the user this task waits on, when it links one. */
   wait?: WaitInfo;
+  previewColor?: string;
 }
 
 /** The request to the user that a task waits on, and what has happened to it. */
@@ -69,7 +70,7 @@ export function executionLine(task: Task, wait?: WaitInfo): { tone: string; text
       return { tone: 'attention', text: WAIT_ENDED[wait?.outcome ?? 'missing'] };
     case 'idle':
       return task.status === 'working' || task.status === 'blocked'
-        ? { tone: 'idle', text: `Idle: marked ${task.status}, nothing running` }
+        ? { tone: 'idle', text: `${task.status === 'working' ? 'Working task' : 'Blocked task'} · no turn running` }
         : null;
     default:
       return null;
@@ -112,17 +113,14 @@ export function TaskCard({
   const execution = task.status === 'done' ? null : executionLine(task, facts.wait);
   const waiting = task.execution_state === 'waiting_on_human';
   const liveAgent = follow?.live?.agent;
-  const liveRun = follow?.live?.run;
   const cardRef = useRef<HTMLElement>(null);
-  // Following: bring a card into view when an agent starts executing it (a known task, never a guess).
-  useEffect(() => {
-    if (liveRun) cardRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
-  }, [liveRun]);
   return (
     <article
       ref={cardRef}
-      className={`bd-card${facts.stale ? ' bd-card-stale' : ''}${waiting ? ' bd-card-you' : ''}${selected ? ' bd-card-selected' : ''}${facts.changed ? ' bd-card-changed' : ''}${liveAgent ? ' fl-card-live' : ''}${follow?.move ? ' fl-card-moved' : ''}`}
-      style={liveAgent ? ({ '--agent-color': agents[liveAgent]?.color || 'var(--accent)' } as React.CSSProperties) : undefined}
+      data-task-id={task.id}
+      data-task-status={task.status}
+      className={`bd-card${task.status === 'done' ? ' bd-card-done' : ''}${facts.previewColor ? ' bd-card-preview' : ''}${facts.stale ? ' bd-card-stale' : ''}${waiting ? ' bd-card-you' : ''}${selected ? ' bd-card-selected' : ''}${facts.changed ? ' bd-card-changed' : ''}${liveAgent ? ' fl-card-live' : ''}${follow?.move ? ' fl-card-moved' : ''}`}
+      style={{ '--agent-color': liveAgent ? agents[liveAgent]?.color || 'var(--accent)' : undefined, '--preview-color': facts.previewColor } as React.CSSProperties}
     >
       {follow && <CardFollowLayer follow={follow} agents={agents} part="bubble" />}
       <button
@@ -142,9 +140,10 @@ export function TaskCard({
         </span>
       </button>
       <div className="bd-card-meta">
-        <AgentChip name={task.owner} agents={agents} />
+        <AgentChip name={task.owner} agents={task.owner && agents[task.owner] ? {...agents, [task.owner]: {...agents[task.owner], label: followName(task.owner, agents)}} : agents} />
         <code className="bd-id">{task.id}</code>
       </div>
+      <div className="bd-card-content">
       {execution && (
         <p className={`bd-exec bd-exec-${execution.tone}`}>
           <span className="bd-exec-dot" aria-hidden="true" />
@@ -205,6 +204,7 @@ export function TaskCard({
       <p className="bd-card-age">
         <RelativeTime time={task.updated} now={now} prefix="Updated " />
       </p>
+      </div>
     </article>
   );
 }

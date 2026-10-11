@@ -301,3 +301,29 @@
 .bd-earlier .bd-gallery { margin-top: 8px; }
 .bd-gallery-earlier img { opacity: 0.8; }
 .bd-gallery-earlier .bd-field-hint { display: block; }
+
+/* Previews reserve their own space. The narrow sheet is in flow, never over cards. */
+.bd-media-layout {display:grid;grid-template-columns:minmax(0,1fr) 0;gap:0;align-items:start;transition:grid-template-columns 420ms cubic-bezier(.2,0,0,1),gap 420ms;min-width:0;}
+.bd-media-layout.has-previews {grid-template-columns:minmax(0,1fr) 300px;gap:16px;}
+.bd-media-board {display:flex;flex-direction:column;gap:16px;min-width:0;}
+@media(min-width:721px){.bd-media-layout .bd-columns {grid-template-columns:repeat(5,minmax(160px,1fr));}}
+.bd-media-layout.is-media-sheet {grid-template-columns:minmax(0,1fr);gap:16px;}
+.bd-media-layout.is-media-sheet .fl-preview-rail {position:static;max-height:52dvh; border-top:1px solid var(--border);padding-top:12px;}
+.bd-card-content {display:flex;flex-direction:column;gap:6px;}
+.bd-card-done .bd-card-content {display:none;}
+.bd-card-done {border-left:3px solid var(--success);}
+.bd-card-done .bd-card-open::before {content:'✓ ';color:var(--success);}
+.bd-motion-cue {box-shadow:0 0 0 2px var(--accent);}
+.bd-card-flight {position:fixed!important;z-index:40;pointer-events:none!important;transform-origin:top left;overflow:hidden;--bd-border:var(--border);--bd-text:var(--text);--bd-muted:var(--text-dim);--bd-accent:var(--accent);font-family:var(--font-ui,"Segoe UI",sans-serif);font-size:14px;line-height:1.5;}
+.bd-card-flight * {pointer-events:none!important;}
+.bd-motion-notice {color:var(--text-dim);font-size:13px;}
+.bd-count-roll {display:inline-block;animation:bd-count-roll 260ms ease-out;}
+@keyframes bd-count-roll {from{opacity:.3;transform:translateY(-5px)}to{opacity:1;transform:none}}
+.bd-root.is-follow-paused * {animation-play-state:paused!important;transition-duration:0ms!important;}
+@media(prefers-reduced-motion:reduce) {.bd-media-layout {transition:none;} .bd-count-roll {animation:none;}}
+
+.bd-media-layout:not(.has-previews) > .fl-preview-rail {visibility:hidden;}
+.bd-media-layout.has-previews.is-media-sheet .bd-media-board {max-height:50dvh;overflow:auto;scrollbar-gutter:stable;}
+.bd-media-layout.is-media-sheet .fl-preview-rail {max-height:38dvh;}
+
+.bd-card-preview {outline:1px solid var(--preview-color);outline-offset:1px;}

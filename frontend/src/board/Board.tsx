@@ -19,7 +19,8 @@ import { TaskDetail } from './TaskDetail';
 import { useBoardPrefs, type Tab } from './useBoardPrefs';
 import { useChangeHighlights } from './useChangeHighlights';
 import { FollowBanner, placeFollow, useFollowKeys, useReconcileRuns } from '../follow/Follow';
-import { useFollow } from '../follow/followStore';
+import { useBoardMotion } from './useBoardMotion';
+import { useFollow, type PipItem } from '../follow/followStore';
 import { FollowPip } from '../follow/Pip';
 import './board.css';
 import Decisions from '../decisions/Decisions';
@@ -30,10 +31,17 @@ installAnnotateHook();
 const NO_FILTERS: TaskFilters = { query: '', owner: '', label: '' };
 
 export default function Board() {
-  const { data: project, error: projectError, refresh } = useProjectState();
-  const { data: runtimeState, error: runtimeError } = useRuntimeState();
+  const { data: latestProject, error: projectError, refresh } = useProjectState();
+  const { data: latestRuntime, error: runtimeError } = useRuntimeState();
   const channel = useActiveChannel();
-  const now = useNow();
+  const liveNow = useNow();
+  const follow = useFollow();
+  const projectId = latestRuntime?.project_id || window.activeProjectId || '';
+  const displayed = useRef({ project: latestProject, runtime: latestRuntime, now: liveNow, id: projectId });
+  // Pause freezes this view, not the server or incoming events. Resume catches up atomically.
+  if (!follow.following || !follow.paused || displayed.current.id !== projectId)
+    displayed.current = { project: latestProject, runtime: latestRuntime, now: liveNow, id: projectId };
+  const { project, runtime: runtimeState, now } = displayed.current;
   const { tab, setTab, groupBy, setGroupBy, sortBy, setSortBy, feedOpen, setFeedOpen } = useBoardPrefs();
   const [selected, setSelected] = useState<string | null>(() => new URLSearchParams(location.search).get('task'));
   const [creating, setCreating] = useState(false);
@@ -41,6 +49,17 @@ export default function Board() {
   const [showAllDone, setShowAllDone] = useState(false);
   const changed = useChangeHighlights(project?.tasks);
   const rootRef = useRef<HTMLDivElement>(null);
+  const mediaRef = useRef<HTMLDivElement>(null);
+  const [previewItems, setPreviewItems] = useState<PipItem[]>([]);
+  const previewCount = previewItems.length;
+  const onPreviewsChange = useCallback((items: PipItem[]) => setPreviewItems(items), []);
+  const [mediaWidth, setMediaWidth] = useState(0);
+  useEffect(() => {
+    const node = mediaRef.current; if (!node) return;
+    const observer = new ResizeObserver(entries => setMediaWidth(entries[0].contentRect.width));
+    observer.observe(node); return () => observer.disconnect();
+  }, [!!project]);
+  const motionNotice = useBoardMotion(rootRef, follow.paused, projectId, follow.following && tab === 'tasks');
   useEffect(() => {
     const sync = () => {if (new URLSearchParams(location.search).has('decision')) setTab('decisions', false);};
     sync(); window.addEventListener('popstate', sync); return () => window.removeEventListener('popstate', sync);
@@ -79,7 +98,6 @@ export default function Board() {
 
   const agents: Agents = useMemo(() => runtimeState?.agents ?? {}, [runtimeState]);
   const runs = useMemo(() => runtimeState?.runs ?? [], [runtimeState]);
-  const follow = useFollow();
   // The shell keeps the Board mounted while hidden; its shortcuts only apply while it is on screen.
   useFollowKeys(follow.following, follow.paused, () => !!rootRef.current?.offsetParent);
   useReconcileRuns(runs);
@@ -99,10 +117,11 @@ export default function Board() {
         ownerActive: !!task.owner && active.has(task.owner),
         changed: changed.has(task.id),
         wait: waitInfo(task, project),
+        previewColor: follow.following && previewItems.some(item => item.task === task.id) ? agents[task.owner]?.color || 'var(--accent)' : undefined,
       });
     }
     return map;
-  }, [project, now, runs, changed]);
+  }, [project, now, runs, changed, previewItems, follow.following, agents]);
 
   const lanes = useMemo(
     () => (project ? buildLanes(project.tasks, filters, groupBy, sortBy, agents) : []),
@@ -138,7 +157,7 @@ export default function Board() {
   ];
 
   return (
-    <div className="bd-root" ref={rootRef}>
+    <div className={`bd-root${follow.paused ? ' is-follow-paused' : ''}`} ref={rootRef}>
       <header className="bd-header">
         <div>
           <h1 className="bd-title">Board</h1>
@@ -229,6 +248,9 @@ export default function Board() {
               </button>
             </div>
           )}
+          {motionNotice && <p className="bd-motion-notice" role="status">{motionNotice}</p>}
+          <div ref={mediaRef} className={`bd-media-layout${previewCount && follow.following ? ' has-previews' : ''}${mediaWidth < 1180 ? ' is-media-sheet' : ''}`}>
+          <div className="bd-media-board">
           {project.tasks.length > 0 &&
             lanes.map(lane => (
               <Lane
@@ -245,7 +267,9 @@ export default function Board() {
                 follows={follow.following ? placement.cards : undefined}
               />
             ))}
-          <FollowPip agents={agents} tasks={project.tasks} onOpenTask={openTask} />
+          </div>
+          <FollowPip key={projectId} projectId={projectId} agents={agents} tasks={project.tasks} onOpenTask={openTask} onPreviewsChange={onPreviewsChange} />
+          </div>
         </div>
         {selectedTask && (
           <TaskDetail

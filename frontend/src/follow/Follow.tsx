@@ -1,11 +1,11 @@
 /* Follow mode UI: the header toggle, the Board's banner and LIVE ticker, the per-card
  * overlay, and the Space/Esc shortcuts. A live agent is pinned to a card only when it is
- * executing exactly one task; otherwise it stays on its chip in the banner, and the Board
+ * explicitly associated with that task; otherwise it stays on its chip in the banner, and the Board
  * never scrolls to a guessed task. */
 import { useEffect, useMemo, useRef } from 'react';
 import { sessionTitle } from '../lib/room';
 import type { RunInfo, Task } from '../lib/types';
-import { displayName, type Agents } from '../board/shared';
+import { type Agents } from '../board/shared';
 import { STATUS_LABELS } from '../board/shared';
 import { reconcileRuns, setFollowing, setPaused, useFollow, type AgentLive, type FollowSnapshot, type TaskMove } from './followStore';
 import './follow.css';
@@ -18,7 +18,7 @@ export interface CardFollow {
 
 export interface FollowPlacement {
   cards: Map<string, CardFollow>;
-  /** Live agents not pinned to a card: no executing task, or more than one. */
+  /** Live agents not pinned to a card: no explicit task association. */
   unplaced: AgentLive[];
 }
 
@@ -27,12 +27,16 @@ export function placeFollow(snap: FollowSnapshot, tasks: Task[]): FollowPlacemen
   const unplaced: AgentLive[] = [];
   if (!snap.following) return { cards, unplaced };
   for (const entry of Object.values(snap.live)) {
-    const executing = tasks.filter(t => t.owner === entry.agent && t.execution_state === 'executing');
-    if (executing.length === 1) cards.set(executing[0].id, { live: entry });
+    const linked = entry.task && tasks.find(t => t.id === entry.task && t.owner === entry.agent);
+    if (linked) cards.set(linked.id, { live: entry });
     else unplaced.push(entry);
   }
   for (const [id, move] of Object.entries(snap.moves)) cards.set(id, { ...cards.get(id), move });
   return { cards, unplaced };
+}
+
+export function followName(name: string, agents: Agents): string {
+  const handle = agents[name]?.handle || name; return handle.charAt(0).toUpperCase() + handle.slice(1);
 }
 
 function agentColor(name: string, agents: Agents): string {
@@ -40,7 +44,7 @@ function agentColor(name: string, agents: Agents): string {
 }
 
 function Avatar({ name, agents }: { name: string; agents: Agents }) {
-  const label = displayName(name, agents);
+  const label = followName(name, agents);
   return <span className="fl-avatar" style={{ '--agent-color': agentColor(name, agents) } as React.CSSProperties} aria-hidden="true">
     {label.slice(0, 2).toUpperCase()}
   </span>;
@@ -59,7 +63,7 @@ export function FollowToggle({ onStart }: { onStart: () => void }) {
 }
 
 function activity(entry: AgentLive): string {
-  if (entry.tool && entry.tool.time >= entry.updated - 1) return `is using ${entry.tool.name}`;
+  if (entry.tool && entry.tool.time >= entry.updated - 1) return entry.tool.label ? `is ${entry.tool.label}` : 'is using a tool';
   if (entry.text) return `is writing in ${sessionTitle(entry.channel)}`;
   return `started a turn in ${sessionTitle(entry.channel)}`;
 }
@@ -85,15 +89,15 @@ export function FollowBanner({ unplaced, agents }: { unplaced: AgentLive[]; agen
           : all.map((entry, i) => <span key={entry.agent} className="fl-who">
             {i > 0 && ' · '}
             <Avatar name={entry.agent} agents={agents} />
-            <strong>{displayName(entry.agent, agents)}</strong> {activity(entry)}
+            <strong>{followName(entry.agent, agents)}</strong> {activity(entry)}
           </span>)}
       </p>
       <span className="fl-banner-hint">Shortcuts work outside text fields</span>
       <button type="button" className="fl-btn" onClick={() => setPaused(!snap.paused)}>{snap.paused ? 'Resume' : 'Pause'} · Space</button>
       <button type="button" className="fl-btn" onClick={() => setFollowing(false)}>Stop · Esc</button>
     </div>
-    {unplaced.filter(e => e.text).map(entry => <p key={entry.agent} className="fl-banner-bubble" style={{ '--agent-color': agentColor(entry.agent, agents) } as React.CSSProperties}>
-      <strong>{displayName(entry.agent, agents)}</strong> {entry.text}
+    {unplaced.filter(e => e.text).sort((a,b)=>b.updated-a.updated).slice(0, 3).map(entry => <p key={entry.agent} className="fl-banner-bubble" style={{ '--agent-color': agentColor(entry.agent, agents) } as React.CSSProperties}>
+      <strong>{followName(entry.agent, agents)}</strong> {entry.text}
       <small> · not tied to one task</small>
     </p>)}
   </section>;
@@ -109,42 +113,15 @@ export function FollowTicker({ tasks, agents, onOpenTask }: { tasks: Task[]; age
   const snap = useFollow();
   const titles = useMemo(() => new Map(tasks.map(t => [t.id, t.title])), [tasks]);
   const viewport = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const node = viewport.current;
-    if (!node || !snap.following || snap.paused) return;
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-    let frame = 0;
-    let previous = 0;
-    let position = node.scrollLeft;
-    let holdUntil = 0;
-    const move = (time: number) => {
-      const held = reduced.matches || document.hidden || node.matches(':hover, :focus-within');
-      const elapsed = previous ? Math.min(time - previous, 64) : 0;
-      previous = time;
-      const end = node.scrollWidth - node.clientWidth;
-      if (held) position = node.scrollLeft;
-      else if (end > 0 && time >= holdUntil) {
-        position += elapsed * 0.032;
-        if (position >= end) {
-          position = 0;
-          holdUntil = time + 1400;
-        }
-        node.scrollLeft = position;
-      }
-      frame = window.requestAnimationFrame(move);
-    };
-    frame = window.requestAnimationFrame(move);
-    return () => window.cancelAnimationFrame(frame);
-  }, [snap.following, snap.paused, snap.ticker[0]?.id]);
   if (!snap.following) return null;
   return <section className={`fl-ticker${snap.paused ? ' is-paused' : ''}`} aria-label="Live team events">
     <span className="fl-ticker-live">{snap.paused ? 'PAUSED' : 'LIVE'}</span>
-    <div className="fl-ticker-viewport" ref={viewport} tabIndex={0} role="region" aria-label="Recent team events. Hover or focus to hold scrolling; use arrow keys to scroll.">
+    <div className="fl-ticker-viewport" ref={viewport} tabIndex={0} role="region" aria-label="Recent team events. Text stays still while you read.">
     <ol className="fl-ticker-list">
       {snap.ticker.length === 0 && <li className="fl-ticker-empty">Waiting for the next event…</li>}
-      {snap.ticker.slice(0, 12).map(item => <li key={item.id}>
+      {snap.ticker.slice(0, 2).map(item => <li key={item.id}>
         <time>{clock(item.time)}</time>
-        {item.actor && <strong>{displayName(item.actor, agents)}</strong>} {item.text}
+        {item.actor && <strong>{followName(item.actor, agents)}</strong>} {item.text}
         {item.task && titles.has(item.task) && <> · <button type="button" className="fl-link" onClick={() => onOpenTask(item.task!)}>{titles.get(item.task)}</button></>}
       </li>)}
     </ol>
@@ -160,16 +137,16 @@ export function CardFollowLayer({ follow, agents, part }: { follow: CardFollow; 
   if (part === 'bubble') {
     if (!live?.text) return null;
     return <p className="fl-bubble" style={{ '--agent-color': agentColor(live.agent, agents) } as React.CSSProperties}>
-      <span><strong>{displayName(live.agent, agents)}</strong> {live.text}</span>
+      <span><strong>{followName(live.agent, agents)}</strong> {live.text}</span>
     </p>;
   }
   return <>
     {live?.tool && <p className="fl-tool" title="The tool the provider reported; providers do not report its arguments here.">
-      <code>{live.tool.name}</code> · {live.tool.status || 'started'}
+      <span>{live.tool.label || 'Using a tool'}</span> · {live.tool.status || 'started'}
     </p>}
     {move && <p className="fl-moved">
       <span aria-hidden="true">→ </span>
-      {move.by ? `${displayName(move.by, agents)} moved it` : 'Moved'} from {STATUS_LABELS[move.from]} · just now
+      {move.by ? `${followName(move.by, agents)} moved it` : 'Moved'} from {STATUS_LABELS[move.from]} · just now
     </p>}
   </>;
 }

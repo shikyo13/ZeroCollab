@@ -82,3 +82,10 @@
 @media (prefers-reduced-motion: reduce) {
   .fl-toggle.is-on .fl-toggle-dot, .fl-bubble, .fl-ticker-list li, .bd-card.fl-card-moved { animation: none; }
 }
+
+/* Activity wraps at word boundaries; no moving marquee or competing arrival travel. */
+.fl-ticker-viewport {white-space:normal;scrollbar-width:thin;}
+.fl-ticker-list {width:auto;flex-wrap:wrap;gap:4px 16px;}
+.fl-ticker-list li {overflow-wrap:anywhere;}
+.bd-card.fl-card-moved {animation:none;}
+.fl-banner-who {overflow-wrap:anywhere;}
