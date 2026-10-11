@@ -31,6 +31,7 @@ from coordination_state import pending_human_wait
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
 from room_goals import RoomGoals
 from ready_wakes import ReadyWakes
+from response_claims import ResponseClaims
 import project_registry
 from agent_profiles import AgentProfiles
 from team_builder import TeamBuilder
@@ -381,6 +382,8 @@ class Run:
         self.message_phase = None
         self.completed_messages = set()
         self.published_messages = []
+        self.last_commentary = ''
+        self.withheld = False  # its answer to a human @all was held because it no longer owned the claim
         self.output_chars = 0
         self.process = self.stderr_task = None
         self.provider_session = None
@@ -508,19 +511,50 @@ class Run:
         content = self.text.strip()
         if content:
             final = self.message_phase == 'final_answer' and not partial
-            metadata = {'run_id': self.id, 'provider_message_id': identifier,
-                'phase': self.message_phase or 'commentary', 'no_route': not final,
-                'worktree': str(self.worktree), 'settings': self.settings,
-                'reported_settings': self.reported_settings, 'chain': self.entry['chain']}
-            if partial:
-                metadata['outcome'] = 'partial'
-            message = self.manager.host.store.add(self.name, content, channel=self.channel, metadata=metadata)
-            self.published_messages.append(message['id'])
+            if not final and not partial:
+                # Interim narration ("I'm checking...") belongs in Activity, not the conversation. The
+                # last one is kept: a turn that ends without a final answer still posts it (publish_last).
+                self.last_commentary = content
+                await self.manager.activity_note(self, 'commentary', content)
+            else:
+                await self.publish(content, identifier, final, partial)
         self.completed_messages.add(identifier)
         self.text = ''
         self.message_id = self.message_phase = None
         await self.manager.emit('runtime_message_end', {'run': self.id, 'message': identifier,
             'agent': self.name, 'channel': self.channel})
+
+    async def publish(self, content, identifier, final, partial=False):
+        """Post one message to the chat. A final answer to a human @all goes through the response
+        claim: if this run no longer owns it, the reply is held in Activity and the chat stays quiet."""
+        claims = self.manager.response_claims
+        if final:
+            reason = claims.check(self)
+            if reason:
+                self.withheld = True
+                await self.manager.activity_note(self, 'reply held', f'{reason}\n\n{content}')
+                return None
+        metadata = {'run_id': self.id, 'provider_message_id': identifier,
+            'phase': self.message_phase or ('final_answer' if final else 'commentary'),
+            'no_route': not final,
+            'worktree': str(self.worktree), 'settings': self.settings,
+            'reported_settings': self.reported_settings, 'chain': self.entry['chain'],
+            **(claims.metadata(self) if final else {})}
+        if partial:
+            metadata['outcome'] = 'partial'
+        message = self.manager.host.store.add(self.name, content, channel=self.channel, metadata=metadata)
+        self.published_messages.append(message['id'])
+        if final:
+            claims.published(self, message['id'])
+        return message
+
+    async def publish_last(self):
+        """End of a completed turn: an agent that put its answer in commentary and then only called
+        tools still has that answer posted once, as its reply."""
+        if not self.published_messages and not self.withheld and self.last_commentary:
+            self.message_phase = 'final_answer'
+            await self.publish(self.last_commentary, 'last-commentary', True)
+            self.message_phase = None
 
     async def tool_event(self, name, params, status):
         self.touch()
@@ -590,6 +624,7 @@ class RoomRuntime:
         self.project_room = ProjectRoom(self)
         self.goals = RoomGoals(self)
         self.ready_wakes = ReadyWakes(self)
+        self.response_claims = ResponseClaims(self)
         self.profiles = AgentProfiles(self)
         self.team_builder = TeamBuilder(self)
         self.decisions = DecisionFlow(self)
@@ -625,6 +660,11 @@ class RoomRuntime:
             with self.audit.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"type": kind, "time": time.time(), "data": data}, ensure_ascii=False) + "\n")
         await self.host._broadcast(json.dumps({"type": kind, "data": data}, ensure_ascii=False))
+
+    async def activity_note(self, run, kind, text):
+        """A line for the Activity view (the runtime_tool feed it already shows), never the chat."""
+        await self.emit("runtime_tool", {"run": run.id, "agent": run.name, "channel": run.channel, "tool": kind,
+                                         "status": "note", "details": {"text": text[:4000]}}, persist=True)
 
     async def publish_status(self):
         await self.emit("runtime_state", self.snapshot())
@@ -1053,6 +1093,11 @@ class RoomRuntime:
             if self.deployment and self.deployment.reload()["writes"] == "blocked":
                 await asyncio.sleep(.25)
                 continue
+            if not self.paused:
+                try:
+                    self.response_claims.tick()  # one backup for an unanswered human @all, never the roster
+                except Exception:
+                    LOGGER.exception('Response-claim backup check failed')
             for name, state in self.states.items():
                 if state.get('archived'):
                     continue
@@ -1279,6 +1324,7 @@ class RoomRuntime:
                 else:
                     await getattr(native, provider)(run, prompt)
             await run.finish_message(phase=run.message_phase or 'final_answer')
+            await run.publish_last()
             silent = not run.published_messages
             self.project_room.complete(run)
             stop_note = getattr(run, 'stop_note', '')
@@ -1448,7 +1494,11 @@ class RoomRuntime:
             return await self.coordination_record(run.name, tool, arguments, run.channel, run.entry['chain'])
         else:
             raise ValueError('Unknown coordination tool')
-        self.host.store.add(run.name, text, channel=run.channel, metadata={'no_route': True, 'chain': run.entry['chain']})
+        if tool == 'room_task' or (tool == 'room_update' and result.get('kind') == 'progress'):
+            # Task receipts and progress notes are bookkeeping: the board and Activity carry them, not the chat.
+            await self.activity_note(run, tool, text)
+        else:
+            self.host.store.add(run.name, text, channel=run.channel, metadata={'no_route': True, 'chain': run.entry['chain']})
         if tool == 'room_task':
             self.ready_wakes.schedule()  # An arming event: a task changed.
         await self.emit('project_state', self.project_room.snapshot())
@@ -1571,9 +1621,10 @@ class RoomRuntime:
         self.states[run.name]['detail'] = 'Last turn ' + summary
         await self.emit('runtime_silent', {'run': run.id, 'agent': run.name, 'channel': run.channel,
                                            'actions': actions, 'changing_calls': changes, 'unanswered': owed}, persist=True)
-        if owed or changes:
+        if (owed or changes) and not run.withheld:
             # A chat line only when an answer is owed or something may have changed: quiet, read-only
-            # replies to an @all must not become new noise.
+            # replies to an @all must not become new noise. A reply held by the response claim
+            # completes silently; its text is in Activity.
             note = f"{run.name} {summary}."
             if owed:
                 note += f" Still unanswered: {', '.join(owed)}."
@@ -1884,6 +1935,8 @@ class RoomRuntime:
 
     async def stop(self):
         self.paused = True
+        self.response_claims.bump_scope()  # a scope change: no answer written before Stop is posted after it
+        self.response_claims.save()
         self.team_builder.interrupt()
         self.decisions.interrupt()
         self.goals.pause('Room stopped by user.')
@@ -2121,6 +2174,25 @@ def install(host):
             host.store.add('system', 'Optional shared spec saved. Ordinary chat remains available independently of the spec.', channel=runtime.default_channel())
             await runtime.emit('project_state', runtime.project_room.snapshot())
             return {'ok': True}
+        except ValueError as exc:
+            return JSONResponse({'error': str(exc)}, 400)
+
+    @host.app.get('/api/runtime/responders')
+    async def responders_status():
+        lead, backup = runtime.response_claims.responders()
+        return {'configured': runtime.project_room.state.get('responders') or {}, 'lead': lead, 'backup': backup}
+
+    @host.app.post('/api/runtime/responders')
+    async def responders_change(request: Request):
+        """Who answers a human @all first, and the one backup. Human only (UI token); empty values use the
+        defaults: the active goal lead, then the configured manager, then roster order."""
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or set(body) - {'lead', 'backup'} or any(
+                    not isinstance(body.get(k, ''), str) for k in ('lead', 'backup')):
+                raise ValueError('Send lead and backup as participant names, or empty strings for the defaults')
+            runtime.response_claims.set_responders(body.get('lead', ''), body.get('backup', ''))
+            return await responders_status()
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, 400)
 
