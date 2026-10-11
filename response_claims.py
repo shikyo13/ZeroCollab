@@ -79,13 +79,17 @@ class ResponseClaims:
         picked = list(dict.fromkeys(n for n in order if n and self.available(n)))
         return (picked + [None, None])[0], (picked + [None, None])[1]
 
-    def set_responders(self, lead, backup):
-        """Human-only setting (the HTTP route checks the UI token); empty values return to the defaults."""
+    def check_responders(self, lead, backup):
+        """Refuses an invalid choice without changing anything (the combined Save validates first)."""
         for name in (lead, backup):
             if name and name not in self.runtime.states:
                 raise ValueError('Choose registered participants for the lead and backup')
         if lead and lead == backup:
             raise ValueError('The backup must be a different participant from the lead')
+
+    def set_responders(self, lead, backup):
+        """Human-only setting (the HTTP route checks the UI token); empty values return to the defaults."""
+        self.check_responders(lead, backup)
         self.state['responders'] = {'lead': lead or '', 'backup': backup or ''}
         self.runtime.project_room.save()
         return self.state['responders']

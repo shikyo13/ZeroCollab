@@ -2359,6 +2359,31 @@ def install(host):
     async def responders_status():
         return runtime.responders_view()
 
+    def validate_checkins(manager, interval_minutes):
+        """Every refusal configure_project_manager can give, checked before the combined Save changes anything:
+        the manager's capability, the interval, the check-in chat, the budget conversation and room for the
+        coordination task on the board."""
+        import manager_wakes as mw
+        from project_room import TASK_LIMIT
+        wakes, room = runtime.manager_wakes, runtime.project_room
+        capability = wakes.capability(manager)
+        if not capability['eligible']:
+            raise ValueError(capability['reason_text'])
+        if type(interval_minutes) is not int or not mw.INTERVAL_MIN <= interval_minutes <= mw.INTERVAL_MAX:
+            raise ValueError('Choose an interval from 15 to 240 minutes')
+        record = wakes.record
+        channel = record.get('channel') or runtime.default_channel()
+        if not runtime.owns_channel(channel) or not runtime.decisions.routes(channel):
+            raise ValueError('Open an ordinary chat in this project before enabling check-ins')
+        chain = record.get('chain')
+        if record.get('budget_initialized') and (not wakes.valid_chain(chain) or chain['channel'] != channel):
+            raise ValueError('Explicit human budget renewal required for missing/changed conversation')
+        tasks = room.state['tasks']
+        marked = any(t.get('manager_coordination') and t.get('status') in ('open', 'working') for t in tasks)
+        if not marked and len(tasks) >= TASK_LIMIT and not room.archivable():
+            raise ValueError(f'The board holds {TASK_LIMIT} unfinished tasks; finish or release one so the '
+                             'Project coordination task can be created')
+
     @host.app.post('/api/runtime/responders')
     async def responders_change(request: Request):
         """Who answers an untagged human message first (the lead), and the one backup. Human only (UI
@@ -2381,11 +2406,19 @@ def install(host):
             room, wakes = runtime.project_room, runtime.manager_wakes
             if checkins is not None and not hasattr(wakes, 'configure_project_manager'):
                 raise ValueError('Automatic check-ins need the updated project-manager runtime')
-            # Everything a save can change, so a refusal part-way restores it all. Nothing below awaits.
-            saved = copy.deepcopy((room.state.get('responders'), wakes.record, room.state['tasks']))
+            lead, backup = body.get('lead', ''), body.get('backup', '')
+            before = (room.state.get('responders') or {}).get('lead', '')
+            # 1. Validate the whole intended change before anything moves (systems 589e2c70).
+            runtime.response_claims.check_responders(lead, backup)
+            if checkins is not None and checkins['enabled']:
+                validate_checkins(lead or None, checkins.get('interval_minutes', 30))
+            # 2. A refusal that can only show up while applying (a full board, a duplicate title) restores
+            # everything a save touches, taken together so the audit chain stays the same object in
+            # room.chains and the record. The check-in record lives in room.state. Nothing below awaits.
+            snapshot = copy.deepcopy((room.state, room.chains, wakes.loaded, wakes.deadline, wakes.held,
+                                      wakes.idle_since))
             try:
-                before = (room.state.get('responders') or {}).get('lead', '')
-                runtime.response_claims.set_responders(body.get('lead', ''), body.get('backup', ''))
+                runtime.response_claims.set_responders(lead, backup)
                 after = room.state['responders']['lead']
                 changed = getattr(wakes, 'manager_changed', None)
                 if after != before and changed:
@@ -2394,16 +2427,21 @@ def install(host):
                     wakes.configure_project_manager('user', enabled=checkins['enabled'], manager=after or None,
                                                     interval_minutes=checkins.get('interval_minutes', 30))
             except (ValueError, TypeError, KeyError):
-                responders, record, tasks = saved
-                if responders is None:
-                    room.state.pop('responders', None)
-                else:
-                    room.state['responders'] = responders
-                wakes.record.clear()
-                wakes.record.update(record)
-                room.state['tasks'][:] = tasks
+                state, chains, wakes.loaded, wakes.deadline, wakes.held, idle_since = snapshot
+                room.state.clear()
+                room.state.update(state)
+                # Only changed budget entries are replaced: running turns may hold the others.
+                for key in [k for k in room.chains if k not in chains]:
+                    del room.chains[key]
+                for key, value in chains.items():
+                    if room.chains.get(key) != value:
+                        room.chains[key] = value
+                audit_chain = wakes.record.get('chain')
+                if isinstance(audit_chain, dict) and audit_chain.get('id') in room.chains:
+                    room.chains[audit_chain['id']] = audit_chain  # the same object as the record's
+                wakes.idle_since.clear()
+                wakes.idle_since.update(idle_since)
                 room.save()
-                wakes.save()
                 raise
             await runtime.publish_status()  # every open window updates its lead badge at once
             result = await responders_status()
