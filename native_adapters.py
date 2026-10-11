@@ -323,6 +323,15 @@ class Rpc:
         await asyncio.gather(self.reader, *self.handlers, return_exceptions=True)
 
 
+class ThreadBusy(RuntimeError):
+    """Another Codex process (for example the user's Codex app) has this agent's saved thread open, so it
+    cannot be resumed. Raised before the turn starts; the room runs the turn once on a new thread."""
+
+
+def thread_busy(exc):
+    return 'active writer' in str(exc)
+
+
 class AuditMCPIsolation(ValueError):
     def __init__(self, names):
         super().__init__('Audit refused: non-room MCP servers require isolation')
@@ -491,7 +500,12 @@ async def codex(run, prompt, *, audit_disabled=()):
             thread_params.pop('ephemeral')
             # Resume keeps model context; omit only the history in the RPC reply.
             thread_params.update(threadId=run.previous_session['id'], excludeTurns=True)
-        thread = await rpc.request(method, thread_params)
+        try:
+            thread = await rpc.request(method, thread_params)
+        except RuntimeError as exc:
+            if method == 'thread/resume' and thread_busy(exc):
+                raise ThreadBusy(str(exc)) from exc
+            raise
         if audit:
             try:
                 await verify_audit_codex(rpc, run, thread, audit_disabled=audit_disabled)
@@ -510,7 +524,13 @@ async def codex(run, prompt, *, audit_disabled=()):
         turn_params = {"threadId": run.provider_session, "input": [{"type": "text", "text": prompt}]}
         if run.settings['effort'] and not local_args:
             turn_params['effort'] = run.settings['effort']
-        started = await rpc.request("turn/start", turn_params)
+        try:
+            started = await rpc.request("turn/start", turn_params)
+        except RuntimeError as exc:
+            # The writer check can also come with the first turn on a resumed thread; nothing has run yet.
+            if method == 'thread/resume' and thread_busy(exc):
+                raise ThreadBusy(str(exc)) from exc
+            raise
         active_turn = started['turn']['id']
 
         async def steer(text, request):

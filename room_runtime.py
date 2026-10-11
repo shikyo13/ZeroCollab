@@ -1473,7 +1473,17 @@ class RoomRuntime:
                 if provider == "api":
                     await self.local_turn(run, prompt)
                 else:
-                    await getattr(native, provider)(run, prompt)
+                    try:
+                        await getattr(native, provider)(run, prompt)
+                    except native.ThreadBusy as exc:
+                        # The saved conversation is open in another Codex process, such as the user's Codex
+                        # app. Nothing was sent, so start a new one once. The context of a resumed session
+                        # only carries what is new, so rebuild it in full for the new conversation.
+                        await native.terminate(run)
+                        run.previous_session = {}
+                        await self.activity_note(run, 'new conversation', 'Its saved Codex conversation is open in '
+                                                 f'another Codex window ({exc}); started a new one with the full room context.')
+                        await getattr(native, provider)(run, self.context(run, changes))
             await run.finish_message(phase=run.message_phase or 'final_answer')
             await run.publish_last()
             silent = not run.published_messages
