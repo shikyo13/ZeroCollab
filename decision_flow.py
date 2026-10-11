@@ -29,6 +29,11 @@ KEEP = 40
 NOTE_LIMIT = 4000
 MAX_INPUTS = 8
 MAX_ATTACHMENTS = 6
+MAX_COMMENTS = 12
+# The user's own verdict on the shown proposal (Zero #13670), kept apart from the team's verdict tally.
+CHOICES = ('approve', 'reject')
+# Where a comment may point in the proposal: its text, or one entry of a list field (by index).
+COMMENT_FIELDS = ('text', 'agreed', 'dissent', 'unresolved', 'would_change', 'tasks')
 UPLOAD_URL = re.compile(r'^/uploads/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$')
 # What a sealed contribution keeps until its round's positions are revealed: who and when, nothing else.
 SEALED_FIELDS = ('id', 'author', 'kind', 'stage', 'round', 'revision', 'epoch', 'created')
@@ -156,6 +161,12 @@ class DecisionFlow:
             return 'unresolved'
         return 'agreed' if all(v == 'agree' for v in votes.values()) else 'dissent'
 
+    def tally(self, d):
+        """The team's verdicts on the current proposal: agree, dissent, and who gave none."""
+        votes = {c['author']: c['verdict'] for c in self.verdicts(d)}
+        return {'agree': sum(v == 'agree' for v in votes.values()), 'dissent': sum(v == 'dissent' for v in votes.values()),
+                'missing': [p for p in d['participants'] if p not in votes]}
+
     def actions(self, d):
         stage, interrupted = d['stage'], bool(d.get('interrupted'))
         result = []
@@ -167,7 +178,11 @@ class DecisionFlow:
             result += ['retry', 'close_stage']
         if (d.get('record') or {}).get('note_id'):
             # Recorded; only failed follow-up tasks can be retried.
-            return ['record'] if stage == 'review' else []
+            if stage != 'review':
+                return []
+            return ['approve'] if (d.get('choice') or {}).get('kind') == 'approve' else ['record']
+        if stage == 'review' and self.proposal(d):
+            result += list(CHOICES)
         if stage == 'review' or (interrupted and self.proposal(d)):
             if self.proposal(d) and d['edits_used'] < MAX_EDITS:
                 result.append('edit')
@@ -217,7 +232,8 @@ class DecisionFlow:
             if c['id'] in superseded:
                 c['before_new_direction'] = True
         current = self.proposal(d)
-        result.update(owed=self.owed(d), outcome=self.outcome(d), coverage=self.coverage(d), phase=self.phase(d),
+        result.update(owed=self.owed(d), outcome=self.outcome(d), tally=self.tally(d), choice=d.get('choice'),
+                      coverage=self.coverage(d), phase=self.phase(d),
                       round=d.get('round', 1), rounds=d.get('rounds', []),
                       current_proposal=current['id'] if current else '',
                       actions=[] if reader else self.actions(d))
@@ -232,7 +248,8 @@ class DecisionFlow:
 
     def summary(self, d):
         return {k: d[k] for k in ('id', 'question', 'stage', 'channel', 'participants', 'lead', 'updated')} | \
-               {'interrupted': d.get('interrupted', ''), 'outcome': self.outcome(d)}
+               {'interrupted': d.get('interrupted', ''), 'outcome': self.outcome(d),
+                'choice': (d.get('choice') or {}).get('kind', '')}
 
     # ---- queueing, deadlines and stage changes ---------------------------------------------
 
@@ -296,6 +313,10 @@ class DecisionFlow:
         }[stage]
         if stage == 'proposal' and d.get('return_question'):
             body += f'\nThe user returned the proposal with this question: {d["return_question"]}'
+            lines = self.feedback_lines(d.get('return_feedback') or {})
+            if lines:
+                # Images are this room's uploads: view them with room_image.
+                body += '\n' + '\n'.join(lines)
         return head + body + '\nQuestion preview: ' + d['question'][:500]
 
     def queue(self, d, names=None):
@@ -328,13 +349,109 @@ class DecisionFlow:
         if not isinstance(value, list) or len(value) > MAX_ATTACHMENTS:
             raise ValueError(f'attachments must be a list of at most {MAX_ATTACHMENTS} {{url, name}} objects')
         folder = Path(self.runtime.host.store.upload_dir).resolve()
+
+        def upload(url):
+            return isinstance(url, str) and bool(UPLOAD_URL.match(url)) and (folder / url.split('/', 2)[2]).is_file()
+
         result = []
         for row in value:
             url = row.get('url') if isinstance(row, dict) else None
-            if not isinstance(url, str) or not UPLOAD_URL.match(url) or not (folder / url.split('/', 2)[2]).is_file():
+            if not upload(url):
                 raise ValueError('Each attachment must be an existing /uploads/<file> from this room')
-            result.append({'url': url, 'name': text(row.get('name') or url.rsplit('/', 1)[1], 'Attachment name', 120)})
+            item = {'url': url, 'name': text(row.get('name') or url.rsplit('/', 1)[1], 'Attachment name', 120)}
+            # Optional: a marked-up copy names the image it annotates, and a short note on the marks.
+            if row.get('source') is not None:
+                if not upload(row['source']):
+                    raise ValueError('An attachment source must be an existing /uploads/<file> from this room')
+                item['source'] = row['source']
+            if row.get('note'):
+                item['note'] = text(row['note'], 'Attachment note', 300)
+            result.append(item)
         return result
+
+    def fence(self, d, body):
+        """The proposal the user is answering must be the one shown: same proposal, revision and epoch."""
+        current = self.proposal(d)
+        shown = (body.get('proposal_id'), body.get('revision'), body.get('epoch'))
+        if not current or shown != (current['id'], d['revision'], d['epoch']):
+            raise ValueError(f'The proposal changed since it was shown (now {current["id"] if current else "none"}, '
+                             f'revision {d["revision"]}, epoch {d["epoch"]}). Reload it; nothing was recorded')
+        return current
+
+    def feedback(self, d, body, current):
+        """The user's note, comments bound to points of the proposal, and annotated images."""
+        comments = body.get('comments') or []
+        if not isinstance(comments, list) or len(comments) > MAX_COMMENTS:
+            raise ValueError(f'comments must be a list of at most {MAX_COMMENTS} {{text, field, index}} objects')
+        bound = []
+        for row in comments:
+            if not isinstance(row, dict):
+                raise ValueError('Each comment must be an object with text, field and index')
+            field, index = row.get('field') or 'text', row.get('index')
+            if field not in COMMENT_FIELDS:
+                raise ValueError(f'A comment field must be one of {", ".join(COMMENT_FIELDS)}')
+            if field == 'text':
+                point = current['text'][:300]
+                index = None
+            else:
+                points = current.get(field) or []
+                if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(points):
+                    raise ValueError(f'Comment on an existing {field} entry of this proposal (index 0 to {len(points) - 1})')
+                point = points[index]
+                point = point.get('point') or point.get('title', '') if isinstance(point, dict) else point
+            bound.append({'text': text(row.get('text'), 'Comment', 1000), 'field': field, 'index': index,
+                          'point': str(point)[:300]})
+        return {'note': text(body.get('note') or '', 'Note', 2000, required=False), 'comments': bound,
+                'attachments': self.attachments(body.get('attachments'))}
+
+    def feedback_lines(self, item):
+        lines = [f'Note: {item["note"]}'] if item.get('note') else []
+        lines += [f'Comment on {c["field"]}' + (f' {c["index"] + 1}' if c['index'] is not None else '')
+                  + f' ("{c["point"][:120]}"): {c["text"]}' for c in item.get('comments', [])]
+        lines += [f'Image: {a["url"]}' + (f' (marks on {a["source"]})' if a.get('source') else '')
+                  + (f': {a["note"]}' if a.get('note') else '') for a in item.get('attachments', [])]
+        return lines
+
+    def choose(self, d, kind, body):
+        """Approve or reject the shown proposal. The user's choice is authoritative and saved apart from the
+        team's tally; approve records it and creates the proposed tasks, reject closes it with none."""
+        current = self.fence(d, body)
+        fresh = not d.get('choice')
+        if fresh:
+            d['choice'] = {'id': uuid.uuid4().hex[:10], 'kind': kind, 'proposal_id': current['id'],
+                           'revision': d['revision'], 'epoch': d['epoch'], 'round': d.get('round', 1),
+                           'team_outcome': self.outcome(d), 'tally': self.tally(d),
+                           **self.feedback(d, body, current), 'by': 'user', 'at': time.time()}
+        try:
+            if kind == 'approve':
+                self.record(d)
+            else:
+                lines = [f'Team decision {d["id"]} rejected by the user (team outcome: {d["choice"]["team_outcome"]}): '
+                         f'{d["question"]}',
+                         f'Proposal {current["id"]} (revision {d["revision"]}, by {current["author"]}): {current["text"]}',
+                         *self.feedback_lines(d['choice']), 'No tasks were created.']
+                note = '\n'.join(lines)
+                if len(note) > NOTE_LIMIT:
+                    note = note[:NOTE_LIMIT - 60] + f' [...] (full record: decision {d["id"]})'
+                d['record'] = {'key': f'{d["id"]}:{current["id"]}:rejected',
+                               'note_id': self.runtime.project_room.note('user', 'decision', note)['id'], 'tasks': []}
+                d.update(stage='recorded', turns={})
+                self.arm(d)
+        except Exception:
+            if fresh and not (d.get('record') or {}).get('note_id'):
+                d.pop('choice', None)  # nothing was recorded, so the choice wasn't made
+            raise
+        d['choice'].update(note_id=d['record']['note_id'], tasks=[t['id'] for t in d['record']['tasks'] if t.get('id')])
+        if d['stage'] != 'recorded' or d['choice'].get('announced'):
+            return  # announced once, when complete; a failed task shows on the card until Approve is retried
+        d['choice']['announced'] = True
+        tally, count = d['choice']['tally'], len(d['choice']['tasks'])
+        said = {'approve': 'approved', 'reject': 'rejected'}[kind]
+        self.runtime.host.store.add(
+            'system', f'The user {said} the proposal for "{d["question"][:200]}" (team: {tally["agree"]} agree, '
+            f'{tally["dissent"]} against, {len(tally["missing"])} didn\'t answer)'
+            + (f'; {count} task{"" if count == 1 else "s"} created.' if kind == 'approve' else '; no tasks were created.'),
+            channel=d['channel'], metadata={'no_route': True, 'decision': d['id']})
 
     def post_conclusion(self, d):
         """The synthesiser's conclusion, posted once per round when it reaches review with its real outcome.
@@ -726,6 +843,12 @@ class DecisionFlow:
 
     def act(self, d, action, body):
         stage = d['stage']
+        prior = d.get('choice')
+        if action in CHOICES and prior:
+            if (prior['kind'], prior['proposal_id']) != (action, body.get('proposal_id')):
+                raise ValueError(f'You already chose to {prior["kind"]} proposal {prior["proposal_id"]}; nothing was changed')
+            if stage == 'recorded':
+                return self.view(d)  # the same choice sent again: the same receipt, nothing duplicated
         if action not in self.actions(d):
             raise ValueError(f'{action} is not available at stage {stage}')
         if action == 'stop':
@@ -755,13 +878,24 @@ class DecisionFlow:
                             edits=current['id'], tasks=current.get('tasks', []))
             self.enter(d, 'verdicts')
         elif action == 'return':
-            question = text(body.get('question'), 'Question for the lead', 2000)
-            d.update(revision=d['revision'] + 1, returns_used=d['returns_used'] + 1, return_question=question,
-                     interrupted='')
+            # Request changes: a question, and optionally comments on points of the shown proposal and marked-up
+            # images. With comments or images the question may be empty; the fence applies when given.
+            current = self.fence(d, body) if 'proposal_id' in body else self.proposal(d)
+            feedback = self.feedback(d, body, current) if current else {'comments': [], 'attachments': []}
+            question = text(body.get('question') or '', 'Question for the lead', 2000,
+                            required=not (feedback['comments'] or feedback['attachments']))
+            if current:
+                self.contribute(d, 'user', 'return', text=question, proposal_id=current['id'],
+                                comments=feedback['comments'], attachments=feedback['attachments'])
+            d.update(revision=d['revision'] + 1, returns_used=d['returns_used'] + 1, interrupted='',
+                     return_question=question or 'See my comments on the proposal.',
+                     return_feedback={'comments': feedback['comments'], 'attachments': feedback['attachments']})
             d['epoch'] += 1
             self.enter(d, 'proposal')
         elif action == 'record':
             self.record(d)
+        elif action in CHOICES:
+            self.choose(d, action, body)
         elif action == 'reopen':
             self.reopen('user', d, body.get('reason') or 'The user asked for another round.')
         elif action == 'input_kind':
@@ -782,7 +916,11 @@ class DecisionFlow:
         room = self.runtime.project_room
         if not record.get('note_id'):
             votes = {c['author']: c for c in self.verdicts(d)}
-            lines = [f'Team decision {d["id"]} recorded by the user ({outcome}): {d["question"]}']
+            choice = d.get('choice') or {}
+            lines = [f'Team decision {d["id"]} approved by the user (team outcome: {outcome}): {d["question"]}'
+                     if choice.get('kind') == 'approve' else
+                     f'Team decision {d["id"]} recorded by the user ({outcome}): {d["question"]}']
+            lines += self.feedback_lines(choice)
             if current:
                 lines.append(f'Proposal {current["id"]} (revision {d["revision"]}, by {current["author"]}): {current["text"]}')
                 for key_name, label in (('agreed', 'Agreed'), ('unresolved', 'Unresolved')):
