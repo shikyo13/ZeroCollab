@@ -86,6 +86,51 @@ ROOM_READS = {"room_read": None, "room_image": None, "room_task": ({"get"}, ''),
               "room_team_builder": ({"get"}, 'get'), "room_decision": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status')}
 
 
+# What an agent is doing, in plain words, for the Board's activity strip and Follow (Zero #13855): the provider's
+# own tool ids (commandExecution, mcpToolCall, mcp__server__tool) mean nothing to the user.
+NATIVE_LABELS = {
+    'commandExecution': 'running a command', 'Bash': 'running a command', 'PowerShell': 'running a command',
+    'BashOutput': 'checking a command', 'KillShell': 'stopping a command', 'fileChange': 'editing files',
+    'Edit': 'editing files', 'MultiEdit': 'editing files', 'Write': 'writing a file', 'write_file': 'writing a file',
+    'edit_file': 'editing files', 'NotebookEdit': 'editing a notebook', 'Read': 'reading files', 'read_file': 'reading files',
+    'NotebookRead': 'reading a notebook', 'Grep': 'searching files', 'grep_search': 'searching files', 'Glob': 'finding files',
+    'file_glob_search': 'finding files', 'LS': 'listing files', 'get_info': 'checking a file', 'webSearch': 'searching the web',
+    'WebSearch': 'searching the web', 'WebFetch': 'reading a web page', 'imageView': 'looking at an image',
+    'todoList': 'updating its plan', 'TodoWrite': 'updating its plan', 'ToolSearch': 'loading tools', 'Task': 'starting a helper',
+    'Agent': 'starting a helper', 'contextCompaction': 'condensing its notes', 'sleep': 'waiting'}
+ROOM_LABELS = {
+    'room_read': 'reading the board', 'room_image': 'looking at an image', 'room_task': 'updating the board',
+    'room_markup': 'marking up a screenshot', 'room_update': 'posting a note', 'room_review': 'working on a review',
+    'room_followup': 'working on a follow-up', 'room_repository': 'asking about a repository', 'room_goal': 'checking the goal',
+    'room_team_builder': 'working on the team', 'room_decision': 'taking part in a decision', 'room_browser': 'using the shared browser'}
+ROOM_ACTION_LABELS = {
+    ('room_task', 'get'): 'reading a task', ('room_task', 'create'): 'creating a task', ('room_task', 'claim'): 'claiming a task',
+    ('room_task', 'delegate'): 'handing over a task', ('room_review', 'request'): 'asking for a review',
+    ('room_review', 'respond'): 'answering a review', ('room_followup', 'create'): 'asking a teammate',
+    ('room_followup', 'resolve'): 'answering a follow-up', ('room_browser', 'screenshot'): 'taking a browser screenshot',
+    ('room_browser', 'open'): 'opening a page in the shared browser', ('room_browser', 'inspect'): 'inspecting a page',
+    ('room_decision', 'submit'): 'submitting to a decision', ('room_decision', 'get'): 'reading a decision'}
+
+
+def tool_label(name, params):
+    """Plain words for a tool event; room tools by their action where it says more."""
+    name, params = str(name or ''), params if isinstance(params, dict) else {}
+    arguments = params
+    if name == 'mcpToolCall':
+        if params.get('server') != ROOM_SERVER:
+            return f"using {params['server']} tools" if params.get('server') else 'using a tool'
+        name, arguments = str(params.get('tool') or ''), params.get('arguments')
+    elif name.startswith('mcp__'):
+        server, _, tool = name[5:].partition('__')
+        if server != ROOM_SERVER:
+            return f'using {server} tools'
+        name, arguments = tool, params.get('input', params)  # Claude's tool_use block keeps arguments in input
+    if name in ROOM_LABELS:
+        action = arguments.get('action') if isinstance(arguments, dict) else None
+        return ROOM_ACTION_LABELS.get((name, action)) or ROOM_LABELS[name]
+    return NATIVE_LABELS.get(name, 'working')
+
+
 def changes_room(tool, arguments):
     if tool not in ROOM_READS:
         return True
@@ -634,6 +679,8 @@ class Run:
                     raise RuntimeError(self.stop_reason)
         await self.manager.emit("runtime_tool", {"run": self.id, "agent": self.name, "channel": self.channel,
                                                   "tool": name, "status": status,
+                                                  # A sealed decision turn says no more than that it is working.
+                                                  "label": 'working on a team decision' if self.sealed else tool_label(name, params),
                                                   "details": {'sealed': True} if self.sealed else params}, persist=True)
 
     async def approval(self, tool, params, reason):
