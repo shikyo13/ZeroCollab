@@ -35,12 +35,12 @@ export default function NewPanelTab({project, projectId, room, browser, tabs, on
     catch (e) {if (alive.current) setError(errorMessage(e));} finally {if (alive.current) setBusy(false);}
   };
   return <div className="panel-new">
-    <p className="panel-eyebrow">WORKSPACE</p><h2>Open resource</h2><p>Open a resource beside the conversation.</p>
+    <p className="panel-eyebrow">WORKSPACE</p><h2>Open beside chat</h2><p>Choose a file, review, changes or a shared browser page.</p>
     <div className="panel-choices">
       {browser?.pages === undefined && <button onClick={() => open({tab: 'browser'})}><strong>Shared browser</strong><small>Current page and team control</small></button>}
       <button onClick={() => {setMode('file'); setError('');}}><strong>File</strong><small>Read a project or agent file</small></button>
-      <button onClick={() => {setMode('review'); setError('');}}><strong>File review</strong><small>Exact captured source and revision</small></button>
-      <button onClick={() => open({tab: 'changes'})}><strong>Changes</strong><small>Current worktree diffs</small></button>
+      <button onClick={() => {setMode('review'); setError('');}}><strong>File review</strong><small>The exact version a teammate sent for review</small></button>
+      <button onClick={() => open({tab: 'changes'})}><strong>Changes</strong><small>What teammates have edited</small></button>
     </div>
     {browser?.pages !== undefined ? <section className="panel-browser-pages" aria-label="Shared browser pages">
       <h3>Shared browser pages · {pages.length} / {browser.max_pages ?? 4}</h3>

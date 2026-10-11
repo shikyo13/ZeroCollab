@@ -27,6 +27,7 @@ export default function SidePanel({children, fileView}: Props) {
   const hasResourcesRef = useRef(hasResources); hasResourcesRef.current = hasResources;
   const [launchRequest, setLaunchRequest] = useState(0);
   const toggle = useRef<HTMLButtonElement | null>(null);
+  const openRef = useRef(open); openRef.current = open;
   const [browserState, setBrowserState] = useState<BrowserState>();
   const currentProject = useRef(key); currentProject.current = key;
   const receiveBrowser = useCallback((state: BrowserState) => {
@@ -46,7 +47,11 @@ export default function SidePanel({children, fileView}: Props) {
     button.type = 'button'; button.className = 'companion-toggle ws-icon-button';
     button.setAttribute('aria-label', 'Toggle side panel'); button.setAttribute('aria-keyshortcuts', 'Control+Shift+B');
     button.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.65" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg><i class="companion-ping" aria-hidden="true"></i>';
-    const activate = () => {if (!hasResourcesRef.current) {setLaunchRequest(v => v + 1); setOpen(true);} else setOpen(v => !v);};
+    const activate = () => {
+      if (openRef.current) {setOpen(false); setExpanded(false); return;}
+      if (!hasResourcesRef.current) setLaunchRequest(v => v + 1);
+      setOpen(true);
+    };
     toggle.current = button; button.onclick = activate;
     (legacy.header.querySelector('.header-right') || legacy.header).append(button);
     const shortcut = (e: KeyboardEvent) => {
@@ -62,8 +67,8 @@ export default function SidePanel({children, fileView}: Props) {
     const activity = activityLabel(currentBrowser);
     button.classList.toggle('companion-active', !!currentBrowser?.running);
     button.setAttribute('aria-pressed', String(open));
-    button.setAttribute('aria-label', hasResources ? 'Toggle side panel' : 'New workspace tab');
-    button.title = `${hasResources ? open ? 'Hide' : 'Show' : 'New tab in'} side panel (Ctrl+Shift+B)` + (currentBrowser?.running ? ` - ${activity}` : '');
+    button.setAttribute('aria-label', open ? 'Hide side panel' : 'Show side panel');
+    button.title = `${open ? 'Hide' : 'Show'} side panel (Ctrl+Shift+B)` + (currentBrowser?.running ? ` - ${activity}` : '');
     button.setAttribute('aria-description', activity);
   }, [currentBrowser, open, hasResources]);
   useEffect(() => {writeStored('workspace.companion.open', open ? '1' : '0'); window.dispatchEvent(new Event('resize'));}, [open]);
@@ -163,7 +168,7 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
     if (tabs.tabs.length === 1) {setChoosing(false); hide();}
     else focusTab(wasSelected ? next?.id || '' : tabs.selected);
   };
-  const chooser = () => {chooserOpener.current = document.activeElement as HTMLElement; setChoosing(true); show(); requestAnimationFrame(() => chooserClose.current?.focus()); setAnnouncement('Open resource chooser.');};
+  const chooser = () => {chooserOpener.current = document.activeElement as HTMLElement; setChoosing(true); show(); requestAnimationFrame(() => chooserClose.current?.focus()); setAnnouncement('Choose what to open beside chat.');};
   const cancelChooser = () => {setChoosing(false); if (tabs.tabs.length) requestAnimationFrame(() => chooserOpener.current?.isConnected ? chooserOpener.current.focus() : focusTab(tabs.selected)); else hide();};
   return <aside hidden={!open} className={`companion-panel${expanded ? ' companion-expanded' : ''}`} style={{width: `${width}%`}} aria-label="Workspace side panel">
     <div className="companion-resize" role="separator" tabIndex={0} aria-label="Resize side panel" aria-orientation="vertical" aria-valuemin={30} aria-valuemax={75} aria-valuenow={Math.round(width)}
@@ -207,8 +212,8 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
       };
       return <div id={paneId(tab.id)} key={tab.id} className="companion-body" hidden={choosing || tabs.selected !== tab.id} role="tabpanel" aria-labelledby={tabId(tab.id)}>{renderers[tab.kind]()}</div>;
     })}
-    {(choosing || !tabs.tabs.length) && <section className="companion-body companion-chooser" aria-label="Open resource" onKeyDown={e => {if (e.key === 'Escape' && !e.defaultPrevented) {e.preventDefault(); e.stopPropagation(); cancelChooser();}}}>
-      <button className="companion-chooser-close" ref={chooserClose} onClick={cancelChooser}>Cancel resource chooser</button>
+    {(choosing || !tabs.tabs.length) && <section className="companion-body companion-chooser" aria-label="Open beside chat" onKeyDown={e => {if (e.key === 'Escape' && !e.defaultPrevented) {e.preventDefault(); e.stopPropagation(); cancelChooser();}}}>
+      <button className="companion-chooser-close" ref={chooserClose} onClick={cancelChooser}>{tabs.tabs.length ? 'Back to tabs' : 'Close side panel'}</button>
       {boardError && <p className="panel-error" role="alert">Could not load project reviews: {boardError}. Other resources remain available.</p>}
       <NewPanelTab project={board} projectId={project} room={room} browser={browser} tabs={tabs.tabs} onBrowser={onBrowser} open={openResource} />
     </section>}
