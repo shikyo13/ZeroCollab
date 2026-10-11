@@ -122,6 +122,12 @@ class SetupChecks(unittest.TestCase):
 
 class ClaudeProtocolChecks(unittest.IsolatedAsyncioTestCase):
     async def test_control_reply_before_init_sends_prompt_then_room_tool_without_human_prompt(self):
+        # The CLI takes --permission-mode manual and reports it as 'default' (live check-in ed7411a06107).
+        for mode in ('manual', 'default'):
+            with self.subTest(mode=mode):
+                await self.check_init(mode)
+
+    async def check_init(self, mode):
         output = asyncio.StreamReader()
         writes, args_seen = [], []
         class Input:
@@ -132,7 +138,7 @@ class ClaudeProtocolChecks(unittest.IsolatedAsyncioTestCase):
                     output.feed_data((json.dumps({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': 'room-init'}}) + '\n').encode())
                 elif obj['type'] == 'user':
                     messages = [
-                        {'type': 'system', 'subtype': 'init', 'permissionMode': 'manual', 'tools': ['mcp__zerocollab_coordination__room_task']},
+                        {'type': 'system', 'subtype': 'init', 'permissionMode': mode, 'tools': ['mcp__zerocollab_coordination__room_task']},
                         {'type': 'control_request', 'request_id': 'tool', 'request': {'subtype': 'can_use_tool', 'tool_name': 'mcp__zerocollab_coordination__room_task', 'input': {'action': 'get'}}},
                         {'type': 'result', 'result': ''}]
                     for msg in messages:

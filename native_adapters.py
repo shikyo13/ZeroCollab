@@ -740,7 +740,9 @@ async def claude(run, prompt):
                 unexpected = [str(t)[:80] for t in tools if not isinstance(t, str) or (
                     t not in ('Read', 'Grep', 'Glob', 'EndConversation')
                     and not t.startswith('mcp__zerocollab_coordination__'))] if isinstance(tools, list) else None
-                if mode != 'manual' or unexpected is None or unexpected:
+                # The CLI takes --permission-mode manual but reports that mode as 'default' (Claude Code 2.1.295,
+                # live check-in ed7411a06107): both mean every tool outside the allow-list asks the room first.
+                if mode not in ('manual', 'default') or unexpected is None or unexpected:
                     # Say exactly what failed, so the check can be corrected without loosening it blind.
                     seen = 'no tool list' if unexpected is None else (
                         'unexpected tools: ' + ', '.join(unexpected[:12]) if unexpected else 'tools as expected')
