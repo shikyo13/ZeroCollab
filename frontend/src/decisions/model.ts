@@ -7,13 +7,23 @@ export interface Contribution {
   agreed?: string[]; dissent?: {point: string; by: string[]}[]; unresolved?: string[]; would_change?: string[];
   answers?: {challenge_id: string; status: string; note: string}[];
   tasks?: {title: string; details: string}[];
-  round?: number; sealed?: boolean; attachments?: {url: string; name?: string}[];
+  round?: number; sealed?: boolean; attachments?: {url: string; name?: string; source?: string; note?: string}[];
+  comments?: ProposalComment[];
+}
+export type CommentField = 'text'|'agreed'|'dissent'|'unresolved'|'would_change'|'tasks';
+export interface ProposalComment {text:string; field:CommentField; index?:number|null; point?:string}
+export interface HumanChoice {
+  id:string; kind:'approve'|'reject'; proposal_id:string; revision:number; epoch:number; round:number;
+  by:string; at:number; note?:string; comments?:ProposalComment[];
+  attachments?: Contribution['attachments']; note_id?:string; tasks?:string[];
+  team_outcome:string; tally:{agree:number; dissent:number; missing:string[]};
 }
 export interface Summary {
   id: string; question: string; stage: Stage; channel: string; participants: string[]; lead: string;
   updated: number; interrupted: string; outcome: 'agreed' | 'dissent' | 'unresolved';
 }
 export interface Decision extends Summary {
+  choice?:HumanChoice|null; tally?:{agree:number; dissent:number; missing:string[]};
   round?: number; in_place?: boolean; origin?: [string, number]; task_id?: string;
   phase?: 'draft' | 'discussing' | 'candidate' | 'review_ready' | 'recorded' | 'stopped';
   coverage?: {submitted: string[]; invited: string[]; missing: string[]};

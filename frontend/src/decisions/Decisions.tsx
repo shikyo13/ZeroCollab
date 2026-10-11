@@ -48,7 +48,7 @@ export default function Decisions({project, active, channel, agents, runs, onTas
     return () => {current = false;};
   }, [selected, refresh, receive]);
   const matching = listing?.decisions.filter(d => d.channel && d.channel === channel).sort((a,b)=>b.updated-a.updated) || [];
-  const transcript = matching.find(d=>!['recorded','stopped'].includes(d.stage)) || matching[0];
+  const transcript = matching.find(d=>!['recorded','stopped'].includes(d.stage));
   const select = (id: string) => {
     if (id) openDecision(id);
     else {const url = new URL(location.href); url.searchParams.delete('decision'); history.pushState({},'',url.pathname + url.search); window.dispatchEvent(new PopStateEvent('popstate'));}
@@ -61,7 +61,7 @@ export default function Decisions({project, active, channel, agents, runs, onTas
     } catch (e) {if (alive.current) setError(errorMessage(e)); return false;} finally {creating.current = false; if (alive.current) setBusy(false);}
   };
   return <><section className="decision-root" aria-label="Team decisions">
-    <header className="decision-heading"><div><p className="decision-eyebrow">TEAM DISCUSSION</p><h2>Decisions</h2><p>A bounded discussion with attributed contributions and a recorded outcome.</p></div><div className="decision-actions">
+    <header className="decision-heading"><div><p className="decision-eyebrow">TEAM DECISIONS</p>{!selected&&<h2>Decisions</h2>}</div><div className="decision-actions">
       {selected && <button className="bd-btn" onClick={() => select('')}>Back to discussions</button>}
       <button className="bd-btn" onClick={() => {setError(''); setRefresh(n => n + 1);}}>Refresh decisions</button></div></header>
     <p className="decision-sr-only" role="status">{announcement}</p>

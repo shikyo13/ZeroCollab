@@ -75,6 +75,10 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
       writeStored(READ_KEY, JSON.stringify(next));
       return next;
     });
+    window.requestAnimationFrame(() => {
+      const menu = root.current?.querySelector('.ws-bell-menu');
+      (menu?.querySelector<HTMLElement>('li button') || menu?.querySelector<HTMLElement>('h2'))?.focus();
+    });
   };
   useEffect(() => {
     if (!open) return;
@@ -173,7 +177,8 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
     });
   }
 
-  const count = items.filter(item => read[item.key] !== item.revision).length;
+  const unread = items.filter(item => read[item.key] !== item.revision);
+  const count = unread.length;
   return <div className="ws-bell" ref={root}>
     <button className={`ws-icon-button ws-bell-button${count ? ' has-items' : ''}`} aria-haspopup="dialog" aria-expanded={open}
       aria-label={count ? `${count} ${count === 1 ? 'unread notification' : 'unread notifications'}` : 'No unread notifications'}
@@ -182,8 +187,8 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
       {count > 0 && <span className="ws-bell-count" aria-hidden="true">{count > 9 ? '9+' : count}</span>}
     </button>
     {open && <div className="ws-popover ws-bell-menu" role="dialog" aria-label="Notifications">
-      <h2>Notifications · {count} unread</h2>
-      {items.length ? <ul>{items.map(item => <li key={item.key}>
+      <h2 tabIndex={-1}>Notifications · {count} unread</h2>
+      {unread.length ? <ul>{unread.map(item => <li key={item.key}>
         <button onClick={() => { setOpen(false); item.open(); }}>
           <strong>{item.title}</strong>
           {item.detail && <small>{item.detail}</small>}
@@ -194,7 +199,7 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
           aria-pressed={read[item.key] === item.revision}>
           {read[item.key] === item.revision ? 'Read' : 'Mark as read'}
         </button>
-      </li>)}</ul> : <p>Nothing needs you right now. Approvals, questions, reviews, team suggestions, repository requests and releases ready to deploy show up here.</p>}
+      </li>)}</ul> : <p>All caught up.</p>}
       <label className="ws-notification-mute">
         <input type="checkbox" checked={muted} onChange={event => {
           const next = event.target.checked; setMuted(next); writeStored(MUTE_KEY, next ? '1' : '0');

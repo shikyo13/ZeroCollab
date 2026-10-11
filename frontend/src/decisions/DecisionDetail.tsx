@@ -3,12 +3,14 @@ import { api, errorMessage } from '../lib/api';
 import type { RunInfo } from '../lib/types';
 import type { Agents } from '../board/shared';
 import { useStoreValue } from '../lib/room';
-import { contextLabel, decisionURL, notePreview, proposalFor, stageIndex, stages, votesFor, type Contribution, type Decision, type Listing } from './model';
+import { contextLabel, notePreview, proposalFor, stageIndex, stages, votesFor, type Contribution, type Decision, type Listing } from './model';
+import { DecisionRecommendation, DecisionChoices, DecisionMedia, decisionName } from './ChatDecision';
 
 function ContributionCard({c, label}: {c: Contribution; label: (name: string) => string}) {
   return <article className="decision-contribution"><h3>{label(c.author)} · {c.kind === 'missing' ? 'No response' : c.kind}</h3>
     <p className="decision-muted">Revision {c.revision} · {c.id}{c.context && ` · ${contextLabel(c.context)}`}{c.before_new_direction && ' · Before new direction'}</p>
     <p className="decision-text">{c.text || c.reason || `No response from ${label(c.author)}`}</p>
+    <DecisionMedia c={c}/>
     {!!c.evidence?.length && <div><strong>Evidence</strong><ul>{c.evidence.map((s,i)=><li key={i}>{s}</li>)}</ul></div>}
     {!!c.responds_to?.length && <p className="decision-muted">Responds to {c.responds_to.join(', ')}</p>}
   </article>;
@@ -25,12 +27,12 @@ export default function DecisionDetail({d, listing, active, agents, runs, receiv
   const [mode, setMode] = useState<'edit'|'return'|'close_stage'|'stop'|''>(''), [draft, setDraft] = useState('');
   const dialog = useRef<HTMLDialogElement>(null), opener = useRef<HTMLElement | null>(null), heading = useRef<HTMLHeadingElement>(null);
   const alive = useRef(true), pending = useRef(false), current = useRef(d), formToken = useRef(''); current.current = d;
-  const id = useId(), proposal = proposalFor(d), votes = votesFor(d), label = (name: string) => agents[name]?.label || name;
+  const id = useId(), candidate = proposalFor(d), proposal = candidate?.sealed ? undefined : candidate;
+  const votes = proposal ? votesFor(d) : {}, label = (name: string) => decisionName(name, agents);
   const token = JSON.stringify(d.token), allowed = (action: string) => d.actions.includes(action);
   const recorded = !!d.record?.note_id;
   const tasks: {title: string; details: string; id?: string; error?: string}[] = recorded ? d.record.tasks || [] : proposal?.tasks || [];
-  const missing = d.participants.filter(p => !votes[p]);
-  const recordLabel = recorded ? 'Retry failed tasks only' : d.outcome === 'dissent' ? 'Record with dissent' : d.outcome === 'unresolved' ? 'Record unresolved outcome' : 'Record decision';
+  
   useEffect(() => {alive.current = true; return () => {alive.current = false;};}, []);
   useEffect(() => {if (active && heading.current?.offsetParent) heading.current.focus();}, [d.stage, d.revision, active]);
   const act = async (action: string, body: Record<string,unknown> = {}, expected = token) => {
@@ -61,11 +63,12 @@ export default function DecisionDetail({d, listing, active, agents, runs, receiv
   const slotsFull = !!slots && slots.used >= slots.limit;
   const status = d.stage === 'recorded' ? 'Decision recorded' : recorded ? 'Decision saved · follow-up task recovery' : d.stage === 'stopped' ? 'Stopped · submissions preserved' : d.interrupted ? d.interrupted : d.stage === 'review' ? `Review ready · ${d.outcome === 'agreed' ? 'All participants agreed' : d.outcome === 'dissent' ? 'Dissent remains' : 'Unresolved outcome'}` : stages[stageIndex[d.stage]];
   return <div className="decision-detail">
-    <header className="decision-heading"><div><h2 ref={heading} tabIndex={-1}>{d.question}</h2><p>Discussion {d.id} · Revision {d.revision} · Lead {label(d.lead)}</p></div>{d.channel && <div><button className="bd-btn" disabled={!chatAvailable} aria-describedby={!chatAvailable ? id + '-chat' : undefined} onClick={transcript}>Open discussion transcript</button>{!chatAvailable && <p id={id + '-chat'} className="decision-muted">Wait for the chat list, or reopen this discussion chat from the sidebar.</p>}</div>}</header>
-    <ol className="decision-stages" aria-label="Discussion stages">{stages.map((s,i)=><li key={s} aria-current={stageIndex[d.stage] === i ? 'step' : undefined}>{i+1}. {s}</li>)}</ol>
+    <header className="decision-heading"><div><h2 ref={heading} tabIndex={-1}>{d.question}</h2><p>Round {d.round || 1} · led by {label(d.lead)}</p></div>{d.channel && <div><button className="bd-btn" disabled={!chatAvailable} aria-describedby={!chatAvailable ? id + '-chat' : undefined} onClick={transcript}>Open discussion transcript</button>{!chatAvailable && <p id={id + '-chat'} className="decision-muted">Wait for the chat list, or reopen this discussion chat from the sidebar.</p>}</div>}</header>
+    <details><summary>Discussion progress</summary><ol className="decision-stages" aria-label="Discussion stages">{stages.map((s,i)=><li key={s} aria-current={stageIndex[d.stage] === i ? 'step' : undefined}>{i+1}. {s}</li>)}</ol></details>
     <div className="decision-banner" role="status"><strong>{status}</strong></div><p className="decision-sr-only" role="status">{announcement}</p>
     {error && <p className="decision-error" role="alert">{error}</p>}
-    <section className="decision-card"><h3>Decision criteria</h3><ul>{d.criteria.map((c,i)=><li key={i}>{c}</li>)}</ul><p className="decision-muted">{d.participants.map(label).join(', ')} · One critique round, followed by bounded proposal edits or named questions.</p></section>
+    <DecisionRecommendation d={d} agents={agents} compact/><DecisionChoices key={d.id} d={d} receive={receive}/><details open className="decision-full-recommendation"><summary>Full recommendation and responses</summary><DecisionRecommendation d={d} agents={agents}/></details>
+    <details className="decision-card"><summary>Original question and criteria</summary><ul>{d.criteria.map((c,i)=><li key={i}>{c}</li>)}</ul><p className="decision-muted">Participants: {d.participants.map(label).join(', ')}.</p></details>
     {allowed('start') && <section className="decision-card"><h3>Saved draft</h3><p>No participant work has started.</p>
       <p id={id + '-slots'}>Starting opens one dedicated discussion chat. {slots ? `${slots.used} of ${slots.limit} chat slots used.` : listing ? 'Chat capacity is unavailable. The server checks capacity when starting.' : 'Checking chat capacity...'}</p>
       {slotsFull && <p>All chat slots are used. Close a chat before starting; this draft stays saved.</p>}
@@ -81,7 +84,7 @@ export default function DecisionDetail({d, listing, active, agents, runs, receiv
       {d.deadline && <p className="decision-muted">Stage deadline {new Date(d.deadline*1000).toLocaleString()}. Complete responses are retained.</p>}
       {allowed('close_stage') && <button className="bd-btn" disabled={busy} onClick={e => show('close_stage',e)}>{skipTitle}</button>}
     </section>}
-    <div className="decision-layout">
+    <details className="decision-card"><summary>Recommendation details and individual responses</summary><div className="decision-layout">
       <section className="decision-card"><h3>Team proposal{proposal && ` · revision ${d.revision}`}</h3>{proposal ? <>
         <p className="decision-muted">{proposal.id} · by {label(proposal.author)}</p><p className="decision-text">{proposal.text}</p>
         {!!proposal.agreed?.length && <><h4>Agreed points</h4><ul>{proposal.agreed.map((s,i)=><li key={i}>{s}</li>)}</ul></>}
@@ -99,19 +102,12 @@ export default function DecisionDetail({d, listing, active, agents, runs, receiv
           {d.contributions.some(c=>c.author===p&&c.kind==='missing') && <p className="decision-warning">Skipped stages: {[...new Set(d.contributions.filter(c=>c.author===p&&c.kind==='missing').map(c=>c.stage))].join(', ')}</p>}
         </article>;
       })}</section>
-    </div>
-    {(allowed('record') || allowed('edit') || allowed('return') || recorded || d.stage === 'review') && <section className="decision-card decision-record"><h3>{recorded ? 'Saved decision and tasks' : 'Record preview'}</h3>
-      {recorded ? <p><a href={decisionURL(d.id)}>Saved decision {d.id}</a> · Note {d.record.note_id}</p> : <><p>Outcome: {d.outcome}. {missing.length > 0 && `Absent verdicts: ${missing.map(label).join(', ')}.`}</p>{slots ? <pre aria-label="Exact decision note preview" tabIndex={0}>{notePreview(d)}</pre> : <p id={id + '-record-format'} role="status">{listing ? 'Recording is unavailable because this server does not provide the matching decision record format. Update the server, then refresh decisions.' : 'Checking the decision record format...'}</p>}</>}
-      <h4>{recorded ? 'Follow-up task receipts' : 'Unowned follow-up tasks to create'}</h4>{!tasks.length && <p>No tasks will be created.</p>}
-      {tasks.map((task,i)=><article className="decision-task" key={i}><strong>{task.title}</strong><p className="decision-text">{(task.details ? task.details + '\n\n' : '') + `From team decision ${d.id}.`}</p>{task.id ? <button className="bd-btn" onClick={()=>onTask(task.id!)}>Open created task {task.id}</button> : <p>Unowned; assign later on the board.</p>}{task.error && <p role="alert" className="decision-error">Task creation failed: {task.error}</p>}</article>)}
-      <p className="decision-muted">Recording grants no deployment, restart, settings or credential authority.</p>
-      <div className="decision-actions">{(!recorded || allowed('record')) && <button className="bd-btn bd-btn-primary" disabled={busy || !allowed('record') || (!recorded && !slots)} aria-describedby={!recorded && !slots ? id + '-record-format' : undefined} onClick={()=>void act('record')}>{busy ? 'Saving...' : recordLabel}</button>}
-        {allowed('edit') && <button className="bd-btn" disabled={busy} onClick={e=>show('edit',e)}>Edit proposal before recording</button>}
-        {allowed('return') && <button className="bd-btn" disabled={busy} onClick={e=>show('return',e)}>Return with a question</button>}</div>
-      {!allowed('record') && !recorded && <p>Recording is unavailable until this stage closes. Missing verdicts require an explicit unresolved outcome.</p>}
-    </section>}
-    <details className="decision-card decision-trail"><summary>Attributed contribution trail · {d.contributions.length}</summary>{d.contributions.map(c=><ContributionCard key={c.id} c={c} label={label} />)}</details>
-    {allowed('stop') && <div className="decision-actions"><button className="bd-btn" disabled={busy} onClick={e=>show('stop',e)}>Stop discussion</button><p className="decision-muted">Stop preserves complete contributions and invalidates queued submissions.</p></div>}
+    </div></details>
+    <details className="decision-card decision-record"><summary>{recorded ? 'Saved outcome and tasks' : 'Proposed follow-up tasks'}</summary>
+      {!tasks.length&&<p>No follow-up tasks.</p>}{tasks.map((task,i)=><article className="decision-task" key={i}><strong>{task.title}</strong><p className="decision-text">{task.details}</p>{task.id&&<button className="bd-btn" onClick={()=>onTask(task.id!)}>Open task</button>}{task.error&&<p role="alert">{task.error}</p>}</article>)}
+      <details><summary>Record text</summary><pre>{notePreview(d)}</pre></details>
+    </details>
+    <details className="decision-card decision-trail"><summary>See how the team got here · {d.contributions.length} contributions</summary>{d.contributions.map(c=>c.sealed?<p key={c.id}>{label(c.author)} submitted a hidden proposal.</p>:<ContributionCard key={c.id} c={c} label={label} />)}</details>
     <dialog ref={dialog} className="decision-dialog" aria-labelledby={id + '-dialog'} onCancel={e=>{if(busy)e.preventDefault();}} onClose={()=>opener.current?.focus()}>
       <form onSubmit={async e=>{e.preventDefault();if((mode==='edit'||mode==='return')&&!draft.trim()){setError('Enter the text before continuing.');return;}
         const ok=await act(mode,mode==='edit'?{text:draft}:mode==='return'?{question:draft}:{},formToken.current);if(ok)dialog.current?.close();}}>
