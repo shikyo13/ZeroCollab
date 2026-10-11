@@ -110,6 +110,9 @@ ROOM_ACTION_LABELS = {
     ('room_followup', 'resolve'): 'answering a follow-up', ('room_browser', 'screenshot'): 'taking a browser screenshot',
     ('room_browser', 'open'): 'opening a page in the shared browser', ('room_browser', 'inspect'): 'inspecting a page',
     ('room_decision', 'submit'): 'submitting to a decision', ('room_decision', 'get'): 'reading a decision'}
+ACP_KIND_LABELS = {
+    'read': 'reading files', 'edit': 'editing files', 'delete': 'deleting files', 'move': 'moving files',
+    'search': 'searching files', 'execute': 'running a command', 'think': 'thinking', 'fetch': 'reading a web page'}
 
 
 def tool_label(name, params):
@@ -128,7 +131,8 @@ def tool_label(name, params):
     if name in ROOM_LABELS:
         action = arguments.get('action') if isinstance(arguments, dict) else None
         return ROOM_ACTION_LABELS.get((name, action)) or ROOM_LABELS[name]
-    return NATIVE_LABELS.get(name, 'working')
+    # Gemini (ACP) names a tool call with free text but reports its kind (harness fd991dcb).
+    return NATIVE_LABELS.get(name) or ACP_KIND_LABELS.get(params.get('kind'), 'working')
 
 
 def changes_room(tool, arguments):
@@ -680,7 +684,9 @@ class Run:
         await self.manager.emit("runtime_tool", {"run": self.id, "agent": self.name, "channel": self.channel,
                                                   "tool": name, "status": status,
                                                   # A sealed decision turn says no more than that it is working.
-                                                  "label": 'working on a team decision' if self.sealed else tool_label(name, params),
+                                                  "label": 'working on a team decision' if self.sealed else
+                                                  'waiting for your approval' if status == 'awaiting approval' else
+                                                  tool_label(name, params),
                                                   "details": {'sealed': True} if self.sealed else params}, persist=True)
 
     async def approval(self, tool, params, reason):
