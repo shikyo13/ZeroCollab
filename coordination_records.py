@@ -351,7 +351,10 @@ class CoordinationRecords:
                             if t.get('owner') == actor and t.get('status') != 'done')
                             if summary['execution_state'] in ('idle', 'needs_attention')],
             'review_requests': [r for r in reviews if r['reviewer'] == actor and r['status'] == 'pending'],
-            'review_findings': [r for r in reviews if self.task(r['task_id'])['owner'] == actor and r['status'] == 'changes_requested'],
+            # Status first, and a lookup that cannot raise: finished tasks with old approved reviews may be
+            # archived off the board (project_room.archive_done), and the inbox feeds every turn's context.
+            'review_findings': [r for r in reviews if r['status'] == 'changes_requested' and next(
+                (t for t in self.room.state['tasks'] if t['id'] == r['task_id']), {}).get('owner') == actor],
             'followups': [f for f in self.room.state.get('followups', []) if f['assigned_to'] == actor and f['status'] == 'open'],
             'waiting_for': [f for f in self.room.state.get('followups', []) if f['created_by'] == actor and f['assigned_to'] != actor and f['status'] == 'open'],
         }
