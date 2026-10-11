@@ -572,8 +572,11 @@ class Run:
             'agent': self.name, 'channel': self.channel, 'kept_in': kept_in})
 
     def answers_human(self):
-        """Woken by a message from the user (directly, or as the lead answering one)."""
-        return any(q.get('human') for q in self.entry.get('requests', []))
+        """Owes the user an answer: woken (or steered mid-turn) by a user message that names this agent or
+        goes to it as the lead. A whole-team @all target is not, unless named directly, so ten agents'
+        interim paragraphs don't flood the chat (harness f0e86c85 F2, F3)."""
+        steered = [q for q in getattr(self.steering, 'pending', []) if q.get('_steer_delivered')]
+        return any(q.get('human') and not q.get('broadcast') for q in self.entry.get('requests', []) + steered)
 
     async def publish(self, content, identifier, final, partial=False, route=True):
         """Post one message to the chat. Anything a run answering a user message under the response claim

@@ -599,9 +599,14 @@ async def _handle_new_message(msg: dict):
     # @all wakes the whole team, as before 0.12.26, and an explicit @agent wakes that agent.
     claim = None
     human = bool(managed_runtime) and not managed_sender and sender not in known_agents
-    if human and router.broadcast_kind(text) == 'all':
-        managed_runtime.response_claims.bump_scope(channel)  # the broadcast supersedes an open lead answer here
-        managed_runtime.response_claims.save()
+    # An @all has no competing answer, so it supersedes nothing: a lead still answering an earlier
+    # untagged message keeps its claim (harness f0e86c85 F1). Its targets that the message doesn't name
+    # directly are marked broadcast, so their interim text stays in Activity (F2).
+    team_wide = human and router.broadcast_kind(text) == 'all'
+    named = set()
+    if team_wide:
+        for name in router.named_mentions(text):
+            named.update(registry.resolve_to_instances(name) if registry else [name])
     elif human and router.untagged(text):
         claim = managed_runtime.response_claims.open(channel, msg.get('id'))
         raw_targets = [claim['owner']] if claim else []
@@ -641,7 +646,8 @@ async def _handle_new_message(msg: dict):
         if not mcp_bridge.is_online(target):
             store.add("system", f"{target} appears offline — message queued.", msg_type="system", channel=channel)
         if agents.is_available(target):
-            routing = {'message_id': msg.get('id'), 'human': not sender_is_agent}
+            routing = {'message_id': msg.get('id'), 'human': not sender_is_agent,
+                       **({'broadcast': True} if team_wide and target not in named else {})}
             message = chat_msg
             if claim and target == claim['owner']:
                 routing.update(response_claim=claim['key'], generation=claim['generation'])
