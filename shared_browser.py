@@ -98,6 +98,11 @@ class WindowsBrowserProcess:
             self.handle = None
 
 
+# The web room's browser host name (ui_sessions.ROOM_HOST), repeated here so the desktop app, which ships
+# this file without ui_sessions.py, needs no extra module. Agents' browser never reaches it on any port.
+ROOM_HOST = 'zerocollab.localhost'
+
+
 def preview_url(value, blocked_ports=()):
     if not isinstance(value, str) or len(value) > 4096:
         raise ValueError('Enter a local preview URL')
@@ -359,6 +364,9 @@ class Browser:
                 # Block admin/control origins for every resource, not only top-level pages.
                 if parsed.hostname in ('localhost', '127.0.0.1', '::1') and (parsed.port or (443 if parsed.scheme == 'https' else 80)) in ports:
                     raise ValueError('Protected room endpoint')
+                # The web room's own host name, on every port: the browser room signs in there.
+                if parsed.hostname and (parsed.hostname == ROOM_HOST or parsed.hostname.endswith('.' + ROOM_HOST)):
+                    raise ValueError('Protected room endpoint')
                 if params.get('resourceType') == 'Document' and url != 'about:blank':
                     preview_url(url, ports)
             except ValueError:
@@ -416,7 +424,8 @@ class Browser:
             await self.command(domain + '.enable', page=page)
         await self.command('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]}, page=page)
         await self.command('Network.setBlockedURLs', {'urls': [f'*://{host}:{p}/*'
-            for host in ('localhost', '127.0.0.1', '[::1]') for p in self.blocked_ports | {self.debug_port}]}, page=page)
+            for host in ('localhost', '127.0.0.1', '[::1]') for p in self.blocked_ports | {self.debug_port}]
+            + [f'*://{ROOM_HOST}*', f'*://*.{ROOM_HOST}*']}, page=page)
         await self.command('Emulation.setDeviceMetricsOverride', {'width': page.width, 'height': page.height, 'deviceScaleFactor': 1, 'mobile': False}, page=page)
         await self.command('Page.setInterceptFileChooserDialog', {'enabled': True}, page=page)
 

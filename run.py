@@ -65,6 +65,37 @@ def revalidated_static_files():
     return RevalidatedStaticFiles
 
 
+def mount_web(app, static_dir, *, session_token):
+    """Serve the workspace: '/' and /static, shared by this launcher and the desktop host so a web fix
+    reaches both. session_token has no default, so each caller states where the token goes: the web
+    launcher passes it and it is embedded in '/'; the desktop host passes None and '/' stays token-free,
+    because its trusted preload delivers the token (security 8a13fffd C1/T2, eab667ee)."""
+    if session_token is not None and not (isinstance(session_token, str) and session_token):
+        raise ValueError('session_token must be a non-empty string, or None for a token-free page')
+    from fastapi.responses import HTMLResponse
+
+    static_dir = Path(static_dir)
+    build_id = static_build_id(static_dir)
+
+    @app.get("/")
+    async def index():
+        # Read index.html fresh each request so changes take effect without restart.
+        # Inject the session token into the HTML so the browser client can use it.
+        # This is safe: same-origin policy prevents cross-origin pages from reading
+        # the response body, so only the user's own browser tab gets the token.
+        html = versioned_assets((static_dir / "index.html").read_text("utf-8"), build_id)
+        if session_token is not None:
+            html = html.replace(
+                "</head>",
+                f'<script>window.__SESSION_TOKEN__="{session_token}";</script>\n</head>',
+            )
+        # X-ZeroCollab-Room lets Start-Room recognise the room now that the page carries no token marker.
+        return HTMLResponse(html, headers={"Cache-Control": "no-store", "X-ZeroCollab-Room": "1"})
+
+    app.mount("/static", revalidated_static_files()(directory=str(static_dir)), name="static")
+    return build_id
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(
         description="Start ZeroCollab (web UI + MCP server).",
@@ -107,12 +138,19 @@ def main():
 
     config = load_config(ROOT)
 
-    # --- Security: generate a random session token (in-memory only) ---
-    session_token = secrets.token_hex(32)
+    # --- Security: the UI token (in memory only) ---
+    # The supervisor generates it and hands it over on stdin with the browser-session hashes, so it is
+    # never in a file, a log or an environment variable an agent could inherit. Started by hand, the room
+    # makes its own. The page never carries it: browsers sign in through a launch code (ui_sessions).
+    import ui_sessions
+    handoff = ui_sessions.read_handoff(sys.stdin)
+    session_token = handoff.get("ui_token") or secrets.token_hex(32)
+    port = int(config.get("server", {}).get("port", 8300))
+    browser_sessions = ui_sessions.BrowserSessions(port, handoff.get("session_hashes"))
 
     # Configure the FastAPI app (creates shared store)
     from app import app, configure, set_event_loop, store as _store_ref
-    configure(config, session_token=session_token)
+    configure(config, session_token=session_token, sessions=browser_sessions)
     import app as room_app
     from room_runtime import install
     runtime = install(room_app)
@@ -144,26 +182,7 @@ def main():
     time.sleep(0.5)
     logging.getLogger(__name__).info("MCP streamable-http on port %d, SSE on port %d", http_port, sse_port)
 
-    # Mount static files
-    from fastapi.responses import HTMLResponse
-
-    static_dir = ROOT / "static"
-    build_id = static_build_id(static_dir)
-
-    @app.get("/")
-    async def index():
-        # Read index.html fresh each request so changes take effect without restart.
-        # Inject the session token into the HTML so the browser client can use it.
-        # This is safe: same-origin policy prevents cross-origin pages from reading
-        # the response body, so only the user's own browser tab gets the token.
-        html = versioned_assets((static_dir / "index.html").read_text("utf-8"), build_id)
-        injected = html.replace(
-            "</head>",
-            f'<script>window.__SESSION_TOKEN__="{session_token}";</script>\n</head>',
-        )
-        return HTMLResponse(injected, headers={"Cache-Control": "no-store"})
-
-    app.mount("/static", revalidated_static_files()(directory=str(static_dir)), name="static")
+    mount_web(app, ROOT / "static", session_token=None)
 
     # Capture the event loop for the store→WebSocket bridge
     @app.on_event("startup")
@@ -206,12 +225,20 @@ def main():
                 sys.exit(1)
 
     print(f"\n  ZeroCollab")
-    print(f"  Web UI:  http://{host}:{port}")
+    print(f"  Web UI:  {browser_sessions.origin}")
     print(f"  MCP HTTP: http://{host}:{http_port}/mcp  (Claude, Codex)")
     print(f"  MCP SSE:  http://{host}:{sse_port}/sse   (Gemini)")
     print(f"  Data:    {data_dir}")
     print(f"  Agents auto-trigger on @mention")
-    print("\n  Browser controls carry the local session token; it is not printed.\n")
+    if handoff.get("ui_token"):
+        print("\n  Open the room from the tray or Start-Room; it signs this browser in.\n")
+    elif sys.stdout.isatty():
+        # Started by hand in a terminal: a single-use sign-in link, printed only here. Output that goes to a
+        # file (an older supervisor's log) gets no link, because agents can read those files.
+        print(f"\n  Sign in (single use, valid {ui_sessions.CODE_SECONDS} s): "
+              f"{browser_sessions.origin}/launch#code={browser_sessions.mint()}\n")
+    else:
+        print("\n  No sign-in link is written to logs. Open the room with: python supervisor.py open\n")
 
     uvicorn.run(app, host=host, port=port, log_level="info")
 
