@@ -11,11 +11,23 @@ import { openServer } from '../workspace/useWorkspaceRoute';
 import type { View } from '../workspace/useWorkspaceRoute';
 import type { DeploymentFeed } from './Deployments';
 import { Icon } from './Icon';
+import { readStored, writeStored } from '../lib/storage';
+import './attention.css';
 
-type Item = { key: string; title: string; detail: string; action: string; open: () => void };
+type Item = { key: string; revision: string; title: string; detail: string; action: string; open: () => void };
 
 const name = (state: RuntimeState | null, id: string) => id === USER ? 'You' : state?.agents[id]?.label || id;
 const clip = (text: string, max = 140) => (text.length > max ? text.slice(0, max - 1) + '…' : text);
+
+const READ_KEY = 'zerocollab-notifications-read-v1';
+const MUTE_KEY = 'zerocollab-mute-unfocused-chat';
+function savedRead(): Record<string, string> {
+  try {
+    const value = JSON.parse(readStored(READ_KEY) || '{}');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  } catch { return {}; }
+}
 
 const REVEAL_TRIES = 40;     // the target view may still be loading its data
 const REVEAL_EVERY_MS = 100;
@@ -41,6 +53,21 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
   const { data: board } = useProjectState();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const [read, setRead] = useState(savedRead);
+  const [muted, setMuted] = useState(() => readStored(MUTE_KEY) === '1');
+  useEffect(() => {
+    const sync = () => { setRead(savedRead()); setMuted(readStored(MUTE_KEY) === '1'); };
+    window.addEventListener('storage', sync);
+    return () => window.removeEventListener('storage', sync);
+  }, []);
+  const markRead = (item: Item) => {
+    setRead(previous => {
+      // Optional local preferences are bounded; request state stays on the server.
+      const next = Object.fromEntries(Object.entries({ ...previous, [item.key]: item.revision }).slice(-200));
+      writeStored(READ_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
   useEffect(() => {
     if (!open) return;
     const outside = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node)) setOpen(false); };
@@ -60,6 +87,7 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
     if (!request) continue;
     items.push({
       key: `repo:${project.id}`,
+      revision: JSON.stringify([request.by, request.path, request.create, request.reason, request.time, request.action, request.replace, request.current]),
       // The runtime state names only the active project's team; another project's requester is in its own.
       title: `${project.team.find(m => m.id === request.by)?.name ?? name(state, request.by)} requested ${request.replace ? 'a repository change' : 'a repository'}`,
       detail: `${project.name}: ${request.path}`,
@@ -70,6 +98,7 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
   for (const approval of state?.approvals ?? []) {
     items.push({
       key: `approval:${approval.id}`,
+      revision: JSON.stringify([approval.agent, approval.tool, approval.question, approval.reason]),
       title: `${name(state, approval.agent)} ${approval.question ? 'has a question' : `asks to run ${approval.tool}`}`,
       detail: clip(approval.reason || ''),
       action: 'Answer',
@@ -80,7 +109,8 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
     if (review.reviewer !== USER || review.status !== 'pending') continue;
     const task = board?.tasks.find(t => t.id === review.task_id);
     items.push({
-      key: `review:${review.id}`,
+      key: `review:${window.activeProjectId}:${review.id}`,
+      revision: JSON.stringify([review.requested_by, review.revision, review.request]),
       title: `${name(state, review.requested_by)} asked you to review`,
       detail: clip(task ? `${task.title}: ${review.request}` : review.request),
       action: 'Open review',
@@ -91,7 +121,8 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
     if (followup.assigned_to !== USER || followup.status !== 'open') continue;
     const task = board?.tasks.find(t => t.id === followup.task_id);
     items.push({
-      key: `followup:${followup.id}`,
+      key: `followup:${window.activeProjectId}:${followup.id}`,
+      revision: JSON.stringify([followup.created_by, followup.text]),
       title: followup.created_by === USER ? 'Your follow-up note is open' : `${name(state, followup.created_by)} needs your answer`,
       detail: clip(followup.text),
       action: 'Open follow-up',
@@ -103,6 +134,7 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
   if (release) {
     items.push({
       key: `release:${release.id}`,
+      revision: JSON.stringify([release.commit, release.manifest_sha, release.title, release.subject, release.notes]),
       title: `Release ${release.version || release.id} is ready to deploy`,
       detail: clip(release.title || release.subject || 'Reviewed and rehearsed; approve it when you are ready.'),
       action: 'Review deployment',
@@ -110,23 +142,35 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
     });
   }
 
-  const count = items.length;
+  const count = items.filter(item => read[item.key] !== item.revision).length;
   return <div className="ws-bell" ref={root}>
     <button className={`ws-icon-button ws-bell-button${count ? ' has-items' : ''}`} aria-haspopup="dialog" aria-expanded={open}
-      aria-label={count ? `${count} ${count === 1 ? 'item' : 'items'} waiting on you` : 'Nothing is waiting on you'}
-      title={count ? `${count} waiting on you` : 'Nothing is waiting on you'} onClick={() => setOpen(!open)}>
+      aria-label={count ? `${count} ${count === 1 ? 'unread notification' : 'unread notifications'}` : 'No unread notifications'}
+      title={count ? `${count} unread notifications` : 'No unread notifications'} onClick={() => setOpen(!open)}>
       <Icon name="bell" size={18} />
       {count > 0 && <span className="ws-bell-count" aria-hidden="true">{count > 9 ? '9+' : count}</span>}
     </button>
-    {open && <div className="ws-popover ws-bell-menu" role="dialog" aria-label="Waiting on you">
-      <h2>Waiting on you{count ? ` (${count})` : ''}</h2>
-      {count ? <ul>{items.map(item => <li key={item.key}>
+    {open && <div className="ws-popover ws-bell-menu" role="dialog" aria-label="Notifications">
+      <h2>Notifications · {count} unread</h2>
+      {items.length ? <ul>{items.map(item => <li key={item.key}>
         <button onClick={() => { setOpen(false); item.open(); }}>
           <strong>{item.title}</strong>
           {item.detail && <small>{item.detail}</small>}
           <span className="ws-bell-action">{item.action} →</span>
         </button>
+        <button className="ws-notification-read" onClick={() => markRead(item)}
+          aria-label={`${read[item.key] === item.revision ? 'Read' : 'Mark as read'}: ${item.title}`}
+          aria-pressed={read[item.key] === item.revision}>
+          {read[item.key] === item.revision ? 'Read' : 'Mark as read'}
+        </button>
       </li>)}</ul> : <p>Nothing needs you right now. Approvals, questions, reviews, repository requests and releases ready to deploy show up here.</p>}
+      <label className="ws-notification-mute">
+        <input type="checkbox" checked={muted} onChange={event => {
+          const next = event.target.checked; setMuted(next); writeStored(MUTE_KEY, next ? '1' : '0');
+        }} />
+        <span>Mute chat sounds when unfocused</span>
+      </label>
+      <p className="ws-notification-help">Visual notifications stay on. Saved in this browser.</p>
     </div>}
   </div>;
 }
