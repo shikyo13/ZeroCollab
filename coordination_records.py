@@ -1,4 +1,6 @@
 """Durable peer reviews and follow-ups shared by the board and agent tools."""
+import os
+import subprocess
 import time
 import uuid
 import hashlib
@@ -30,6 +32,23 @@ def bounded(text, kind):
 def excerpt(text, limit=HISTORY_TEXT):
     """History summaries repeat a record that is stored in full, so they are shortened visibly."""
     return text if len(text) <= limit else text[:limit - 40] + ' [...] (full text in the record)'
+
+
+def _git_bytes(root, *args):
+    """Raw stdout of a read-only Git command in root (hooks off), or None when Git fails or is missing."""
+    try:
+        result = subprocess.run(['git', '-c', 'core.hooksPath=' + os.devnull, '-C', str(root), *args],
+                                capture_output=True, timeout=15,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def checked_out_branch(root):
+    """The full ref of the branch checked out in root ('refs/heads/...'), or '' (detached, not Git)."""
+    out = _git_bytes(root, 'symbolic-ref', '-q', 'HEAD')
+    return out.decode('utf-8', 'replace').strip() if out else ''
 
 
 class CoordinationRecords:
@@ -71,6 +90,7 @@ class CoordinationRecords:
         if not isinstance(selected, list) or len(selected) > 32 or any(not isinstance(p, str) for p in selected):
             raise ValueError('Review files must be a list of at most 32 relative files')
         entries, blobs, unavailable, total = [], {}, [], 0
+        branches = {}  # file root -> branch checked out there when the review was requested
         for relative in dict.fromkeys(selected):
             file_root, file_relative = self.review_source(task, relative, root)
             path = (file_root / file_relative).resolve()
@@ -88,7 +108,13 @@ class CoordinationRecords:
                 raise ValueError('Review snapshot exceeds 2 MB; select a smaller explicit file list')
             data = path.read_bytes()
             sha = hashlib.sha256(data).hexdigest()
-            entries.append({'path': relative, 'root': str(file_root), 'relative': file_relative, 'sha256': sha, 'bytes': len(data)})
+            entry = {'path': relative, 'root': str(file_root), 'relative': file_relative, 'sha256': sha, 'bytes': len(data)}
+            if file_root not in branches:
+                branches[file_root] = checked_out_branch(file_root)
+            if branches[file_root]:
+                # Lets the approval outlive the owner switching branches (see changed_files).
+                entry['branch'] = branches[file_root]
+            entries.append(entry)
             blobs[sha] = data
         return {'root': str(root), 'files': entries, 'unavailable': unavailable}, blobs
 
@@ -125,19 +151,38 @@ class CoordinationRecords:
         for entry in snapshot.get('files', []):
             root = Path(entry.get('root', snapshot['root'])).resolve()
             path = (root / entry.get('relative', entry['path'])).resolve()
+            if not path.is_relative_to(root):
+                changed.append(entry['path'])
+                continue
             try:
-                if not path.is_relative_to(root):
-                    matches = False
-                else:
-                    if path not in hashes:
-                        with path.open('rb') as stream:
-                            hashes[path] = hashlib.file_digest(stream, 'sha256').hexdigest()
-                    matches = hashes[path] == entry['sha256']
+                if path not in hashes:
+                    with path.open('rb') as stream:
+                        hashes[path] = hashlib.file_digest(stream, 'sha256').hexdigest()
+                matches = hashes[path] == entry['sha256']
             except OSError:
                 matches = False
-            if not matches:
+            if not matches and not self.branch_holds(root, entry, hashes):
                 changed.append(entry['path'])
         return changed
+
+    def branch_holds(self, root, entry, hashes):
+        """True when the owner has since checked out another branch and the reviewed branch's tip still
+        holds the reviewed bytes, so switching branches does not make an approval look stale. While the
+        reviewed branch is checked out, its working copy decides, so uncommitted edits still count. The
+        tip is read as a checkout writes it (git cat-file --filters), the same bytes the snapshot hashed."""
+        branch = entry.get('branch')
+        if not branch:
+            return False  # Snapshot taken before branches were recorded, or a detached HEAD.
+        if ('branch', root) not in hashes:
+            hashes[('branch', root)] = checked_out_branch(root)
+        if hashes[('branch', root)] == branch:
+            return False
+        spec = f"{branch}:{str(entry.get('relative', entry['path'])).replace(chr(92), '/')}"
+        key = ('tip', root, spec)
+        if key not in hashes:
+            data = _git_bytes(root, 'cat-file', '--filters', spec)
+            hashes[key] = hashlib.sha256(data).hexdigest() if data is not None else None
+        return hashes[key] == entry['sha256']
 
     def artifact(self, review_id, path):
         """One captured review file exactly as it was submitted, never the current working copy.
