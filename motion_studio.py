@@ -184,6 +184,9 @@ def validate(scene):
 
 # ---- scene storage ----------------------------------------------------------------------------
 
+PROJECT_REQUIRED = 'Video export needs a project folder. Create or open a project from Projects.'
+
+
 def project_dir(runtime):
     identity = getattr(runtime, 'identity', None)
     return runtime.data / 'projects' / identity / 'motion' if identity and identity != 'chat' else None
@@ -331,10 +334,10 @@ class Exporter:
     def start(self, ref, reduced):
         if self.current and self.current['phase'] in ('starting', 'rendering', 'encoding'):
             raise RuntimeError('An export is already running; cancel it or wait for it to finish')
-        encoder = require_tools(self.runtime)
         base = project_dir(self.runtime)
         if not base:
-            raise ValueError('Open a project to export videos')
+            raise ValueError(PROJECT_REQUIRED)
+        encoder = require_tools(self.runtime)
         scenes, _ = catalogue(self.runtime)
         if ref not in scenes:
             raise ValueError('Unknown or invalid scene')
@@ -560,11 +563,14 @@ def install(host, runtime):
         if wrong_project(request.query_params.get('project')):
             return JSONResponse({'error': changed}, 409)
         found, invalid = catalogue(runtime)
-        try:
-            encoder = await asyncio.to_thread(require_tools, runtime)  # cached after the first check
-            export = {'available': True, 'reason': None, 'license': encoder['license']}
-        except Unavailable as exc:
-            export = {'available': False, 'reason': str(exc), 'license': None}
+        if project_dir(runtime) is None:
+            export = {'available': False, 'reason': PROJECT_REQUIRED, 'license': None}
+        else:
+            try:
+                encoder = await asyncio.to_thread(require_tools, runtime)  # cached after the first check
+                export = {'available': True, 'reason': None, 'license': encoder['license']}
+            except Unavailable as exc:
+                export = {'available': False, 'reason': str(exc), 'license': None}
         return {'project': runtime.identity, 'scenes': [summary(ref, s, scene) for ref, (s, scene) in found.items()],
                 'invalid': invalid,
                 'export': {**export, 'format': 'webm', 'codec': 'vp9', 'mime': 'video/webm',
