@@ -707,7 +707,9 @@ class RoomRuntime:
 
     def snapshot(self):
         return {"agents": {n: {**{k: v for k, v in s.items() if k != "task"}, "queued": self.queues[n].qsize() + int(s.get('waiting', False)),
-                              "controls": self.controls.describe(n)} for n, s in self.states.items()}, "project": str(self.project or ""), "paused": self.paused,
+                              "controls": self.controls.describe(n)} for n, s in self.states.items()}, "project": str(self.project or ""),
+                # The project's id: what manager check-ins, decisions and the Team panel compare (Zero #13629).
+                "project_id": self.identity or "", "paused": self.paused,
                 "repository_transition": self.repository_progress(),
                 "automatic_tool_approvals": self.cfg.get('runtime', {}).get('automatic_tool_approvals', False),
                 "limits": {**self.project_room.limits, "parallel_agents_effective": self.parallel_capacity(), "queue_per_agent": 4},
