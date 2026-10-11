@@ -12,4 +12,11 @@
 .backend-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
 .backend-confirm{padding:10px;border:1px solid var(--border-strong);border-radius:8px;margin-top:12px}
 .backend-error{color:var(--danger-text)}
+.backend-panel.backend-inline{position:static;width:100%;max-height:none;box-shadow:none}
+.backend-controller-state{color:var(--text-muted)}
+.backend-update{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;padding:12px;border:1px solid var(--border-strong);border-radius:8px}
+.backend-update p{margin:0}
+.backend-inline button{font:inherit;min-height:34px;padding:6px 12px;border:1px solid var(--border-control);border-radius:7px;background:var(--bg-elevated);color:inherit;cursor:pointer}
+.backend-inline button:disabled{opacity:.45;cursor:not-allowed}
+.backend-inline button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 @media(max-width:800px){.backend-panel{position:fixed;left:16px;right:16px;top:90px;bottom:auto;width:auto;max-width:420px;max-height:calc(100dvh - 110px)}}

@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from functools import wraps
+from contextlib import contextmanager
 from pathlib import Path
 
 from durable import atomic_write
@@ -33,6 +34,78 @@ def release_order(item):
 
 def atomic_json(path, value):
     atomic_write(path, lambda stream: json.dump(value, stream, indent=2))
+
+
+@contextmanager
+def approval_lock(root):
+    """Serialize web and tray approvals, including their pending-request check."""
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / 'approval.lock').open('a+b') as handle:
+        handle.seek(0)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ValueError('Another deployment approval is in progress') from exc
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == 'nt':
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def approve_release(state, body, *, allow_offline=False, supervisor_online=None):
+    """One fingerprinted approval path for the room and native controller.
+
+    Offline validation returns a transport without writing a request. The tray
+    starts the existing supervisor (or bootstraps an unversioned room) and must
+    validate this same fingerprint again before queuing an online request.
+    """
+    with state.lock, approval_lock(state.root):
+        state.version = read_json(state.root / 'current.json', {}) or {}
+        item = state.release(body.get('release_id'))
+        if body.get('manifest_sha') != item['manifest_sha']:
+            raise ValueError('Candidate changed; review the release shown now')
+        if not item['rehearsal_passed']:
+            raise ValueError('This exact package must pass rehearsal before approval')
+        if item['relation'] == 'current':
+            raise ValueError('This release is already running')
+        if item['relation'] == 'older' and body.get('rollback') is not True:
+            raise ValueError(f"{item.get('version') or item['id']} is older than the running release; "
+                             'choose it under Earlier releases to roll back deliberately')
+        status = read_json(state.root / 'status.json', {}) or {}
+        age = time.time() - float(status.get('updated', 0))
+        online = age <= 15 and supervisor_online is not False
+        if not online and not allow_offline:
+            raise ValueError('Supervisor is offline; external bootstrap is required')
+        if online and status.get('state') not in ('running', 'ready', 'idle'):
+            raise ValueError('The supervisor is busy or needs recovery')
+        if (state.root / 'journal.json').exists():
+            raise ValueError('A deployment is in progress or needs recovery')
+        if any((state.root / 'requests').glob('*.json')):
+            raise ValueError('A deployment is already queued')
+        if state.reload()['writes'] != 'open' or state.gate['admission'] != 'open':
+            raise ValueError('The room is closed for deployment or recovery')
+        if body.get('interrupt', False) is not False:
+            raise ValueError('This control waits for current turns; interrupt deployment is not enabled')
+        seconds = body.get('drain_seconds', 600)
+        if not isinstance(seconds, int) or isinstance(seconds, bool) or not 10 <= seconds <= 3600:
+            raise ValueError('Drain time must be between 10 and 3600 seconds')
+        identifier = uuid.uuid4().hex
+        record = {'id': identifier, 'release_id': item['id'], 'manifest_sha': item['manifest_sha'],
+                  'approved_by': 'user', 'approved_at': time.time(), 'drain_seconds': seconds,
+                  'interrupt': False, 'rollback': item['relation'] == 'older'}
+        if not online:
+            return {**record, 'transport': 'start' if state.version else 'bootstrap'}
+        atomic_json(state.root / 'requests' / (identifier + '.json'), record)
+        return record
 
 
 class DeploymentState:
@@ -224,33 +297,6 @@ def install(host, runtime):
     async def approve(request: Request):
         try:
             body = await request.json()
-            item = state.release(body.get('release_id'))
-            if body.get('manifest_sha') != item['manifest_sha']:
-                raise ValueError('Candidate changed; review the release shown now')
-            if not item['rehearsal_passed']:
-                raise ValueError('This exact package must pass rehearsal before approval')
-            if item['relation'] == 'current':
-                raise ValueError('This release is already running')
-            if item['relation'] == 'older' and body.get('rollback') is not True:
-                raise ValueError(f"{item.get('version') or item['id']} is older than the running release; "
-                                 'choose it under Earlier releases to roll back deliberately')
-            status = read_json(state.root / 'status.json', {}) or {}
-            if time.time() - float(status.get('updated', 0)) > 15:
-                raise ValueError('Supervisor is offline; external bootstrap is required')
-            if status.get('state') not in ('running', 'ready', 'idle'):
-                raise ValueError('The supervisor is busy or needs recovery')
-            if any((state.root / 'requests').glob('*.json')):
-                raise ValueError('A deployment is already queued')
-            if body.get('interrupt', False) is not False:
-                raise ValueError('This control waits for current turns; interrupt deployment is not enabled')
-            seconds = body.get('drain_seconds', 600)
-            if not isinstance(seconds, int) or isinstance(seconds, bool) or not 10 <= seconds <= 3600:
-                raise ValueError('Drain time must be between 10 and 3600 seconds')
-            identifier = uuid.uuid4().hex
-            record = {'id': identifier, 'release_id': item['id'], 'manifest_sha': item['manifest_sha'],
-                      'approved_by': 'user', 'approved_at': time.time(), 'drain_seconds': seconds, 'interrupt': False,
-                      'rollback': item['relation'] == 'older'}
-            atomic_json(state.root / 'requests' / (identifier + '.json'), record)
-            return record
+            return approve_release(state, body)
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             return JSONResponse({'error': str(exc)}, 409)

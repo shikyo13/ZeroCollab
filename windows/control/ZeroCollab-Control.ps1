@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory=$true)][string]$RoomRoot,
     [ValidateSet('Window','Start','Stop','Restart')][string]$Action = 'Window',
     [string]$PreviewPath,
+    [string]$PreviewStatusPath,
     [switch]$TrayOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -62,10 +63,12 @@ $script:notice = ''
 $script:url = 'http://127.0.0.1:8300'
 $script:closing = $false
 $script:webProcess = $null
+$savedStatus = Read-Status
+$script:origin = if ($savedStatus.url -match '^http://127\.0\.0\.1:\d+/?$') { $savedStatus.url.TrimEnd('/') } else { 'http://127.0.0.1:8300' }
 $form = New-Object Windows.Forms.Form
 $form.Text = 'ZeroCollab Control'
-$form.ClientSize = New-Object Drawing.Size(530,310)
-$form.MinimumSize = New-Object Drawing.Size(546,349)
+$form.ClientSize = New-Object Drawing.Size(530,430)
+$form.MinimumSize = New-Object Drawing.Size(546,469)
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object Drawing.Font('Segoe UI',10)
 $form.BackColor = [Drawing.Color]::FromArgb(24,28,36)
@@ -83,16 +86,19 @@ $title.SetBounds(24,20,470,42)
 $stateLabel = New-Object Windows.Forms.Label
 $stateLabel.SetBounds(26,74,475,30)
 $detail = New-Object Windows.Forms.Label
-$detail.SetBounds(26,108,475,62)
+$detail.SetBounds(26,145,475,52)
 $detail.Anchor = 'Top,Left,Right'
 $detail.ForeColor = [Drawing.Color]::FromArgb(190,201,219)
-$form.Controls.AddRange(@($title,$stateLabel,$detail))
+$versionLabel = New-Object Windows.Forms.Label
+$versionLabel.SetBounds(26,108,475,30)
+$versionLabel.ForeColor = [Drawing.Color]::LightSkyBlue
+$form.Controls.AddRange(@($title,$stateLabel,$versionLabel,$detail))
 $buttons = @{}
 $x = 24
 foreach ($name in @('Start','Stop','Restart','Open')) {
     $button = New-Object Windows.Forms.Button
     $button.Text = $name
-    $button.SetBounds($x,183,112,38)
+    $button.SetBounds($x,210,112,38)
     $button.FlatStyle = 'Flat'
     $button.BackColor = [Drawing.Color]::FromArgb(43,53,70)
     $buttons[$name] = $button
@@ -102,18 +108,28 @@ foreach ($name in @('Start','Stop','Restart','Open')) {
 $logs = New-Object Windows.Forms.LinkLabel
 $logs.Text = 'Open logs folder'
 $logs.LinkColor = [Drawing.Color]::LightSkyBlue
-$logs.SetBounds(26,236,180,25)
+$logs.SetBounds(26,355,180,25)
 $logs.Add_Click({ Start-Process explorer.exe -ArgumentList ('"' + (Join-Path $RoomRoot 'data') + '"') })
 $hint = New-Object Windows.Forms.Label
 $hint.Text = 'Closing this window keeps the controller in the notification area.'
-$hint.SetBounds(26,274,480,25)
+$hint.SetBounds(26,394,480,25)
 $hint.Font = New-Object Drawing.Font('Segoe UI',9)
 $form.Controls.AddRange(@($logs,$hint))
+$updateLabel = New-Object Windows.Forms.Label
+$updateLabel.SetBounds(26,269,345,60)
+$updateLabel.ForeColor = [Drawing.Color]::FromArgb(190,201,219)
+$install = New-Object Windows.Forms.Button
+$install.Text = 'Install'
+$install.SetBounds(389,272,112,38)
+$install.FlatStyle = 'Flat'
+$install.BackColor = [Drawing.Color]::FromArgb(43,53,70)
+$form.Controls.AddRange(@($updateLabel,$install))
 $menu = New-Object Windows.Forms.ContextMenuStrip
 $show = $menu.Items.Add('Show controller')
 $show.Add_Click({ $form.Show(); $form.WindowState = 'Normal'; $form.Activate() })
 $trayItems = @{}
 foreach ($name in @('Start','Stop','Restart','Open')) { $trayItems[$name] = $menu.Items.Add($name) }
+$trayInstall = $menu.Items.Add('Install staged update')
 [void]$menu.Items.Add('-')
 $quit = $menu.Items.Add('Exit controller (leave backend running)')
 $quit.Add_Click({ if (!$script:worker) { $script:closing = $true; $form.Close() } })
@@ -121,31 +137,32 @@ $tray = New-Object Windows.Forms.NotifyIcon
 $tray.Icon = $form.Icon
 $tray.Text = 'ZeroCollab Control'
 $tray.ContextMenuStrip = $menu
-$tray.Visible = $true
+$tray.Visible = !$PreviewPath
 $tray.Add_DoubleClick({ $form.Show(); $form.WindowState = 'Normal'; $form.Activate() })
 $form.Add_FormClosing({ param($sender,$eventArgs) if (!$script:closing) { $eventArgs.Cancel = $true; $form.Hide() } })
 if ($TrayOnly) { $form.Add_Shown({ $form.Hide() }) }
 
+function Read-ControlStatus {
+    if ($PreviewStatusPath) { return Get-Content -LiteralPath $PreviewStatusPath -Raw | ConvertFrom-Json }
+    return Invoke-RestMethod -Uri 'http://127.0.0.1:8301/status' -Headers @{ Origin = $script:origin } -TimeoutSec 3
+}
 function Invoke-Control([string]$command) {
-    if ($script:worker) { return }
-    if ($command -eq 'Open') {
-        # The supervisor opens the browser on a single-use sign-in link; the page no longer carries the token.
-        Start-Process -FilePath $python -ArgumentList @('-X', 'utf8', "`"$supervisor`"", 'open') -WindowStyle Hidden
-        return
-    }
+    if (!$script:controlStatus -or $script:controlStatus.busy -or $PreviewPath) { return }
     if ($command -in @('Stop','Restart')) {
         $answer = [Windows.Forms.MessageBox]::Show("$command the ZeroCollab backend? Active agent turns will be interrupted. Saved chats and files remain.", 'ZeroCollab', 'YesNo', 'Warning', 'Button2')
         if ($answer -ne 'Yes') { return }
     }
+    if ($command -eq 'Install') {
+        $selected = $script:controlStatus.update
+        if (!$selected) { return }
+        $answer = [Windows.Forms.MessageBox]::Show("Install ZeroCollab $($selected.version)? Current turns can finish before the room restarts. If the room is stopped, it will be started to install. Saved chats and files remain.", 'ZeroCollab', 'YesNo', 'Question', 'Button2')
+        if ($answer -ne 'Yes') { return }
+    }
     try {
-        $logRoot = Join-Path $RoomRoot 'data'
-        $script:outputPath = Join-Path $logRoot 'controller-output.log'
-        $script:errorPath = Join-Path $logRoot 'controller-error.log'
-        $arguments = '-NoProfile -NonInteractive -File "{0}" -RoomRoot "{1}" -Action {2}' -f $PSCommandPath,$RoomRoot,$command
-        $script:worker = Start-Process -FilePath "$PSHOME\powershell.exe" -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $script:outputPath -RedirectStandardError $script:errorPath
-        $null = $script:worker.Handle
-        $script:pendingAction = $command
-        $script:notice = ''
+        $body = @{ action = $command }
+        if ($command -eq 'Install') { $body.release_id = $selected.id; $body.manifest_sha = $selected.manifest_sha }
+        $null = Invoke-RestMethod -Uri 'http://127.0.0.1:8301/action' -Method Post -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -Headers @{ Origin = $script:origin; 'X-Control-Token' = $script:controlStatus.token } -TimeoutSec 10
+        $script:notice = "$command submitted."
     } catch { $script:notice = $_.Exception.Message }
     Update-Control
 }
@@ -154,6 +171,8 @@ foreach ($name in @('Start','Stop','Restart','Open')) {
     $buttons[$name].Add_Click($handler)
     $trayItems[$name].Add_Click($handler)
 }
+$install.Add_Click({ Invoke-Control 'Install' })
+$trayInstall.Add_Click({ Invoke-Control 'Install' })
 function Update-Control {
     if ($script:worker -and $script:worker.HasExited) {
         $script:worker.WaitForExit()
@@ -165,29 +184,44 @@ function Update-Control {
         $script:worker.Dispose()
         $script:worker = $null
     }
-    $status = Read-Status
+    try { $script:controlStatus = Read-ControlStatus } catch { $script:controlStatus = $null }
+    $status = $script:controlStatus
     if ($script:webProcess -and $script:webProcess.HasExited) {
         $script:notice = 'The frontend connection could not start. See controller-web-server-error.log (port 8301 may be in use).'
     }
-    $alive = $false
-    if ($status.supervisor_pid) {
-        $alive = $null -ne (Get-Process -Id $status.supervisor_pid -ErrorAction SilentlyContinue)
-    }
-    # Status is advisory. The supervisor independently verifies process identity before any action.
+    $alive = $status -and $status.alive
     $state = if ($alive) { [string]$status.state } else { 'stopped' }
     if ($status.url -match '^http://127\.0\.0\.1:\d+/?$') { $script:url = $status.url }
-    $busy = $null -ne $script:worker
-    $stateLabel.Text = if ($busy) { "$script:pendingAction in progress..." } else { "Backend: $state" }
-    $detail.Text = if ($script:notice) { $script:notice } elseif ($status.error) { [string]$status.error } else { "$script:url`nThe controller stays available when the backend is stopped." }
+    $busy = !$status -or $status.busy
+    $stateLabel.Text = if (!$status) { 'Controller connection unavailable' } elseif ($busy) { 'Backend: action or update in progress' } else { "Backend: $state" }
+    $versionLabel.Text = if ($status) { "Installed $($status.current.version) | Controller $($status.controller.version) | " + $(if ($status.controller.in_sync) { 'In sync' } else { 'Refresh pending' }) } else { 'Retrying the tray connection...' }
+    $detail.Text = if ($status.controller.refresh_error) { "Controller refresh failed. See controller-refresh-error.log. $($status.controller.refresh_error)" } elseif ($status.progress) { [string]$status.progress } elseif ($script:notice) { $script:notice } elseif ($status.message) { [string]$status.message } else { "$script:url`nThe controller stays available when the backend is stopped." }
+    $updateLabel.Text = if ($busy -and $status) { "Update / control in progress`n$($status.progress)" } elseif ($status.update) { "$($status.update.version) ready`nCurrent turns can finish before installation." } elseif ($status.receipt) { "Latest update: $($status.receipt.status)`n$($status.receipt.detail)" } else { 'No staged update ready to install.' }
+    $install.Enabled = $status -and !$busy -and $null -ne $status.update
+    $trayInstall.Enabled = $install.Enabled
+    $trayInstall.Text = if ($status.update) { "Install $($status.update.version)" } else { 'No staged update ready' }
     $tray.Text = ('ZeroCollab - ' + $stateLabel.Text).Substring(0,[Math]::Min(63,('ZeroCollab - ' + $stateLabel.Text).Length))
     foreach ($name in @('Start','Stop','Restart','Open')) {
         $enabled = !$busy
         if ($name -eq 'Start') { $enabled = !$busy -and !$alive }
+        if ($name -eq 'Open') { $enabled = !$busy -and $alive }
         if ($name -in @('Stop','Restart')) { $enabled = !$busy -and $alive }
         $buttons[$name].Enabled = $enabled
         $trayItems[$name].Enabled = $enabled
     }
     $quit.Enabled = !$busy
+    if ($status -and !$status.controller.in_sync -and !$status.controller.refresh_error -and !$busy -and !$PreviewPath -and !$script:refreshing) {
+        # Only refresh the managed installed copy; never rewrite the runtime source.
+        $managed = Join-Path $env:LOCALAPPDATA 'ZeroCollabControl'
+        if ([IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') -eq [IO.Path]::GetFullPath($managed).TrimEnd('\')) {
+            $script:refreshing = $true
+            $refreshArgs = '-X utf8 "{0}" --root "{1}" --destination "{2}" --parent-pid {3}' -f (Join-Path $RoomRoot 'windows\control\refresh_controller.py'),$RoomRoot,$PSScriptRoot,$PID
+            if (!$form.Visible -or $TrayOnly) { $refreshArgs += ' --tray-only' }
+            Start-Process -FilePath $python -ArgumentList $refreshArgs -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RoomRoot 'data\controller-refresh.log') -RedirectStandardError (Join-Path $RoomRoot 'data\controller-refresh-error.log')
+            $script:closing = $true
+            $form.Close()
+        }
+    }
 }
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 1500
