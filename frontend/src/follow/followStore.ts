@@ -177,10 +177,11 @@ interface RuntimeData {
   tool?: string;
   status?: string;
   outcome?: string;
+  sealed?: boolean;
 }
 
 // Raw streamed text per run and message, so the bubble shows the tail of the current message.
-const streams = new Map<string, { message: string; text: string }>();
+const streams = new Map<string, { message: string; text: string; draft: boolean }>();
 
 function onStart(event: RoomEvent) {
   const d = event.data as RuntimeData;
@@ -192,14 +193,17 @@ function onStart(event: RoomEvent) {
 function onDelta(event: RoomEvent) {
   const d = event.data as RuntimeData;
   const entry = ensure(d.agent, d.run, d.channel ?? '');
+  const draft = event.type === 'runtime_draft';
   let stream = streams.get(d.run);
-  if (!stream || stream.message !== d.message) {
-    stream = { message: d.message ?? '', text: '' };
+  // The first public delta repeats the full message after a draft, rather than continuing its chunks.
+  if (!stream || stream.message !== (d.message ?? '') || stream.draft && !draft) {
+    stream = { message: d.message ?? '', text: '', draft };
     streams.set(d.run, stream);
   }
+  stream.draft = draft;
   // Keep a bounded window; only the tail is ever shown.
-  stream.text = (stream.text + (d.text ?? '')).slice(-TEXT_TAIL * 3);
-  entry.text = tail(stream.text);
+  stream.text = d.sealed ? '' : (stream.text + (d.text ?? '')).slice(-TEXT_TAIL * 3);
+  entry.text = d.sealed ? 'Sealed position' : tail(stream.text);
   entry.updated = now();
   publish();
 }
@@ -355,6 +359,7 @@ const HANDLERS: [string, Listener][] = [
   ['runtime_state', onRuntimeState],
   ['runtime_start', onStart],
   ['runtime_delta', onDelta],
+  ['runtime_draft', onDelta],
   ['runtime_tool', onTool],
   ['runtime_end', onEnd],
   ['project_state', onProjectState],

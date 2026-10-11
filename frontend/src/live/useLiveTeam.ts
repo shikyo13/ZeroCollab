@@ -30,7 +30,7 @@ export function useLiveTeam(active: boolean) {
     let serial = 0, generation = 0, fetching = false, roomPush = 0, projectPush = 0;
     let socket: WebSocket | null | undefined;
     const ended = new Set<string>();
-    const streams = new Map<string, { message: string; text: string }>();
+    const streams = new Map<string, { message: string; text: string; draft: boolean }>();
     const publish = () => { dirty = true; };
     const add = (source: Omit<LiveSource, 'count' | 'fresh'>, fresh = true) => {
       const old = state.sources.find(s => s.id === source.id);
@@ -121,9 +121,9 @@ export function useLiveTeam(active: boolean) {
         room(next);
       }],
       ['project_state', e => { projectPush++; project(e.data as ProjectState, !state.ready); }],
-      ...(['runtime_start', 'runtime_delta', 'runtime_tool', 'runtime_end'] as const).map(type => [type, (event: RoomEvent) => {
+      ...(['runtime_start', 'runtime_delta', 'runtime_draft', 'runtime_tool', 'runtime_end'] as const).map(type => [type, (event: RoomEvent) => {
         if (!accept() || !state.room) return;
-        const d = event.data as { run: string; agent: string; channel?: string; message?: string; text?: string; tool?: string; status?: string; outcome?: string };
+        const d = event.data as { run: string; agent: string; channel?: string; message?: string; text?: string; sealed?: boolean; tool?: string; status?: string; outcome?: string };
         if (!d.run || !d.agent || ended.has(d.run)) return;
         const run = state.room.runs.find(r => r.id === d.run);
         if (type !== 'runtime_start' && type !== 'runtime_end' && !run) return;
@@ -131,11 +131,15 @@ export function useLiveTeam(active: boolean) {
           // Only an explicit start or current snapshot can create a live run.
           if (!run) state.room = { ...state.room, runs: [...state.room.runs, { id: d.run, agent: d.agent, channel: d.channel || '', text: '', settings: {}, reported_settings: {}, reported_tokens: 0, input_chars: 0 }] };
           add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title: 'Started a turn', text: 'Waiting for the next visible action.', kind: 'Turn', time: now(), motion: { version: 1, event: 'wake', state: 'Running' } });
-        } else if (type === 'runtime_delta') {
+        } else if (type === 'runtime_delta' || type === 'runtime_draft') {
+          const draft = type === 'runtime_draft';
           let stream = streams.get(d.run);
-          if (!stream || stream.message !== (d.message ?? '')) stream = { message: d.message ?? '', text: '' };
-          stream.text = (stream.text + (d.text || '')).slice(-1080); streams.set(d.run, stream);
-          add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title: 'Writing a reply', text: tail(stream.text), kind: 'Reply', time: now(), motion: { version: 1, event: 'caption', state: 'Writing a reply' } });
+          // A draft becoming public starts with the entire buffer, so replace the draft's chunks.
+          if (!stream || stream.message !== (d.message ?? '') || stream.draft && !draft) stream = { message: d.message ?? '', text: '', draft };
+          stream.draft = draft;
+          stream.text = d.sealed ? '' : (stream.text + (d.text || '')).slice(-1080); streams.set(d.run, stream);
+          const title = d.sealed ? 'Sealed position' : draft ? 'Working' : 'Writing a reply';
+          add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title, text: d.sealed ? 'Position text stays hidden until reveal.' : tail(stream.text), kind: draft ? 'Progress' : 'Reply', time: now(), motion: { version: 1, event: 'caption', state: title } });
         } else if (type === 'runtime_tool') {
           add({ id: `run:${d.run}`, actor: d.agent, channel: d.channel, run: d.run, title: d.tool || 'Using a tool', text: d.status || 'Tool activity reported', kind: 'Tool', time: now(),
             motion: { version: 1, event: ['completed', 'failed', 'cancelled'].includes(d.status || '') ? 'tool_end' : ['started', 'running'].includes(d.status || '') ? 'tool_start' : 'caption', state: d.status || 'Tool activity reported' } });
