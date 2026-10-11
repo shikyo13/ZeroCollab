@@ -583,11 +583,11 @@ async def _handle_new_message(msg: dict):
     # A human @all wakes one lead (response_claims.py): the claim is recorded before anyone is woken, and
     # agents named directly in the same message are still woken. @everyone keeps the wake-everyone path.
     claim = None
-    broadcast = router.broadcast_kind(text) if managed_runtime and not managed_sender and sender not in known_agents else None
-    if broadcast == 'all':
+    kind = router.broadcast_kind(text) if managed_runtime and not managed_sender and sender not in known_agents else None
+    if kind == 'all':
         claim = managed_runtime.response_claims.open(channel, msg.get('id'))
         raw_targets = router.named_mentions(text) + ([claim['owner']] if claim else [])
-    elif broadcast == 'everyone':
+    elif kind == 'everyone':
         managed_runtime.response_claims.bump_scope(channel)
         managed_runtime.response_claims.save()
     # Resolve base family names to actual registered instances
