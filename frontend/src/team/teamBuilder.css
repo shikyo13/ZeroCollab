@@ -8,7 +8,8 @@
 
 /* Step 1 */
 .tb-brief-form h2 { font-size: 18px; }
-.tb-sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 10px; border: 0; margin: 0; padding: 0; }
+.tb-sources { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; border: 0; margin: 0; padding: 0; }
+@media (max-width: 640px) { .tb-sources { grid-template-columns: 1fr; } }
 .tb-sources legend { margin-bottom: 6px; }
 .tb-source { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--bd-border); border-radius: var(--bd-radius); background: var(--bd-surface-2); cursor: pointer; }
 .tb-source input { margin-top: 3px; accent-color: var(--bd-accent); }

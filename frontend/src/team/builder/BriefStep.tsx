@@ -23,6 +23,7 @@ export function BriefStep({
   const [drafter, setDrafter] = useState(previous?.drafter || agents[0]?.handle || '');
   const [challenger, setChallenger] = useState(previous?.challenger || agents.find(a => a.handle !== (previous?.drafter || agents[0]?.handle))?.handle || '');
   const create = useAction();
+  const one = source === 'agent';
 
   const choose = (next: BriefSource) => {
     setSource(next);
@@ -41,31 +42,39 @@ export function BriefStep({
   return (
     <form className="bd-panel bd-form tb-brief-form" onSubmit={submit}>
       <div>
-        <h2>What is this project for?</h2>
+        <h2>{one ? 'Describe the agent you want' : 'What is this project for?'}</h2>
         <p className="bd-muted">
-          The team is shaped around this brief. Your current agents stay as they are; the proposal only suggests additions.
+          {one
+            ? 'Existing agents draft and refine an expert background. Review and edit it before adding the new agent.'
+            : 'The team is shaped around this brief. Your current agents stay as they are; the proposal only suggests additions.'}
         </p>
       </div>
       <fieldset className="tb-sources">
         <legend className="bd-field-label">Start from</legend>
         {(Object.keys(SOURCE_LABELS) as BriefSource[]).map(value => {
-          const empty = value !== 'text' && !textFor(value).trim();
+          // Only spec and goal read saved text; text and agent are typed here.
+          const empty = (value === 'spec' || value === 'goal') && !textFor(value).trim();
           return (
             <label key={value} className={`tb-source${source === value ? ' tb-source-on' : ''}${empty ? ' tb-source-off' : ''}`}>
               <input type="radio" name="tb-source" value={value} checked={source === value} disabled={empty} onChange={() => choose(value)} />
               <span>
                 <strong>{SOURCE_LABELS[value]}</strong>
-                <small>{empty ? (value === 'spec' ? 'No saved spec in this project' : 'No shared goal is running') : value === 'text' ? 'Describe it in your own words' : 'Edit below before drafting'}</small>
+                <small>{empty ? (value === 'spec' ? 'No saved spec in this project' : 'No shared goal is running')
+                  : value === 'text' ? 'Describe it in your own words' : value === 'agent' ? 'Describe the agent you want' : 'Edit below before drafting'}</small>
               </span>
             </label>
           );
         })}
       </fieldset>
-      <Field label="Brief" hint={`${brief.length.toLocaleString()} characters. Add what matters: audience, constraints, what the current team lacks.`}>
-        <textarea value={brief} rows={8} required onChange={e => setBrief(e.target.value)} placeholder="e.g. Build an accessible tutorial hub from recovered pages and instructional images." />
+      <Field label={one ? 'Description' : 'Brief'} hint={one
+        ? `${brief.length.toLocaleString()} characters. Say what it owns, what it should be expert in, and anything it must never do.`
+        : `${brief.length.toLocaleString()} characters. Add what matters: audience, constraints, what the current team lacks.`}>
+        <textarea value={brief} rows={one ? 5 : 8} required onChange={e => setBrief(e.target.value)} placeholder={one
+          ? 'e.g. A Godot 4 shader specialist who reviews our 2D lighting and keeps frame time under 2 ms.'
+          : 'e.g. Build an accessible tutorial hub from recovered pages and instructional images.'} />
       </Field>
       <div className="bd-form-row">
-        <Field label="Drafted by" hint="Proposes the members and the expertise each one covers.">
+        <Field label="Drafted by" hint={one ? 'Writes the agent and its background.' : 'Proposes the members and the expertise each one covers.'}>
           <select
             value={drafter}
             required
@@ -84,7 +93,7 @@ export function BriefStep({
             ))}
           </select>
         </Field>
-        <Field label="Challenged by" hint="Questions overlaps and gaps before you see the proposal.">
+        <Field label="Challenged by" hint={one ? 'Checks the background against your description before you see it.' : 'Questions overlaps and gaps before you see the proposal.'}>
           <select value={challenger} required onChange={e => setChallenger(e.target.value)}>
             {agents.length < 2 && <option value="">Needs a second connected agent</option>}
             {agents
@@ -109,7 +118,7 @@ export function BriefStep({
           Cancel
         </button>
         <button type="submit" className="bd-btn bd-btn-primary" disabled={create.busy || !drafter || !challenger || drafter === challenger || !brief.trim()}>
-          {create.busy ? 'Starting...' : previous ? 'Draft a new proposal' : 'Draft the team'}
+          {create.busy ? 'Starting...' : one ? 'Draft agent background' : previous ? 'Draft a new proposal' : 'Draft the team'}
         </button>
       </div>
       {previous && <p className="bd-muted tb-note">Drafting again creates a new proposal. Members already added stay on the team.</p>}

@@ -2,7 +2,7 @@
 import type { BriefSource, ProposedMember } from '../../lib/teamBuilder';
 import type { ProviderInfo } from '../ProfileEditor';
 
-export const SOURCE_LABELS: Record<BriefSource, string> = { spec: 'Project spec', goal: 'Shared goal', text: 'Your own description' };
+export const SOURCE_LABELS: Record<BriefSource, string> = { spec: 'Project spec', goal: 'Shared goal', text: 'Your own description', agent: 'One agent' };
 
 export const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 

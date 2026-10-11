@@ -5,7 +5,8 @@
 import { runtime } from './api';
 import type { Profile, ProviderInfo } from '../team/ProfileEditor';
 
-export type BriefSource = 'spec' | 'goal' | 'text';
+/** agent: one member from the user's short description, with an expert background (Zero #12932). */
+export type BriefSource = 'spec' | 'goal' | 'text' | 'agent';
 export type ProposalStatus = 'drafting' | 'challenging' | 'ready' | 'failed';
 export type MemberStatus = 'proposed' | 'approved' | 'revision_requested' | 'declined' | 'added';
 export type MemberAction = 'approve' | 'edit' | 'request_revision' | 'decline';
@@ -24,6 +25,9 @@ export interface ProposedMember {
   status: MemberStatus;
   handle_available: boolean;
   error?: string;
+  /** On a suggestion: the agent who suggested this member, and its reason. */
+  suggested_by?: string;
+  reason?: string;
 }
 
 export interface CoverageRow {

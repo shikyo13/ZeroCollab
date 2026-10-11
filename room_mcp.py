@@ -155,8 +155,10 @@ def room_team_builder(action: str = 'get', proposal_id: str = '', revision: int 
     suggest: when the team lacks a skill the work needs, propose ONE new member for the user's review.
     member = {name, id (lowercase handle), template (a signed-in native connection from get), model,
     effort, background (the new agent's full instructions), rationale}; reason = the missing
-    capability and the expected deliverable (up to 1000 characters). Refused while another proposal
-    is open, for an existing handle, or for one the user already declined. Suggest only for a real gap.
+    capability and the expected deliverable (up to 1000 characters). Call once per member: while a
+    suggestion is waiting, further suggestions join it and the user decides on each one separately.
+    Refused while a team proposal the user started is open, for an existing or already suggested
+    handle, or for one the user already declined. Suggest only for a real gap.
     """
     arguments = dict(action=action, proposal_id=proposal_id, revision=revision, payload=payload)
     if action == 'suggest':

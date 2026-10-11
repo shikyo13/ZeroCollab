@@ -1,10 +1,12 @@
 /* Header bell: everything waiting on the user, with a count and a link to the exact place to act.
  * Sources the workspace already loads: repository requests (/projects), tool approvals
  * (runtime state), reviews and follow-ups addressed to the user (/project-state) and a
- * prepared release that passed rehearsal (/deployments). Items disappear when resolved. */
+ * prepared release that passed rehearsal (/deployments), and a team suggestion or proposal waiting for the
+ * user's review (/team-builder, the open project only). Items disappear when resolved. */
 import { useEffect, useRef, useState } from 'react';
 import { EVENTS, USER } from '../lib/constants';
-import { useProjectState, useRuntimeState } from '../lib/room';
+import { useProjectState, useRoomEvent, useRuntimeState } from '../lib/room';
+import { loadContext, type Proposal } from '../lib/teamBuilder';
 import type { RuntimeState } from '../lib/types';
 import type { ProjectSummary } from '../workspace/projectData';
 import { openServer } from '../workspace/useWorkspaceRoute';
@@ -41,6 +43,12 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
   const { data: board } = useProjectState();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  // The open project's team proposal or suggestion, re-read whenever the team builder changes it.
+  const [team, setTeam] = useState<Proposal | null>(null);
+  const loadTeam = () => { loadContext().then(c => setTeam(c.proposal)).catch(() => undefined); };
+  useEffect(loadTeam, []);
+  useRoomEvent('team_builder', loadTeam);
+  useRoomEvent('settings', loadTeam);
   useEffect(() => {
     if (!open) return;
     const outside = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node)) setOpen(false); };
@@ -98,6 +106,28 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
       open: () => openBoard(task ? { task: task.id } : { tab: 'coordination' }),
     });
   }
+  const pending = team?.status === 'ready' ? team.members.filter(m => m.status === 'proposed' || m.status === 'approved') : [];
+  if (team && pending.length) {
+    const suggestion = team.source === 'suggestion';
+    items.push({
+      key: `team:${team.id}`,
+      title: suggestion ? (pending.length === 1
+          ? `${name(state, pending[0].suggested_by || team.suggested_by || team.drafter)} suggested a new team member`
+          : `${pending.length} suggested team members are waiting`)
+        : pending.length === 1 ? 'A proposed team member is ready to review' : `${pending.length} proposed team members are ready to review`,
+      detail: clip(pending.map(m => `${m.name} (@${m.id})`).join(', ')),
+      action: 'Review on Team',
+      open: () => {
+        // The same exact-proposal view a chat suggestion link opens (Team reads these on popstate).
+        const url = new URL(location.href);
+        url.searchParams.set('view', 'team');
+        url.searchParams.set('team_project', window.activeProjectId || '');
+        url.searchParams.set('team_proposal', team.id);
+        history.pushState({}, '', url);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      },
+    });
+  }
   const feed = deployments.data;
   const release = feed && !feed.pending.length ? feed.releases.find(r => r.relation === 'newer' && r.rehearsal_passed) : undefined;
   if (release) {
@@ -126,7 +156,7 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
           {item.detail && <small>{item.detail}</small>}
           <span className="ws-bell-action">{item.action} →</span>
         </button>
-      </li>)}</ul> : <p>Nothing needs you right now. Approvals, questions, reviews, repository requests and releases ready to deploy show up here.</p>}
+      </li>)}</ul> : <p>Nothing needs you right now. Approvals, questions, reviews, team suggestions, repository requests and releases ready to deploy show up here.</p>}
     </div>}
   </div>;
 }

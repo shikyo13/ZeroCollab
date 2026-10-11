@@ -12,6 +12,7 @@ from project_room import write_json
 
 # A proposal file larger than this is treated as corrupt rather than read (security d4cdc9a4).
 PROPOSAL_BYTES = 1_000_000
+SUGGESTION_MEMBERS = 12  # undecided members one open suggestion holds before the user must decide on some
 
 
 
@@ -21,6 +22,26 @@ def inert(value):
     whitespace collapsed; the caller shows the result as inline code, which renders it literally."""
     return ' '.join(str(value).replace('\\', '/').replace('`', "'").split()) or '-'
 
+
+# How every drafted background is written (Zero #12932): it is the member's standing system prompt, so it is
+# written with ordinary prompt-engineering structure rather than a job title and a sentence.
+BACKGROUND_GUIDE = (
+    'Write each background as that agent\'s standing instructions, in the second person ("You are..."), '
+    'about 150 to 400 words, concrete and specific to this project. Structure it as: '
+    '1) identity and expertise: the specific domains, tools, languages and versions it is expert in; '
+    '2) lane: what it owns and leads, the file areas it usually claims, and what it leaves to others; '
+    '3) how it works: how it plans, the checks and evidence it produces, and how it reviews peers in its area; '
+    '4) quality bar: the domain pitfalls it watches for and the standard its work must meet; '
+    '5) deliverables: what "done" means for its typical tasks; '
+    '6) limits: when it stops and asks the user. '
+    'Do not repeat the room rules every agent already receives (board, reviews, no credentials, no paid APIs). '
+    'Write no filler or praise, and do not claim abilities the connection does not have.')
+# One member from the user's short description (source 'agent', Zero #12932).
+AGENT_BRIEF = ('The brief is the user\'s short description of ONE agent to add. Propose exactly one member '
+               'that fits it, with a descriptive name, a unique handle and an expert background as described. '
+               'Treat stated requirements as binding and fill gaps with sensible, project-specific detail; '
+               'coverage may list just that member\'s areas. The challenger checks the background against the '
+               'description and the structure and returns the one improved member.')
 
 CHALLENGE_FEEDBACK = ('The user asked you to challenge this agent-suggested member. Check that the role is really '
                       'missing from the team, that the instructions (background) are right and complete, and that the '
@@ -127,6 +148,8 @@ class TeamBuilder:
             'and proposed handles without @. Empty members is valid when no additions are needed. '
             'For a member revision return ONLY its replacement plus complete updated coverage; '
             'other member decisions must stay intact. Finish with a brief chat summary after submission.\n'
+            + BACKGROUND_GUIDE + '\n'
+            + (AGENT_BRIEF + '\n' if p.get('source') == 'agent' else '')
             + (f'Revision target: {target["name"]} (@{target["id"]}); '
                f'feedback preview: {p["feedback"][:500]}\n' if target else '')
             + 'Brief preview: ' + p['brief'][:500])
@@ -141,10 +164,11 @@ class TeamBuilder:
 
     def start(self, body):
         source = body.get('source', 'text')
-        if source not in ('spec', 'goal', 'text'):
-            raise ValueError('Choose spec, goal or text as the brief source')
+        if source not in ('spec', 'goal', 'text', 'agent'):
+            raise ValueError('Choose spec, goal, text or agent as the brief source')
         context = self.context()
-        brief = text(body.get('brief', context[source] if source != 'text' else ''), 'Brief', 64000)
+        brief = text(body.get('brief', context[source] if source in ('spec', 'goal') else ''),
+                     'Description' if source == 'agent' else 'Brief', 64000)
         available = [a['id'] for a in self.agents()]
         drafter = body.get('drafter') or (available[0] if available else '')
         challenger = body.get('challenger') or next((a for a in available if a != drafter), '')
@@ -206,9 +230,12 @@ class TeamBuilder:
         allowed = set(handles) | {n for n, m in self.runtime.profiles.items.items() if not m.get('archived')}
         coverage = payload.get('coverage')
         suggestion = p.get('source') == 'suggestion'
+        single = suggestion or p.get('source') == 'agent'
         if suggestion and len(payload['members']) != 1:
             raise ValueError('Return exactly the one revised member; a suggestion cannot be withdrawn')
-        if not isinstance(coverage, list) or (not coverage and not suggestion):
+        if p.get('source') == 'agent' and len(payload['members']) != 1:
+            raise ValueError('Return exactly one member for the described agent')
+        if not isinstance(coverage, list) or (not coverage and not single):
             raise ValueError('Provide expertise coverage for the brief')
         normalized = []
         for row in coverage:
@@ -226,6 +253,7 @@ class TeamBuilder:
             normalized.append(item)
         summary = text(payload.get('summary'), 'Draft/challenge summary', 8000)
         p['history'].append({'actor': actor, 'stage': p['status'], 'summary': summary})
+        reviewed = p['revision_member']
         p.update(members=members, coverage=normalized, summary=summary, error='')
         if p['status'] == 'drafting':
             p['status'] = 'challenging'
@@ -235,8 +263,9 @@ class TeamBuilder:
             p.update(status='ready', revision_member='', feedback='')
             if suggestion and p.get('challenge'):
                 p['challenge'].update(status='done', summary=summary)
-                self.announce_challenge(f'{self.label(actor)} reviewed {self.label(p["suggested_by"])}\'s suggestion of '
-                                        f'`{inert(members[0]["name"])}`. Its summary: `{inert(summary)}` '
+                revised = next((m for m in p['members'] if m['member_id'] == reviewed), members[0])
+                self.announce_challenge(f'{self.label(actor)} reviewed {self.label(revised.get("suggested_by") or p["suggested_by"])}\'s '
+                                        f'suggestion of `{inert(revised["name"])}`. Its summary: `{inert(summary)}` '
                                         'Both versions are on Team.')
             self.save()
         return self.get()
@@ -277,7 +306,8 @@ class TeamBuilder:
         p.update(status='ready', revision_member='', feedback='', error='')
         p.setdefault('challenge', {}).update(status=status, reason=reason)
         self.save()
-        self.announce_challenge(f'The requested review of {self.label(p["suggested_by"])}\'s suggestion did not finish: '
+        by = (member or {}).get('suggested_by') or p['suggested_by']
+        self.announce_challenge(f'The requested review of {self.label(by)}\'s suggestion did not finish: '
                                 f'{reason}. The suggestion is unchanged; retry the review or decide on Team.')
 
     def challenge(self, identifier, body):
@@ -288,13 +318,16 @@ class TeamBuilder:
         p = self.proposal
         if p.get('source') != 'suggestion' or p['status'] != 'ready':
             raise ValueError('Only a suggestion waiting for review can be challenged')
-        member = p['members'][0]
-        if member['status'] not in ('proposed', 'approved'):
+        # A suggestion can hold several members; name one with member_id (the first open one by default).
+        wanted = (body or {}).get('member_id')
+        member = next((m for m in p['members'] if (m['member_id'] == wanted if wanted else
+                       m['status'] in ('proposed', 'approved'))), None)
+        if not member or member['status'] not in ('proposed', 'approved'):
             raise ValueError('A suggestion can be challenged only before it is added or declined')
         agent = (body or {}).get('agent')
-        if agent == p['suggested_by'] or agent not in {a['id'] for a in self.agents()}:
+        if agent == (member.get('suggested_by') or p['suggested_by']) or agent not in {a['id'] for a in self.agents()}:
             raise ValueError('Choose an available agent other than the one who suggested it')
-        p.setdefault('original_member', copy.deepcopy(member))
+        p.setdefault('original_members', {}).setdefault(member['member_id'], copy.deepcopy(member))
         member['status'] = 'revision_requested'
         p.update(status='challenging', challenger=agent, revision=p['revision'] + 1, revision_member=member['member_id'],
                  feedback=CHALLENGE_FEEDBACK, error='', chain=self.runtime.project_room.new_chain(p['channel']))
@@ -316,9 +349,15 @@ class TeamBuilder:
 
     def suggest(self, actor, channel, member, reason):
         """An agent proposes one new member. It goes straight to the user's review: no agent turn runs,
-        nothing is added, and the user approves, edits, declines and adds as with any proposal."""
-        if not self.finished():
-            raise ValueError('A team proposal is still open for review. Mention the missing skill in chat instead.')
+        nothing is added, and the user approves, edits, declines and adds as with any proposal.
+        While a suggestion is still open, further suggestions join it as separate members, so several can
+        wait at once; members already approved, declined or added there keep their state."""
+        current = self.proposal
+        joining = not self.finished() and current.get('source') == 'suggestion' and current['status'] in ('ready', 'challenging')
+        if not self.finished() and not joining:
+            raise ValueError('A team proposal the user started is still open for review. Mention the missing skill in chat instead.')
+        if joining and sum(m['status'] not in ('added', 'declined') for m in current['members']) >= SUGGESTION_MEMBERS:
+            raise ValueError(f'{SUGGESTION_MEMBERS} suggestions are already waiting; ask the user to decide on them first')
         reason = text(reason, 'Reason', 1000)
         if not isinstance(member, dict):
             raise ValueError('Suggest one member as an object')
@@ -328,19 +367,34 @@ class TeamBuilder:
         previous = self.proposal or {}
         declined = list(previous.get('declined_suggestions', []))
         if previous.get('source') == 'suggestion':
-            declined += [{'by': previous['suggested_by'], 'handle': m['id']}
+            declined += [{'by': m.get('suggested_by') or previous['suggested_by'], 'handle': m['id']}
                          for m in previous['members'] if m['status'] == 'declined']
+        if (self.runtime.profiles.items.get(handle) or {}).get('archived'):
+            # Restoring an archived member is the user's choice on Team; a suggestion never revives it.
+            raise ValueError(f'@{handle} belongs to an archived member; suggest a different handle')
         if handle in self.runtime.profiles.items or self.runtime.host.registry.get_instance(handle):
             raise ValueError(f'@{handle} is already a team member')
         if {'by': actor, 'handle': handle} in declined:
             raise ValueError(f'The user already declined your suggestion of @{handle}')
+        if joining and any(m['id'] == handle for m in current['members']):
+            raise ValueError(f'@{handle} is already in the suggestion waiting for the user; choose another handle')
         if not self.runtime.owns_channel(channel):
             channel = self.runtime.default_channel()
-        self.proposal = dict(id=uuid.uuid4().hex[:16], revision=1, source='suggestion', suggested_by=actor,
-            brief=reason, channel=channel, chain=self.runtime.project_room.new_chain(channel),
-            drafter=actor, challenger='', status='ready', members=[normalized], coverage=[],
-            summary=reason, history=[{'actor': actor, 'stage': 'suggestion', 'summary': reason}], error='',
-            revision_member='', feedback='', created=time.time(), declined_suggestions=declined[-50:])
+        normalized.update(suggested_by=actor, reason=reason)
+        if joining:
+            # The revision is unchanged, so a review already running on another member still submits;
+            # its result replaces only that member.
+            current['members'].append(normalized)
+            current['history'].append({'actor': actor, 'stage': 'suggestion', 'summary': reason})
+            current['brief'] = (current['brief'] + f'\n\n@{actor} on {normalized["name"]}: {reason}')[:64000]
+            current['declined_suggestions'] = declined[-50:]
+            channel = current['channel']
+        else:
+            self.proposal = dict(id=uuid.uuid4().hex[:16], revision=1, source='suggestion', suggested_by=actor,
+                brief=reason, channel=channel, chain=self.runtime.project_room.new_chain(channel),
+                drafter=actor, challenger='', status='ready', members=[normalized], coverage=[],
+                summary=reason, history=[{'actor': actor, 'stage': 'suggestion', 'summary': reason}], error='',
+                revision_member='', feedback='', created=time.time(), declined_suggestions=declined[-50:])
         self.save()
         p = self.proposal
         label = self.runtime.states.get(actor, {}).get('label') or actor
@@ -422,7 +476,9 @@ class TeamBuilder:
                 for key in ('lead', 'support'):
                     row[key] = [member['id'] if handle == old_handle else handle for handle in row[key]]
         elif action == 'use_original':
-            original = p.get('original_member')
+            # original_member: a record saved before suggestions could hold several members.
+            original = p.get('original_members', {}).get(member_id) or (
+                p.get('original_member') if p['members'] and p['members'][0]['member_id'] == member_id else None)
             if p.get('source') != 'suggestion' or not original:
                 raise ValueError('Only a challenged suggestion has an original to return to')
             member.update({**copy.deepcopy(original), 'member_id': member_id, 'status': 'proposed', 'error': ''})

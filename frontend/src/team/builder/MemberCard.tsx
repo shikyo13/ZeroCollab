@@ -93,7 +93,7 @@ function MemberEdit({
       </div>
       {catalog?.loading ? <p className="bd-muted">Loading model choices…</p>
         : catalog?.error && <p className="bd-error">{catalog.error}</p>}
-      <Field label="Working background" hint={`${draft.background.length.toLocaleString()} / ${LIMITS.profileText.toLocaleString()} characters`}>
+      <Field label="Expert background" hint={`${draft.background.length.toLocaleString()} / ${LIMITS.profileText.toLocaleString()} characters`}>
         <textarea value={draft.background} rows={6} maxLength={LIMITS.profileText} onChange={e => update({ background: e.target.value })} />
       </Field>
       <div className="bd-actions">
@@ -178,8 +178,8 @@ export function MemberCard({
             <p>{member.rationale || 'No rationale given.'}</p>
           </div>
           {suggestion ? <section className="tb-detail tb-instructions" aria-label="Complete member instructions">
-            <b>Working background · complete member instructions</b>
-            <p className="bd-muted">These are the instructions this member would receive. Suggested by @{proposal.suggested_by || proposal.drafter}.</p>
+            <b>Expert background · complete member instructions</b>
+            <p className="bd-muted">These are the instructions this member would receive. Suggested by @{member.suggested_by || proposal.suggested_by || proposal.drafter}.</p>
             <dl className="tb-configuration">
               <div><dt>Provider connection</dt><dd>{providers.find(p => p.id === member.template)?.label || member.template}</dd></div>
               <div><dt>Model</dt><dd>{member.model || 'Connection default'}</dd></div>
