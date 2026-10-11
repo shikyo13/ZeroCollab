@@ -132,7 +132,8 @@ def tool_label(name, params):
         action = arguments.get('action') if isinstance(arguments, dict) else None
         return ROOM_ACTION_LABELS.get((name, action)) or ROOM_LABELS[name]
     # Gemini (ACP) names a tool call with free text but reports its kind (harness fd991dcb).
-    return NATIVE_LABELS.get(name) or ACP_KIND_LABELS.get(params.get('kind'), 'working')
+    kind = params.get('kind')
+    return NATIVE_LABELS.get(name) or ACP_KIND_LABELS.get(kind if isinstance(kind, str) else '', 'working')
 
 
 def changes_room(tool, arguments):
@@ -685,7 +686,9 @@ class Run:
                                                   "tool": name, "status": status,
                                                   # A sealed decision turn says no more than that it is working.
                                                   "label": 'working on a team decision' if self.sealed else
-                                                  'waiting for your approval' if status == 'awaiting approval' else
+                                                  # question() asks through the same approval path as tool "Question".
+                                                  ('waiting for your answer' if name == 'Question' else 'waiting for your approval')
+                                                  if status == 'awaiting approval' else
                                                   tool_label(name, params),
                                                   "details": {'sealed': True} if self.sealed else params}, persist=True)
 
