@@ -452,9 +452,11 @@ class DecisionFlow:
         elif not count:
             effect = '; nothing new to start.'
         else:
-            manager = self.hand_off(d)
+            configured, manager = self.hand_off(d)
             effect = (f'; {count} task{"" if count == 1 else "s"} created'
                       + (f' and sent to {manager} to assign.' if manager else
+                         f'. {configured} couldn\'t be woken now, so {"it is" if count == 1 else "they are"} unowned on the Board.'
+                         if configured else
                          '. Choose a project manager on Team to have them assigned.'))
         self.runtime.host.store.add(
             'system', f'The user {said} the proposal for "{d["question"][:200]}" (team: {tally["agree"]} agree, '
@@ -463,15 +465,16 @@ class DecisionFlow:
 
     def hand_off(self, d):
         """Approved tasks are created unowned, so the project manager is woken once to assign or take them
-        (Zero #13805: an approval should start the work). Returns who was woken, or '' when nobody is set."""
+        (Zero #13805: an approval should start the work). Returns (the configured manager, who was woken):
+        ('', '') when none is set, (manager, '') when neither it nor the chosen backup could be woken."""
         r = self.runtime
         claims = r.response_claims
-        configured = (claims.state.get('responders') or {}).get('lead') or \
-            (getattr(getattr(r, 'manager_wakes', None), 'record', None) or {}).get('manager')
-        # The configured manager, or whoever answers for it while it is stopped (the backup first).
-        manager = configured and claims.responders()[0]
+        chosen = claims.state.get('responders') or {}
+        configured = chosen.get('lead') or (getattr(getattr(r, 'manager_wakes', None), 'record', None) or {}).get('manager')
+        # The manager, or the backup chosen on Team while it is stopped; never anyone further down the roster.
+        manager = next((n for n in (configured, chosen.get('backup')) if n and claims.available(n)), '')
         if not manager:
-            return ''
+            return configured or '', ''
         tasks = {t['id']: t['title'] for t in d['record']['tasks'] if t.get('id')}
         prompt = (f'The user approved team decision {d["id"]}: {d["question"][:500]}\n'
                   f'Decision note {d["record"]["note_id"]}. It created {len(tasks)} unowned tasks:\n'
@@ -480,7 +483,7 @@ class DecisionFlow:
                     'Do not repeat the decision or ask the user to approve it again.')
         queued = r.enqueue(manager, d['channel'], prompt=prompt, chain=r.project_room.new_chain(d['channel']),
                            routing={'human': False, 'decision_tasks': d['id']})
-        return manager if queued else ''  # enqueue is True only when the wake was queued
+        return configured, manager if queued else ''  # enqueue is True only when the wake was queued
 
     def post_conclusion(self, d):
         """The synthesiser's conclusion, posted once per round when it reaches review with its real outcome.
