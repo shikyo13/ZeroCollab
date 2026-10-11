@@ -33,6 +33,10 @@ TASK_STATES = {'open', 'working', 'blocked', 'review', 'done'}
 NEXT_ACTION_STATES = {'ready', 'deferred', 'waiting', ''}
 # Changes to these fields by anyone other than the owner are new work for the owner (work_rev).
 SEMANTIC_FIELDS = ('status', 'owner', 'transfer', 'depends_on', 'wait', 'next_action', 'next_action_state', 'paths')
+# The board holds at most TASK_LIMIT tasks. Finished tasks that nothing open still references move,
+# oldest first and ARCHIVE_BATCH at a time, to tasks-archive.jsonl beside coordination.json.
+TASK_LIMIT = 200
+ARCHIVE_BATCH = 20
 # Owned work without a check-in for this long is flagged as stale in context and on the board.
 # This is visibility only; turn cutoffs stay governed by the optional limits (0 = off).
 STALE_SECONDS = 600
@@ -239,6 +243,51 @@ class ProjectRoom:
         self.current_chain = {}
         self.records = CoordinationRecords(self)
 
+    def archive_path(self):
+        return self.path.parent / 'tasks-archive.jsonl'
+
+    def archivable(self):
+        """Done tasks no live record points at, oldest first: not a dependency of unfinished work,
+        not the subject of a pending review or open follow-up, with no transfer or wait."""
+        tasks = self.state['tasks']
+        held = {d for t in tasks if t['status'] != 'done' for d in t.get('depends_on', [])}
+        held |= {r['task_id'] for r in self.state.get('reviews', []) if r.get('status') in ('pending', 'changes_requested')}
+        held |= {f['task_id'] for f in self.state.get('followups', []) if f.get('status') == 'open'}
+        return sorted((t for t in tasks if t['status'] == 'done' and t['id'] not in held
+                       and not t.get('transfer') and not t.get('wait')), key=lambda t: t.get('updated', 0))
+
+    def archive_done(self, count):
+        """Append up to count archivable tasks to the archive (flushed to disk first), then drop them
+        from the board in place. A crash in between leaves a task in both; the board copy wins."""
+        moving = self.archivable()[:count]
+        if not moving:
+            return 0
+        with open(self.archive_path(), 'a', encoding='utf-8') as archive:
+            archive.write(''.join(json.dumps(t, ensure_ascii=False) + '\n' for t in moving))
+            archive.flush()
+            os.fsync(archive.fileno())
+        ids = {t['id'] for t in moving}
+        self.state['tasks'][:] = [t for t in self.state['tasks'] if t['id'] not in ids]
+        self.state['archived_tasks'] = self.state.get('archived_tasks', 0) + len(moving)
+        return len(moving)
+
+    def archived_task(self, task_id):
+        """An archived task by id (the last copy written), or None."""
+        path = self.archive_path() if self.path else None
+        if not task_id or not path or not path.exists():
+            return None
+        found = None
+        with open(path, encoding='utf-8') as archive:
+            for line in archive:
+                if task_id in line:
+                    try:
+                        task = json.loads(line)
+                    except ValueError:
+                        continue
+                    if task.get('id') == task_id:
+                        found = task
+        return found
+
     def use_project(self, identity):
         self.path = self.runtime.data / 'projects' / identity / 'coordination.json'
         self.state = json.loads(self.path.read_text('utf-8')) if self.path.exists() else {'spec': '', 'tasks': [], 'notes': []}
@@ -411,15 +460,27 @@ class ProjectRoom:
         update = bounded(update, 'update') if update else update
         if action == 'get':
             if not task:
-                raise ValueError('Task was not found')
-            return {**self.task_view(task), 'reviews': [self.records.review_view(r) for r in self.state.get('reviews', []) if r['task_id'] == task_id],
+                task = self.archived_task(task_id)
+                if not task:
+                    raise ValueError('Task was not found')
+                return {**self.task_view(task), 'archived': True,
+                        'reviews': [self.records.review_view(r) for r in self.state.get('reviews', []) if r['task_id'] == task_id],
+                        'followups': [f for f in self.state.get('followups', []) if f['task_id'] == task_id]}
+            return {**self.task_view(task),'reviews': [self.records.review_view(r) for r in self.state.get('reviews', []) if r['task_id'] == task_id],
                     'followups': [f for f in self.state.get('followups', []) if f['task_id'] == task_id]}
         if action == 'create':
             duplicate = next((t for t in tasks if t['status'] != 'done' and t['title'].strip().casefold() == title.casefold()), None)
             if duplicate:
                 raise ValueError('Duplicate task; existing task: ' + json.dumps({k: duplicate[k] for k in ('id', 'title', 'owner', 'status')}))
-            if not title or len(tasks) >= 200:
-                raise ValueError('Provide a task title; the project supports up to 200 tasks')
+            if not title:
+                raise ValueError('Provide a task title')
+            if len(tasks) >= TASK_LIMIT:
+                # Finished history must not block new work (Zero #12082): move the oldest
+                # unreferenced done tasks to the archive file, in batches.
+                self.archive_done(max(ARCHIVE_BATCH, len(tasks) - TASK_LIMIT + 1))
+                if len(tasks) >= TASK_LIMIT:
+                    raise ValueError(f'The board holds {TASK_LIMIT} tasks that are unfinished or still referenced '
+                                     'by open work; finish, release or merge some before creating more')
             task = {'id': uuid.uuid4().hex[:8], 'title': title,
                     'details': details, 'paths': [self.task_scope(p) for p in (paths or [])[:20]],
                     'repository_key': self.primary_repository_key(),
