@@ -213,7 +213,9 @@ def main():
     print(f"  Agents auto-trigger on @mention")
     print("\n  Browser controls carry the local session token; it is not printed.\n")
 
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # No per-message deflate: the room is served on this machine, and compressing every broadcast for
+    # every browser tab cost about a quarter of the event loop (py-spy on 0.12.28, task f91a332e).
+    uvicorn.run(app, host=host, port=port, log_level="info", ws_per_message_deflate=False)
 
 
 if __name__ == "__main__":
