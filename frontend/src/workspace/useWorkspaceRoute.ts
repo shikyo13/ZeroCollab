@@ -7,7 +7,7 @@ import { legacy } from '../legacy';
 export const VIEWS = ['projects', 'chat', 'board', 'live', 'motion', 'team', 'activity', 'server'] as const;
 export type View = typeof VIEWS[number];
 
-export type ServerSection = 'status' | 'updates' | 'history';
+export type ServerSection = 'status' | 'updates' | 'history' | 'activity';
 export function openServer(section: ServerSection = 'status') {
   const url = new URL(location.href);
   url.searchParams.set('view', 'server');
@@ -17,7 +17,7 @@ export function openServer(section: ServerSection = 'status') {
 }
 
 const DEFAULT_VIEW: View = 'chat';
-const validView = (value: string | null): View => (VIEWS.includes(value as View) ? (value as View) : DEFAULT_VIEW);
+const validView = (value: string | null): View => value === 'activity' ? 'server' : (VIEWS.includes(value as View) ? (value as View) : DEFAULT_VIEW);
 const param = (name: string) => new URL(location.href).searchParams.get(name);
 
 export function useWorkspaceRoute() {
@@ -26,8 +26,11 @@ export function useWorkspaceRoute() {
   const [historySession, setHistorySession] = useState(() => param('history') || '');
 
   const navigate = useCallback((next: View) => {
+    const activity = next === 'activity';
+    if (activity) next = 'server';
     setView(next);
     const url = new URL(location.href);
+    if (activity) url.searchParams.set('server', 'activity');
     url.searchParams.set('view', next);
     url.searchParams.delete('history');
     url.searchParams.delete('team_project');
@@ -61,6 +64,9 @@ export function useWorkspaceRoute() {
   useEffect(() => {
     // Back/Forward: the entry's URL is the source of truth for both the view and the project.
     const back = () => {
+      if (param('view') === 'activity') {
+        const url = new URL(location.href); url.searchParams.set('view', 'server'); url.searchParams.set('server', 'activity'); history.replaceState({}, '', url);
+      }
       setView(validView(param('view')));
       setFocusState(param('project') || '');
       setHistorySession(param('history') || '');
@@ -71,6 +77,7 @@ export function useWorkspaceRoute() {
       const target = (event.target as HTMLElement).closest('button');
       if (target?.id === 'settings-toggle') navigate('chat');
     };
+    back();
     window.addEventListener('popstate', back);
     window.addEventListener(EVENTS.team, showTeam);
     legacy.header.addEventListener('click', toolbar, true);

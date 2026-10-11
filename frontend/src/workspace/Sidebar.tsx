@@ -62,7 +62,7 @@ export function Sidebar({ view, navigate, projects, active, deployments, onOpenP
   const newProject = () => { onOpenProject(''); window.dispatchEvent(new Event(EVENTS.newProject)); };
   const item = (target: View, label: string, extra?: React.ReactNode) =>
     <button className="ws-nav-item" aria-current={view === target ? 'page' : undefined} title={label} onClick={() => navigate(target)}>
-      <Icon name={target === 'server' ? 'settings' : target === 'live' || target === 'motion' ? 'activity' : target} size={18} /><span>{label}</span>{extra}
+      <Icon name={target === 'server' ? 'settings' : target} size={18} /><span>{label}</span>{extra}
     </button>;
   const changed = async (p: ProjectSummary, archived?: boolean) => {
     if (archived === true) { setUndo({ id: p.id, name: p.name }); setArchivedOpen(true); setNotice(`${p.name} archived. Saved data retained.`); }
@@ -104,7 +104,6 @@ export function Sidebar({ view, navigate, projects, active, deployments, onOpenP
       {item('board', 'Board', busy ? <small className="ws-count">{busy} active</small> : null)}
       {item('live', 'Live view')}
       {item('motion', 'Motion')}
-      {item('activity', 'Activity')}
       {item('team', 'Team', agents ? <small className="ws-count">{agents}</small> : null)}
     </div>
     <div className={`ws-projects${drawerOpen ? ' pn-drawer-open' : ''}`} id="pn-project-drawer" ref={drawer}>
