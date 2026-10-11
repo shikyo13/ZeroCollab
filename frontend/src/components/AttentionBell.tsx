@@ -2,8 +2,10 @@
  * Sources the workspace already loads: repository requests (/projects), tool approvals
  * (runtime state), reviews and follow-ups addressed to the user (/project-state) and a
  * prepared release that passed rehearsal (/deployments), and a team suggestion or proposal waiting for the
- * user's review (/team-builder, the open project only). Items disappear when resolved. */
+ * user's review (/team-builder, the open project only). Items disappear when resolved; current-project decisions notify while waiting for the user's choice. */
 import { useEffect, useRef, useState } from 'react';
+import { api } from '../lib/api';
+import type { Decision, Summary } from '../decisions/model';
 import { EVENTS, USER } from '../lib/constants';
 import { useProjectState, useRoomEvent, useRuntimeState } from '../lib/room';
 import { loadContext, type Proposal } from '../lib/teamBuilder';
@@ -15,6 +17,9 @@ import type { DeploymentFeed } from './Deployments';
 import { Icon } from './Icon';
 import { readStored, writeStored } from '../lib/storage';
 import './attention.css';
+
+type WaitingDecision = Pick<Decision, 'id'|'question'|'stage'|'revision'|'epoch'|'current_proposal'|'updated'|'choice'>;
+type DecisionSummary = Summary & {choice?: string};
 
 type Item = { key: string; revision: string; title: string; detail: string; action: string; open: () => void };
 
@@ -61,6 +66,48 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
   useEffect(loadTeam, []);
   useRoomEvent('team_builder', loadTeam);
   useRoomEvent('settings', loadTeam);
+  // Listing summaries omit the proposal fence: fetch details only for decisions awaiting a choice.
+  const [decisionFeed, setDecisionFeed] = useState<{project: string; items: WaitingDecision[]}>({project: '', items: []});
+  const decisionProject = useRef(''), decisionLoad = useRef(0), decisionEvents = useRef(0);
+  const decisionVersions = useRef(new Map<string, number>());
+  const loadDecisions = async (project = decisionProject.current) => {
+    if (!project) return;
+    const generation = ++decisionLoad.current, began = decisionEvents.current;
+    try {
+      const listing = await api<{decisions: DecisionSummary[]}>('/api/decisions');
+      const details = await Promise.all(listing.decisions.filter(d => d.stage === 'review' && !d.choice)
+        .map(d => api<WaitingDecision>('/api/decisions/' + encodeURIComponent(d.id))));
+      if (generation !== decisionLoad.current || project !== decisionProject.current) return;
+      setDecisionFeed(previous => {
+        const items = new Map(details.map(d => [d.id, d]));
+        if (previous.project === project) for (const known of previous.items) {
+          if ((decisionVersions.current.get(known.id) || 0) > began || known.updated > (items.get(known.id)?.updated ?? Infinity)) items.set(known.id, known);
+        }
+        return {project, items: [...items.values()]};
+      });
+    } catch { /* The next decision event or reconnect resynchronizes this optional notification source. */ }
+  };
+  const selectDecisionProject = (project: string) => {
+    decisionProject.current = project; ++decisionLoad.current; decisionVersions.current.clear();
+    setDecisionFeed({project, items: []}); void loadDecisions(project);
+  };
+  useEffect(() => {
+    selectDecisionProject(state?.project_id || '');
+    return () => { ++decisionLoad.current; };
+  }, [state?.project_id]);
+  useRoomEvent<{project_id?: string}>('settings', event => {
+    selectDecisionProject(event.data.project_id || '');
+  });
+  useRoomEvent<Decision>('decision', event => {
+    const project = decisionProject.current, d = event.data;
+    if (!project || !d.id) return;
+    decisionVersions.current.set(d.id, ++decisionEvents.current);
+    setDecisionFeed(previous => {
+      const items = previous.project === project ? previous.items : [];
+      const known = items.find(p => p.id === d.id);
+      return known && known.updated > d.updated ? previous : {project, items: [d, ...items.filter(p => p.id !== d.id)]};
+    });
+  });
   const [read, setRead] = useState(savedRead);
   const [muted, setMuted] = useState(() => readStored(MUTE_KEY) === '1');
   useEffect(() => {
@@ -139,6 +186,22 @@ export function AttentionBell({ projects, deployments, navigate, openProject }: 
       detail: clip(followup.text),
       action: 'Open follow-up',
       open: () => openBoard(task ? { task: task.id } : { tab: 'coordination' }),
+    });
+  }
+  for (const decision of decisionFeed.items) {
+    if (decisionFeed.project !== decisionProject.current || decision.stage !== 'review' || decision.choice) continue;
+    items.push({
+      key: `decision:${decisionFeed.project}:${decision.id}`,
+      revision: JSON.stringify([decision.id, decision.revision, decision.epoch, decision.current_proposal]),
+      title: 'Decision waiting for your choice',
+      detail: clip(decision.question),
+      action: 'Decide',
+      open: () => {
+        navigate('chat');
+        window.dispatchEvent(new CustomEvent('workspace-side-panel', {detail: {
+          tab: 'decision', decision_id: decision.id, opener: root.current?.querySelector('button'),
+        }}));
+      },
     });
   }
   const pending = team?.status === 'ready' ? team.members.filter(m => m.status === 'proposed' || m.status === 'approved') : [];
