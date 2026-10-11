@@ -486,6 +486,8 @@ class ProjectRoom:
                     'repository_key': self.primary_repository_key(),
                     'owner': owner or ('' if human else actor), 'status': 'open', 'updates': [], 'updated': time.time()}
         elif not task:
+            if self.archived_task(task_id):
+                raise ValueError('That task is archived and read-only; create a new task instead')
             raise ValueError('Task was not found')
         else:
             task = {**task, 'updates': list(task['updates'])}
@@ -530,6 +532,12 @@ class ProjectRoom:
                     task['status'] = status
             else:
                 raise ValueError('Choose get, create, claim, delegate, accept, release, or update')
+            if previous['status'] == 'done' and task['status'] != 'done' and task.get('depends_on'):
+                # Reopening: a dependency missing from the board was archived, and only done tasks
+                # are archived, so it is finished. Dropping it keeps the task from waiting forever
+                # on an id every done-set check would treat as unfinished (backend 86d7fe0e F1).
+                board = {t['id'] for t in tasks}
+                task['depends_on'] = [d for d in task['depends_on'] if d in board]
         task = update_execution(task, self.state, next_action=next_action, priority=priority, wait=wait)
         if previous and task['owner'] != previous['owner']:
             # A new owner opts in to ready-task wakes for themselves; readiness never transfers.
