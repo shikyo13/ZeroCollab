@@ -9,8 +9,10 @@ from pathlib import Path
 # Entries kept per task: check-ins, review/follow-up activity and automatic ownership/status events.
 TASK_HISTORY = 20
 # Free-text limits. Over-limit text is refused, never cut, so the author learns before the record is saved.
-LIMITS = dict(title=120, details=8000, update=4000, note=4000, request=4000, findings=8000,
-              cancellation=4000, followup=4000, result=4000, evidence=4000,
+# Requests, follow-ups, results and cancellations are stored in full, so they match findings: 4000 kept
+# refusing ordinary multi-point reviews and forced agents to split one record into several.
+LIMITS = dict(title=120, details=8000, update=4000, note=4000, request=8000, findings=8000,
+              cancellation=8000, followup=8000, result=8000, evidence=4000,
               # Matches room_markup's summary limit. A markup note is up to two provenance lines,
               # that summary and up to 20 mark lines of at most 358 characters: under 8500.
               markup=1000, **{'attachment note': 9000})
@@ -38,7 +40,7 @@ def _git_bytes(root, *args):
     """Raw stdout of a read-only Git command in root (hooks off), or None when Git fails or is missing."""
     try:
         result = subprocess.run(['git', '-c', 'core.hooksPath=' + os.devnull, '-C', str(root), *args],
-                                capture_output=True, timeout=15,
+                                capture_output=True, timeout=5,  # runs on the event loop; stale is the safe answer
                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -49,6 +51,16 @@ def checked_out_branch(root):
     """The full ref of the branch checked out in root ('refs/heads/...'), or '' (detached, not Git)."""
     out = _git_bytes(root, 'symbolic-ref', '-q', 'HEAD')
     return out.decode('utf-8', 'replace').strip() if out else ''
+
+
+def git_location(root):
+    """(branch, worktree top, root's path from that top) for a review root, or None when root is not in a
+    Git worktree or HEAD is detached. The top always exists, even after a branch switch removes root."""
+    out = _git_bytes(root, 'rev-parse', '--show-toplevel', '--show-prefix', '--symbolic-full-name', 'HEAD')
+    lines = out.decode('utf-8', 'replace').splitlines() if out else []
+    if len(lines) != 3 or not lines[2].startswith('refs/heads/'):
+        return None
+    return lines[2], lines[0], lines[1]
 
 
 class CoordinationRecords:
@@ -110,10 +122,11 @@ class CoordinationRecords:
             sha = hashlib.sha256(data).hexdigest()
             entry = {'path': relative, 'root': str(file_root), 'relative': file_relative, 'sha256': sha, 'bytes': len(data)}
             if file_root not in branches:
-                branches[file_root] = checked_out_branch(file_root)
+                branches[file_root] = git_location(file_root)
             if branches[file_root]:
                 # Lets the approval outlive the owner switching branches (see changed_files).
-                entry['branch'] = branches[file_root]
+                branch, top, prefix = branches[file_root]
+                entry.update(branch=branch, git_root=top, git_path=prefix + file_relative.replace('\\', '/'))
             entries.append(entry)
             blobs[sha] = data
         return {'root': str(root), 'files': entries, 'unavailable': unavailable}, blobs
@@ -170,17 +183,19 @@ class CoordinationRecords:
         holds the reviewed bytes, so switching branches does not make an approval look stale. While the
         reviewed branch is checked out, its working copy decides, so uncommitted edits still count. The
         tip is read as a checkout writes it (git cat-file --filters), the same bytes the snapshot hashed."""
-        branch = entry.get('branch')
-        if not branch:
+        branch, top, git_path = entry.get('branch'), entry.get('git_root'), entry.get('git_path')
+        if not (branch and top and git_path):
             return False  # Snapshot taken before branches were recorded, or a detached HEAD.
-        if ('branch', root) not in hashes:
-            hashes[('branch', root)] = checked_out_branch(root)
-        if hashes[('branch', root)] == branch:
+        if ('branch', top) not in hashes:
+            hashes[('branch', top)] = checked_out_branch(top)
+        if hashes[('branch', top)] == branch:
             return False
-        spec = f"{branch}:{str(entry.get('relative', entry['path'])).replace(chr(92), '/')}"
-        key = ('tip', root, spec)
+        # Run from the worktree top with the path from the top: a subfolder root may not exist on the
+        # branch now checked out, and a bare 'branch:path' always resolves from the top anyway.
+        spec = f'{branch}:{git_path}'
+        key = ('tip', top, spec)
         if key not in hashes:
-            data = _git_bytes(root, 'cat-file', '--filters', spec)
+            data = _git_bytes(top, 'cat-file', '--filters', spec)
             hashes[key] = hashlib.sha256(data).hexdigest() if data is not None else None
         return hashes[key] == entry['sha256']
 
