@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import contextlib
+import copy
 import hashlib
 import json
 import logging
@@ -2362,23 +2363,52 @@ def install(host):
     async def responders_change(request: Request):
         """Who answers an untagged human message first (the lead), and the one backup. Human only (UI
         token); empty values use the defaults: the active goal lead, then the configured manager, then
-        roster order. Returns the same shape as GET and the runtime snapshot's responders field."""
+        roster order. Returns the same shape as GET and the runtime snapshot's responders field.
+
+        The chosen lead is the Project manager (Zero #13091, decision 363ae046426b). An optional
+        `checkins: {enabled, interval_minutes}` saves its automatic check-ins in the same request: both
+        settings are saved, or on any refusal both are restored and nothing changes (one truthful Save).
+        The response then also carries `checkins`, the check-in status."""
         try:
             body = await request.json()
-            if not isinstance(body, dict) or set(body) - {'lead', 'backup'} or any(
+            if not isinstance(body, dict) or set(body) - {'lead', 'backup', 'checkins'} or any(
                     not isinstance(body.get(k, ''), str) for k in ('lead', 'backup')):
                 raise ValueError('Send lead and backup as participant names, or empty strings for the defaults')
-            before = (runtime.project_room.state.get('responders') or {}).get('lead', '')
-            runtime.response_claims.set_responders(body.get('lead', ''), body.get('backup', ''))
-            after = runtime.project_room.state['responders']['lead']
-            # The chosen lead is the project manager (Zero #13091, reference 220a0b3c): automatic check-ins
-            # follow it in the same request, before anything awaits, so no check-in runs for the old one.
-            changed = getattr(runtime.manager_wakes, 'manager_changed', None)
-            if after != before and changed:
-                changed(after)
+            checkins = body.get('checkins')
+            if checkins is not None and (not isinstance(checkins, dict) or set(checkins) - {'enabled', 'interval_minutes'}
+                                         or type(checkins.get('enabled')) is not bool):
+                raise ValueError('checkins must be {enabled: true|false, interval_minutes}')
+            room, wakes = runtime.project_room, runtime.manager_wakes
+            if checkins is not None and not hasattr(wakes, 'configure_project_manager'):
+                raise ValueError('Automatic check-ins need the updated project-manager runtime')
+            # Everything a save can change, so a refusal part-way restores it all. Nothing below awaits.
+            saved = copy.deepcopy((room.state.get('responders'), wakes.record, room.state['tasks']))
+            try:
+                before = (room.state.get('responders') or {}).get('lead', '')
+                runtime.response_claims.set_responders(body.get('lead', ''), body.get('backup', ''))
+                after = room.state['responders']['lead']
+                changed = getattr(wakes, 'manager_changed', None)
+                if after != before and changed:
+                    changed(after)  # check-ins follow the manager, before anything awaits
+                if checkins is not None:
+                    wakes.configure_project_manager('user', enabled=checkins['enabled'], manager=after or None,
+                                                    interval_minutes=checkins.get('interval_minutes', 30))
+            except (ValueError, TypeError, KeyError):
+                responders, record, tasks = saved
+                if responders is None:
+                    room.state.pop('responders', None)
+                else:
+                    room.state['responders'] = responders
+                wakes.record.clear()
+                wakes.record.update(record)
+                room.state['tasks'][:] = tasks
+                room.save()
+                wakes.save()
+                raise
             await runtime.publish_status()  # every open window updates its lead badge at once
-            return await responders_status()
-        except ValueError as exc:
+            result = await responders_status()
+            return {**result, 'checkins': wakes.status()} if checkins is not None else result
+        except (ValueError, TypeError, KeyError) as exc:
             return JSONResponse({'error': str(exc)}, 400)
 
     @host.app.post('/api/runtime/limits')
