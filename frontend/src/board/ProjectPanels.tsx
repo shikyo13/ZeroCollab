@@ -6,6 +6,7 @@ import { sendChatMessage, sessionTitle } from '../lib/room';
 import type { Chain, Limits, ProjectState } from '../lib/types';
 import { ErrorText, Field, RelativeTime, useAction, type Agents, displayName } from './shared';
 import { LIMITS } from '../lib/constants';
+import { ManagerAuditPanel } from './ManagerAuditPanel';
 
 export function SpecPanel({ project, channel, refresh }: { project: ProjectState; channel: string; refresh: () => Promise<void> }) {
   const { run, busy, error } = useAction();
@@ -190,15 +191,21 @@ export function LimitsPanel({ project, channel, refresh }: { project: ProjectSta
   const [values, setValues] = useState<Limits>(project.limits);
   const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [savedReadyWakes, setSavedReadyWakes] = useState(project.limits.ready_task_wakes === 1);
   useEffect(() => {
     if (!dirty) setValues(project.limits);
   }, [project.limits, dirty]);
-  const chain = [...(project.chains ?? [])].reverse().find(c => c.channel === channel);
+  useEffect(() => {
+    setSavedReadyWakes(project.limits.ready_task_wakes === 1);
+  }, [project.limits.ready_task_wakes]);
+  // The manager check-ins keep their own finite budget chain in the same chat; it is shown in their panel, not here.
+  const chain = [...(project.chains ?? [])].reverse().find(c => c.channel === channel && c.kind !== 'manager_audit');
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const ok = await run(async () => {
-      await runtime('/limits', values);
+      const response = await runtime<{ limits: Limits }>('/limits', values);
+      setSavedReadyWakes(response.limits.ready_task_wakes === 1);
       await refresh();
     });
     if (ok) {
@@ -220,6 +227,8 @@ export function LimitsPanel({ project, channel, refresh }: { project: ProjectSta
           <p className="bd-empty">No agent work started in this channel yet.</p>
         )}
       </section>
+      {/* Keyed by project: switching projects remounts it, so no status, draft or action carries over. */}
+      <ManagerAuditPanel key={window.activeProjectId || ''} project={window.activeProjectId || ''} />
       <section className="bd-panel" aria-labelledby="bd-limits-heading">
         <h3 id="bd-limits-heading">Execution controls (optional)</h3>
         <p className="bd-muted">Zero disables optional cutoffs and lets the whole team run together.</p>
@@ -231,6 +240,21 @@ export function LimitsPanel({ project, channel, refresh }: { project: ProjectSta
             setSaved(false);
           }}
         >
+          <div>
+            <label className="bd-check">
+              <input type="checkbox" checked={values.ready_task_wakes === 1} disabled={busy}
+                aria-describedby="bd-ready-wakes-help bd-ready-wakes-status"
+                onChange={e => setValues(v => ({ ...v, ready_task_wakes: e.target.checked ? 1 : 0 }))} />
+              <span>Wake owners of ready tasks automatically</span>
+            </label>
+            <p className="bd-muted" id="bd-ready-wakes-help">
+              After a relevant task change, wake an available owner whose next action is explicitly marked Ready.
+              Existing Stop, pause and room limits still apply. This does not assign work from the backlog.
+            </p>
+            <p className="bd-muted" id="bd-ready-wakes-status" role="status">
+              Saved setting: {savedReadyWakes ? 'On' : 'Off'}{dirty && ' · Unsaved changes'}
+            </p>
+          </div>
           <div className="bd-limits-grid">
             {LIMIT_FIELDS.map(([name, label, min, max, hint]) => (
               <Field key={name} label={label} hint={`${hint} (${min.toLocaleString()}-${max.toLocaleString()})`}>

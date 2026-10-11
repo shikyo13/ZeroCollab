@@ -130,6 +130,8 @@ export interface Note {
 }
 
 export interface Limits {
+  /** Explicit human opt-in; absent on older servers means off. */
+  ready_task_wakes?: 0 | 1;
   input_chars: number;
   agent_turns: number;
   parallel_agents: number;
@@ -148,6 +150,8 @@ export interface Chain {
   reported_tokens: number;
   input_chars: number;
   paused: boolean;
+  /** 'manager_audit' for the manager check-ins' own budget chain (systems f394c1c); absent for chat conversations. */
+  kind?: string;
 }
 
 /** GET /api/runtime/project-state and the `project_state` WS event. */
