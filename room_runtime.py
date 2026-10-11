@@ -504,6 +504,7 @@ class Run:
             raise RuntimeError("Response exceeded room output limit")
         base = {"run": self.id, "message": self.message_id, "phase": self.message_phase, "agent": self.name,
                 "channel": self.channel}
+        was_public = self.public_streamed == self.message_id and self.public_stream == (self.message_id, True)
         if self.streams_to_chat():
             # The first public delta carries everything written so far, in case the phase arrived late.
             first = self.public_streamed != self.message_id
@@ -514,15 +515,23 @@ class Run:
             # chat (design 7da9d517, Zero #12872): they reach Activity at message end, or nowhere if held.
             # runtime_draft keeps the live views informed.
             await self.manager.emit("runtime_draft", {**base, "text": text})
+            if was_public:
+                # It lost its claim mid-answer: retract the text already shown (the snapshot now has none).
+                await self.manager.publish_status()
 
     def streams_to_chat(self):
         """True only for a final answer this run may publish now: not a progress note, not text whose
         phase is still unknown (Claude reports it at the end), and passing its answer claim.
-        Decided once per message, since the claim check reads the chat store."""
+        The full check, which scans the chat store, runs once per message; ownership, generation, status
+        and scope are re-checked on every emission and snapshot, so an answer whose claim is superseded
+        mid-stream stops streaming at once and stays stopped (frontend 6f6cb398)."""
         if self.message_phase != 'final_answer' or not self.message_id:
             return False
+        claims = self.manager.response_claims
         if self.public_stream[0] != self.message_id:
-            self.public_stream = (self.message_id, not self.manager.response_claims.check(self))
+            self.public_stream = (self.message_id, not claims.check(self))
+        elif self.public_stream[1] and claims.check(self, scan=False):
+            self.public_stream = (self.message_id, False)
         return self.public_stream[1]
 
     async def begin_message(self, identifier, phase=None):

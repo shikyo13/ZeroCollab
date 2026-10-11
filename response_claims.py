@@ -52,6 +52,15 @@ class ResponseClaims:
                 claim.update(status='superseded', ended=time.time())
         for name in ([channel] if channel else {c['channel'] for c in self.claims.values()} | set(scopes)):
             scopes[name] = scopes.get(name, 0) + 1
+        self.retract_streams()
+
+    def retract_streams(self):
+        """An answer streaming for a claim that just changed hands or scope must leave the chat now, not at
+        message end: a fresh snapshot re-checks every run, and a run that lost its claim shows no text
+        (frontend 6f6cb398)."""
+        publish = getattr(self.runtime, 'publish_soon', None)
+        if publish:
+            publish()
 
     def save(self):
         done = [k for k, c in self.claims.items() if c['status'] != 'open']
@@ -117,9 +126,10 @@ class ResponseClaims:
         request = (steered or started or [None])[-1]
         return (request['response_claim'], request.get('generation', 1)) if request else None
 
-    def check(self, run):
+    def check(self, run, scan=True):
         """'' when this run may publish its answer to the claim it was woken for, else the reason it
-        may not. Called just before publication."""
+        may not. Called just before publication. scan=False skips the chat-store scan: the cheap ownership,
+        generation, status and scope test the live stream repeats on every emission."""
         grant = self.grant(run)
         if not grant:
             return ''
@@ -134,7 +144,7 @@ class ResponseClaims:
         if claim['scope'] != self.scope(claim['channel']):
             return 'the scope changed since the question was asked'
         others = [p for p in claim['published'] if p.get('generation') == generation and p.get('run') != run.id]
-        if others or self.published_elsewhere(claim, generation, run.id):
+        if others or (scan and self.published_elsewhere(claim, generation, run.id)):
             return 'this answer was already published'
         return ''
 
@@ -183,6 +193,7 @@ class ResponseClaims:
                 claim.update(owner=backup, generation=2, deadline=now + BACKUP_SECONDS)
                 changed = True
                 self.save()
+                self.retract_streams()
                 self.wake(claim, backup)
             else:
                 claim.update(status='expired', ended=now)
