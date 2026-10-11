@@ -1154,6 +1154,9 @@ class RoomRuntime:
                 # A running agent keeps its working state; its next refresh reports the failure.
                 if not connected and self.states[peer]['provider'] == 'antigravity' and peer not in self.running:
                     self.states[peer].update(state='blocked', detail=self.controls.catalogs[name]['error'])
+        for name, state in self.states.items():
+            if state['state'] == 'ready' and not state.get('paused'):
+                self.wake_notices.pop(name, None)  # Refresh unblocked it: a later problem is worth telling
         # Connections no agent uses yet (added in Team > Providers) still offer their models in Add agent.
         templates = self.profiles.templates
         unused = [t for t in templates if t not in groups]
@@ -1249,6 +1252,15 @@ class RoomRuntime:
         self.wake_notices[key] = state
         self.host.store.add("system", text, channel=channel, metadata={'no_route': True})
 
+    @staticmethod
+    def plain_failure(name, detail):
+        """The one chat sentence for an agent that can't start or finish; the raw error stays in Activity and the roster."""
+        if 'active writer' in detail:
+            # Codex refuses a second writer on a conversation; live, the holder was the user's own Codex app.
+            return (f"{name} couldn't start because its Codex conversation is open somewhere else, such as the Codex app. "
+                    "Close it there and send again; the details are in Activity.")
+        return f"{name} couldn't start or finish its turn; the details are in Activity."
+
     def enqueue(self, name, channel="general", message="", prompt="", chain=None, routing=None, ref=None):
         if self.deployment and self.deployment.rehearsal:
             return False
@@ -1272,9 +1284,10 @@ class RoomRuntime:
                 and self.states[name].get("detail") == "Response exceeded room output limit"):
             self.states[name].update(state="ready", detail="")
         if self.states[name]["state"] in ("login_required", "blocked"):
-            detail = self.states[name]['detail']
-            self.wake_notice(name, f"{self.states[name]['state']}:{detail}", f"{name} cannot start: {detail}",
-                             channel, routing)
+            state, detail = self.states[name]['state'], self.states[name]['detail']
+            text = (f"{name} is signed out. Sign in on Team > Providers, then click Refresh connections."
+                    if state == 'login_required' else self.plain_failure(name, detail))
+            self.wake_notice(name, f"{state}:{detail[:200]}", text, channel, routing)
             return
         if not (routing or {}).get('decision') and not self.decisions.routes(channel):
             # A live team-decision chat runs only the flow's turns; other wakes (reviews, follow-ups,
@@ -1478,6 +1491,7 @@ class RoomRuntime:
             if self.goals.goal and self.goals.goal['owner'] == name:
                 self.goals.pause('Goal lead turn cancelled.')
             self.states[name].update(state="ready", detail="Stopped; pending work cleared")
+            self.wake_notices.pop(name, None)
             await run.finish_message(partial=True)
             self.host.store.add("system", f"{name} stopped.", channel=run.channel)
         except Exception as exc:
@@ -1504,11 +1518,11 @@ class RoomRuntime:
                 self.states[name].update(state='ready' if run.manager_audit else 'blocked', detail=detail[:600])
                 await self.activity_note(run, 'turn failed', detail[:4000])
                 # One plain sentence in chat, once per cause; the raw error is in Activity and the roster.
-                if self.wake_notices.get(name) != f'failed:{detail[:200]}':
-                    self.wake_notices[name] = f'failed:{detail[:200]}'
-                    reason = ("its previous session is still closing; try again in a minute"
-                              if 'active writer' in detail else "the details are in Activity")
-                    self.host.store.add("system", f"{name} couldn't finish its turn: {reason}.", channel=run.channel,
+                # Same key as enqueue's blocked notice, so the next direct mention doesn't repeat it.
+                key = f"{self.states[name]['state']}:{detail[:200]}"
+                if self.wake_notices.get(name) != key:
+                    self.wake_notices[name] = key
+                    self.host.store.add("system", self.plain_failure(name, detail), channel=run.channel,
                                         metadata={'no_route': True})
             await run.finish_message(partial=True)
         finally:
@@ -2535,7 +2549,7 @@ def install(host):
                 chain = runtime.project_room.new_chain(channel)
                 runtime.ready_wakes.record_chain(task['id'], chain)
                 runtime.enqueue(task['owner'], channel, prompt=f"Task {task['id']}: {task['title']}\n{task['details']}\nReserved paths: {', '.join(task['paths'])}",
-                                chain=chain, routing={'task_id': task['id']})
+                                chain=chain, routing={'task_id': task['id'], 'human': True})  # the user's own start
             runtime.ready_wakes.schedule()
             runtime.project_state_soon()
             return task
