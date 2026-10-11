@@ -1426,7 +1426,7 @@ class RoomRuntime:
             async with asyncio.timeout(None) as deadline:
                 run.begin(deadline)
                 provider = self.states[name]["provider"]
-                if run.manager_audit and provider not in ('codex', 'api'):
+                if run.manager_audit and provider not in ('codex', 'api', 'claude'):
                     raise ValueError('Audit runner changed or lacks verified pre-input permissions')
                 if provider == "api":
                     await self.local_turn(run, prompt)
