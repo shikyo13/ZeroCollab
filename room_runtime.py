@@ -694,6 +694,7 @@ class RoomRuntime:
         self.decisions = DecisionFlow(self)
         self.profile_lock = asyncio.Lock()
         self.deploy_held = {}
+        self.wake_notices = {}  # agent (or room:chat) -> the unavailable state last announced in chat
         self.deployment = None
         self.project_state_due = False  # a coalesced board snapshot is scheduled (project_state_soon)
         self.repository_transition = None
@@ -1236,6 +1237,18 @@ class RoomRuntime:
             return identifier
         return self.project_room.new_chain(channel)
 
+    def wake_notice(self, key, state, text, channel, routing):
+        """A wake the room refuses (stopped room or agent, signed out, blocked) is said in chat only when the user
+        named that agent directly, and once per state: the roster already shows it, and an @all or an agent's
+        own handoff must not repeat it on every message (Zero: messages should be natural, not alarming).
+        The state is forgotten when the agent is resumed or completes a turn, so a new problem is told again."""
+        if not (routing or {}).get('human') or (routing or {}).get('broadcast'):
+            return
+        if self.wake_notices.get(key) == state:
+            return
+        self.wake_notices[key] = state
+        self.host.store.add("system", text, channel=channel, metadata={'no_route': True})
+
     def enqueue(self, name, channel="general", message="", prompt="", chain=None, routing=None, ref=None):
         if self.deployment and self.deployment.rehearsal:
             return False
@@ -1246,10 +1259,12 @@ class RoomRuntime:
                                 channel=self.default_channel(), metadata={'no_route': True})
             return False
         if self.paused:
-            self.host.store.add("system", f"Room is stopped. Click Resume before waking {name}.", channel=channel)
+            self.wake_notice(f'room:{channel}', 'paused', "The room is stopped. Click Resume to let the team work.",
+                             channel, routing)
             return
         if self.states[name].get("paused"):
-            self.host.store.add("system", f"{name} is stopped. Click its Resume agent button before waking it.", channel=channel)
+            self.wake_notice(name, 'paused', f"{name} is stopped. Click its Resume agent button to wake it.",
+                             channel, routing)
             return
         # Older rooms blocked long, otherwise healthy turns on a cumulative text cap.
         # Let the next wake recover that obsolete failure; explicit Stop above still wins.
@@ -1257,7 +1272,9 @@ class RoomRuntime:
                 and self.states[name].get("detail") == "Response exceeded room output limit"):
             self.states[name].update(state="ready", detail="")
         if self.states[name]["state"] in ("login_required", "blocked"):
-            self.host.store.add("system", f"{name} cannot start: {self.states[name]['detail']}", channel=channel)
+            detail = self.states[name]['detail']
+            self.wake_notice(name, f"{self.states[name]['state']}:{detail}", f"{name} cannot start: {detail}",
+                             channel, routing)
             return
         if not (routing or {}).get('decision') and not self.decisions.routes(channel):
             # A live team-decision chat runs only the flow's turns; other wakes (reviews, follow-ups,
@@ -1448,6 +1465,7 @@ class RoomRuntime:
             self.project_room.complete(run)
             stop_note = getattr(run, 'stop_note', '')
             self.states[name].update(state="ready", detail=stop_note or "Last turn completed")
+            self.wake_notices.pop(name, None)  # working again: a later problem is worth telling
             if silent and not stop_note:
                 try:
                     await self.silent_turn(run)
@@ -1479,11 +1497,19 @@ class RoomRuntime:
             if self.signed_out(run, name, detail):
                 pass
             elif self.retry_startup(run, exc, detail):
-                self.host.store.add("system", f"{name} failed to start; retrying once in {STARTUP_RETRY_SECONDS} s: {detail[:600]}",
-                                    channel=run.channel, metadata={'no_route': True})
+                # A retry is routine: Activity only, so the chat doesn't look broken while it recovers.
+                await self.activity_note(run, 'startup retry',
+                                         f"Failed to start; retrying once in {STARTUP_RETRY_SECONDS} s: {detail[:600]}")
             else:
                 self.states[name].update(state='ready' if run.manager_audit else 'blocked', detail=detail[:600])
-                self.host.store.add("system", f"{name} failed: {detail[:600]}", channel=run.channel)
+                await self.activity_note(run, 'turn failed', detail[:4000])
+                # One plain sentence in chat, once per cause; the raw error is in Activity and the roster.
+                if self.wake_notices.get(name) != f'failed:{detail[:200]}':
+                    self.wake_notices[name] = f'failed:{detail[:200]}'
+                    reason = ("its previous session is still closing; try again in a minute"
+                              if 'active writer' in detail else "the details are in Activity")
+                    self.host.store.add("system", f"{name} couldn't finish its turn: {reason}.", channel=run.channel,
+                                        metadata={'no_route': True})
             await run.finish_message(partial=True)
         finally:
             # First, so nothing below (shutdown grace, a failing close) leaves the relay usable after the turn.
@@ -2217,6 +2243,8 @@ def install(host):
     @host.app.post("/api/runtime/resume")
     async def resume():
         runtime.paused = False
+        for key in [k for k in runtime.wake_notices if k.startswith('room:')]:
+            del runtime.wake_notices[key]
         runtime.save_project()
         await runtime.publish_status()
         return {"ok": True}
@@ -2270,6 +2298,7 @@ def install(host):
         if runtime.states[name].get('archived'):
             return JSONResponse({'error': 'Restore this profile in Team before resuming it'}, 400)
         runtime.states[name]["paused"] = False
+        runtime.wake_notices.pop(name, None)
         runtime.save_project()
         await runtime.publish_status()
         return {"ok": True}
