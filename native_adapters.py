@@ -737,10 +737,15 @@ async def claude(run, prompt):
             await run.report_settings(model=msg.get('model'), effort=msg.get('effort'))
             if audit:
                 mode, tools = msg.get('permissionMode'), msg.get('tools')
-                if mode != 'manual' or not isinstance(tools, list) or any(
-                        not isinstance(t, str) or (t not in ('Read', 'Grep', 'Glob', 'EndConversation')
-                        and not t.startswith('mcp__zerocollab_coordination__')) for t in tools):
-                    raise ValueError('Audit Claude permissions/tool inventory not verified')
+                unexpected = [str(t)[:80] for t in tools if not isinstance(t, str) or (
+                    t not in ('Read', 'Grep', 'Glob', 'EndConversation')
+                    and not t.startswith('mcp__zerocollab_coordination__'))] if isinstance(tools, list) else None
+                if mode != 'manual' or unexpected is None or unexpected:
+                    # Say exactly what failed, so the check can be corrected without loosening it blind.
+                    seen = 'no tool list' if unexpected is None else (
+                        'unexpected tools: ' + ', '.join(unexpected[:12]) if unexpected else 'tools as expected')
+                    raise ValueError(f'Audit Claude permissions/tool inventory not verified '
+                                     f'(permission mode {str(mode)[:40]!r}; {seen})')
                 audit_permissions = True
                 await run.report_permissions({'permission_mode': mode, 'loaded_tools': tools})
             else:
