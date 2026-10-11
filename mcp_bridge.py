@@ -130,7 +130,11 @@ def _resolve_tool_identity(
     *,
     field_name: str,
     required: bool = False,
+    acting: bool = False,
 ) -> tuple[str, str | None]:
+    """The caller's name. acting=True (posting, joining, claiming) requires an authenticated agent
+    session: an unauthenticated MCP client could otherwise post as 'user' or any non-agent name, and
+    the room would treat it as the human (wakes, @all claims). People post from the room UI."""
     provided = raw_name.strip() if raw_name else ""
     token = _extract_agent_token(ctx)
     inst = _authenticated_instance(ctx)
@@ -141,6 +145,9 @@ def _resolve_tool_identity(
         return resolved, None
     if token:
         return "", "Error: stale or unknown authenticated agent session. Re-register and retry."
+    if acting:
+        return "", ("Error: this needs an authenticated agent session. Agents act through their own session; "
+                    "people post from the room UI.")
 
     if not provided:
         if required:
@@ -177,7 +184,7 @@ def chat_send(
         `chat_read(channel="bugfixing")` lands in #bugfixing, not #general).
       - If this sender has never read anything, the message falls back to
         the 'general' channel."""
-    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True, acting=True)
     if err:
         return err
 
@@ -480,7 +487,7 @@ def _in_project(msgs: list[dict]) -> list[dict]:
 
 def chat_join(name: str, channel: str = "general", ctx: Context | None = None) -> str:
     """Announce that you've connected to ZeroCollab."""
-    name, err = _resolve_tool_identity(name, ctx, field_name="name", required=True)
+    name, err = _resolve_tool_identity(name, ctx, field_name="name", required=True, acting=True)
     if err:
         return err
     # Block pending instances (identity not yet confirmed)
@@ -554,7 +561,7 @@ def chat_claim(sender: str, name: str = "", ctx: Context | None = None) -> str:
 
     Your sender must be your current registered name (the one assigned at registration).
     The identity breadcrumb in chat_read responses shows your current identity."""
-    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True, acting=True)
     if err:
         return err
     if not registry:
