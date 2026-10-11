@@ -1258,8 +1258,9 @@ class RoomRuntime:
         if 'active writer' in detail:
             # Codex refuses a second writer on a conversation; live, the holder was the user's own Codex app.
             return (f"{name} couldn't start because its Codex conversation is open somewhere else, such as the Codex app. "
-                    "Close it there and send again; the details are in Activity.")
-        return f"{name} couldn't start or finish its turn; the details are in Activity."
+                    "Close it there, then click Refresh connections on Team.")
+        # A failed agent is blocked until Refresh connections; Team shows the reason beside it (Zero #13960).
+        return f"{name} stopped after an error. Team shows why; click Refresh connections there to let it work again."
 
     def enqueue(self, name, channel="general", message="", prompt="", chain=None, routing=None, ref=None):
         if self.deployment and self.deployment.rehearsal:
@@ -1531,8 +1532,10 @@ class RoomRuntime:
                 await self.activity_note(run, 'turn failed', detail[:4000])
                 # One plain sentence in chat, once per cause; the raw error is in Activity and the roster.
                 # Same key as enqueue's blocked notice, so the next direct mention doesn't repeat it.
+                # An automatic manager check-in is background work: its result shows on Team, never in chat
+                # (Zero #13960, harness fde473e3), and the agent stays ready.
                 key = f"{self.states[name]['state']}:{detail[:200]}"
-                if self.wake_notices.get(name) != key:
+                if not run.manager_audit and self.wake_notices.get(name) != key:
                     self.wake_notices[name] = key
                     self.host.store.add("system", self.plain_failure(name, detail), channel=run.channel,
                                         metadata={'no_route': True})
