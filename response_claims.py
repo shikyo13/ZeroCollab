@@ -66,18 +66,17 @@ class ResponseClaims:
                                     or state.get('state') in ('blocked', 'login_required'))
 
     def responders(self):
-        """(lead, backup). An explicit room setting wins; otherwise the active goal lead, then the
-        configured manager, then roster order. The backup is never the lead."""
+        """(lead, backup), the first two available in one order: the chosen lead, the chosen backup, the
+        active goal lead, the configured manager, then roster order. So an unavailable chosen lead hands
+        the answer to the chosen backup (QA 2d8e271c), never to whoever sorts first. Never the same agent."""
         r = self.runtime
         chosen = self.state.get('responders') or {}
         goal = getattr(r.goals, 'goal', None) or {}
         manager = (getattr(getattr(r, 'manager_wakes', None), 'record', None) or {}).get('manager')
-        candidates = [chosen.get('lead'), goal.get('owner') if goal.get('status') == 'active' else None,
-                      manager, *sorted(r.states)]
-        lead = next((n for n in candidates if n and self.available(n)), None)
-        backups = [chosen.get('backup'), manager, *sorted(r.states)]
-        backup = next((n for n in backups if n and n != lead and self.available(n)), None)
-        return lead, backup
+        order = [chosen.get('lead'), chosen.get('backup'), goal.get('owner') if goal.get('status') == 'active' else None,
+                 manager, *sorted(r.states)]
+        picked = list(dict.fromkeys(n for n in order if n and self.available(n)))
+        return (picked + [None, None])[0], (picked + [None, None])[1]
 
     def set_responders(self, lead, backup):
         """Human-only setting (the HTTP route checks the UI token); empty values return to the defaults."""
