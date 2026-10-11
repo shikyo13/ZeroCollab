@@ -397,7 +397,6 @@ class Run:
         self.published_messages = []
         self.last_commentary = ''
         self.withheld = False  # its answer to a human @all was held because it no longer owned the claim
-        self.output_chars = 0
         self.process = self.stderr_task = None
         self.provider_session = None
         self.settings = dict(manager.controls.values[name])
@@ -509,9 +508,6 @@ class Run:
         if not self.message_id:
             await self.begin_message(uuid.uuid4().hex[:12])
         self.text += text
-        self.output_chars += len(text)
-        if self.output_chars > 48000:
-            raise RuntimeError("Response exceeded room output limit")
         # The chat shows finished messages only, so nothing that appeared there is taken back (QA c0950fb6,
         # Zero #12950/#12974). Text being written goes to the Live and Follow views as runtime_draft; a sealed
         # decision position sends no text at all.
@@ -1247,6 +1243,11 @@ class RoomRuntime:
         if self.states[name].get("paused"):
             self.host.store.add("system", f"{name} is stopped. Click its Resume agent button before waking it.", channel=channel)
             return
+        # Older rooms blocked long, otherwise healthy turns on a cumulative text cap.
+        # Let the next wake recover that obsolete failure; explicit Stop above still wins.
+        if (self.states[name]["state"] == "blocked"
+                and self.states[name].get("detail") == "Response exceeded room output limit"):
+            self.states[name].update(state="ready", detail="")
         if self.states[name]["state"] in ("login_required", "blocked"):
             self.host.store.add("system", f"{name} cannot start: {self.states[name]['detail']}", channel=channel)
             return
