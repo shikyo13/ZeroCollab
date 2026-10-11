@@ -21,6 +21,8 @@ import sys
 import time
 from urllib.parse import urlsplit
 
+import provider_prices
+
 # Printable ASCII without whitespace, double quote or backslash: every vendor key format fits. The
 # stored blob is base64 in any case, so no key character reaches a command line.
 KEY = re.compile(r'[!#-\[\]-~]{8,512}')
@@ -210,6 +212,19 @@ def bearer(key):
     return {'Authorization': 'Bearer ' + key}
 
 
+# S5b: API keys that the official CLIs use through the room relay (provider_relay.py). Each vendor
+# has one fixed origin, so the connection's address can't be edited.
+VENDORS = {
+    'claude': {'origin': 'https://api.anthropic.com', 'label': 'Anthropic API'},
+    'codex': {'origin': 'https://api.openai.com', 'label': 'OpenAI API'},
+}
+
+
+def auth(provider, key):
+    """The vendor's own auth header: Anthropic takes x-api-key, OpenAI-style servers a bearer token."""
+    return {'x-api-key': key} if provider == 'claude' else bearer(key)
+
+
 def headers(cfg, label=None):
     """Headers for one request to cfg['base_url']: {} for a connection without a key. Raises with a
     message to show when the key is missing, switched off or saved for another origin."""
@@ -227,7 +242,31 @@ def headers(cfg, label=None):
         raise KeyProblem(f'The API key for {name} is missing. Enter it again in Team > Providers.')
     if stored['origin'] != origin(cfg.get('base_url', '')):
         raise KeyProblem(f'The address for {name} changed outside the app; no key was sent. Enter its API key again in Team > Providers.')
-    return bearer(stored['key'])
+    problem = limit_problem(name, entry)
+    if problem:
+        # S5c: every keyed request passes here (local turns, the relay, model lists), so none starts past the
+        # limit. Requests already running complete, so the month can end above it by those responses.
+        raise KeyProblem(problem)
+    return auth(cfg.get('provider'), stored['key'])
+
+
+def limit_problem(name, entry):
+    """Why no new request may start under this connection's monthly limit, or None. Missing prices are
+    never counted as zero (security d64927b2): this month's usage of a model without a price stops new
+    requests until it is priced, so unpriced spend is bounded by one response per newly seen model.
+    Responses that reported no usage, or no model, can't be priced and are only shown as incomplete."""
+    limit = entry.get('limit')
+    if limit is None:
+        return None
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not limit > 0:
+        return f'The monthly limit for {name} is invalid. Set it again in Team > Providers.'
+    cost, unpriced = month_state(entry.get('key_target', ''), prices_for(entry))
+    if unpriced:
+        return (f"Monthly limit for {name} can't be checked: no price for {', '.join(unpriced)}. "
+                'Add prices in Team > Providers.')
+    if cost >= limit:
+        return f'Monthly API limit reached for {name} (${limit:,.2f}). Raise it in Team > Providers.'
+    return None
 
 
 def failure(exc, url):
@@ -250,38 +289,107 @@ def usage_path():
     return RUNTIME.data / 'api_usage.jsonl'
 
 
-def record(cfg, agent, run_id, model, usage):
-    """Append one keyed response's token usage (no content). usage None means the server reported none."""
-    connection = cfg.get('key_target') if isinstance(cfg, dict) else None
+def count(value):
+    """A token count from a server. Servers vary: a missing count is 0, but anything that isn't a
+    number (Infinity included) makes the usage unknown (ValueError or OverflowError)."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError
+    return max(0, int(value))
+
+
+def append_usage(connection, agent, run_id, model, counts):
+    """One keyed response's row (no content). counts: {input, cached, output[, cache_write]} with input
+    excluding cached reads and cache writes, or None when the response reported no usage."""
     if not connection or RUNTIME is None:
         return
     row = {'connection': connection, 'agent': agent, 'run': run_id, 'model': model, 'time': time.time()}
-    def count(value):
-        # Servers vary: a missing count is 0, but anything that isn't a number makes this usage unknown.
-        if value is None:
-            return 0
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError
-        return max(0, int(value))
-
-    try:
-        details = usage.get('prompt_tokens_details') or {}
-        prompt, cached = count(usage.get('prompt_tokens')), count(details.get('cached_tokens') if isinstance(details, dict) else None)
-        row.update(input=max(0, prompt - cached), cached=cached, output=count(usage.get('completion_tokens')))
-    except (AttributeError, ValueError, OverflowError):  # no usage, or usage the room can't read (Infinity included): never fail the turn over it
-        row['missing'] = True
+    row.update(counts if counts is not None else {'missing': True})
     with usage_path().open('a', encoding='utf-8') as f:
         f.write(json.dumps(row) + '\n')
 
 
-def price_of(prices, model):
-    """Per-million prices for a model, or None when the input or output price is unknown.
+def record(cfg, agent, run_id, model, usage):
+    """Append one keyed response's token usage from an OpenAI-style chat `usage`; None means none reported."""
+    connection = cfg.get('key_target') if isinstance(cfg, dict) else None
+    try:
+        details = usage.get('prompt_tokens_details') or {}
+        prompt, cached = count(usage.get('prompt_tokens')), count(details.get('cached_tokens') if isinstance(details, dict) else None)
+        counts = {'input': max(0, prompt - cached), 'cached': cached, 'output': count(usage.get('completion_tokens'))}
+    except (AttributeError, ValueError, OverflowError):  # no usage, or usage the room can't read: never fail the turn over it
+        counts = None
+    append_usage(connection, agent, run_id, model, counts)
+
+
+def prices_for(entry):
+    """The prices a key connection is charged at: the built-in list for its CLI (S5b: Anthropic for
+    Claude, OpenAI for Codex), with the prices the user entered taking precedence per model."""
+    entry = entry if isinstance(entry, dict) else {}
+    return {**provider_prices.builtin(entry.get('provider')), **(entry.get('prices') or {})}
+
+
+def _rates(price):
+    """(input, cached, output, cache_write) per million, or None without an input and output price.
     A blank cached-input price is charged at the input price, so the estimate errs high."""
-    price = (prices or {}).get(model) or {}
-    if not isinstance(price.get('input'), (int, float)) or not isinstance(price.get('output'), (int, float)):
+    if not isinstance(price, dict) or not isinstance(price.get('input'), (int, float)) or not isinstance(price.get('output'), (int, float)):
         return None
     cached = price.get('cached') if isinstance(price.get('cached'), (int, float)) else price['input']
-    return price['input'], cached, price['output']
+    # Anthropic prompt-cache writes cost 1.25x input for the 5-minute cache (2x for 1 hour); without a
+    # price of its own, the higher rate keeps the estimate on the high side.
+    write = price.get('cache_write') if isinstance(price.get('cache_write'), (int, float)) else price['input'] * 2
+    return price['input'], cached, price['output'], write
+
+
+def price_of(prices, model):
+    """A model's price entry (exact ID, or without a dated snapshot suffix), or None when its input or
+    output price is unknown."""
+    price = provider_prices.lookup(prices, model)
+    return price if _rates(price) else None
+
+
+# Service tiers billed at standard rates or less (batch and flex are cheaper, so counting them as standard
+# errs high). Any other tier the vendor reports (priority, fast) is priced on its own (security f066876a).
+STANDARD_TIERS = {'', 'standard', 'default', 'auto', 'batch', 'flex'}
+
+
+def priced_name(row):
+    """The name a usage row is priced under: its model, or '<model> (<tier>)' for a non-standard service
+    tier, so a priority or fast-mode response never counts at standard rates. Without a price entered for
+    that name it is unpriced, and with a limit set it stops new requests until it is priced."""
+    model, tier = row.get('model') or '', str(row.get('tier') or '').lower()
+    return f'{model} ({tier})' if model and tier not in STANDARD_TIERS else model
+
+
+def row_cost(price, row):
+    """USD for one usage row. A size tier (`long`) applies when the request's whole prompt (input, cache
+    reads and cache writes) is above its threshold, as the vendors bill each request on its own."""
+    prompt = row.get('input', 0) + row.get('cached', 0) + row.get('cache_write', 0)
+    long = price.get('long')
+    rates = _rates({**price, **long}) if isinstance(long, dict) and prompt > long.get('above', float('inf')) else _rates(price)
+    return (row['input'] * rates[0] + row['cached'] * rates[1] + row['output'] * rates[2]
+            + row.get('cache_write', 0) * rates[3]) / 1_000_000
+
+
+_MONTH = {}  # connection -> (stamp, (cost, unpriced models))
+
+
+def month_state(connection, prices):
+    """This month's priced cost and the models used without a price, for one connection; cached per
+    connection until the usage file, the prices or the month change, so the per-request limit check
+    doesn't re-read the file."""
+    path = usage_path()
+    try:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = None
+    stamp = (stamp, json.dumps(prices, sort_keys=True), datetime.date.today().strftime('%Y-%m'))
+    cached = _MONTH.get(connection)
+    if not cached or cached[0] != stamp:
+        totals = summary(connection, prices)
+        cached = _MONTH[connection] = (stamp, (totals['month']['cost'], totals['unpriced']))
+    return cached[1]
 
 
 def summary(connection, prices, now=None):
@@ -293,7 +401,7 @@ def summary(connection, prices, now=None):
     def bucket():
         return {'cost': 0.0, 'complete': True, 'input': 0, 'cached': 0, 'output': 0}
 
-    today, this_month, agents, missing_price, missing_usage = bucket(), bucket(), {}, set(), False
+    today, this_month, agents, missing_price, missing_usage, seen, unpriced = bucket(), bucket(), {}, set(), False, set(), set()
     path = usage_path()
     for line in path.read_text('utf-8').splitlines() if path.exists() else []:
         try:
@@ -306,27 +414,37 @@ def summary(connection, prices, now=None):
         if (when.year, when.month) != month:
             continue
         targets = [this_month, agents.setdefault(row.get('agent', '?'), bucket())] + ([today] if when.date() == day else [])
-        price = price_of(prices, row.get('model'))
+        name = priced_name(row)
+        if name:
+            seen.add(name)
+        price = price_of(prices, name)
         if row.get('missing'):
             missing_usage = True
         elif price is None:
-            missing_price.add(row.get('model') or '?')
+            missing_price.add(name or '?')
+            if name:
+                unpriced.add(name)
         for b in targets:
             if row.get('missing'):
                 b['complete'] = False
                 continue
-            for key in ('input', 'cached', 'output'):
-                b[key] += row.get(key, 0)
+            # Cache writes (Anthropic) are input tokens for the token columns, priced at their own rate.
+            b['input'] += row.get('input', 0) + row.get('cache_write', 0)
+            b['cached'] += row.get('cached', 0)
+            b['output'] += row.get('output', 0)
             if price is None:
                 b['complete'] = False
             else:
-                b['cost'] += (row['input'] * price[0] + row['cached'] * price[1] + row['output'] * price[2]) / 1_000_000
+                b['cost'] += row_cost(price, row)
     incomplete = []
     if missing_price:
         incomplete.append('no price for ' + ', '.join(sorted(missing_price)))
     if missing_usage:
         incomplete.append('some responses reported no token usage')
-    return {'today': today, 'month': this_month, 'agents': agents, 'incomplete': incomplete}
+    # models: what this connection served this month, so each can be priced (a Claude or Codex key has no single model).
+    # unpriced: named models this month without a price; with a limit set they stop new requests (S5c).
+    return {'today': today, 'month': this_month, 'agents': agents, 'incomplete': incomplete, 'models': sorted(seen),
+            'unpriced': sorted(unpriced)}
 
 
 def install(host, runtime):

@@ -10,8 +10,8 @@ What depends on what: third-party packages, the internal Python import graph, th
 | Package | Used by |
 |-|-|
 | `PIL` | room_markup |
-| `fastapi` | app, project_registry, provider_setup, provider_store, room_deploy, room_runtime, run, shared_browser, team_builder |
-| `httpx` | provider_controls, provider_setup, provider_store, room_mcp, room_runtime, shared_browser, supervisor |
+| `fastapi` | app, coordination_records, decision_flow, project_registry, provider_relay, provider_setup, provider_store, room_deploy, room_runtime, run, shared_browser, team_builder |
+| `httpx` | provider_controls, provider_keys, provider_relay, provider_setup, provider_store, room_mcp, room_runtime, shared_browser, supervisor |
 | `jsonschema` | local_protocol, native_adapters |
 | `mcp` | mcp_bridge, room_mcp |
 | `starlette` | app |
@@ -41,8 +41,9 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `build_release` | - | - |
 | `config_loader` | - | - |
 | `coordination_queue` | - | - |
-| `coordination_records` | project_registry | - |
+| `coordination_records` | project_registry | fastapi |
 | `coordination_state` | - | - |
+| `decision_flow` | project_registry, project_room, team_builder | fastapi |
 | `durable` | - | - |
 | `file_preview` | git_preview, room_runtime | - |
 | `git_preview` | - | - |
@@ -53,24 +54,28 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `native_adapters` | - | jsonschema |
 | `project_registry` | project_room, room_runtime | fastapi |
 | `project_room` | coordination_queue, coordination_records, coordination_state, durable, project_registry, room_markup | - |
-| `provider_controls` | durable, native_adapters | httpx |
-| `provider_setup` | local_protocol, native_adapters, provider_store, room_runtime | fastapi, httpx |
-| `provider_store` | project_room, provider_setup, room_runtime | fastapi, httpx |
+| `provider_controls` | durable, native_adapters, provider_keys, provider_store | httpx |
+| `provider_keys` | provider_prices | httpx |
+| `provider_prices` | - | - |
+| `provider_relay` | provider_keys | fastapi, httpx |
+| `provider_setup` | local_protocol, native_adapters, provider_keys, provider_relay, provider_store, room_runtime | fastapi, httpx |
+| `provider_store` | project_room, provider_keys, provider_prices, provider_setup, room_runtime | fastapi, httpx |
 | `queue_file` | - | - |
+| `ready_wakes` | - | - |
 | `registry` | durable | - |
 | `release_pack` | - | - |
 | `room_deploy` | durable, mcp_bridge | fastapi |
-| `room_goals` | durable | - |
+| `room_goals` | coordination_records, durable | - |
 | `room_markup` | - | PIL |
 | `room_mcp` | - | httpx, mcp |
-| `room_runtime` | agent_profiles, coordination_queue, coordination_state, durable, git_preview, local_protocol, mcp_bridge, native_adapters, project_registry, project_room, provider_controls, provider_setup, provider_store, queue_file, room_deploy, room_goals, shared_browser, steering_delivery, team_builder | fastapi, httpx |
+| `room_runtime` | agent_profiles, coordination_queue, coordination_records, coordination_state, decision_flow, durable, git_preview, local_protocol, mcp_bridge, native_adapters, project_registry, project_room, provider_controls, provider_keys, provider_setup, provider_store, queue_file, ready_wakes, room_deploy, room_goals, shared_browser, steering_delivery, team_builder | fastapi, httpx |
 | `router` | - | - |
 | `run` | app, config_loader, mcp_bridge, room_runtime | fastapi, uvicorn |
 | `shared_browser` | - | fastapi, httpx, websockets |
 | `steering_delivery` | coordination_queue | - |
 | `store` | durable | - |
 | `supervisor` | release_pack | httpx |
-| `team_builder` | project_room | fastapi |
+| `team_builder` | project_registry, project_room | fastapi |
 | `wrapper` | config_loader, mcp_proxy, queue_file, wrapper_unix, wrapper_windows | - |
 | `wrapper_api` | config_loader, queue_file, wrapper | - |
 | `wrapper_unix` | - | - |
@@ -88,8 +93,9 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `archive` | app |
 | `config_loader` | run, wrapper, wrapper_api |
 | `coordination_queue` | project_room, room_runtime, steering_delivery |
-| `coordination_records` | project_room |
+| `coordination_records` | project_room, room_goals, room_runtime |
 | `coordination_state` | project_room, room_runtime |
+| `decision_flow` | room_runtime |
 | `durable` | app, mcp_bridge, project_room, provider_controls, registry, room_deploy, room_goals, room_runtime, store |
 | `file_preview` | app |
 | `git_preview` | file_preview, room_runtime |
@@ -97,12 +103,16 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `mcp_bridge` | agents, app, room_deploy, room_runtime, run |
 | `mcp_proxy` | wrapper |
 | `native_adapters` | login_gemini, provider_controls, provider_setup, room_runtime |
-| `project_registry` | app, coordination_records, project_room, room_runtime |
-| `project_room` | agent_profiles, project_registry, provider_store, room_runtime, team_builder |
+| `project_registry` | app, coordination_records, decision_flow, project_room, room_runtime, team_builder |
+| `project_room` | agent_profiles, decision_flow, project_registry, provider_store, room_runtime, team_builder |
 | `provider_controls` | agent_profiles, room_runtime |
+| `provider_keys` | provider_controls, provider_relay, provider_setup, provider_store, room_runtime |
+| `provider_prices` | provider_keys, provider_store |
+| `provider_relay` | provider_setup |
 | `provider_setup` | provider_store, room_runtime |
-| `provider_store` | agent_profiles, provider_setup, room_runtime |
+| `provider_store` | agent_profiles, provider_controls, provider_setup, room_runtime |
 | `queue_file` | agents, room_runtime, wrapper, wrapper_api |
+| `ready_wakes` | room_runtime |
 | `registry` | app |
 | `release_pack` | supervisor |
 | `room_deploy` | room_runtime |
@@ -113,7 +123,7 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `shared_browser` | room_runtime |
 | `steering_delivery` | room_runtime |
 | `store` | app |
-| `team_builder` | room_runtime |
+| `team_builder` | decision_flow, room_runtime |
 | `wrapper` | wrapper_api |
 | `wrapper_unix` | wrapper |
 | `wrapper_windows` | wrapper |

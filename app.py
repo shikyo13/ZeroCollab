@@ -212,6 +212,12 @@ def _install_security_middleware(token: str, cfg: dict):
                     )
                 return await call_next(request)
 
+            # The API key relay (provider_relay.py) is gated only by its own checks: it refuses any
+            # Origin header, needs a loopback client and exact Host, and a relay token of a running
+            # turn. Neither the UI token nor a run's room token opens it, and it opens nothing else.
+            if path.startswith("/relay/"):
+                return await call_next(request)
+
             # --- Origin check (blocks cross-origin / DNS-rebinding attacks) ---
             origin = request.headers.get("origin")
             if origin and origin not in allowed_origins:

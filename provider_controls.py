@@ -120,7 +120,17 @@ class ProviderControls:
         folder for a provider no agent uses yet). headers: a key being checked before it is saved;
         otherwise a saved key is attached after its origin check (provider_keys)."""
         if provider != 'api':
-            models = await cli_catalog(provider, cwd)
+            try:
+                models = await cli_catalog(provider, cwd)
+            except Exception:
+                if not cfg.get('key_target'):
+                    raise
+                # An Anthropic or OpenAI key connection (S5b) still has the models the vendor lists for the key.
+                import provider_store
+                ids = await provider_store.vendor_models(cfg)
+                return {'models': [{'value': '', 'label': 'CLI default', 'efforts': []}, *({'value': m, 'label': m, 'efforts': []} for m in ids)],
+                        'error': '', 'loading': False, 'source': 'Models listed for this key',
+                        'effort_note': 'The CLI did not list effort options.'}
             source = 'Official CLI model catalog'
             note = 'Effort options follow the selected model.'
             if provider == 'antigravity':

@@ -339,26 +339,39 @@ async def probe_configured(client, cfg):
         return await probe_server(keyed, cfg['base_url'])
 
 
+async def probe_vendor(cfg):
+    """S5b: an Anthropic or OpenAI key connection is checked by listing its models with the saved key
+    (free), after the on/off and origin checks."""
+    import provider_store
+    try:
+        return {'reachable': True, 'model_count': len(await provider_store.vendor_models(cfg))}
+    except ValueError as exc:  # KeyProblem and FieldError carry a message safe to show
+        return {'reachable': False, 'detail': str(exc)}
+
+
 async def status(runtime):
     templates = runtime.profiles.templates
-    providers = sorted({cfg.get('provider', name) for name, cfg in templates.items()} - {'api'})
+    # Key connections for Claude or Codex (S5b) report their key, not the CLI's sign-in.
+    vendors = {name: cfg for name, cfg in templates.items() if cfg.get('key_target') and cfg.get('provider') in provider_keys.VENDORS}
+    providers = sorted({cfg.get('provider', name) for name, cfg in templates.items() if name not in vendors} - {'api'})
     async with httpx.AsyncClient(timeout=httpx.Timeout(2, connect=1), trust_env=False) as client:
         configured = {name: cfg for name, cfg in templates.items() if cfg.get('provider') == 'api' and cfg.get('base_url')}
         listed = listed_servers()
         bases = list(dict.fromkeys(base for _, _, base, _ in listed))
-        cli_results, configured_results, local_results = await asyncio.gather(
+        cli_results, configured_results, local_results, vendor_results = await asyncio.gather(
             asyncio.gather(*(cli_status(p) for p in providers)),
             asyncio.gather(*(probe_configured(client, cfg) for cfg in configured.values())),
-            asyncio.gather(*(probe_server(client, base) for base in bases)))
+            asyncio.gather(*(probe_server(client, base) for base in bases)),
+            asyncio.gather(*(probe_vendor(cfg) for cfg in vendors.values())))
     by_provider = dict(zip(providers, cli_results))
-    by_template = dict(zip(configured, configured_results))
+    by_template = dict(zip(configured, configured_results)) | dict(zip(vendors, vendor_results))
     rows = []
     for name, cfg in templates.items():
         provider = cfg.get('provider', name)
         catalog = runtime.controls.catalogs.get(next((p for p, prof in runtime.profiles.items.items() if prof['template'] == name), ''), {})
         row = {'template': name, 'provider': provider, 'label': cfg.get('label', name),
                'models': {'loading': bool(catalog.get('loading')), 'count': len(catalog.get('models', [])), 'error': catalog.get('error', '')}}
-        if provider == 'api':
+        if provider == 'api' or name in vendors:
             row['server'] = {'base_url': cfg['base_url'], **by_template.get(name, {'reachable': False, 'detail': 'No base_url'})}
         else:
             row['cli'] = by_provider[provider]
@@ -443,10 +456,13 @@ def install(host, runtime):
         except (OSError, RuntimeError) as exc:
             return JSONResponse({'error': str(exc)[:400]}, 400)
 
-    # Add, edit, remove and reset connections (S3, provider_store.py), and API keys (S5a).
+    # Add, edit, remove and reset connections (S3, provider_store.py), API keys (S5a) and the relay
+    # that Claude and Codex use for Anthropic and OpenAI keys (S5b).
+    import provider_relay
     import provider_store
     provider_keys.install(host, runtime)
     provider_store.install(host, runtime)
+    provider_relay.install(host, runtime)
 
 
 if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == 'sign-in' and sys.argv[2] in SIGN_IN:

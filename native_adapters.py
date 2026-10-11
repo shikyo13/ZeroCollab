@@ -85,6 +85,28 @@ def room_environment(run):
             'AGENT_ROOM_SESSION_TOKEN': run.room_token, 'AGENT_ROOM_RUN_ID': run.id}
 
 
+def relay_setup(run, provider):
+    """S5b: a run on an Anthropic or OpenAI API key connection uses the room relay (provider_relay.py)
+    with a token minted for this run; it lives only on the run object and dies with the run. Returns
+    (env, extra args), or ({}, []) for an agent on its subscription."""
+    cfg = run.manager.cfg['agents'].get(run.name, {}) if hasattr(run, 'manager') else {}
+    connection = cfg.get('key_target')
+    if not connection or cfg.get('provider') != provider:
+        return {}, []
+    run.relay_token = secrets.token_urlsafe(32)
+    base = f"http://127.0.0.1:{run.manager.cfg['server']['port']}/relay/{connection}"
+    if provider == 'claude':
+        # Command-line settings outrank the user's ~/.claude/settings.json, so its env can't move the
+        # address. A key from the user's settings (env or apiKeyHelper) reaching the relay is refused.
+        return {'ANTHROPIC_API_KEY': run.relay_token}, ['--settings', json.dumps({'env': {'ANTHROPIC_BASE_URL': base}})]
+    provider_config = {'name': 'ZeroCollab relay', 'base_url': base + '/v1', 'env_key': 'ZEROCOLLAB_RELAY_TOKEN', 'wire_api': 'responses'}
+    args = ['-c', 'model_provider="zerocollab_relay"']
+    for key, value in provider_config.items():
+        args += ['-c', f'model_providers.zerocollab_relay.{key}={json.dumps(value)}']
+    # The name contains TOKEN, so Codex's default shell environment policy keeps it from tool shells.
+    return {'ZEROCOLLAB_RELAY_TOKEN': run.relay_token}, args
+
+
 def room_server(run):
     return {'command': sys.executable, 'args': ['-X', 'utf8', str(Path(__file__).with_name('room_mcp.py'))],
             'env': room_environment(run)}
@@ -304,7 +326,9 @@ async def codex(run, prompt):
                        'env_vars': list(room_environment(run)), 'required': True,
                        'startup_timeout_sec': 30}.items():
         args += ['-c', 'mcp_servers.zerocollab_coordination.' + key + '=' + json.dumps(value)]
-    proc = await spawn(run, args, stream_limit=CODEX_MESSAGE_LIMIT)
+    relay_env, relay_args = relay_setup(run, 'codex')
+    args += relay_args
+    proc = await spawn(run, args, relay_env, stream_limit=CODEX_MESSAGE_LIMIT)
     rpc = Rpc(run, proc, notify, incoming)
     try:
         await rpc.request("initialize", {"clientInfo": {"name": "zerocollab_local", "version": "0.1.0"},
@@ -468,7 +492,10 @@ async def claude(run, prompt):
         args += ['--model', run.settings['model']]
     if run.settings['effort']:
         args += ['--effort', run.settings['effort']]
-    proc = await spawn(run, args, {'CLAUDE_CODE_EFFORT_LEVEL': run.settings['effort']} if run.settings['effort'] else None)
+    relay_env, relay_args = relay_setup(run, 'claude')
+    args += relay_args
+    env = {**relay_env, **({'CLAUDE_CODE_EFFORT_LEVEL': run.settings['effort']} if run.settings['effort'] else {})}
+    proc = await spawn(run, args, env or None)
     async def send(obj):
         proc.stdin.write((json.dumps(obj) + "\n").encode())
         await proc.stdin.drain()

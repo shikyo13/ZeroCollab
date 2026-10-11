@@ -20,6 +20,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 import provider_keys
+import provider_prices
 from project_room import write_json
 
 # Official CLIs a connection can use; each signs in with its own login (Team > Providers, S2).
@@ -43,7 +44,8 @@ CONTEXT_TOKENS = (2048, 2_000_000)
 # The smallest room prompt worth sending (project_room.LIMIT_RANGES input_chars minimum).
 MIN_INPUT_CHARS = 4000
 # S5a: an API key connection's settings in providers.json. The key is only in the credential store.
-KEY_FIELDS = ('key_target', 'key_hint', 'enabled', 'prices')
+KEY_FIELDS = ('key_target', 'key_hint', 'enabled', 'prices', 'limit')
+LIMIT_MAX = 1_000_000  # USD per month; an upper bound on what a typo can set
 PRICE_LIMIT = 10_000  # USD per million tokens, an upper bound on what a typo can claim
 MAX_PRICED_MODELS = 50
 
@@ -89,6 +91,28 @@ def server_address(value):
     if parts.username or parts.password or parts.query or parts.fragment:
         raise ValueError('Enter the server address without a user name, password, query or fragment')
     return value.strip().rstrip('/')
+
+
+async def vendor_models(cfg, key=None, outcome=''):
+    """S5b: the models an Anthropic or OpenAI key can use, listed by the vendor (free). key: one being
+    checked before it is saved; otherwise the saved key, after its on/off and origin checks."""
+    import provider_setup
+    provider = cfg.get('provider')
+    base = provider_keys.VENDORS[provider]['origin']
+    headers = provider_keys.auth(provider, valid_key(key)) if key is not None else provider_keys.headers({**cfg, 'base_url': base})
+    if provider == 'claude':
+        headers['anthropic-version'] = '2023-06-01'
+    async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=4), trust_env=False, follow_redirects=False, headers=headers) as client:
+        try:
+            response = await client.get(base + '/v1/models', params={'limit': 1000} if provider == 'claude' else None)
+            response.raise_for_status()
+            data = response.json().get('data')
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            raise FieldError(f'{provider_keys.failure(exc, base)} {outcome}'.strip(), 'key') from exc
+    ids = [m['id'] for m in data if isinstance(m, dict) and isinstance(m.get('id'), str) and m['id']] if isinstance(data, list) else []
+    if not ids:
+        raise FieldError(f'{provider_keys.host(base)} listed no models for this key. {outcome}'.strip(), 'key')
+    return ids[:provider_setup.MODEL_LIMIT]
 
 
 def empty_catalog(error):
@@ -145,7 +169,7 @@ class ProviderStore:
                          'tool_check': cfg.get('tool_check'), **self.key_view(name, cfg)})
         hidden = [{'id': name, 'label': cfg.get('label', name)} for name, cfg in self.base.items()
                   if self.entries.get(name, {}).get('removed')]
-        connected = {cfg.get('provider') for cfg in templates.values()}
+        connected = {cfg.get('provider') for cfg in templates.values() if not cfg.get('key_target')}
         return {'providers': rows, 'removed': hidden, 'error': self.error,
                 'available': [{'provider': kind, 'label': info['label']} for kind, info in SUBSCRIPTIONS.items() if kind not in connected]}
 
@@ -154,9 +178,14 @@ class ProviderStore:
         if not cfg.get('key_target'):
             return {'keyed': False}
         prices = cfg.get('prices') or {}
-        return {'keyed': True, 'key_hint': cfg.get('key_hint', ''), 'enabled': cfg.get('enabled', True) is not False,
+        vendor = provider_keys.VENDORS.get(cfg.get('provider'), {}).get('label', '')
+        return {'keyed': True, 'vendor': vendor, 'key_hint': cfg.get('key_hint', ''), 'enabled': cfg.get('enabled', True) is not False,
                 'prices': prices, 'origin': provider_keys.origin(cfg.get('base_url', '')),
-                'usage': provider_keys.summary(name, prices)}
+                'usage': provider_keys.summary(name, provider_keys.prices_for(cfg)), 'limit': cfg.get('limit'),
+                # S5b: the built-in vendor price list (source, date, per-model prices) for Claude and Codex keys.
+                'builtin_prices': provider_prices.describe(cfg.get('provider')),
+                # Why new requests are refused under the limit (reached, or a used model has no price), or ''.
+                'limit_problem': provider_keys.limit_problem(cfg.get('label', name), cfg) or ''}
 
     def offered(self, name):
         """Add agent offers a connection unless it is an API key connection that is switched off."""
@@ -183,6 +212,9 @@ class ProviderStore:
         out = {'provider': kind, 'label': label.strip(), 'color': color.lower()}
         if kind != 'api':
             out['command'] = defaults['command']
+            if current and current.get('key_target'):
+                # An Anthropic or OpenAI key connection (S5b) keeps its fixed vendor address and key settings.
+                out.update({k: current[k] for k in ('base_url', *KEY_FIELDS) if k in current})
             return out
         base_url = server_address(body.get('base_url', (current or {}).get('base_url', '')))
         model = body.get('model', (current or {}).get('model', ''))
@@ -320,7 +352,8 @@ class ProviderStore:
             entry = self.fields(body)
             templates = self.runtime.profiles.templates
             if entry['provider'] != 'api':
-                existing = next((cfg.get('label', n) for n, cfg in templates.items() if cfg.get('provider') == entry['provider']), None)
+                existing = next((cfg.get('label', n) for n, cfg in templates.items()
+                                 if cfg.get('provider') == entry['provider'] and not cfg.get('key_target')), None)
                 if existing:
                     raise ValueError(f'{SUBSCRIPTIONS[entry["provider"]]["label"]} is already connected as {existing}')
             catalog = await self.catalog(entry)
@@ -440,6 +473,9 @@ class ProviderStore:
         """Check key: list the server's models with the key, so the form can offer them. Nothing is saved."""
         self.gate()
         body = body if isinstance(body, dict) else {}
+        if body.get('provider') in provider_keys.VENDORS:
+            models = await vendor_models({'provider': body['provider']}, body.get('key') or '', 'Key not saved; check it and try again.')
+            return {'models': models, 'warning': ''}
         base_url = server_address(body.get('base_url', ''))
         models = await self.key_models(base_url, body.get('key'))
         warning = '' if base_url.startswith('https://') or provider_keys.loopback(base_url) else \
@@ -474,6 +510,8 @@ class ProviderStore:
             self.gate()
             body = body if isinstance(body, dict) else {}
             key = valid_key(body.get('key'))
+            if body.get('provider') in provider_keys.VENDORS:
+                return await self.vendor_key_create(body, key)
             entry = self.fields({k: v for k, v in body.items() if k not in ('key', 'prices', *KEY_FIELDS)} | {'provider': 'api'})
             headers = provider_keys.bearer(key)
             if entry['model'] not in await self.key_models(entry['base_url'], key):
@@ -495,6 +533,39 @@ class ProviderStore:
             await self.apply(name, catalog)
             return {'id': name, **{k: v for k, v in entry.items() if k != 'tool_check'}, 'budget_note': note}
 
+    async def vendor_key_create(self, body, key):
+        """S5b Check and save for an Anthropic or OpenAI key: the vendor lists models with it (free). No
+        billed check: the official CLI handles tools. Called under profile_lock."""
+        provider = body['provider']
+        entry = self.fields({'provider': provider, 'label': body.get('label', ''),
+                             'color': body.get('color', SUBSCRIPTIONS[provider]['color'])})
+        entry['base_url'] = provider_keys.VENDORS[provider]['origin']
+        models = await vendor_models(entry, key, 'Key not saved; check it and try again.')
+        catalog = await self.vendor_catalog(entry, models)
+        prices = self.key_prices(body.get('prices'))
+        self.gate()  # a deployment check may have started during the checks
+        name = self.new_id(entry['label'], body.get('id'))
+        entry.update(key_target=name, key_hint=key[-4:], enabled=True, prices=prices)
+        provider_keys.save(self.runtime.data, name, key, entry['base_url'])
+        self.entries[name] = entry
+        try:
+            self.save()
+        except Exception:
+            self.entries.pop(name, None)
+            provider_keys.delete(self.runtime.data, name)
+            raise
+        await self.apply(name, catalog)
+        return {'id': name, **entry, 'budget_note': f'{len(models)} model{"" if len(models) == 1 else "s"} available with this key'}
+
+    async def vendor_catalog(self, entry, models):
+        """The official CLI's model and effort catalog, as for a subscription; if the CLI can't list
+        one, the models the vendor listed for the key."""
+        try:
+            return await self.runtime.controls.lookup(entry['provider'], entry, self.runtime.data)
+        except Exception:
+            return {'models': [{'value': '', 'label': 'CLI default', 'efforts': []}, *({'value': m, 'label': m, 'efforts': []} for m in models)],
+                    'error': '', 'loading': False, 'source': 'Models listed for this key', 'effort_note': 'The CLI did not list effort options.'}
+
     async def key_update(self, name, body):
         """Replace the key, turn the connection on or off, or set its prices. A replacement key is checked
         first; if it fails, the previous key and the switch stay exactly as they were."""
@@ -509,7 +580,9 @@ class ProviderStore:
             if key is not None:
                 kept = 'Replacement not saved; the previous key is still in use.'
                 valid_key(key)
-                if entry['model'] not in await self.key_models(entry['base_url'], key, kept):
+                if entry.get('provider') in provider_keys.VENDORS:
+                    await vendor_models(entry, key, kept)
+                elif entry['model'] not in await self.key_models(entry['base_url'], key, kept):
                     raise ValueError(f'{entry["model"]} is not served for this key. {kept}')
             if 'enabled' in body:
                 if not isinstance(body['enabled'], bool):
@@ -517,6 +590,14 @@ class ProviderStore:
                 entry['enabled'] = body['enabled']
             if 'prices' in body:
                 entry['prices'] = self.key_prices(body['prices'])
+            if 'limit' in body:
+                limit = body['limit']
+                if limit is None or limit == '':
+                    entry.pop('limit', None)
+                elif isinstance(limit, bool) or not isinstance(limit, (int, float)) or not 0 < limit <= LIMIT_MAX:
+                    raise ValueError(f'The monthly limit is USD, more than 0 and at most {LIMIT_MAX:,}, or empty for none')
+                else:
+                    entry['limit'] = float(limit)
             self.gate()
             if key is not None:
                 provider_keys.save(self.runtime.data, name, key, entry['base_url'])
@@ -524,7 +605,7 @@ class ProviderStore:
             self.entries[name] = entry
             self.save()
             await self.apply(name)
-            if 'enabled' in body and body['enabled'] != current.get('enabled', True):
+            if ('enabled' in body and body['enabled'] != current.get('enabled', True)) or entry.get('limit') != current.get('limit'):
                 # Agents on it show "API provider turned off" (or recover) from their connection check.
                 await self.runtime.refresh()
             return {'id': name, **self.key_view(name, entry)}

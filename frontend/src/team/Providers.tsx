@@ -284,7 +284,7 @@ export function Providers({ reload }: { reload: number }) {
         <p className="pv-note">
           Each provider signs in with its own official app, and ZeroCollab never sees your password or token. A CLI signed
           in with an API account bills that account; each row shows the sign-in its CLI reports.
-          {keyed.length > 0 && ' API keys added below are used only for their own servers; keys in your environment are ignored.'}
+          {keyed.length > 0 && ' API keys added below are used only by agents on that key; keys in your environment are ignored.'}
         </p>
         <ul className="pv-list">
           {subscriptions.map(row => (

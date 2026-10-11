@@ -964,7 +964,12 @@ class RoomRuntime:
                     state.update(state="ready", detail=f"Local model {model} · scoped file tools · shell disabled")
                 else:
                     executable = native.command(provider)
-                    if provider in ("claude", "codex"):
+                    cfg = self.cfg["agents"][name]
+                    if cfg.get("key_target"):
+                        # An Anthropic or OpenAI API key (S5b): no sign-in; the key must be on, present and
+                        # bound to its vendor, and the vendor must accept it (listing models is free).
+                        await provider_store.vendor_models(cfg)
+                    elif provider in ("claude", "codex"):
                         # Same check as Team > Providers; only an explicit signed-out answer blocks the agent.
                         sign_in = await provider_setup.sign_in_status(provider, executable)
                         if sign_in['state'] == 'signed_out':
@@ -1278,7 +1283,8 @@ class RoomRuntime:
             outcome = "failed"
             if self.goals.goal and self.goals.goal['owner'] == name:
                 self.goals.pause('Goal lead failed; inspect the agent status before resuming.')
-            detail = run.stop_reason or str(exc) or type(exc).__name__
+            # A refusal the relay saw (key not accepted, no credit) names the account, not the agent.
+            detail = run.stop_reason or getattr(run, 'relay_problem', '') or str(exc) or type(exc).__name__
             if isinstance(exc, TimeoutError):
                 pending = [a['display']['tool'] for a in self.approvals.values() if a['display']['run'] == run.id]
                 detail = run.timeout_detail() + (f' while waiting for {", ".join(pending)}' if pending else '')
@@ -1295,6 +1301,8 @@ class RoomRuntime:
                 self.host.store.add("system", f"{name} failed: {detail[:600]}", channel=run.channel)
             await run.finish_message(partial=True)
         finally:
+            # First, so nothing below (shutdown grace, a failing close) leaves the relay usable after the turn.
+            run.relay_token = None
             await run.steering.close(outcome)
             # Completed and stopped (already interrupted) CLIs are idle and may exit on their own;
             # a failed run can still be mid-turn, so it is killed at once to enforce its limits.
