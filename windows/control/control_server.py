@@ -23,7 +23,8 @@ def main():
     import sys
     sys.path.insert(0, str(root))
     from supervisor import room_port, supervisor_alive
-    origins = {f'http://127.0.0.1:{room_port()}', f'http://localhost:{room_port()}'}
+    origins = {f'http://127.0.0.1:{room_port()}', f'http://localhost:{room_port()}',
+               f'http://zerocollab.localhost:{room_port()}'}
     worker = None
     action = ''
     message = ''
