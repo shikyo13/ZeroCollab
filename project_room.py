@@ -254,7 +254,7 @@ class ProjectRoom:
 
     def snapshot(self):
         review_hashes = {}
-        return {**{k: v for k, v in self.state.items() if k not in ('sessions', 'cursors', 'receipts')},
+        return {**{k: v for k, v in self.state.items() if k not in ('sessions', 'cursors', 'receipts', 'manager_audit')},
                 'tasks': [self.broadcast_view(t) for t in self.state['tasks']],
                 'reviews': [self.records.review_view(r, review_hashes) for r in self.state.get('reviews', [])],
                 'limits': dict(self.limits), 'chains': list(self.chains.values())[-12:],
@@ -338,6 +338,9 @@ class ProjectRoom:
             goal = getattr(getattr(self.runtime, 'goals', None), 'goal', None)
             if goal and goal.get('status') in ('active', 'paused', 'blocked'):
                 active.add(goal.get('chain'))
+            audit = self.state.get('manager_audit', {}).get('chain') or {}
+            if audit.get('id'):
+                active.add(audit['id'])
             for old in list(self.chains)[:-60]:
                 if old not in active and old not in self.current_chain.values():
                     self.chains.pop(old, None)
@@ -346,14 +349,22 @@ class ProjectRoom:
     def chain_for(self, channel):
         return self.current_chain.get(channel) or self.new_chain(channel)
 
-    def permit(self, identifier):
+    def permit(self, identifier, audit_reserved=None):
         chain = self.chains.get(identifier)
         if chain is None:
             return False
-        if chain['paused'] or (self.limits['agent_turns'] and chain['turns'] >= self.limits['agent_turns']) or (self.limits['reported_token_budget'] and chain['reported_tokens'] >= self.limits['reported_token_budget']):
+        if chain['paused'] or (self.limits['agent_turns'] and chain['turns'] - bool(audit_reserved) >= self.limits['agent_turns']) or (self.limits['reported_token_budget'] and chain['reported_tokens'] >= self.limits['reported_token_budget']):
             chain['paused'] = True
             return False
-        chain['turns'] += 1
+        audit = getattr(self.runtime, 'manager_wakes', None)
+        if audit_reserved and not audit:
+            return False
+        if audit and not audit.reserve_turn(identifier, audit_reserved):
+            return False
+        if not audit_reserved:
+            chain['turns'] += 1
+        if audit and (audit.record.get('chain') or {}).get('id') == identifier:
+            self.save()
         return True
 
     def handoffs_spent(self, identifier):
@@ -377,6 +388,9 @@ class ProjectRoom:
         chain = self.chains.get(run.entry.get('chain'))
         if chain:
             chain['reported_tokens'] += delta
+            audit = getattr(self.runtime, 'manager_wakes', None)
+            if audit and (audit.record.get('chain') or {}).get('id') == chain['id']:
+                self.save()
         return {'reported_tokens': run.reported_tokens, 'provider_usage': usage}
 
     def previous_session(self, run):
@@ -388,6 +402,9 @@ class ProjectRoom:
         return {}
 
     def complete(self, run):
+        if getattr(run, 'manager_audit', None):
+            self.save()
+            return  # Timer sessions never replace the ordinary conversation continuation.
         self.state.setdefault('cursors', {})[run.session_key] = run.context_delivery
         receipts = self.state.setdefault('receipts', {}).get(run.session_key, [])
         delivered = run.receipts

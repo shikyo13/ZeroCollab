@@ -31,6 +31,7 @@ from coordination_state import pending_human_wait
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
 from room_goals import RoomGoals
 from ready_wakes import ReadyWakes
+from manager_wakes import ManagerWakes, install as install_manager_wakes
 import project_registry
 from agent_profiles import AgentProfiles
 from team_builder import TeamBuilder
@@ -405,7 +406,11 @@ class Run:
         self.stop_reason = ''
         self.deadline = None
         self.started_at = self.last_activity = 0
+        self.manager_audit = next((q.get('manager_audit') for q in entry['requests'] if q.get('manager_audit')), None)
         self.limits = dict(manager.project_room.limits)
+        if self.manager_audit:
+            for field, cap in {'turn_max_seconds': 120, 'turn_seconds': 60, 'native_tool_calls': 16, 'local_tool_rounds': 3}.items():
+                self.limits[field] = min(self.limits.get(field) or cap, cap)
         self.automatic_tool_approvals = manager.cfg.get('runtime', {}).get('automatic_tool_approvals', False)
         self.instructions = (
             f"You are {name} in a real shared project chatroom. Reply as yourself. Other participants' "
@@ -441,7 +446,10 @@ class Run:
                 f'{key} -> {path}' for key, path in sorted(extra.items()))
             self.instructions += '\nUse key:relative/path for task reservations, review files and local file tools in additional repositories. Bare task paths are pinned to the primary when claimed.'
         self.instruction_hash = hashlib.sha256(self.instructions.encode('utf-8')).hexdigest()
-        self.previous_session = manager.project_room.previous_session(self)
+        self.previous_session = {} if self.manager_audit else manager.project_room.previous_session(self)
+        if self.manager_audit:
+            self.automatic_tool_approvals = False
+            self.instructions += '\nThis is a bounded automatic manager audit. Only read records, add a non-waking progress/blocker note, or create at most two targeted follow-ups for digest issues. Never create or replace decisions/references. No task mutation, tool escalation or setting changes.'
 
     def install_steer(self, sender):
         self.steering.install(sender)
@@ -509,7 +517,7 @@ class Run:
         if content:
             final = self.message_phase == 'final_answer' and not partial
             metadata = {'run_id': self.id, 'provider_message_id': identifier,
-                'phase': self.message_phase or 'commentary', 'no_route': not final,
+                'phase': self.message_phase or 'commentary', 'no_route': bool(self.manager_audit) or not final,
                 'worktree': str(self.worktree), 'settings': self.settings,
                 'reported_settings': self.reported_settings, 'chain': self.entry['chain']}
             if partial:
@@ -543,7 +551,7 @@ class Run:
                                                   "tool": name, "status": status, "details": params}, persist=True)
 
     async def approval(self, tool, params, reason):
-        if self.automatic_tool_approvals:
+        if self.automatic_tool_approvals and not self.manager_audit:
             await self.tool_event(tool, params, 'automatically approved')
             return True
         return await self.manager.ask(self, tool, params, reason)
@@ -590,6 +598,7 @@ class RoomRuntime:
         self.project_room = ProjectRoom(self)
         self.goals = RoomGoals(self)
         self.ready_wakes = ReadyWakes(self)
+        self.manager_wakes = ManagerWakes(self)
         self.profiles = AgentProfiles(self)
         self.team_builder = TeamBuilder(self)
         self.decisions = DecisionFlow(self)
@@ -658,6 +667,8 @@ class RoomRuntime:
         self.project = project
         self.identity = identity
         self.project_room.use_project(identity)
+        self.manager_wakes.loaded = None
+        self.manager_wakes.restore()
         self.goals.load()
         for worker in self.workers.values():
             worker.cancel()
@@ -1051,8 +1062,13 @@ class RoomRuntime:
             except Exception:
                 LOGGER.exception('Post-deployment provider refresh failed; turns remain held')
             if self.deployment and self.deployment.reload()["writes"] == "blocked":
+                self.manager_wakes.held = True
                 await asyncio.sleep(.25)
                 continue
+            try:
+                self.manager_wakes.tick()
+            except Exception:
+                LOGGER.exception('Manager audit refused after scheduler/persistence failure')
             for name, state in self.states.items():
                 if state.get('archived'):
                     continue
@@ -1224,9 +1240,13 @@ class RoomRuntime:
                 await asyncio.sleep(.2)
             self.queues[name].merge_waiting(entry)
             receipts = self.project_room.state.get('receipts', {}).get(name + ':' + entry['channel'], [])
+            if any(not q.get('manager_audit') for q in entry['requests']):
+                # An ordinary request covers this interval; do not mix timer authority into it.
+                self.manager_wakes.covered(entry['requests'])
+                entry['requests'] = [q for q in entry['requests'] if not q.get('manager_audit')]
             requests = [r for r in entry['requests'] if not r.get('_steer_delivered') and current_request(r, name, self.project_room.state, receipts)
                         and self.goals.accepts(r) and self.team_builder.accepts(r) and self.decisions.accepts(r)
-                        and self.ready_wakes.accepts(r)]
+                        and self.ready_wakes.accepts(r) and self.manager_wakes.accepts(r)]
             if not requests:
                 await self.emit('runtime_queue_pruned', {'agent': name, 'channel': entry['channel'],
                     'reason': 'Resolved, superseded or already delivered requests'}, persist=True)
@@ -1244,7 +1264,7 @@ class RoomRuntime:
             entry['prompt'] = '\n\n'.join(r['prompt'] for r in requests)
             if len(requests) > 1:
                 entry['prompt'] = 'Pending updates (oldest to newest; later human direction takes precedence):\n' + entry['prompt']
-            if not self.project_room.permit(entry['chain']):
+            if not self.project_room.permit(entry['chain'], audit_reserved=next((q.get('manager_audit') for q in requests if q.get('manager_audit')), None)):
                 if any(r.get('goal_token') for r in requests):
                     self.goals.pause('Conversation turn or token budget reached.')
                 self.host.store.add('system', 'Conversation budget reached. Send a new instruction to continue this project.', channel=entry['channel'])
@@ -1274,6 +1294,8 @@ class RoomRuntime:
             async with asyncio.timeout(None) as deadline:
                 run.begin(deadline)
                 provider = self.states[name]["provider"]
+                if run.manager_audit and provider not in ('codex', 'api'):
+                    raise ValueError('Audit runner changed or lacks verified pre-input permissions')
                 if provider == "api":
                     await self.local_turn(run, prompt)
                 else:
@@ -1317,7 +1339,7 @@ class RoomRuntime:
                 self.host.store.add("system", f"{name} failed to start; retrying once in {STARTUP_RETRY_SECONDS} s: {detail[:600]}",
                                     channel=run.channel, metadata={'no_route': True})
             else:
-                self.states[name].update(state="blocked", detail=detail[:600])
+                self.states[name].update(state='ready' if run.manager_audit else 'blocked', detail=detail[:600])
                 self.host.store.add("system", f"{name} failed: {detail[:600]}", channel=run.channel)
             await run.finish_message(partial=True)
         finally:
@@ -1333,6 +1355,10 @@ class RoomRuntime:
                     if not approval["future"].done():
                         approval["future"].cancel()
                     self.approvals.pop(identifier, None)
+            try:
+                self.manager_wakes.finished(run, outcome)
+            except Exception:
+                LOGGER.exception('Audit result persistence failed; admission disabled, cleanup continues')
             self.running.pop(name, None)
             self.team_builder.turn_finished(entry)
             self.decisions.turn_finished(name, entry)
@@ -1349,6 +1375,18 @@ class RoomRuntime:
         if changes_room(tool, arguments):
             run.changing_calls += 1
         arguments = self.profiles.recipient_arguments(arguments)
+        audit_receipt = None
+        if run.manager_audit:
+            if run.coordination_calls > 16:
+                raise ValueError('Automatic audit room-call limit reached')
+            audit_receipt = self.manager_wakes.authorize(run, tool, arguments)
+            if audit_receipt and audit_receipt.get('status') != 'claimed':
+                return audit_receipt.get('result') or {'status': 'already claimed; no repeat notification'}
+            if audit_receipt and audit_receipt.get('attempted'):
+                return audit_receipt.get('result') or {'status': 'delivery uncertain; no repeat notification'}
+            if audit_receipt:
+                audit_receipt['attempted'] = True
+                self.manager_wakes.save()
         if tool == 'room_browser':
             action = arguments.get('action', 'status')
             if action == 'status':
@@ -1445,7 +1483,11 @@ class RoomRuntime:
             result = self.project_room.note(run.name, **arguments)
             text = f"{result['kind']}: {result['text']}"
         elif tool in ('room_review', 'room_followup'):
-            return await self.coordination_record(run.name, tool, arguments, run.channel, run.entry['chain'])
+            result = await self.coordination_record(run.name, tool, arguments, run.channel, run.entry['chain'])
+            if audit_receipt:
+                audit_receipt.update(status='completed', result=result)
+                self.manager_wakes.save()
+            return result
         else:
             raise ValueError('Unknown coordination tool')
         self.host.store.add(run.name, text, channel=run.channel, metadata={'no_route': True, 'chain': run.entry['chain']})
@@ -1486,7 +1528,7 @@ class RoomRuntime:
         queue now and waits out the delay in run_turn's admission loop, so newer same-channel work merges after
         it, Stop drains it and a deployment checkpoint keeps it."""
         entry = run.entry
-        if (isinstance(exc, (ValueError, TimeoutError)) or run.stop_reason or run.text or run.published_messages
+        if (run.manager_audit or isinstance(exc, (ValueError, TimeoutError)) or run.stop_reason or run.text or run.published_messages
                 or run.native_tool_calls or run.coordination_calls or entry.get('startup_retry')):
             return False
         entry.update(startup_retry=True, retry_after=time.time() + STARTUP_RETRY_SECONDS)
@@ -1726,13 +1768,17 @@ class RoomRuntime:
     async def local_turn(self, run, prompt):
         cfg = self.cfg["agents"][run.name]
         base = cfg["base_url"].rstrip("/")
-        tools = local_tool_definitions() if cfg.get("tools", True) else []
+        tools = [] if run.manager_audit else (local_tool_definitions() if cfg.get("tools", True) else [])
         async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5), trust_env=False) as client:
-            if cfg.get("tools", True) and cfg.get("tool_schema_url"):
+            if not run.manager_audit and cfg.get("tools", True) and cfg.get("tool_schema_url"):
                 response = await client.get(cfg["tool_schema_url"])
                 response.raise_for_status()
                 tools = [t["definition"] for t in response.json() if t.get("tool") in FILE_TOOLS]
             tools = tools + coordination_tools() if cfg.get('tools', True) else []
+            if run.manager_audit:
+                tools = [t for t in coordination_tools() if t['function']['name'] in ('room_read', 'room_task', 'room_update', 'room_followup')]
+                await run.report_permissions({'runner': 'direct-local', 'approval_reviewer': 'user',
+                                              'loaded_tools': [t['function']['name'] for t in tools]})
             messages = [{"role": "system", "content": run.instructions + "\nLocal file tools use your primary worktree by default; key:relative/path selects one of your attached repository worktrees. Shell execution is unavailable. Tool arguments must match their advertised schemas."},
                         {"role": "user", "content": prompt}]
             rounds = run.limits['local_tool_rounds']
@@ -1765,6 +1811,9 @@ class RoomRuntime:
                     # The execution guard below bounds calls without changing their protocol.
                     payload["tool_choice"] = "auto"
                 payload.update(cfg.get("request_options", {}))
+                if run.manager_audit:
+                    # Provider request options cannot restore untrusted file/shell tools.
+                    payload['tools'] = tools
                 payload['model'] = run.settings['model']
                 payload.pop('reasoning_effort', None)
                 if run.settings['effort']:
@@ -1856,6 +1905,8 @@ class RoomRuntime:
                     messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
 
     async def cancel_turn(self, name):
+        if name == self.manager_wakes.record.get('manager'):
+            self.manager_wakes.invalidate('Manager cancelled or paused')
         run = self.running.get(name)
         if run:
             await run.steering.close('cancelled')
@@ -1884,6 +1935,7 @@ class RoomRuntime:
 
     async def stop(self):
         self.paused = True
+        self.manager_wakes.invalidate('Room stopped')
         self.team_builder.interrupt()
         self.decisions.interrupt()
         self.goals.pause('Room stopped by user.')
@@ -2042,6 +2094,8 @@ def install(host):
             return {'ok': True, 'settings': selected, 'applies': 'next turn'}
         except (ValueError, KeyError) as exc:
             return JSONResponse({'error': str(exc)}, 400)
+
+    install_manager_wakes(runtime, host)
 
     @host.app.post("/api/runtime/approval/{identifier}")
     async def approval(identifier: str, request: Request):

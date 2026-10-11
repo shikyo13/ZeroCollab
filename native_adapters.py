@@ -323,7 +323,67 @@ class Rpc:
         await asyncio.gather(self.reader, *self.handlers, return_exceptions=True)
 
 
-async def codex(run, prompt):
+class AuditMCPIsolation(ValueError):
+    def __init__(self, names):
+        super().__init__('Audit refused: non-room MCP servers require isolation')
+        self.names = tuple(sorted(names))
+
+
+async def verify_audit_codex(rpc, run, thread, *, audit_disabled=()):
+    """Read only runner-reported permissions and tool names, never user config."""
+    sandbox = thread.get('sandbox')
+    safe = isinstance(sandbox, dict) and sandbox.get('type') == 'readOnly' and not sandbox.get('networkAccess', False)
+    if not safe or thread.get('approvalPolicy') != 'on-request' or thread.get('approvalsReviewer') != 'user':
+        raise ValueError('Audit Codex permissions were not reported as read-only/on-request/user')
+    cursor, loaded, seen, extras = None, [], set(), set()
+    for _ in range(20):
+        page = await rpc.request('mcpServerStatus/list', {
+            'threadId': thread['thread']['id'], 'limit': 100, 'cursor': cursor, 'detail': 'toolsAndAuthOnly'})
+        data = page.get('data')
+        if not isinstance(data, list):
+            raise ValueError('Audit MCP inventory unavailable')
+        for server in data:
+            name = server.get('name')
+            if not isinstance(name, str) or not name or len(name) > 128 or not name.isascii() or any(
+                    not (c.isalnum() or c in '_-') for c in name):
+                raise ValueError('Audit MCP inventory has an unsupported server identity')
+            if name != 'zerocollab_coordination':
+                if (name in audit_disabled and server.get('runtimeStatus') == 'disabled'
+                        and server.get('tools') == {} and not server.get('toolsError')):
+                    continue
+                extras.add(name)
+                if len(extras) > 32:
+                    raise ValueError('Audit MCP isolation exceeded server bound')
+                continue
+            if server.get('toolsError'):
+                raise ValueError('Audit room discovery failed')
+            tools = server.get('tools')
+            if not isinstance(tools, dict) or not tools:
+                raise ValueError('Audit room tool inventory unavailable')
+            loaded.extend('mcp__zerocollab_coordination__' + name for name in tools)
+        cursor = page.get('nextCursor')
+        if not cursor:
+            break
+        if cursor in seen:
+            raise ValueError('Audit MCP inventory cursor repeated')
+        seen.add(cursor)
+    else:
+        raise ValueError('Audit MCP inventory exceeded page bound')
+    if not loaded:
+        raise ValueError('Audit room MCP server was not loaded')
+    if extras:
+        raise AuditMCPIsolation(extras)
+    await run.report_permissions({'approval_policy': thread['approvalPolicy'], 'sandbox': sandbox,
+                                  'approval_reviewer': thread['approvalsReviewer'], 'loaded_tools': loaded,
+                                  # Windows may report networkAccess=false without blocking network.
+                                  'network_enforced': False if os.name == 'nt' else None})
+
+
+async def codex(run, prompt, *, audit_disabled=()):
+    audit = bool(getattr(run, 'manager_audit', None))
+    if audit:
+        run.automatic_tool_approvals = False
+        run.previous_session = {}
     done = asyncio.get_running_loop().create_future()
     async def notify(method, params):
         if method == "item/agentMessage/delta":
@@ -399,6 +459,13 @@ async def codex(run, prompt):
     # Values the user's own config.toml sets in [shell_environment_policy.set] are still added for a
     # subscription agent, which needs that CODEX_HOME to sign in; a local-model agent has its own home.
     args += ['-c', 'shell_environment_policy.ignore_default_excludes=false']
+    if audit:
+        args += ['-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="read-only"',
+                 '-c', 'approvals_reviewer="user"', '-c', 'features.apps=false',
+                 '-c', 'features.multi_agent=false', '-c', 'web_search="disabled"',
+                 '-c', 'shell_environment_policy.ignore_default_excludes=false']
+        for name in audit_disabled:
+            args += ['-c', f'mcp_servers.{name}.enabled=false']
     proc = await spawn(run, args, relay_env, stream_limit=CODEX_MESSAGE_LIMIT, room_env=True)
     rpc = Rpc(run, proc, notify, incoming)
     try:
@@ -407,8 +474,11 @@ async def codex(run, prompt):
         await rpc.send({"jsonrpc": "2.0", "method": "initialized"})
         thread_params = {"cwd": str(run.worktree),
                          "approvalPolicy": "never" if run.automatic_tool_approvals else "on-request",
-                         "sandbox": "danger-full-access" if run.automatic_tool_approvals else "workspace-write",
+                         "sandbox": "read-only" if audit else ("danger-full-access" if run.automatic_tool_approvals else "workspace-write"),
                          "ephemeral": False, "developerInstructions": run.instructions}
+        if audit:
+            thread_params['approvalsReviewer'] = 'user'
+            thread_params['ephemeral'] = True
         model = run.settings['model'] or (run.manager.cfg['agents'][run.name].get('local_model') if local_args else '')
         if model:
             # A local connection's own model when the agent has none selected: Codex's default is an OpenAI model.
@@ -422,7 +492,19 @@ async def codex(run, prompt):
             # Resume keeps model context; omit only the history in the RPC reply.
             thread_params.update(threadId=run.previous_session['id'], excludeTurns=True)
         thread = await rpc.request(method, thread_params)
-        await run.report_permissions({'approval_policy': thread.get('approvalPolicy'), 'sandbox': thread.get('sandbox')})
+        if audit:
+            try:
+                await verify_audit_codex(rpc, run, thread, audit_disabled=audit_disabled)
+            except AuditMCPIsolation as exc:
+                if audit_disabled:
+                    raise ValueError('Audit MCP isolation failed after one relaunch') from exc
+                # No prompt was sent. Close this owned idle child before one isolated relaunch.
+                # Discover names from the actual inventory; never read or edit user config.
+                await rpc.close()
+                await terminate(run, EXIT_GRACE)
+                return await codex(run, prompt, audit_disabled=exc.names)
+        else:
+            await run.report_permissions({'approval_policy': thread.get('approvalPolicy'), 'sandbox': thread.get('sandbox')})
         await run.report_settings(model=thread.get('model'), effort=thread.get('reasoningEffort'))
         run.provider_session = thread["thread"]["id"]
         turn_params = {"threadId": run.provider_session, "input": [{"type": "text", "text": prompt}]}
@@ -554,6 +636,10 @@ async def antigravity(run, prompt):
 
 
 async def claude(run, prompt):
+    audit = bool(getattr(run, 'manager_audit', None))
+    if audit:
+        run.automatic_tool_approvals = False
+        run.previous_session = {}
     # --replay-user-messages echoes each stdin user message (isReplay) once the CLI adds it to the
     # conversation; mid-turn messages join the running turn at the next tool boundary.
     args = command("claude") + ["--print", "--verbose", "--input-format", "stream-json",
@@ -561,6 +647,9 @@ async def claude(run, prompt):
         "bypassPermissions" if run.automatic_tool_approvals else "manual",
         "--permission-prompt-tool", "stdio", "--mcp-config", json.dumps({'mcpServers': {'zerocollab_coordination': room_server(run)}}),
         "--append-system-prompt", run.instructions]
+    if audit:
+        args += ['--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--disallowedTools',
+                 'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent']
     if run.previous_session:
         args += ['--resume', run.previous_session['id']]
     if run.settings['model']:
@@ -576,6 +665,7 @@ async def claude(run, prompt):
         await proc.stdin.drain()
     await send({"type": "control_request", "request_id": "room-init", "request": {"subtype": "initialize", "hooks": {}}})
     sent = False
+    audit_permissions = False
     message_id = None
     streamed_messages = set()
     # Sent steers by uuid -> original request. Delivery is the CLI's isReplay echo of that uuid
@@ -620,13 +710,23 @@ async def claude(run, prompt):
             return b''
 
     async def claude_event(msg):
-        nonlocal sent, message_id, grace_deadline, open_for_input
+        nonlocal sent, message_id, grace_deadline, open_for_input, audit_permissions
         kind = msg.get("type")
         if kind == 'system' and msg.get('subtype') == 'init':
             run.provider_session = msg.get('session_id')
             await run.report_settings(model=msg.get('model'), effort=msg.get('effort'))
-            await run.report_permissions({'permission_mode': msg.get('permissionMode')})
+            if audit:
+                mode, tools = msg.get('permissionMode'), msg.get('tools')
+                if mode != 'manual' or not isinstance(tools, list) or any(
+                        t not in ('Read', 'Grep', 'Glob') and not t.startswith('mcp__zerocollab_coordination__') for t in tools):
+                    raise ValueError('Audit Claude permissions/tool inventory not verified')
+                audit_permissions = True
+                await run.report_permissions({'permission_mode': mode, 'loaded_tools': tools})
+            else:
+                await run.report_permissions({'permission_mode': msg.get('permissionMode')})
         elif kind == "control_response" and not sent:
+            if audit and not audit_permissions:
+                raise ValueError('Claude audit refused: no runner permission/tool inventory before model input')
             sent = True
             await send({"type": "user", "session_id": "", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": None})
             open_for_input = True
