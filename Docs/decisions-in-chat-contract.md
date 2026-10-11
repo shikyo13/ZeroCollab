@@ -73,7 +73,10 @@ approval gate.
   review, one conclusion is posted in the originating chat, unrouted, by the lead: the real outcome
   (agreed / dissent / unresolved), positions submitted of invited and who is missing, the proposal, agreed,
   unresolved, what would change it, and dissent with names. Once per round; an interrupted round posts nothing.
-  With no proposal it is a system line saying nothing was concluded. Positions and verdicts stay in the record.
+  It also gives verdicts submitted of invited (for the current proposal and epoch) with who is missing, and each
+  dissent verdict with its author and reason, separate from dissent the lead noted in the proposal.
+  With no proposal it is a system line saying nothing was concluded, and that round's history keeps
+  `concluded: false` and `proposal_id: ""`. Positions and verdicts stay in the record.
 - The human accepts (`record`), asks for another round (`reopen`), or overrules (`record` with an edited
   proposal, the existing `edit`). Recording writes the decision note and creates proposed tasks, as today.
 

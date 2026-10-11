@@ -347,12 +347,22 @@ class DecisionFlow:
                  f'Outcome: {outcome}. Positions from {len(coverage["submitted"])} of {len(coverage["invited"])}'
                  + (f'; missing: {", ".join(coverage["missing"])}' if coverage['missing'] else '') + '.']
         if current:
+            # Verdicts on this proposal at this epoch are the result; the proposal's own dissent list is
+            # what the lead recorded before them (frontend 7420a9a1).
+            votes = {c['author']: c for c in self.verdicts(d)}
+            unvoted = [p for p in d['participants'] if p not in votes]
+            lines.append(f'Verdicts from {len(votes)} of {len(d["participants"])}'
+                         + (f'; missing: {", ".join(unvoted)}' if unvoted else '') + '.')
             lines.append(current['text'])
             for key, label in (('agreed', 'Agreed'), ('unresolved', 'Unresolved'), ('would_change', 'Would change it')):
                 if current.get(key):
                     lines.append(f'{label}: ' + '; '.join(current[key]))
             for row in current.get('dissent', []):
-                lines.append(f'Dissent ({", ".join(row["by"])}): {row["point"]}')
+                lines.append(f'Dissent noted in the proposal ({", ".join(row["by"])}): {row["point"]}')
+            for name, vote in votes.items():
+                if vote['verdict'] == 'dissent':
+                    lines.append(f'Dissent verdict ({name}): {vote["reason"]}')
+            d.setdefault('concluded_rounds', []).append(d.get('round', 1))
         else:
             lines.append('No proposal was written; nothing is concluded.')
         lines.append('Waiting for the user to record, reopen or edit it. It grants no deploy, settings or credential authority.')
@@ -629,12 +639,14 @@ class DecisionFlow:
         channel, message_id = body.get('channel'), body.get('message_id')
         if not isinstance(channel, str) or not self.runtime.owns_channel(channel):
             raise ValueError('Open the decision in a chat of the current project')
-        existing = next((d for d in self.items if d.get('origin') == [channel, message_id]), None)
-        if existing:
-            return existing, False
+        # Who may open is checked before create-or-get, so naming a message never returns someone else's
+        # decision (security 214851d6 F1).
         self.origin(channel, message_id)
         if not self.may_open(actor, channel, message_id):
             raise ValueError('Only the user, or the lead or backup answering that message, can open a decision on it')
+        existing = next((d for d in self.items if d.get('origin') == [channel, message_id]), None)
+        if existing:
+            return existing, False
         if self.runtime.paused:
             raise ValueError('Resume the room before opening a decision')
         question = text(body.get('question'), 'Question', 2000)
@@ -677,7 +689,8 @@ class DecisionFlow:
             raise ValueError('This decision is not open')
         reason = text(reason, 'Reason for another round', 1000)
         current = self.proposal(d)
-        concluded = d.get('round', 1) in d.get('conclusions_posted', [])
+        # Concluded only when a proposal reached review; a "nothing is concluded" status line is not one.
+        concluded = d.get('round', 1) in d.get('concluded_rounds', [])
         d.setdefault('rounds', []).append({
             'round': d.get('round', 1), 'revealed': d['stage'] != 'positions', 'concluded': concluded,
             'outcome': self.outcome(d) if concluded else '', 'proposal_id': current['id'] if current else '',
