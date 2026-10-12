@@ -1564,7 +1564,10 @@ async def file_view_open(body: dict):
 
 # Serve uploaded images
 UPLOAD_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
-                      '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml'}
+                      '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
+                      # Videos agents publish with room_motion play inline in chat and on tasks (Zero #14291).
+                      # Only room_motion publish writes them; /api/upload still accepts images only.
+                      '.webm': 'video/webm', '.mp4': 'video/mp4'}
 # Uploads come from agents and users but are served from the room's own origin, where the page holds the
 # session token. An SVG opened as a page could otherwise run script with that token. The sandbox gives any
 # upload opened as a document a unique origin with scripts off; <img> previews and downloads are unaffected.

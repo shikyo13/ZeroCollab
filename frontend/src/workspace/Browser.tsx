@@ -6,12 +6,15 @@ import './browser.css';
 export type BrowserPage = {id: string; url: string; title: string; generation: number; dialog: boolean; file_chooser: boolean; active: boolean};
 export type BrowserState = {
   running: boolean; project: string; url: string; title: string; owner: string; owner_label: string;
+  browser?: string; agent?: string; browser_label?: string; generation?: number;
+  instances?: {id: string; agent: string; label: string; running: boolean; pages: number; owner: string}[];
   width: number; height: number; lease_seconds: number | null;
   page?: string; active_page?: string; pages?: BrowserPage[]; max_pages?: number;
   events: {time: number; kind: string; text: string; page?: string}[];
   dialog: {type: string; message: string} | null; file_chooser: boolean;
   activity?: {actor: string; label: string; action: string; phase: string; time: number; page?: string} | null;
 };
+type InputTarget = {project: string; browser: string; page: string; generation?: number; selection: number};
 
 export function activityLabel(state?: BrowserState): string {
   if (!state) return 'Browser';
@@ -28,6 +31,8 @@ export default function Browser({ active, project, page, onState, choosePage, cl
   active: boolean; project?: string; page?: string; onState?: (state: BrowserState) => void; choosePage?: () => void; closeViewer?: () => void; onUnavailable?: (value: boolean) => void;
 }) {
   const [state, setState] = useState<BrowserState>();
+  const [selectedBrowser, setSelectedBrowser] = useState('');
+  const [visible, setVisible] = useState(!document.hidden);
   const [address, setAddress] = useState('http://localhost:5173');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -46,14 +51,23 @@ export default function Browser({ active, project, page, onState, choosePage, cl
   const alive = useRef(true);
   useEffect(() => {alive.current = true; return () => {alive.current = false;};}, []);
   const image = useRef<HTMLImageElement>(null);
+  const imageMounted = useRef(false);
   const stateRef = useRef(state);
   const inputQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const selection = useRef(0);
+  const viewer = useRef({active, visible, project, page});
+  viewer.current = {active, visible, project, page};
   const dragging = useRef(false);
   const lastMove = useRef(0);
   const addressEditing = useRef(false);
   const canonicalPending = useRef(false);
   const refreshFrame = useRef<() => void>(() => undefined);
   stateRef.current = state;
+  useEffect(() => {
+    const changed = () => setVisible(!document.hidden);
+    document.addEventListener('visibilitychange', changed);
+    return () => document.removeEventListener('visibilitychange', changed);
+  }, []);
   const controlling = state?.owner === 'user';
   const events = state?.events.filter(event => !page || !event.page || event.page === page) ?? [];
   const pageActivity = page && state?.activity?.page && state.activity.page !== page ? {...state, activity: null} : state;
@@ -67,55 +81,126 @@ export default function Browser({ active, project, page, onState, choosePage, cl
   });
 
   useEffect(() => {
-    if (!active) return;
-    let stopped = false, polling = false, refreshPending = false, timer: ReturnType<typeof setTimeout>, objectUrl = '';
+    if (!active || !visible) return;
+    let stopped = false, polling = false, refreshPending = false, timer: ReturnType<typeof setTimeout>;
     const abort = new AbortController();
     async function poll() {
       if (polling) {refreshPending = true; return;}
       polling = true;
       try {
-        const query = new URLSearchParams({...project ? {project} : {}, ...page ? {page} : {}});
+        const query = new URLSearchParams({...project ? {project} : {}, ...page ? {page} : {}, ...selectedBrowser && !page ? {browser: selectedBrowser} : {}});
         const next = await runtime<BrowserState>('/browser?' + query);
         if (stopped) return;
         if (project && next.project !== project) {setState(undefined); setFrame(''); setError('Project changed; reopen the shared browser for this project.'); return;}
         if (page && next.page !== page) throw new ApiError('This shared browser page has closed or is unavailable.', 400);
         setState(next); setClosed(false); onState?.(next);
+        if (!page && !selectedBrowser && next.running && next.browser) setSelectedBrowser(next.browser);
         if (canonicalPending.current) {canonicalPending.current = false; setAddress(next.url || 'about:blank');}
-        if (next.running) {
-          const frameQuery = new URLSearchParams({project: next.project, ...page ? {page} : {}});
-          const response = await fetch('/api/runtime/browser/frame?' + frameQuery, {headers: sessionHeaders(), signal: abort.signal});
-          if (response.ok) {
-            const blob = await response.blob();
-            if (stopped) return;
-            const fresh = URL.createObjectURL(blob);
-            if (objectUrl) URL.revokeObjectURL(objectUrl);
-            objectUrl = fresh; setFrame(fresh);
-          } else {setFrame(''); throw new Error('Could not receive this page frame.');}
-        } else { setFrame(''); }
+        if (!next.running) setFrame('');
       } catch (e) { if (!stopped) {
         setError(errorMessage(e)); setFrame('');
         if (e instanceof ApiError && (e.status === 400 || e.status === 409)) {setState(undefined); setClosed(e.status === 400 && !!page);}
       } }
-      finally { polling = false; if (!stopped) {timer = setTimeout(poll, refreshPending ? 0 : 650); refreshPending = false;} }
+      finally { polling = false; if (!stopped) {timer = setTimeout(poll, refreshPending ? 0 : 3000); refreshPending = false;} }
     }
     refreshFrame.current = () => {clearTimeout(timer); void poll();};
     void poll();
-    return () => { stopped = true; refreshFrame.current = () => undefined; abort.abort(); clearTimeout(timer); if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [active, project, page, onState]);
+    return () => { stopped = true; refreshFrame.current = () => undefined; abort.abort(); clearTimeout(timer); };
+  }, [active, visible, project, page, selectedBrowser, onState]);
 
-  const send = useCallback(async (action: string, args: Record<string, unknown> = {}) => {
+  // Multipart frames arrive independently of status and actions. Keep only the
+  // newest frame per animation tick; a slow viewer never builds a frame backlog.
+  const currentBrowser = state?.browser, currentPage = state?.page, currentProject = state?.project;
+  const running = state?.running;
+  useEffect(() => {
+    if (!active || !visible || !running || !currentBrowser || !currentPage || !currentProject) return;
+    const abort = new AbortController();
+    let objectUrl = '', buffered = new Uint8Array(0), latest: Uint8Array | null = null, raf = 0;
+    let retry: ReturnType<typeof setTimeout> | undefined, attempts = 0;
+    imageMounted.current = false; setFrame('');
+    function present() {
+      raf = 0;
+      if (!latest || abort.signal.aborted) return;
+      const fresh = URL.createObjectURL(new Blob([latest as Uint8Array<ArrayBuffer>], {type: 'image/jpeg'}));
+      latest = null;
+      if (image.current && imageMounted.current) image.current.src = fresh;
+      else {setFrame(fresh); imageMounted.current = true;}
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrl = fresh;
+    }
+    async function read() {
+      if (abort.signal.aborted) return;
+      buffered = new Uint8Array(0);
+      let received = false;
+      try {
+        const query = new URLSearchParams({project: currentProject!, browser: currentBrowser!, page: currentPage!});
+        const response = await fetch('/api/runtime/browser/stream?' + query, {headers: sessionHeaders(), signal: abort.signal});
+        if (!response.ok || !response.body) throw new Error('Could not receive this browser stream.');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        try {
+          while (!abort.signal.aborted) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            const combined = new Uint8Array(buffered.length + chunk.value.length);
+            combined.set(buffered); combined.set(chunk.value, buffered.length); buffered = combined;
+            if (buffered.length > 8 * 1024 * 1024) throw new Error('Browser frame exceeded the viewing limit.');
+            while (buffered.length) {
+              let end = -1;
+              for (let i = 0; i + 3 < buffered.length; i++) {
+                if (buffered[i] === 13 && buffered[i + 1] === 10 && buffered[i + 2] === 13 && buffered[i + 3] === 10) {end = i; break;}
+              }
+              if (end < 0) break;
+              const header = decoder.decode(buffered.subarray(0, end));
+              const match = /Content-Length:\s*(\d+)/i.exec(header);
+              if (!match) throw new Error('Invalid browser frame stream.');
+              const length = Number(match[1]);
+              if (length < 1 || length > 8 * 1024 * 1024) throw new Error('Invalid browser frame size.');
+              if (buffered.length < end + 4 + length + 2) break;
+              latest = buffered.slice(end + 4, end + 4 + length);
+              if (!received) {received = true; attempts = 0; setError('');}
+              buffered = buffered.slice(end + 4 + length + 2);
+              if (!raf) raf = requestAnimationFrame(present);
+            }
+          }
+          if (!abort.signal.aborted) throw new Error('The browser stream disconnected.');
+        } finally {await reader.cancel().catch(() => undefined); reader.releaseLock();}
+      } catch (e) {
+        if (!abort.signal.aborted) {
+          setError(errorMessage(e) + ' Reconnecting…');
+          // One connection and one timer per visible viewer; retry delay is capped.
+          retry = setTimeout(() => void read(), Math.min(5000, 1000 * 2 ** Math.min(attempts++, 3)));
+        }
+      }
+    }
+    void read();
+    return () => {abort.abort(); clearTimeout(retry); if (raf) cancelAnimationFrame(raf); if (objectUrl) URL.revokeObjectURL(objectUrl); imageMounted.current = false; setFrame('');};
+  }, [active, visible, running, currentBrowser, currentPage, currentProject, state?.generation]);
+
+  const send = useCallback(async (action: string, args: Record<string, unknown> = {}, target?: InputTarget) => {
     const current = stateRef.current;
     if (!current || !alive.current) return;
+    const scope = viewer.current;
+    if (target && (!scope.active || !scope.visible || target.selection !== selection.current
+        || target.project !== current.project || target.browser !== current.browser || target.page !== current.page
+        || target.generation !== current.generation || scope.project && scope.project !== target.project
+        || scope.page && scope.page !== target.page || current.owner !== 'user')) return;
+    const chosen = selection.current;
     try {
-      const next = await runtime<BrowserState>('/browser', {action, project: project || current.project, ...args, ...page ? {page} : {}});
-      if (!alive.current) return;
+      const next = await runtime<BrowserState>('/browser', {action, ...args, project: target?.project || project || current.project,
+        browser: target?.browser || current.browser, ...target ? {page: target.page} : page ? {page} : {}});
+      if (!alive.current || chosen !== selection.current || viewer.current.project !== scope.project
+          || viewer.current.page !== scope.page || stateRef.current?.browser !== current.browser) return;
       onState?.(next);
       // Global lease/stop/close commands can return the team-active page. Never put that page in this viewer.
       if ((!project || next.project === project) && (!page || next.page === page)) setState(next);
       if (action === 'close_page' && page) {setState(undefined); setClosed(true); setFrame(''); requestAnimationFrame(() => recoveryButton.current?.focus());}
       setError(''); refreshFrame.current();
       return true;
-    } catch (e) { setError(errorMessage(e)); }
+    } catch (e) {
+      if (alive.current && chosen === selection.current && stateRef.current?.browser === current.browser
+          && viewer.current.project === scope.project && viewer.current.page === scope.page) setError(errorMessage(e));
+    }
   }, [project, page, onState]);
   const command = async (action: string, args: Record<string, unknown> = {}) => {
     setBusy(true); const ok = await send(action, args); setBusy(false); return ok;
@@ -127,7 +212,11 @@ export default function Browser({ active, project, page, onState, choosePage, cl
     : action === 'active' && state.active_page === page ? 'This page is already active for the team.'
     : action === 'close' && (state.pages?.length ?? 0) <= 1 ? 'This is the last open page, so it cannot be closed. Shutting down the browser is a separate action.' : '';
   const input = (action: string, args: Record<string, unknown>) => {
-    inputQueue.current = inputQueue.current.then(() => send(action, args));
+    const current = stateRef.current;
+    if (!current?.browser || !current.page) return;
+    const target: InputTarget = {project: project || current.project, browser: current.browser, page: page || current.page,
+      generation: current.generation, selection: selection.current};
+    inputQueue.current = inputQueue.current.then(() => send(action, args, target));
   };
   const point = (event: {clientX: number; clientY: number}) => {
     const box = image.current!.getBoundingClientRect();
@@ -146,7 +235,7 @@ export default function Browser({ active, project, page, onState, choosePage, cl
     if (!state) return;
     setBusy(true);
     try {
-      const query = new URLSearchParams({project: project || state.project, ...page ? {page} : {}});
+      const query = new URLSearchParams({project: project || state.project, ...state.browser ? {browser: state.browser} : {}, ...page ? {page} : {}});
       const response = await fetch('/api/runtime/browser/file?' + query, {
         method: 'POST', headers: {...sessionHeaders(), 'X-File-Name': encodeURIComponent(file.name)}, body: file,
       });
@@ -161,6 +250,11 @@ export default function Browser({ active, project, page, onState, choosePage, cl
 
   return <div className="shared-browser">
     <div className="browser-controls">
+    {!page && !!state?.instances?.length && <label className="browser-ownership">Watch browser
+      <select aria-label="Agent browser" value={selectedBrowser || state.browser || ''} onChange={e => {selection.current++; stateRef.current = undefined; setSelectedBrowser(e.target.value); setState(undefined); setFrame(''); setError('');}}>
+        {state.instances.map(instance => <option key={instance.id} value={instance.id}>{instance.label} · {instance.pages} {instance.pages === 1 ? 'page' : 'pages'}{instance.running ? '' : ' · stopped'}</option>)}
+      </select>
+    </label>}
     <form className="browser-toolbar" onSubmit={async e => {e.preventDefault(); if (!controlling || busy) return; const ok = await command('open', {url: address}); if (ok) {addressEditing.current = false; canonicalPending.current = true; refreshFrame.current();}}}>
       <button type="button" disabled={!controlling || !state?.running || busy} onClick={() => void command('reload')} aria-label="Reload shared page">↻</button>
       <input ref={addressInput} aria-label="Local preview URL" readOnly={!controlling || busy} title={controlling ? 'Press Enter to navigate the shared page' : 'Viewing only. Take control to navigate this shared page'} value={address} onFocus={() => {addressEditing.current = true;}} onBlur={() => {addressEditing.current = false;}} onChange={e => setAddress(e.target.value)} placeholder="http://localhost:5173" />
@@ -227,7 +321,7 @@ export default function Browser({ active, project, page, onState, choosePage, cl
       <button disabled={!controlling || busy} onClick={async () => {setBusy(true); const ok = await send('close_page'); setBusy(false); if (ok) confirm.current?.close();}}>Close shared page</button>
     </dialog>
     <dialog className="browser-close-confirm" ref={shutdown} aria-labelledby={confirmationId + '-shutdown'} onCancel={e => {if (busy) e.preventDefault();}} onClose={focusMenu}>
-      <h2 id={confirmationId + '-shutdown'}>Shut down shared browser?</h2><p>Every shared page closes for everyone. This may interrupt agent work. File, review and Changes viewers stay open.</p>
+      <h2 id={confirmationId + '-shutdown'}>Shut down this browser?</h2><p>All pages in {state?.browser_label || 'this browser'} close for everyone viewing them. Other agents' browsers and file, review and Changes viewers stay open.</p>
       {error && <p role="alert">{error}</p>}<button autoFocus disabled={busy} onClick={() => shutdown.current?.close()}>Keep browser</button>
       <button disabled={!controlling || busy} onClick={async () => {if (await command('stop')) shutdown.current?.close();}}>Shut down shared browser</button>
     </dialog>

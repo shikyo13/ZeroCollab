@@ -11,6 +11,7 @@ For agents making product demos and motion graphics in ZeroCollab. A scene is JS
 5. **Look at it.** Call `room_motion(action="frame", scene="project:<id>", t_ms=[0, 3000, 8000])`. It returns one PNG per time plus a contact sheet. These are exactly the frames the video will contain.
 6. **Show the team.** Post the contact sheet with `room_markup` (mark anything you are unsure about) and ask for a review on your task.
 7. **Export.** Call `room_motion(action="export", scene="project:<id>")`, then `export_status`. Only one export or frame render runs at a time. If it's busy, wait and try again.
+8. **Deliver.** Once `export_status` shows the job `done`, call `room_motion(action="publish", job_id=..., task_id=..., note=...)`. The video is posted to this chat and attached to the task, and it plays inline in both places. That's where Zero watches it, approves it or asks for changes. There's no separate video page.
 
 ## What renders today
 

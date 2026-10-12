@@ -116,7 +116,8 @@ ROOM_ACTION_LABELS = {
     ('room_browser', 'open'): 'opening a page in the shared browser', ('room_browser', 'inspect'): 'inspecting a page',
     ('room_decision', 'submit'): 'submitting to a decision', ('room_decision', 'get'): 'reading a decision',
     ('room_motion', 'validate'): 'checking a motion scene', ('room_motion', 'save'): 'saving a motion scene',
-    ('room_motion', 'frame'): 'rendering preview frames', ('room_motion', 'export'): 'exporting a video'}
+    ('room_motion', 'frame'): 'rendering preview frames', ('room_motion', 'export'): 'exporting a video',
+    ('room_motion', 'publish'): 'sharing a video'}
 ACP_KIND_LABELS = {
     'read': 'reading files', 'edit': 'editing files', 'delete': 'deleting files', 'move': 'moving files',
     'search': 'searching files', 'execute': 'running a command', 'think': 'thinking', 'fetch': 'reading a web page'}
@@ -1705,6 +1706,12 @@ class RoomRuntime:
             return {**result, 'activity': self.browser.activity}
         if tool == 'room_motion':
             import motion_studio
+            if arguments.get('action') == 'publish':
+                import motion_agent
+                result = await motion_agent.publish(self, run, arguments)
+                self.project_state_soon()
+                await self.live.publish(self.live.artifact(run, result['url'], 'upload'))
+                return result
             result = await motion_studio.agent_action(self, run, arguments)
             if isinstance(result, dict) and result.get('frames'):
                 await self.live.publish(self.live.artifact(run, result.get('sheet_url') or result['frames'][0]['url'], 'upload'))

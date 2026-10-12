@@ -230,15 +230,18 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
 def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None = None, overwrite: bool = False,
-                t_ms: float | list[float] = 0, reduced: bool = False, job_id: str = '') -> list:
+                t_ms: float | list[float] = 0, reduced: bool = False, job_id: str = '', task_id: str = '',
+                note: str = '', name: str = '', post: bool = True) -> list:
     """Author motion scenes and product videos with the room's motion engine (data, never code).
     list: bundled and project scenes. get: one scene by ref (bundled:<id> or project:<id>).
     validate: check scene_json; returns {ok, issues: [{path, message}]}. Fix every issue, then save.
     save: write scene_json as project:<id> (overwrite to replace). frame: render the scene at t_ms (one
     time or up to 6) exactly as the video will look; returns /uploads PNGs plus a contact sheet you can
     post with room_markup. export: start the video (one at a time); export_status / export_cancel job_id.
-    Field reference: Docs/motion-scene-v2.md (scene v2) in the room repository; v1 scenes (layout plus
-    beats) still work. Loop: validate until clean, save, frame 2-3 key moments and show them, then export."""
+    publish job_id: deliver a finished video into this chat (post false to skip), and task_id attaches it
+    to a task you own; it plays inline there. Field reference: Docs/motion-scene-v2.md (scene v2) in the
+    room repository; v1 scenes (layout plus beats) still work. Loop: validate until clean, save, frame 2-3
+    key moments and show them, export, then publish."""
     args = dict(action=action)
     if scene:
         args['scene'] = scene
@@ -252,6 +255,8 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
         args['reduced'] = reduced
     if job_id:
         args['job_id'] = job_id
+    if action == 'publish':
+        args.update(task_id=task_id, note=note, name=name, post=post)
     # Starting a headless browser and rendering up to 6 frames can take longer than a board call.
     result = call('room_motion', args, timeout=60 if action == 'frame' else 15)
     content = [json.dumps(result)]

@@ -102,18 +102,22 @@ def task_labels(values):
 
 # Formats every provider's image input accepts, so room_image can always deliver them.
 RASTER_IMAGES = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+# Videos an agent rendered with room_motion and published (Zero #14291: videos arrive in chat and on tasks).
+VIDEOS = {'webm', 'mp4'}
 
 
-def upload_url(raw):
+def upload_url(raw, video=False):
+    """A room upload link. Annotation sources stay raster-only; a task attachment may also be a video."""
     # Accept the room's own upload links, including the absolute form agents see in chat excerpts.
     raw = str(raw).strip()
     path = '/uploads/' + raw.split('/uploads/', 1)[1] if '/uploads/' in raw else ''
     name = path[len('/uploads/'):]
     if not name or not all(c.isascii() and (c.isalnum() or c in '._-') for c in name) or name.startswith('.'):
         raise ValueError('Attachments must be uploaded images (/uploads/<file>)')
-    if name.rsplit('.', 1)[-1].lower() not in RASTER_IMAGES:
+    extension = name.rsplit('.', 1)[-1].lower()
+    if extension not in RASTER_IMAGES and not (video and extension in VIDEOS):
         # SVG can carry script; board images and annotation sources are raster only.
-        raise ValueError('Attach a PNG, JPEG, GIF or WebP image')
+        raise ValueError('Attach a PNG, JPEG, GIF or WebP image' + (', or a WebM or MP4 video' if video else ''))
     return path
 
 
@@ -136,7 +140,7 @@ def task_attachments(values):
         item = {'url': value} if isinstance(value, str) else value
         if not isinstance(item, dict):
             raise ValueError('Each attachment needs a url')
-        attachment = {'url': upload_url(item.get('url', '')), 'name': str(item.get('name') or 'image')[:120]}
+        attachment = {'url': upload_url(item.get('url', ''), video=True), 'name': str(item.get('name') or 'image')[:120]}
         if item.get('note'):
             attachment['note'] = bounded(item['note'], 'attachment note')
         if item.get('source'):
@@ -1278,11 +1282,12 @@ def coordination_tools():
                         'x1': {'type': 'number'}, 'y1': {'type': 'number'}, 'x2': {'type': 'number'}, 'y2': {'type': 'number'}, 'note': string, 'color': string},
                         'required': ['kind', 'x1', 'y1']}},
                     'summary': string, 'task_id': string, 'post': {'type': 'boolean'}}, ['image']),
-        definition('room_motion', 'Author motion scenes and product videos (JSON data, never code). list/get scenes; validate scene_json (returns issues [{path, message}]); save it as project:<id> (overwrite to replace); frame renders t_ms (one time or up to 6) exactly as the video looks, returning /uploads PNGs and a contact sheet; export starts the video; export_status; export_cancel job_id. Field reference: Docs/motion-scene-v2.md. Loop: validate until clean, save, frame key moments and show them with room_markup, then export.',
-                   {'action': {'type': 'string', 'enum': ['list', 'get', 'validate', 'save', 'frame', 'export', 'export_status', 'export_cancel']},
+        definition('room_motion', 'Author motion scenes and product videos (JSON data, never code). list/get scenes; validate scene_json (returns issues [{path, message}]); save it as project:<id> (overwrite to replace); frame renders t_ms (one time or up to 6) exactly as the video looks, returning /uploads PNGs and a contact sheet; export starts the video; export_status; export_cancel job_id; publish job_id posts the finished video to this chat (post false to skip) and task_id attaches it to a task you own. Field reference: Docs/motion-scene-v2.md. Loop: validate until clean, save, frame key moments and show them with room_markup, export, then publish.',
+                   {'action': {'type': 'string', 'enum': ['list', 'get', 'validate', 'save', 'frame', 'export', 'export_status', 'export_cancel', 'publish']},
                     'scene': string, 'scene_json': {'type': 'object'}, 'overwrite': {'type': 'boolean'},
                     't_ms': {'anyOf': [{'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}, 'maxItems': 6}]},
-                    'reduced': {'type': 'boolean'}, 'job_id': string}, ['action']),
+                    'reduced': {'type': 'boolean'}, 'job_id': string, 'task_id': string, 'note': string, 'name': string,
+                    'post': {'type': 'boolean'}}, ['action']),
         definition('room_update', 'Post a concise progress, decision, reference, blocker, or handoff update to project memory and the chatroom without waking peers.',
                    {'kind': string, 'text': string, 'supersedes': string, 'resolves': string}, ['kind', 'text']),
         definition('room_review', 'Request peer review of an approach or patch using an explicit artifact/revision reference, or respond with findings for that exact reference. Optional files selects relative files for backend hash snapshots (otherwise declared file paths). Changed snapshots block approval; room_read review_artifact retrieves captured content. Requests remain in the inbox; notify attempts one bounded wake-up.',

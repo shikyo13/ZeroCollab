@@ -336,6 +336,7 @@ class Exporter:
         self.current = None
         self.task = None
         self.framing = None  # an agent's frame render (room_motion frame) shares the one render slot
+        self.generation = 0
 
     def busy(self):
         return bool(self.current and self.current['phase'] in ('starting', 'rendering', 'encoding'))
@@ -374,7 +375,9 @@ class Exporter:
             raise ValueError('Unknown or invalid scene')
         scene = drawable(scenes[ref][1])
         encoder = require_tools(self.runtime)
+        self.generation += 1
         self.current = {'id': uuid.uuid4().hex[:12], 'scene': ref, 'scene_id': scene['id'],
+                        'generation': self.generation,
                         'name': scene.get('name') or scene['id'], 'reduced': bool(reduced), 'phase': 'starting',
                         'frame': 0, 'frames': scene['duration_ms'] * FPS // 1000, 'width': WIDTH, 'height': HEIGHT,
                         'fps': FPS, 'format': 'webm', 'codec': 'vp9', 'created': time.time(),
@@ -404,7 +407,13 @@ class Exporter:
         try:
             folder.mkdir(parents=True, exist_ok=True)
             started = time.perf_counter()
-            hashes = await export_video(scene, job['reduced'], partial, work, job, ffmpeg)
+            def check():
+                if (job.get('cancel') or self.current is not job or
+                        job['generation'] != self.generation or job['project'] != self.runtime.identity):
+                    raise Cancelled()
+
+            hashes = await export_video(scene, job['reduced'], partial, work, job, ffmpeg, check_cancel=check)
+            check()
             job['render_s'] = round(time.perf_counter() - started, 2)
             final = folder / f'{job["id"]}.webm'
             os.replace(partial, final)
@@ -442,7 +451,7 @@ def public(job):
     return {k: v for k, v in job.items() if k != 'cancel'} if job else None
 
 
-async def export_video(scene, reduced, out, work, job, ffmpeg):
+async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=None):
     """Render every frame of scene and pipe it into ffmpeg, writing a VP9 WebM to out.
     Returns the sha256 of each frame's PNG in order. No frame is stored on disk. ffmpeg is always
     stopped before this returns, including on cancellation or room shutdown."""
@@ -470,10 +479,12 @@ async def export_video(scene, reduced, out, work, job, ffmpeg):
             raise await failure()
 
     try:
-        await render(page, job, sink, work / 'profile')
+        await render(page, job, sink, work / 'profile', check_cancel=check_cancel)
         job['phase'] = 'encoding'
         encoder.stdin.close()
         while encoder.returncode is None:
+            if check_cancel:
+                check_cancel()
             if job.get('cancel'):
                 raise Cancelled()
             try:
@@ -490,95 +501,49 @@ async def export_video(scene, reduced, out, work, job, ffmpeg):
         errors.cancel()
 
 
-async def render(page, job, sink, profile):
-    """Load the page headless and pass each frame's PNG to sink, in order. The browser runs in a
-    kill-on-close job on Windows, so no child outlives the export; every DevTools command times out."""
+async def render(page, job, sink, profile, *, check_cancel=None):
+    """Shared owned worker for sequential MCP still times and bounded ordered video frames.
+    Signature and PNG-only sink remain compatible with agent preview/contact sheets.
+    """
+    from motion_render import ChromiumWorker, FrameClock, RenderIdentity, render_frames as capture_frames
+
     def check():
         if job.get('cancel'):
             raise Cancelled()
+        if check_cancel:
+            check_cancel()
 
-    profile.mkdir()
-    args = [shared_browser.executable(), *RENDER_FLAGS, f'--user-data-dir={profile}', 'about:blank']
-    proc = (shared_browser.WindowsBrowserProcess(args) if os.name == 'nt' else
-            await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL,
-                                                 stderr=asyncio.subprocess.DEVNULL))
-    ws = None
-    try:
-        marker = profile / 'DevToolsActivePort'
-        for _ in range(150):
-            check()
-            if marker.exists() and marker.read_text().strip():
-                break
-            code = proc.returncode
-            if code is not None and not (os.name == 'nt' and code == 0):
-                raise RuntimeError('The browser exited during startup')
-            await asyncio.sleep(.1)
-        else:
-            raise RuntimeError('The browser did not start within 15 seconds')
-        port = int(marker.read_text().splitlines()[0])
-        async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
-            pages = (await client.get(f'http://127.0.0.1:{port}/json/list')).json()
-        ws = await asyncio.wait_for(websockets.connect(
-            next(p for p in pages if p['type'] == 'page')['webSocketDebuggerUrl'], max_size=64 * 1024 * 1024), CALL_TIMEOUT)
-        ids = iter(range(1, 1 << 30))
+    fps = job.get('fps', FPS)
+    clock = FrameClock(fps['num'], fps['den']) if isinstance(fps, dict) else FrameClock(fps)
+    digest = hashlib.sha256(page.read_bytes()).hexdigest()
+    # Cache is not enabled until resolved asset/browser identities are pinned by
+    # the app integration. This page hash covers the inlined v1 scene and scripts.
+    identity = RenderIdentity(job.get('scene_id', 'preview'), digest,
+                              hashlib.sha256(b'').hexdigest(), digest,
+                              job.get('width', WIDTH), job.get('height', HEIGHT), clock)
+    check()
+    job['phase'] = 'rendering'
+    if job.get('times'):
+        async with ChromiumWorker(page, profile, identity, check, legacy_ms=True) as worker:
+            for i, ms in enumerate(job['times']):
+                check()
+                await sink(await worker.capture_ms(ms))
+                job['frame'] = i + 1
+        return
 
-        async def reply(mid):
-            while True:
-                msg = json.loads(await ws.recv())
-                if msg.get('id') == mid:
-                    return msg
+    async def ordered_sink(frame, png, receipt):
+        await sink(png)
+        job['frame'] = frame + 1
 
-        async def call(method, **params):
-            mid = next(ids)
-            await ws.send(json.dumps({'id': mid, 'method': method, 'params': params}))
-            try:
-                msg = await asyncio.wait_for(reply(mid), CALL_TIMEOUT)
-            except asyncio.TimeoutError:
-                raise RuntimeError(f'The browser stopped responding ({method})') from None
-            if 'error' in msg:
-                raise RuntimeError(f'{method}: {msg["error"].get("message")}')
-            return msg.get('result', {})
+    def factory(slot):
+        return ChromiumWorker(page, profile.parent / f'{profile.name}-{slot}',
+                              identity, check, legacy_ms=True)
 
-        async def evaluate(expression, wait=False):
-            r = await call('Runtime.evaluate', expression=expression, awaitPromise=wait, returnByValue=True)
-            if 'exceptionDetails' in r:
-                raise RuntimeError(r['exceptionDetails'].get('text') or 'scene script error')
-            return r.get('result', {}).get('value')
-
-        await call('Network.enable')
-        await call('Network.setBlockedURLs', urls=['http://*', 'https://*', 'ws://*', 'wss://*'])
-        await call('Emulation.setDeviceMetricsOverride', width=WIDTH, height=HEIGHT, deviceScaleFactor=1, mobile=False)
-        await call('Page.navigate', url=page.as_uri())
-        for _ in range(400):
-            check()
-            state = await evaluate('({ready: window.__ready === true, error: window.__error || null})')
-            if state and state['error']:
-                raise RuntimeError(state['error'])
-            if state and state['ready']:
-                break
-            await asyncio.sleep(.025)
-        else:
-            raise RuntimeError('The scene did not become ready within 10 seconds')
-
-        job['phase'] = 'rendering'
-        # An export seeks every frame; an agent's preview (room_motion frame) seeks only the times it asked for.
-        seeks = job.get('times') or [round(i * 1000 / FPS, 4) for i in range(job['frames'])]
-        for i, ms in enumerate(seeks):
-            check()
-            await evaluate(f'window.__seek({ms})', wait=True)
-            shot = await call('Page.captureScreenshot', format='png', fromSurface=True,
-                              clip={'x': 0, 'y': 0, 'width': WIDTH, 'height': HEIGHT, 'scale': 1})
-            await sink(base64.b64decode(shot['data']))
-            job['frame'] = i + 1
-    finally:
-        if ws:
-            await ws.close()
-        if os.name == 'nt':
-            proc.terminate()
-            proc.close_handles()
-        elif proc.returncode is None:
-            proc.kill()
-            await proc.wait()
+    await capture_frames(identity, range(job['frames']), factory, ordered_sink, check,
+                         # v1's animated SVG stroke rasterization depends on seek
+                         # history at two sampled frames. Parallelism is opt-in
+                         # until the deterministic S1/S5 frame renderer is wired.
+                         concurrency=job.get('workers', 1))
 
 
 # ---- agent tool: room_motion (task 78f77506, motion-agent-interface/CONTRACT.md r2) -----------------

@@ -1,8 +1,9 @@
-"""One disposable, project-scoped Chromium browser shared by the user and room agents: one page by default,
-more only on an explicit new_page request."""
+"""Disposable project-scoped Chromium instances, independently controlled by each agent and viewable
+by the user. Pages are opened explicitly; viewing frames never holds the action lock."""
 import asyncio
 import base64
 import contextlib
+import contextvars
 import json
 import os
 import shutil
@@ -17,12 +18,13 @@ from urllib.parse import urlsplit, unquote
 import httpx
 import websockets
 from fastapi import Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 WIDTH, HEIGHT = 1280, 800
 LEASE_SECONDS = 60
 # Explicitly opened pages per browser; each headless page costs a renderer process.
 MAX_PAGES = 4
+IDLE_SECONDS = 300
 
 
 class WindowsBrowserProcess:
@@ -154,6 +156,12 @@ class Page:
         self.dialog = self.file_node = None
         self.dialog_event = asyncio.Event()
         self.frame, self.frame_at = b'', 0
+        self.frame_seq = self.frame_drops = self.viewers = 0
+        self.frame_generation = 0
+        self.frame_event = asyncio.Event()
+        self.stream_lock = asyncio.Lock()
+        self.streaming = False
+        self.legacy_until = 0
         self.width, self.height = WIDTH, HEIGHT
 
     def summary(self, active):
@@ -186,9 +194,15 @@ class Browser:
         cfg = getattr(runtime, 'cfg', {})
         self.blocked_ports = {int(cfg.get('server', {}).get('port', 8300)),
                               int(cfg.get('mcp', {}).get('http_port', 8200)),
-                              int(cfg.get('mcp', {}).get('sse_port', 8201))}
+                              int(cfg.get('mcp', {}).get('sse_port', 8201)), 8301}
+        self.protected_debug_ports = set()
         self.debug_port = None
         self.activity = None
+        self.id = uuid.uuid4().hex[:12]
+        self.agent = self.label = ''
+        self.last_action = time.monotonic()
+        self.capacity_guard = None
+        self.lifecycle_guard = None
 
     async def publish_activity(self, actor, label, action, phase, page=None):
         # Broadcast existing observer status plus action metadata, not action arguments or screenshots.
@@ -252,6 +266,7 @@ class Browser:
         if self.active == page.id:
             self.active = next(reversed(self.pages), None)
         self.generation += 1
+        page.frame_event.set()
 
     async def receive(self):
         try:
@@ -296,10 +311,19 @@ class Browser:
                 page = self.session_page(message.get('sessionId'))
                 if page is None:
                     continue
-                if method == 'Page.frameNavigated' and not p.get('frame', {}).get('parentId'):
+                if method == 'Page.screencastFrame':
+                    page.frame = base64.b64decode(p['data'])
+                    page.frame_at = time.monotonic()
+                    page.frame_generation = page.generation
+                    page.frame_seq += 1
+                    page.frame_event.set()
+                    # Never await a command from the reader that receives its reply.
+                    self.schedule(self.command('Page.screencastFrameAck', {'sessionId': p['sessionId']}, page=page))
+                elif method == 'Page.frameNavigated' and not p.get('frame', {}).get('parentId'):
                     page.url = p['frame']['url']
                     page.generation += 1
                     self.generation += 1
+                    page.frame, page.frame_at = b'', 0
                 elif method == 'Runtime.consoleAPICalled' and p.get('type') in ('error', 'warning'):
                     self.note('console', ' '.join(str(a.get('value', a.get('description', ''))) for a in p.get('args', [])), page)
                 elif method == 'Runtime.exceptionThrown':
@@ -360,7 +384,7 @@ class Browser:
             url = params['request']['url']
             try:
                 parsed = urlsplit(url)
-                ports = self.blocked_ports | {self.debug_port}
+                ports = self.blocked_ports | self.protected_debug_ports | {self.debug_port}
                 # Block admin/control origins for every resource, not only top-level pages.
                 if parsed.hostname in ('localhost', '127.0.0.1', '::1') and (parsed.port or (443 if parsed.scheme == 'https' else 80)) in ports:
                     raise ValueError('Protected room endpoint')
@@ -424,7 +448,7 @@ class Browser:
             await self.command(domain + '.enable', page=page)
         await self.command('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]}, page=page)
         await self.command('Network.setBlockedURLs', {'urls': [f'*://{host}:{p}/*'
-            for host in ('localhost', '127.0.0.1', '[::1]') for p in self.blocked_ports | {self.debug_port}]
+            for host in ('localhost', '127.0.0.1', '[::1]') for p in self.blocked_ports | self.protected_debug_ports | {self.debug_port}]
             + [f'*://{ROOM_HOST}*', f'*://*.{ROOM_HOST}*']}, page=page)
         await self.command('Emulation.setDeviceMetricsOverride', {'width': page.width, 'height': page.height, 'deviceScaleFactor': 1, 'mobile': False}, page=page)
         await self.command('Page.setInterceptFileChooserDialog', {'enabled': True}, page=page)
@@ -433,7 +457,8 @@ class Browser:
         binary = executable()
         if not binary:
             raise ValueError('Install Microsoft Edge, Google Chrome or Chromium to use the shared browser')
-        await asyncio.to_thread(remove_stale_profiles)
+        if not self.lifecycle_guard:
+            await asyncio.to_thread(remove_stale_profiles)
         self.profile = tempfile.TemporaryDirectory(prefix='zerocollab-browser-')
         try:
             # An elevated Edge or Chrome otherwise relaunches itself de-elevated through the shell.
@@ -464,6 +489,7 @@ class Browser:
                 raise ValueError('Chromium did not start within 8 seconds')
             port = int(marker.read_text().splitlines()[0])
             self.debug_port = port
+            self.protected_debug_ports.add(port)
             async with httpx.AsyncClient(trust_env=False, timeout=3) as client:
                 pages = (await client.get(f'http://127.0.0.1:{port}/json/list')).json()
                 version = (await client.get(f'http://127.0.0.1:{port}/json/version')).json()
@@ -534,6 +560,8 @@ class Browser:
         self.drop(page)
 
     async def close(self):
+        for page in self.pages.values():
+            page.frame_event.set()
         if self.ws:
             with contextlib.suppress(Exception):
                 await self.ws.close()
@@ -557,6 +585,8 @@ class Browser:
         if self.profile:
             with contextlib.suppress(OSError):
                 self.profile.cleanup()
+        self.protected_debug_ports.discard(self.debug_port)
+        self.debug_port = None
         self.proc = self.ws = self.reader = self.profile = None
         self.pages, self.active, self.adopting = {}, None, None
         self.context = self.anchor = None
@@ -577,6 +607,7 @@ class Browser:
         process_ready = self.proc and (self.proc.returncode is None or
                                       isinstance(self.proc, WindowsBrowserProcess) and self.proc.returncode == 0)
         return {'running': bool(process_ready and self.ws and self.reader and not self.reader.done()),
+                'browser': self.id, 'agent': self.agent, 'browser_label': self.label,
                 'project': self.runtime.identity, 'url': page.url if page else '', 'title': page.title if page else '',
                 'owner': self.owner, 'owner_label': self.owner_label,
                 'lease_seconds': max(0, int(self.expires - time.monotonic())) if self.owner != 'user' else None,
@@ -585,7 +616,10 @@ class Browser:
                 'dialog': page.dialog if page else None, 'file_chooser': bool(page and page.file_node),
                 'activity': self.activity, 'page': page.id if page else None,
                 'active_page': self.active if self.active in self.pages else None,
-                'pages': [p.summary(p.id == self.active) for p in self.pages.values()], 'max_pages': MAX_PAGES}
+                'pages': [p.summary(p.id == self.active) for p in self.pages.values()], 'max_pages': MAX_PAGES,
+                'frame_sequence': page.frame_seq if page else 0,
+                'frame_age_ms': round((time.monotonic() - page.frame_at) * 1000) if page and page.frame_at else None,
+                'frame_drops': page.frame_drops if page else 0, 'viewers': page.viewers if page else 0}
 
     def control(self, actor):
         self.expire()
@@ -594,16 +628,71 @@ class Browser:
         self.expires = time.monotonic() + LEASE_SECONDS
 
     async def screenshot(self, page):
-        if time.monotonic() - page.frame_at > .35:
-            result = await self.command('Page.captureScreenshot', {'format': 'jpeg', 'quality': 75}, page=page)
-            page.frame = base64.b64decode(result['data'])
-            page.frame_at = time.monotonic()
+        # Explicit evidence is always a fresh capture, independent of the viewing stream.
+        result = await self.command('Page.captureScreenshot', {'format': 'jpeg', 'quality': 75}, page=page)
+        return base64.b64decode(result['data'])
+
+    async def start_stream(self, page):
+        async with page.stream_lock:
+            if self.pages.get(page.id) is not page or not self.status()['running']:
+                raise ValueError('That browser page was closed')
+            if not page.streaming:
+                for attempt in range(40):
+                    try:
+                        await self.command('Page.startScreencast', {'format': 'jpeg', 'quality': 75,
+                                           'maxWidth': page.width, 'maxHeight': page.height, 'everyNthFrame': 1}, page=page)
+                        break
+                    except ValueError as exc:
+                        # Page.navigate returns before the replacement renderer is active.
+                        if ('Not attached to an active page' not in str(exc) or attempt == 39
+                                or self.pages.get(page.id) is not page):
+                            raise
+                        await asyncio.sleep(.05)
+                page.streaming = True
+
+    async def latest_frame(self, page):
+        page.legacy_until = time.monotonic() + 2
+        await self.start_stream(page)
+        if not page.frame:
+            await asyncio.wait_for(page.frame_event.wait(), 5)
+        if self.pages.get(page.id) is not page or not page.frame:
+            raise ValueError('That browser page was closed')
         return page.frame
+
+    async def stream(self, page):
+        page.viewers += 1
+        seen = -1
+        try:
+            await self.start_stream(page)
+            while self.pages.get(page.id) is page and self.project == self.runtime.identity and self.status()['running']:
+                page.frame_event.clear()
+                if page.frame_seq == seen or not page.frame:
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(page.frame_event.wait(), 10)
+                    continue
+                if seen >= 0:
+                    page.frame_drops += max(0, page.frame_seq - seen - 1)
+                seen, data = page.frame_seq, page.frame
+                headers = (f'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(data)}\r\n'
+                           f'X-Browser-ID: {self.id}\r\nX-Page-ID: {page.id}\r\n'
+                           f'X-Page-Generation: {page.frame_generation}\r\nX-Frame-Sequence: {seen}\r\n\r\n').encode()
+                yield headers + data + b'\r\n'
+        finally:
+            page.viewers -= 1
+            async with page.stream_lock:
+                if not page.viewers and page.streaming and time.monotonic() >= page.legacy_until:
+                    with contextlib.suppress(Exception):
+                        await self.command('Page.stopScreencast', page=page)
+                    page.streaming = False
 
     async def act(self, actor, label, arguments):
         if not isinstance(arguments, dict):
             raise ValueError('Browser arguments must be an object')
         async with self.lock:
+            if self.lifecycle_guard:
+                self.lifecycle_guard()
+            if arguments.get('action', 'status') != 'status':
+                self.last_action = time.monotonic()
             if self.project and self.project != self.runtime.identity:
                 await self.close()
                 self.events.clear()
@@ -633,6 +722,8 @@ class Browser:
                     if arguments.get('page'):
                         raise ValueError('That browser page was closed; read status for the current pages')
                     await self.close()
+                    if self.capacity_guard:
+                        self.capacity_guard()
                     self.owner, self.owner_label = actor, label
                     self.expires = time.monotonic() + LEASE_SECONDS
                     await self.start()
@@ -749,8 +840,163 @@ class Browser:
         return x, y
 
 
+def browser_capacity():
+    """Conservative on-demand process budget, not a claim about measured memory use."""
+    available = 2 * 1024 ** 3
+    if os.name == 'nt':
+        import ctypes
+        class Memory(ctypes.Structure):
+            _fields_ = [('length', ctypes.c_ulong), ('load', ctypes.c_ulong)] + [
+                (name, ctypes.c_ulonglong) for name in ('total', 'available', 'page_total', 'page_available',
+                                                       'virtual_total', 'virtual_available', 'extended')]
+        value = Memory()
+        value.length = ctypes.sizeof(value)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(value)):
+            available = value.available
+    elif hasattr(os, 'sysconf'):
+        with contextlib.suppress(ValueError, OSError):
+            available = os.sysconf('SC_AVPHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+    return min(32, max(1, available // (384 * 1024 ** 2)))
+
+
+class BrowserManager:
+    """Independent browser process/control per stable room agent; shared read-only selection."""
+    def __init__(self, runtime):
+        self.runtime, self.lock = runtime, asyncio.Lock()
+        self.instances, self.agents = {}, {}
+        self.project = runtime.identity
+        self.debug_ports, self.starting = set(), set()
+        self.default = None
+        self.reaper = None
+        self.selection = contextvars.ContextVar('browser_instance', default=None)
+        self.max_instances = browser_capacity()
+        self.cleaned_profiles = False
+
+    @property
+    def activity(self):
+        browser = self.selection.get()
+        return browser.activity if browser else None
+
+    def reserve(self, browser):
+        self.validate(browser)
+        active = sum(b.status()['running'] or b.id in self.starting for b in self.instances.values())
+        if active >= self.max_instances and browser.id not in self.starting:
+            raise ValueError(f'The browser memory budget allows {self.max_instances} active instances. Stop an unused one first.')
+        self.starting.add(browser.id)
+
+    def validate(self, browser):
+        if self.instances.get(browser.id) is not browser or self.project != self.runtime.identity:
+            raise ValueError('That browser instance was closed; reopen it for this project')
+
+    def summaries(self):
+        return [{'id': b.id, 'agent': b.agent, 'label': b.label, 'running': b.status()['running'],
+                 'pages': len(b.pages), 'owner': b.owner} for b in self.instances.values()]
+
+    def wrap(self, browser, result):
+        return {**result, 'instances': self.summaries(), 'max_instances': self.max_instances,
+                'idle_timeout': IDLE_SECONDS}
+
+    def choose(self, actor, label, arguments, create=True):
+        instance = arguments.get('browser')
+        page = arguments.get('page')
+        if page:
+            match = next((b for b in self.instances.values() if page in b.pages), None)
+            if not match or instance and instance != match.id:
+                raise ValueError('That browser page was closed; choose an open page')
+            instance = match.id
+        if actor != 'user':
+            own = self.agents.get(label)
+            if instance and instance != own:
+                raise ValueError('That page belongs to another agent browser; use your own instance')
+            instance = own
+        elif not instance:
+            running = [b for b in self.instances.values() if b.status()['running']]
+            instance = self.default if self.default in self.instances and self.instances[self.default].status()['running'] else (
+                running[0].id if running else self.agents.get('user'))
+        if instance:
+            if instance not in self.instances:
+                raise ValueError('That browser instance was closed')
+            return self.instances[instance]
+        if not create:
+            raise ValueError('Open a local preview first')
+        browser = Browser(self.runtime)
+        browser.agent, browser.label = ('user', 'Your browser') if actor == 'user' else (label, label)
+        browser.protected_debug_ports = self.debug_ports
+        browser.capacity_guard = lambda: self.reserve(browser)
+        browser.lifecycle_guard = lambda: self.validate(browser)
+        self.instances[browser.id] = browser
+        self.agents[browser.agent] = browser.id
+        return browser
+
+    async def prepare(self, actor, label, arguments):
+        async with self.lock:
+            if not self.cleaned_profiles:
+                # Clean once before any concurrent startup can create a profile.
+                await asyncio.to_thread(remove_stale_profiles)
+                self.cleaned_profiles = True
+            if self.project != self.runtime.identity:
+                await self.close()
+                self.project = self.runtime.identity
+            if not self.reaper:
+                self.reaper = asyncio.create_task(self.reap())
+            return self.choose(actor, label, arguments)
+
+    async def act(self, actor, label, arguments):
+        if not isinstance(arguments, dict):
+            raise ValueError('Browser arguments must be an object')
+        browser = await self.prepare(actor, label, arguments)
+        self.selection.set(browser)
+        try:
+            result = await browser.act(actor, label, arguments)
+            if result['running'] and not self.default:
+                self.default = browser.id
+            return self.wrap(browser, result)
+        finally:
+            self.starting.discard(browser.id)
+
+    async def publish_activity(self, actor, label, action, phase, page=None):
+        browser = await self.prepare(actor, label, {})
+        self.selection.set(browser)
+        browser.activity = {'actor': actor, 'label': label, 'action': action,
+                            'phase': phase, 'time': time.time(), 'page': page or browser.active}
+        await self.runtime.emit('browser_activity', self.wrap(browser, browser.status()))
+
+    async def close(self):
+        if self.reaper and self.reaper is not asyncio.current_task():
+            self.reaper.cancel()
+            await asyncio.gather(self.reaper, return_exceptions=True)
+        self.reaper = None
+        instances = list(self.instances.values())
+        self.instances.clear()
+        self.agents.clear()
+        self.starting.clear()
+        self.default = None
+        async def close_instance(browser):
+            async with browser.lock:
+                await browser.close()
+        await asyncio.gather(*(close_instance(browser) for browser in instances), return_exceptions=True)
+
+    async def reap(self):
+        while True:
+            await asyncio.sleep(1)
+            for browser in list(self.instances.values()):
+                for page in list(browser.pages.values()):
+                    if page.streaming and not page.viewers and time.monotonic() >= page.legacy_until:
+                        async with page.stream_lock:
+                            if not page.viewers and time.monotonic() >= page.legacy_until:
+                                with contextlib.suppress(Exception):
+                                    await browser.command('Page.stopScreencast', page=page)
+                                page.streaming = False
+                browser.expire()
+                if (browser.status()['running'] and not browser.owner and not browser.lock.locked()
+                        and not any(p.viewers for p in browser.pages.values())
+                        and time.monotonic() - browser.last_action >= IDLE_SECONDS):
+                    async with browser.lock:
+                        await browser.close()
+
+
 def install(host, runtime):
-    browser = runtime.browser = Browser(runtime)
+    browser = runtime.browser = BrowserManager(runtime)
 
     @host.app.get('/api/runtime/browser')
     async def status(request: Request):
@@ -762,6 +1008,8 @@ def install(host, runtime):
         arguments = {'action': 'status'}
         if request.query_params.get('page'):
             arguments['page'] = request.query_params['page']
+        if request.query_params.get('browser'):
+            arguments['browser'] = request.query_params['browser']
         try:
             return await browser.act('user', 'You', arguments)
         except ValueError as exc:
@@ -776,7 +1024,10 @@ def install(host, runtime):
             if body.get('project') != runtime.identity:
                 return JSONResponse({'error': 'Project changed; reload the browser view'}, 409)
             result = await browser.act('user', 'You', body)
-            await browser.publish_activity('user', 'You', body.get('action', 'status'), 'done', result.get('page'))
+            selected = browser.selection.get()
+            selected.activity = {'actor': 'user', 'label': 'You', 'action': body.get('action', 'status'),
+                                 'phase': 'done', 'time': time.time(), 'page': result.get('page')}
+            await runtime.emit('browser_activity', browser.wrap(selected, selected.status()))
             return {**result, 'activity': browser.activity}
         except (ValueError, TypeError, OSError) as exc:
             return JSONResponse({'error': str(exc)}, 400)
@@ -786,28 +1037,46 @@ def install(host, runtime):
         try:
             if request.query_params.get('project') != runtime.identity:
                 return Response(status_code=409)
-            arguments = {'action': 'screenshot'}
-            if request.query_params.get('page'):
-                arguments['page'] = request.query_params['page']
-            result = await browser.act('user', 'You', arguments)
-            return Response(base64.b64decode(result['image']), media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
+            selected = await browser.prepare('user', 'You', dict(request.query_params))
+            page = selected.page(dict(request.query_params))
+            return Response(await selected.latest_frame(page), media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
+        except ValueError:
+            return Response(status_code=404)
+        except (OSError, asyncio.TimeoutError):
+            return Response(status_code=409)
+
+    @host.app.get('/api/runtime/browser/stream')
+    async def stream(request: Request):
+        try:
+            if request.query_params.get('project') != runtime.identity:
+                return Response(status_code=409)
+            selected = await browser.prepare('user', 'You', dict(request.query_params))
+            page = selected.page(dict(request.query_params))
+            # Start/validate before headers; streaming never holds the action lock.
+            await selected.start_stream(page)
+            return StreamingResponse(selected.stream(page), media_type='multipart/x-mixed-replace; boundary=frame',
+                                     headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
         except (ValueError, OSError):
             return Response(status_code=409)
 
     @host.app.post('/api/runtime/browser/file')
     async def upload(request: Request):
-        async with browser.lock:
+        try:
+            selected = await browser.prepare('user', 'You', dict(request.query_params))
+        except ValueError as exc:
+            return JSONResponse({'error': str(exc)}, 400)
+        async with selected.lock:
             try:
-                if request.query_params.get('project') != runtime.identity or browser.project != runtime.identity:
+                if request.query_params.get('project') != runtime.identity or selected.project != runtime.identity:
                     raise ValueError('Project changed; reopen the browser')
-                browser.control('user')
-                page = browser.page({'page': request.query_params.get('page', '')})
+                selected.control('user')
+                page = selected.page({'page': request.query_params.get('page', '')})
                 if not page.file_node:
                     raise ValueError('The page has no pending file picker')
                 filename = Path(unquote(request.headers.get('X-File-Name', 'upload')).replace('\\', '/')).name
                 if not filename or filename in ('.', '..') or ':' in filename:
                     raise ValueError('Invalid filename')
-                target = Path(browser.profile.name) / 'uploads' / filename
+                target = Path(selected.profile.name) / 'uploads' / filename
                 target.parent.mkdir(exist_ok=True)
                 count = 0
                 with target.open('wb') as output:
@@ -816,8 +1085,8 @@ def install(host, runtime):
                         if count > 16 * 1024 * 1024:
                             raise ValueError('File must be smaller than 16 MB')
                         output.write(chunk)
-                await browser.command('DOM.setFileInputFiles', {'files': [str(target)], 'backendNodeId': page.file_node}, page=page)
+                await selected.command('DOM.setFileInputFiles', {'files': [str(target)], 'backendNodeId': page.file_node}, page=page)
                 page.file_node = None
-                return browser.status(page)
+                return browser.wrap(selected, selected.status(page))
             except (ValueError, OSError) as exc:
                 return JSONResponse({'error': str(exc)}, 400)
