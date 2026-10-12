@@ -24,6 +24,23 @@
     m.play(def.beats, ZCMotion.layout(m, def.layout));
     window.__scene = { version: ZCMotion.VERSION, id: def.id, duration: def.duration_ms, reduced, beats: def.beats };
     window.__seek = m.seek;
+    // v1 keeps its millisecond entry point. Frame consumers use one rational mapping,
+    // including when core.js has not shipped yet (the old Studio remains usable).
+    const core = window.ZCMotionCore;
+    const input = opts.frame_input;
+    const fps = input ? input.fps : { num: 30, den: 1 };
+    const seekFrame = frame => {
+      if (!Number.isSafeInteger(frame) || frame < 0) throw new RangeError('frame must be a nonnegative integer');
+      if (!Number.isSafeInteger(fps.num) || !Number.isSafeInteger(fps.den) || fps.num <= 0 || fps.den <= 0) throw new RangeError('fps must be positive integers');
+      if (input && !core) throw new Error('Frame identity requires motion core');
+      const milliseconds = input ? core.evaluateFrame({ ...input, frame }, context => context.milliseconds)
+        : core ? core.frameToMilliseconds(frame, fps) : frame * 1000 * fps.den / fps.num;
+      return m.seek(milliseconds);
+    };
+    window.__seekFrame = seekFrame;
+    // A server-adapted v2 room composition carries frame_input in options; legacy
+    // pages without it retain __seek(ms). General v2 layer rendering is a later slice.
+    if (input) window.__seek = seekFrame;
     if (opts.render) {
       m.seek(0);
     } else {
