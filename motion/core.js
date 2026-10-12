@@ -364,6 +364,15 @@ var ZCMotionCore = (() => {
   function layoutStage(people, stage, reserved = [], previous) {
     const area = { x: stage.x + 60, y: stage.y + 70, w: Math.max(120, stage.w - 120), h: Math.max(120, stage.h - 130) };
     const home = homeSeats(people, area);
+    for (const p of people) {
+      const seat = home.get(p.id);
+      for (const r of reserved) {
+        if (overlap(personRect(seat, p.quiet, p.hasThumb), r) === 0) continue;
+        const below = { x: seat.x, y: r.y + r.h + 26 + 10 };
+        const rect = personRect(below, p.quiet, p.hasThumb);
+        home.set(p.id, rect.y + rect.h <= stage.y + stage.h - 10 ? below : { x: r.x + r.w + PERSON.w / 2 + 10, y: seat.y });
+      }
+    }
     const seats2 = new Map(home);
     const byGroup = /* @__PURE__ */ new Map();
     for (const p of people) if (p.group && !p.quiet) (byGroup.get(p.group) ?? byGroup.set(p.group, []).get(p.group)).push(p);

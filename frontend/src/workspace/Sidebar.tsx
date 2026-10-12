@@ -102,6 +102,7 @@ export function Sidebar({ view, navigate, projects, active, deployments, onOpenP
     </div>
     <div className="ws-nav-group">
       {item('board', 'Board', busy ? <small className="ws-count">{busy} active</small> : null)}
+      {item('live', 'Live')}
       {item('motion', 'Motion')}
       {item('team', 'Team', agents ? <small className="ws-count">{agents}</small> : null)}
     </div>

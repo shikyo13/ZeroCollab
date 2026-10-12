@@ -53,10 +53,21 @@ function homeSeats(people: SeatInput[], area: Rect): Map<string, Point> {
   return seats;
 }
 
-/** Formation placement avoids reserved areas when space permits. Callers inspect footprints for crowding. */
+/** Home seats and formations avoid reserved areas when space permits. Callers inspect footprints for crowding. */
 export function layoutStage(people: SeatInput[], stage: Rect, reserved: Rect[] = [], previous?: Map<string, Rect>): StageLayout {
   const area = { x: stage.x + 60, y: stage.y + 70, w: Math.max(120, stage.w - 120), h: Math.max(120, stage.h - 130) };
   const home = homeSeats(people, area);
+  // A home seat under a reserved area (the You area while you answer a question) steps just below it,
+  // then right if that would leave the stage; nobody sits under something you are using.
+  for (const p of people) {
+    const seat = home.get(p.id)!;
+    for (const r of reserved) {
+      if (overlap(personRect(seat, p.quiet, p.hasThumb), r) === 0) continue;
+      const below = { x: seat.x, y: r.y + r.h + 26 + 10 };
+      const rect = personRect(below, p.quiet, p.hasThumb);
+      home.set(p.id, rect.y + rect.h <= stage.y + stage.h - 10 ? below : { x: r.x + r.w + PERSON.w / 2 + 10, y: seat.y });
+    }
+  }
   const seats = new Map(home);
   const byGroup = new Map<string, SeatInput[]>();
   for (const p of people) if (p.group && !p.quiet) (byGroup.get(p.group) ?? byGroup.set(p.group, []).get(p.group)!).push(p);
