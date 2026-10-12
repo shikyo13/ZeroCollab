@@ -1,7 +1,4 @@
-/* Follow mode UI: the header toggle, the Board's banner and LIVE ticker, the per-card
- * overlay, and the Space/Esc shortcuts. A live agent is pinned to a card only when it is
- * explicitly associated with that task; otherwise it stays on its chip in the banner, and the Board
- * never scrolls to a guessed task. */
+/* Follow the current executing task from the server, with explicit event links taking priority. */
 import { useEffect, useMemo, useRef } from 'react';
 import { sessionTitle } from '../lib/room';
 import type { RunInfo, Task } from '../lib/types';
@@ -18,7 +15,7 @@ export interface CardFollow {
 
 export interface FollowPlacement {
   cards: Map<string, CardFollow>;
-  /** Live agents not pinned to a card: no explicit task association. */
+  /** Live agents without a unique executing task remain in the banner. */
   unplaced: AgentLive[];
 }
 
@@ -27,7 +24,9 @@ export function placeFollow(snap: FollowSnapshot, tasks: Task[]): FollowPlacemen
   const unplaced: AgentLive[] = [];
   if (!snap.following) return { cards, unplaced };
   for (const entry of Object.values(snap.live)) {
-    const linked = entry.task && tasks.find(t => t.id === entry.task && t.owner === entry.agent);
+    const explicit = entry.task && tasks.find(t => t.id === entry.task);
+    const executing = tasks.filter(t => t.owner === entry.agent && t.execution_state === 'executing');
+    const linked = explicit || (executing.length === 1 ? executing[0] : undefined);
     if (linked) cards.set(linked.id, { live: entry });
     else unplaced.push(entry);
   }
@@ -113,13 +112,40 @@ export function FollowTicker({ tasks, agents, onOpenTask }: { tasks: Task[]; age
   const snap = useFollow();
   const titles = useMemo(() => new Map(tasks.map(t => [t.id, t.title])), [tasks]);
   const viewport = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const node = viewport.current;
+    if (!node || !snap.following || snap.paused) return;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let frame = 0;
+    let previous = 0;
+    let position = node.scrollLeft;
+    let holdUntil = 0;
+    const move = (time: number) => {
+      const held = reduced.matches || document.hidden || node.matches(':hover, :focus-within');
+      const elapsed = previous ? Math.min(time - previous, 64) : 0;
+      previous = time;
+      const end = node.scrollWidth - node.clientWidth;
+      if (held) position = node.scrollLeft;
+      else if (end > 0 && time >= holdUntil) {
+        position += elapsed * 0.032;
+        if (position >= end) {
+          position = 0;
+          holdUntil = time + 1400;
+        }
+        node.scrollLeft = position;
+      }
+      frame = window.requestAnimationFrame(move);
+    };
+    frame = window.requestAnimationFrame(move);
+    return () => window.cancelAnimationFrame(frame);
+  }, [snap.following, snap.paused, snap.ticker[0]?.id]);
   if (!snap.following) return null;
   return <section className={`fl-ticker${snap.paused ? ' is-paused' : ''}`} aria-label="Live team events">
     <span className="fl-ticker-live">{snap.paused ? 'PAUSED' : 'LIVE'}</span>
-    <div className="fl-ticker-viewport" ref={viewport} tabIndex={0} role="region" aria-label="Recent team events. Text stays still while you read.">
+    <div className="fl-ticker-viewport" ref={viewport} tabIndex={0} role="region" aria-label="Recent team events. Hover or focus to hold scrolling; use arrow keys to scroll.">
     <ol className="fl-ticker-list">
       {snap.ticker.length === 0 && <li className="fl-ticker-empty">Waiting for the next event…</li>}
-      {snap.ticker.slice(0, 2).map(item => <li key={item.id}>
+      {snap.ticker.slice(0, 12).map(item => <li key={item.id}>
         <time>{clock(item.time)}</time>
         {item.actor && <strong>{followName(item.actor, agents)}</strong>} {item.text}
         {item.task && titles.has(item.task) && <> · <button type="button" className="fl-link" onClick={() => onOpenTask(item.task!)}>{titles.get(item.task)}</button></>}

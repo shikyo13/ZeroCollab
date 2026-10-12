@@ -383,11 +383,22 @@ class ProjectRoom:
         self.state['spec'] = text.strip()
         self.save()
 
+    @staticmethod
+    def fresh_chain(identifier, channel):
+        return {'id': identifier, 'channel': channel, 'turns': 0,
+                'handoffs': 0, 'reported_tokens': 0, 'input_chars': 0, 'paused': False}
+
+    def adopt_chain(self, identifier, channel):
+        """Conversation records live in memory only. Admitted work that names one lost to a restart (a restored
+        install checkpoint) or to pruning gets a fresh record under the same id instead of being refused as if
+        its budget ran out (harness 8016e379). Never used for manager check-ins, whose fences must hold."""
+        if identifier and identifier not in self.chains:
+            self.chains[identifier] = self.fresh_chain(identifier, channel)
+
     def new_chain(self, channel):
         identifier = uuid.uuid4().hex[:12]
         self.current_chain[channel] = identifier
-        self.chains[identifier] = {'id': identifier, 'channel': channel, 'turns': 0,
-                                   'handoffs': 0, 'reported_tokens': 0, 'input_chars': 0, 'paused': False}
+        self.chains[identifier] = self.fresh_chain(identifier, channel)
         # Completed old conversations need not stay in memory; audit retains events.
         if len(self.chains) > 100:
             active = {r.entry.get('chain') for r in self.runtime.running.values()}

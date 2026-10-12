@@ -9,7 +9,7 @@ import { followName } from './Follow';
 import { closePip, useFollow, type PipItem } from './followStore';
 import './pip.css';
 
-type Pane = {key:number; item:PipItem; pinned:boolean; held:boolean; graceUntil:number; heldCollapsed:boolean; collapsed:boolean|null; opened:boolean; updates:number};
+type Pane = {key:number; item:PipItem; pinned:boolean; held:boolean; graceUntil:number; heldCollapsed:boolean; collapsed:boolean|null; opened:boolean; viewed:boolean; updates:number};
 type Frame = {src:string; received:number};
 
 function useBrowserFrame(item:PipItem, frozen:boolean, hardFrozen:boolean, active:()=>boolean) {
@@ -51,14 +51,24 @@ function Preview({pane,collapsed,paused,agents,tasks,onChange,onClose,onOpenTask
   useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()/1000),1000);return()=>clearInterval(timer);},[]);
   useEffect(()=>{const node=root.current;if(!node)return;const observer=new IntersectionObserver(entries=>setVisible(entries[0].isIntersecting));observer.observe(node);return()=>observer.disconnect();},[]);
   useEffect(()=>{
-    if(paused||pane.pinned||pane.held||expanded||now<pane.graceUntil)return;
+    // Unseen/folded evidence stays available until it has actually been displayed.
+    if(!pane.viewed||collapsed||!visible||paused||pane.pinned||pane.held||expanded||now<pane.graceUntil)return;
     const timer=setTimeout(()=>closeRef.current(),12000);return()=>clearTimeout(timer);
-  },[item.id,paused,pane.pinned,pane.held,expanded,now<pane.graceUntil]);
+  },[item.id,pane.viewed,collapsed,visible,paused,pane.pinned,pane.held,expanded,now<pane.graceUntil]);
   useEffect(()=>{
     if(!expanded)return;dialog.current?.showModal();return()=>{dialog.current?.close();if(opener.current?.isConnected)opener.current.focus();};
   },[expanded]);
   const hold=(held:boolean)=>onChange({held,heldCollapsed:collapsed,graceUntil:held?0:Date.now()/1000+10});
   const image=item.kind==='browser'?frame?.src:original&&item.source?item.source:item.url;
+  useEffect(()=>{
+    const node=root.current?.querySelector<HTMLImageElement>('.fl-preview-image img');
+    if(!node||pane.viewed||collapsed)return;
+    let inView=false;
+    const viewed=()=>{if(inView&&node.complete&&node.naturalWidth>0)onChange({viewed:true});};
+    const observer=new IntersectionObserver(entries=>{inView=entries[0].isIntersecting;viewed();});
+    node.addEventListener('load',viewed);observer.observe(node);
+    return()=>{node.removeEventListener('load',viewed);observer.disconnect();};
+  },[pane.viewed,collapsed,image]);
   const notes=item.kind==='markup'?imageNotes(item.note):null;
   const title=item.kind==='browser'?'Browser':item.kind==='markup'?'Annotation':'Screenshot';
   const time=new Date(item.time*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
@@ -71,6 +81,7 @@ function Preview({pane,collapsed,paused,agents,tasks,onChange,onClose,onOpenTask
       <button className="fl-pip-btn" aria-expanded={!collapsed} onClick={()=>onChange({collapsed:!collapsed,heldCollapsed:!collapsed,opened:collapsed})}>{collapsed?'Show':'Fold'}</button>
       <button className="fl-pip-btn" aria-pressed={pane.pinned} disabled={item.kind==='browser'&&!frame&&!pane.pinned} onClick={()=>onChange({pinned:!pane.pinned})}>{pane.pinned?'Unpin':'Pin'}</button>
       <button className="fl-pip-btn" aria-label={`Close ${followName(item.actor,agents)} ${title} preview`} onClick={onClose}>Close</button>
+      {!!pane.updates&&<button className="fl-pip-btn fl-preview-new" onClick={onNew}>{pane.updates} new previews</button>}
     </div><p className="fl-preview-source"><strong>{task?.title || 'Team activity'}</strong><span>{item.kind==='browser'?item.url || 'Shared browser':item.source?'Saved annotation · original available':'Saved screenshot'}</span></p></header>
     {!collapsed&&<div className="fl-preview-body">
       <p className="fl-preview-caption">{caption}</p>
@@ -78,7 +89,6 @@ function Preview({pane,collapsed,paused,agents,tasks,onChange,onClose,onOpenTask
       {image?<button className="fl-preview-image" aria-label={`Expand ${title} image`} onClick={e=>{opener.current=e.currentTarget;setExpanded(true);}}><img src={image} alt={notes?.summary || `${title} evidence`}/></button>:<p className="fl-pip-empty">Waiting for the shared browser…</p>}
       {notes&&!original&&<ol className="fl-pip-legend">{notes.marks.map(mark=><li key={mark.number}><span className="fl-pip-key" style={{background:mark.color || 'var(--accent)'}}>{mark.number}</span>{mark.text}</li>)}</ol>}
       {task&&<button className="fl-pip-link" onClick={()=>onOpenTask(task.id)}>{task.title}</button>}
-      {!!pane.updates&&<button className="fl-pip-btn fl-preview-new" onClick={onNew}>{pane.updates} new previews</button>}
     </div>}
     {expanded&&<dialog ref={dialog} className="fl-preview-dialog" aria-label={`${title} image inspection`} onCancel={e=>{e.preventDefault();setExpanded(false);}} onClose={()=>setExpanded(false)}>
       <header><strong>{followName(item.actor,agents)} · {title}</strong><button className="fl-pip-btn" aria-label="Close image inspection" onClick={()=>setExpanded(false)}>Close</button></header>
@@ -98,8 +108,8 @@ export function FollowPip({agents,tasks,onOpenTask,onPreviewsChange,projectId}:{
       let next=previous.map(p=>({...p,updates:p.pinned||p.held||Date.now()/1000<p.graceUntil?p.updates+incoming.length:p.updates}));
       for(const item of [...incoming].reverse()){
         const same=next.findIndex(p=>item.kind==='browser'&&p.item.kind==='browser'&&p.item.project===item.project&&p.item.page===item.page&&!p.pinned&&!p.held&&Date.now()/1000>=p.graceUntil);
-        if(same>=0){next[same]={...next[same],item};continue;}
-        const pane:Pane={key:item.id,item,pinned:false,held:false,graceUntil:0,heldCollapsed:false,collapsed:null,opened:false,updates:0};
+        if(same>=0){next[same]={...next[same],item,viewed:false};continue;}
+        const pane:Pane={key:item.id,item,pinned:false,held:false,graceUntil:0,heldCollapsed:false,collapsed:null,opened:false,viewed:false,updates:0};
         // Incoming media never displaces a pinned/read surface. Its update chip leads to the new item.
         if (next.some(p=>p.pinned||p.held||Date.now()/1000<p.graceUntil)) next.push(pane); else next.unshift(pane);
       }
@@ -115,8 +125,9 @@ export function FollowPip({agents,tasks,onOpenTask,onPreviewsChange,projectId}:{
   };
   if(!snap.following||!panes.length)return null;
   return <aside ref={rail} className="fl-preview-rail" aria-label="Team previews"><h2>Team previews</h2>{panes.map((pane,index)=>{
-    const collapsed=pane.held||Date.now()/1000<pane.graceUntil?pane.heldCollapsed:pane.collapsed ?? (index>=2&&!pane.pinned&&!pane.opened);
-    return <Preview key={pane.key} pane={pane} collapsed={collapsed} paused={snap.paused} agents={agents} tasks={tasks} onOpenTask={onOpenTask}
+    const collapsed=pane.collapsed ?? (pane.held||Date.now()/1000<pane.graceUntil?pane.heldCollapsed:index>=2&&!pane.pinned&&!pane.opened);
+    const updates=panes.filter(p=>p.item.id>pane.item.id).length;
+    return <Preview key={pane.key} pane={{...pane,updates:pane.pinned||pane.held||Date.now()/1000<pane.graceUntil?updates:0}} collapsed={collapsed} paused={snap.paused} agents={agents} tasks={tasks} onOpenTask={onOpenTask}
       onChange={patch=>setPanes(previous=>previous.map(p=>p.item.id===pane.item.id?{...p,...patch}:p))} onClose={()=>close(pane.item.id)}
       onNew={()=>{
         const newest=Math.max(...panes.map(p=>p.item.id));

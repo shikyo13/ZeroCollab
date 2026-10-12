@@ -1504,10 +1504,15 @@ class RoomRuntime:
             entry['prompt'] = '\n\n'.join(r['prompt'] for r in requests)
             if len(requests) > 1:
                 entry['prompt'] = 'Pending updates (oldest to newest; later human direction takes precedence):\n' + entry['prompt']
-            if not self.project_room.permit(entry['chain'], audit_reserved=next((q.get('manager_audit') for q in requests if q.get('manager_audit')), None)):
+            audit_reserved = next((q.get('manager_audit') for q in requests if q.get('manager_audit')), None)
+            if not audit_reserved:
+                self.project_room.adopt_chain(entry['chain'], entry['channel'])
+            if not self.project_room.permit(entry['chain'], audit_reserved=audit_reserved):
                 if any(r.get('goal_token') for r in requests):
                     self.goals.pause('Conversation turn or token budget reached.')
-                self.host.store.add('system', 'Conversation budget reached. Send a new instruction to continue this project.', channel=entry['channel'])
+                # A check-in refused by its own fence is background bookkeeping, not a budget the user can act on.
+                if not audit_reserved:
+                    self.host.store.add('system', 'Conversation budget reached. Send a new instruction to continue this project.', channel=entry['channel'])
                 return
             if not humans and handoffs:
                 self.project_room.handoff(entry['chain'])

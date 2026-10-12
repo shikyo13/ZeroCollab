@@ -315,6 +315,7 @@ interface BrowserData {
   project?: string;
   page?: string;
   active_page?: string;
+  running?: boolean;
   pages?: {id: string; url: string}[];
   activity?: { actor?: string; label?: string; action?: string; phase?: string; time?: number; page?: string } | null;
 }
@@ -351,7 +352,8 @@ function onBrowser(event: RoomEvent) {
   if (who !== 'user' && a.action !== 'release' && d.project) {
     const page = a.page || d.page || d.active_page;
     const url = d.pages?.find(p => p.id === page)?.url || (!a.page || a.page === d.page ? d.url : '') || '';
-    showPip({ kind: 'browser', actor: who, time: a.time, url, project: d.project, page, action: words });
+    // A claim on a stopped browser has no page or frame to show.
+    if (page && d.running !== false) showPip({ kind: 'browser', actor: who, time: a.time, url, project: d.project, page, action: words });
   }
   publish();
 }

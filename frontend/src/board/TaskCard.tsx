@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Followup, ProjectState, Review, Task } from '../lib/types';
 import { CardFollowLayer, followName, type CardFollow } from '../follow/Follow';
 import { CardThumbnails } from './Attachments';
@@ -114,6 +114,11 @@ export function TaskCard({
   const waiting = task.execution_state === 'waiting_on_human';
   const liveAgent = follow?.live?.agent;
   const cardRef = useRef<HTMLElement>(null);
+  const liveRun = follow?.live?.run;
+  useEffect(() => {
+    if (!liveRun) return;
+    cardRef.current?.scrollIntoView({block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'});
+  }, [liveRun]);
   return (
     <article
       ref={cardRef}
