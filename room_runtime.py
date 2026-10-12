@@ -64,6 +64,7 @@ READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "We
                    "BashOutput", "webSearch", "imageView", "todoList",
                    "read_file", "file_glob_search", "grep_search", "get_info"}
 ROOM_SERVER = 'zerocollab_coordination'
+EVENT_LOG_LIMIT = 32 * 1024 * 1024  # runtime_events.jsonl starts a new file past this size (append_event)
 # One automatic retry for a turn that failed before producing any output (task 33f0aa98).
 STARTUP_RETRY_SECONDS = 5
 # A subscription CLI's saved sign-in revoked or expired: Codex reports 'workspace routing discovery
@@ -781,10 +782,22 @@ class RoomRuntime:
                           "settings": r.settings, "reported_settings": r.reported_settings,
                           "reported_tokens": r.reported_tokens, "input_chars": r.input_chars} for r in self.running.values()]}
 
+    def append_event(self, line):
+        """runtime_events.jsonl grew past 400 MB, and antivirus rescans an appended file after each write
+        (QA 9bac8aee, harness a10204ae). Past EVENT_LOG_LIMIT the file is renamed with a timestamp and a new one
+        starts. Earlier files are kept, never deleted; nothing in the room reads them back."""
+        try:
+            if self.audit.stat().st_size >= EVENT_LOG_LIMIT:
+                self.audit.replace(self.audit.with_name(  # unique, so a rename never overwrites an earlier file
+                    f'{self.audit.stem}-{time.strftime("%Y%m%d-%H%M%S")}-{uuid.uuid4().hex[:6]}{self.audit.suffix}'))
+        except OSError:
+            pass  # Missing, or held open by a reader: keep appending and rotate on a later event.
+        with self.audit.open("a", encoding="utf-8") as f:
+            f.write(line)
+
     async def emit(self, kind, data, persist=False):
         if persist:
-            with self.audit.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({"type": kind, "time": time.time(), "data": data}, ensure_ascii=False) + "\n")
+            self.append_event(json.dumps({"type": kind, "time": time.time(), "data": data}, ensure_ascii=False) + "\n")
         await self.host._broadcast(json.dumps({"type": kind, "data": data}, ensure_ascii=False))
 
     async def activity_note(self, run, kind, text):
