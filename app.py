@@ -1140,30 +1140,72 @@ async def websocket_endpoint(websocket: WebSocket):
 # --- REST endpoints ---
 
 ALLOWED_UPLOAD_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'}
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB default
+VIDEO_UPLOAD_EXTS = {'.webm', '.mp4'}  # play inline in chat and on tasks
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB default for images
+MAX_FILE_BYTES = 512 * 1024 * 1024  # videos and other files dropped or pasted into chat (Zero, chat box)
+UPLOAD_CHUNK = 1024 * 1024
+UPLOAD_SUFFIX = _re.compile(r'\.[a-z0-9]{1,10}')
+PASTED_IMAGE_TYPES = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp',
+                      'image/bmp': '.bmp', 'image/svg+xml': '.svg'}
+
+
+def upload_suffix(filename, content_type):
+    """The stored extension: the file's own when it is plain letters and digits, else .bin. A pasted
+    clipboard image may arrive without a name; its content type then picks the image extension."""
+    suffix = Path(filename or '').suffix.lower()
+    if not suffix:
+        return PASTED_IMAGE_TYPES.get((content_type or '').split(';')[0].strip().lower(), '.bin')
+    return suffix if UPLOAD_SUFFIX.fullmatch(suffix) else '.bin'
+
+
+async def save_upload(file, target, max_bytes):
+    """Streams the upload to target in chunks, never reading more than max_bytes + 1. Returns the size,
+    or None (and leaves no file) when the upload is larger than max_bytes."""
+    size = 0
+    try:
+        with open(target, 'wb') as out:
+            while chunk := await file.read(min(UPLOAD_CHUNK, max_bytes + 1 - size)):
+                size += len(chunk)
+                if size > max_bytes:
+                    break
+                await asyncio.to_thread(out.write, chunk)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    if size > max_bytes:
+        target.unlink(missing_ok=True)
+        return None
+    return size
 
 
 @app.post("/api/upload")
 async def upload_image(file: UploadFile = File(...)):
-    upload_dir = Path(config.get("images", {}).get("upload_dir", "./uploads"))
+    """Images, videos and any other file dropped or pasted into chat. kind tells the composer what to do:
+    'image' embeds, 'video' plays inline, 'file' is shared as its link. Serving decides how each renders:
+    anything that isn't an image or video is only ever downloaded (serve_upload)."""
+    images = config.get("images", {})
+    upload_dir = Path(images.get("upload_dir", "./uploads"))
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    ext = Path(file.filename).suffix or ".png"
-    if ext.lower() not in ALLOWED_UPLOAD_EXTS:
-        return JSONResponse({"error": f"unsupported file type: {ext}"}, status_code=400)
-
-    max_bytes = int(config.get("images", {}).get("max_size_mb", MAX_UPLOAD_BYTES // (1024 * 1024)) * 1024 * 1024)
-    content = await file.read(max(0, max_bytes) + 1)
-    if len(content) > max_bytes:
-        return JSONResponse({"error": f"file too large (max {max_bytes // 1024 // 1024} MB)"}, status_code=400)
+    ext = upload_suffix(file.filename, file.content_type)
+    kind = 'image' if ext in ALLOWED_UPLOAD_EXTS else 'video' if ext in VIDEO_UPLOAD_EXTS else 'file'
+    if kind == 'image':
+        max_bytes = int(images.get("max_size_mb", MAX_UPLOAD_BYTES // (1024 * 1024)) * 1024 * 1024)
+    else:
+        max_bytes = int(images.get("max_file_mb", MAX_FILE_BYTES // (1024 * 1024)) * 1024 * 1024)
+    max_bytes = max(0, max_bytes)
 
     filename = f"{uuid.uuid4().hex[:8]}{ext}"
-    filepath = upload_dir / filename
-    filepath.write_bytes(content)
+    size = await save_upload(file, upload_dir / filename, max_bytes)
+    if size is None:
+        return JSONResponse({"error": f"file too large (max {max_bytes // 1024 // 1024} MB)"}, status_code=400)
 
     return JSONResponse({
-        "name": file.filename,
+        "name": file.filename or f"pasted{ext}",
         "url": f"/uploads/{filename}",
+        "kind": kind,
+        "size": size,
+        "type": UPLOAD_MEDIA_TYPES.get(ext, "application/octet-stream"),
     })
 
 
@@ -1565,8 +1607,7 @@ async def file_view_open(body: dict):
 # Serve uploaded images
 UPLOAD_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
                       '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
-                      # Videos agents publish with room_motion play inline in chat and on tasks (Zero #14291).
-                      # Only room_motion publish writes them; /api/upload still accepts images only.
+                      # Videos (room_motion publish, or dropped into chat) play inline in chat and on tasks.
                       '.webm': 'video/webm', '.mp4': 'video/mp4'}
 # Uploads come from agents and users but are served from the room's own origin, where the page holds the
 # session token. An SVG opened as a page could otherwise run script with that token. The sandbox gives any

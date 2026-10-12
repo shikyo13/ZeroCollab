@@ -1,10 +1,12 @@
 import asyncio
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 from fastapi import UploadFile
+from starlette.datastructures import Headers
 import app
 import archive
 
@@ -26,6 +28,52 @@ class UploadBoundsTests(unittest.TestCase):
                 response = asyncio.run(app.upload_image(UploadFile(filename='test.png', file=io.BytesIO(content))))
             self.assertEqual(response.status_code, 200)
             self.assertEqual(next(Path(root).iterdir()).read_bytes(), content)
+
+    def upload(self, root, filename, content, content_type=None, **limits):
+        headers = Headers({'content-type': content_type}) if content_type else None
+        source = io.BytesIO(content)
+        with patch.object(app, 'config', {'images': {'upload_dir': root, **limits}}):
+            response = asyncio.run(app.upload_image(UploadFile(filename=filename, file=source, headers=headers)))
+        return response, json.loads(response.body), source
+
+    def test_video_and_file_uploads_say_how_to_share_them(self):
+        # Dropped or pasted into chat: images embed, videos play inline, anything else is shared as a link.
+        with tempfile.TemporaryDirectory() as root:
+            response, video, _ = self.upload(root, 'Demo Cut.MP4', b'\x00\x00\x00 ftypisom')
+            self.assertEqual((response.status_code, video['kind'], video['type'], video['size']), (200, 'video', 'video/mp4', 12))
+            self.assertRegex(video['url'], r'^/uploads/[0-9a-f]{8}\.mp4$')
+            self.assertEqual(self.serve(root, video['url'].split('/')[-1]).media_type, 'video/mp4')
+            _, file, _ = self.upload(root, 'notes.ZIP', b'PK\x03\x04')
+            self.assertEqual((file['kind'], file['type'], file['name']), ('file', 'application/octet-stream', 'notes.ZIP'))
+            self.assertTrue(self.serve(root, file['url'].split('/')[-1]).headers['content-disposition'].startswith('attachment'))
+            _, image, _ = self.upload(root, 'shot.png', b'\x89PNG')
+            self.assertEqual((image['kind'], image['type']), ('image', 'image/png'))
+
+    def test_file_names_never_choose_an_unsafe_suffix(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, odd, _ = self.upload(root, 'report.t%r gz', b'x')
+            self.assertTrue(odd['url'].endswith('.bin') and odd['kind'] == 'file', odd)
+            _, page, _ = self.upload(root, 'page.HTML', b'<script>')
+            self.assertTrue(page['url'].endswith('.html') and page['kind'] == 'file', page)
+            _, pasted, _ = self.upload(root, '', b'\x89PNG', content_type='image/png')
+            self.assertTrue(pasted['url'].endswith('.png') and pasted['kind'] == 'image', pasted)
+            _, bare, _ = self.upload(root, 'Makefile', b'all:')
+            self.assertTrue(bare['url'].endswith('.bin') and bare['kind'] == 'file', bare)
+
+    def test_files_have_their_own_larger_limit_and_oversized_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            tiny = 16 / (1024 * 1024)
+            response, body, source = self.upload(root, 'big.webm', b'x' * 100, max_file_mb=tiny)
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('too large', body['error'])
+            self.assertEqual(source.tell(), 17)
+            self.assertEqual(list(Path(root).iterdir()), [])
+            # An image limit doesn't apply to files, and a file limit doesn't apply to images.
+            response, body, _ = self.upload(root, 'clip.webm', b'x' * 100, max_size_mb=tiny)
+            self.assertEqual((response.status_code, body['size']), (200, 100))
+            with patch.object(app, 'UPLOAD_CHUNK', 7):  # several chunks reassemble exactly
+                response, body, _ = self.upload(root, 'data.csv', bytes(range(50)), max_file_mb=50 / (1024 * 1024))
+            self.assertEqual(Path(root, body['url'].split('/')[-1]).read_bytes(), bytes(range(50)))
 
     def serve(self, root, name):
         with patch.object(app, 'config', {'images': {'upload_dir': root}}):
