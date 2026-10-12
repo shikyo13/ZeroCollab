@@ -68,10 +68,10 @@ def addressed(text, name):
     return bool(re.search(rf'@({re.escape(name)}|all|both)(?![\w-])', str(text), re.IGNORECASE))
 
 
-def continued(message, origin, limit):
+def continued(message, origin, limit, uploads=None):
     # A message addressed to the reader is cut only when it cannot fit at all, and then the cut
     # names the exact room_read call that returns the rest, so nobody acts on half a message.
-    full = message_text(message, origin)
+    full = message_text(message, origin, uploads)
     if len(full) <= limit:
         return full
     shown = max(0, limit - 200)
@@ -921,7 +921,7 @@ class ProjectRoom:
         elif section == 'memory':
             text = json.dumps(self.state['notes'], ensure_ascii=False)
         elif section == 'messages':
-            text = '\n'.join(message_text(m, self.origin()) for m in self.visible(run, self.runtime.host.store.get_since(int(after_id), channel=run.channel)))
+            text = '\n'.join(message_text(m, self.origin(), self.uploads()) for m in self.visible(run, self.runtime.host.store.get_since(int(after_id), channel=run.channel)))
         elif section == 'patches':
             if changes is None:
                 raise ValueError('Patch collection must be supplied by the async caller')
@@ -949,7 +949,7 @@ class ProjectRoom:
         # A clipped page must not acknowledge records/messages the model never received.
         if section == 'messages':
             for m in self.visible(run, self.runtime.host.store.get_since(int(after_id), channel=run.channel)):
-                if message_text(m, self.origin()) in page:
+                if message_text(m, self.origin(), self.uploads()) in page:
                     self.observe_message(run, m)
         elif section in ('inbox', 'reviews', 'followups', 'tasks'):
             for collection in ('reviews', 'followups', 'tasks'):
@@ -1075,14 +1075,14 @@ class ProjectRoom:
             if m['id'] in in_request:
                 entry = f"#{m['id']} {m['sender']}: [Addressed to you; full text under Current message below.]"
             elif to_reader(m['text']):
-                entry = continued(m, self.origin(), max(1400, chat_limit // 2))
+                entry = continued(m, self.origin(), max(1400, chat_limit // 2), self.uploads())
             else:
-                entry = clipped(message_text(m, self.origin()), 1400)
+                entry = clipped(message_text(m, self.origin(), self.uploads()), 1400)
             if lines and used + len(entry) + 1 > chat_limit:
                 break
             lines.insert(0, entry if len(entry) <= chat_limit else clipped(entry, chat_limit))
             shown.add(m['id'])
-            if lines[0] == message_text(m, self.origin()):
+            if lines[0] == message_text(m, self.origin(), self.uploads()):
                 self.observe_message(run, m)
             used += len(lines[0]) + 1
         history = '\n'.join(lines)
@@ -1217,8 +1217,8 @@ class ProjectRoom:
         for index, pending in enumerate(reversed(requests)):
             message = store.get_by_id(pending['message_id']) if pending.get('message_id') is not None else None
             if message:
-                part = continued(message, self.origin(), limit - reserve - used)
-                whole = part == message_text(message, self.origin())
+                part = continued(message, self.origin(), limit - reserve - used, self.uploads())
+                whole = part == message_text(message, self.origin(), self.uploads())
                 if re.search(r'@(all|both)(?![\w-])', message['text'], re.IGNORECASE):
                     # Every teammate reads this at once; without this, each posts its own acknowledgement or claim.
                     part += (f"\n[Sent to every agent. Before replying, read messages after #{message['id']} with room_read: "
@@ -1250,14 +1250,53 @@ class ProjectRoom:
     def origin(self):
         return f"http://127.0.0.1:{self.runtime.cfg['server']['port']}"
 
+    def uploads(self):
+        return getattr(self.runtime.host.store, 'upload_dir', None)
 
-def message_text(message, origin=''):
+
+def file_size(size):
+    for unit in ('bytes', 'KB', 'MB'):
+        if size < 1024 or unit == 'MB':
+            return f'{size} {unit}' if unit == 'bytes' else f'{size:.1f} {unit}'
+        size /= 1024
+
+
+def upload_files(message, uploads, limit=8):
+    """Videos and other files a message attaches or links (Zero #14495: drop or paste any file into chat).
+    room_image shows raster images only, so for anything else name the local copy an agent can open with its
+    own file tools. Only names inside the upload folder count; existence, kind and size come from disk."""
+    if not isinstance(uploads, (str, os.PathLike)):
+        return []
+    named = [(a.get('url', ''), a.get('name')) for a in message.get('attachments', [])]
+    named += [(link, None) for link in re.findall(r'/uploads/[\w.-]+', str(message.get('text', '')))]
+    root, lines, seen = Path(uploads).resolve(), [], set()
+    for url, name in named:
+        upload = str(url).split('/uploads/', 1)[1].rstrip('.') if '/uploads/' in str(url) else ''
+        if (not upload or upload in seen or upload.startswith('.')
+                or not all(c.isascii() and (c.isalnum() or c in '._-') for c in upload)):
+            continue
+        seen.add(upload)
+        extension = upload.rsplit('.', 1)[-1].lower() if '.' in upload else ''
+        path = (root / upload).resolve()
+        # Message text and attachments are not validated: same containment rule as serve_upload.
+        if extension in RASTER_IMAGES or not path.is_relative_to(root) or not path.is_file():
+            continue
+        kind = 'video' if extension in VIDEOS else 'file'
+        lines.append(f"File: {name or upload} is at {path} ({kind}, {file_size(path.stat().st_size)})")
+        if len(lines) == limit:
+            break
+    return lines
+
+
+def message_text(message, origin='', uploads=None):
     text = f"#{message['id']} {message['sender']}:"
     for attachment in message.get('attachments', []):
         url = attachment.get('url', '')
         if url.startswith('/uploads/'):
             url = origin + url
         text += f"\nAttachment: {attachment.get('name', 'image')} {url}"
+    for line in upload_files(message, uploads):
+        text += '\n' + line
     return text + '\n' + message['text']
 
 
