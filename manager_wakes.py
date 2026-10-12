@@ -8,6 +8,7 @@ import json
 import time
 import uuid
 import re
+import math
 from pathlib import Path, PurePosixPath
 
 from coordination_state import pending_human_wait, wait_record
@@ -79,7 +80,15 @@ class ManagerWakes:
         for claim in r.get('claims', {}).values():
             if claim.get('status') in ('claimed', 'sent', 'dispatched'):
                 claim.update(status='unknown', reason='Restart/project reload; never resent')
-        self.defer()
+        due = r.get('next_due') if r.get('enabled') else None
+        if type(due) in (int, float) and math.isfinite(due):
+            # A deployment can restart us after a slot passed. Preserve that slot,
+            # but coalesce all missed time into one normal, budget-checked tick.
+            remaining = max(0, min(self.interval(), due - self.wall()))
+            self.deadline = self.clock() + remaining
+            r['next_due'] = self.wall() + remaining
+        else:
+            self.defer()
         self.save()
 
     def selected_manager(self):
@@ -439,9 +448,8 @@ class ManagerWakes:
             return False
         if self.held:
             self.held = False
-            self.defer()
-            self.save()
-            return False
+            # Keep the scheduled deadline: an overdue slot catches up once below,
+            # while a shorter pause does not advance or postpone the next slot.
         if self.clock() < self.deadline:
             return False
         self.defer()

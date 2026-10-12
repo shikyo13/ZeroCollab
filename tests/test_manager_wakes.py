@@ -19,12 +19,13 @@ class SchedulerChecks(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         pr = SimpleNamespace(path=Path(folder.name) / 'coordination.json', chains={},
             limits={'agent_turns': 0, 'reported_token_budget': 0},
-            state={'tasks': [self.task('manager', 'lead')], 'reviews': [], 'followups': []})
+            state={'tasks': [self.task('manager', 'lead')], 'reviews': [], 'followups': [],
+                   'responders': {'lead': 'lead', 'backup': ''}})
         def save():
             pr.path.write_text(json.dumps(pr.state), encoding='utf-8')
             self.saved.append(json.loads(pr.path.read_text('utf-8')))
         pr.save = save
-        self.r = SimpleNamespace(project_room=pr, paused=False, deployment=None,
+        self.r = SimpleNamespace(project_room=pr, paused=False, deployment=None, identity=None,
             states={'lead': {'provider': 'codex', 'state': 'ready'},
                     'worker': {'provider': 'api', 'state': 'ready'}},
             running={}, deploy_held={}, queues={}, goals=SimpleNamespace(goal=None),
@@ -117,15 +118,83 @@ class SchedulerChecks(unittest.TestCase):
         self.assertFalse(self.m.accepts(request))
         self.assertEqual(next(iter(self.m.record['claims'].values()))['status'], 'dropped')
 
-    def test_pause_and_deploy_release_get_fresh_interval(self):
+    def test_overdue_pause_catches_up_once_on_resume(self):
         self.actionable()
         self.enable()
         self.r.paused = True
         self.assertFalse(self.due())
         self.r.paused = False
+        self.assertTrue(self.m.tick())
         self.assertFalse(self.m.tick())
+        self.assertEqual(len(self.queued), 1)
+
+    def test_pause_before_deadline_preserves_scheduled_slot(self):
+        self.actionable()
+        self.enable()
+        scheduled = self.m.deadline
+        self.r.paused = True
+        self.mono += 100
+        self.now += 100
         self.assertFalse(self.m.tick())
-        self.assertTrue(self.due())
+        self.r.paused = False
+        self.assertFalse(self.m.tick())
+        self.assertEqual(self.m.deadline, scheduled)
+        self.mono += 800
+        self.now += 800
+        self.assertTrue(self.m.tick())
+
+    def test_deployment_gate_catches_up_once_after_many_missed_slots(self):
+        self.actionable()
+        self.enable()
+        self.r.turn_admission_open = lambda: False
+        self.mono += 2701
+        self.now += 2701
+        self.assertFalse(self.m.tick())
+        self.r.turn_admission_open = lambda: True
+        self.assertTrue(self.m.tick())
+        self.assertFalse(self.m.tick())
+        self.assertEqual(len(self.queued), 1)
+        self.assertEqual(self.m.record['claimed_starts'], 1)
+
+    def test_restart_keeps_overdue_slot_and_never_replays_sent_claim(self):
+        self.actionable()
+        self.enable()
+        self.mono += 901
+        self.now += 901
+        restarted = ManagerWakes(self.r, clock=lambda: 1, wall=lambda: self.now)
+        self.assertTrue(restarted.tick())
+        self.assertFalse(restarted.tick())
+        self.assertEqual(len(self.queued), 1)
+        self.now += 901
+        reloaded = ManagerWakes(self.r, clock=lambda: 1, wall=lambda: self.now)
+        self.assertFalse(reloaded.tick())  # Prior issue is already claimed, even after a missed slot.
+        self.assertEqual(next(iter(reloaded.record['claims'].values()))['status'], 'unknown')
+        self.assertEqual(reloaded.record['chain']['turns'], 1)
+        self.assertEqual(len(self.queued), 1)
+
+    def test_restart_before_due_keeps_remaining_time(self):
+        self.actionable()
+        self.enable()
+        self.now += 100
+        restarted = ManagerWakes(self.r, clock=lambda: 1, wall=lambda: self.now)
+        self.assertFalse(restarted.tick())
+        self.assertEqual(restarted.deadline, 801)
+
+    def test_catchup_still_obeys_credit_and_hourly_limits(self):
+        for ceiling in ('credits', 'hourly'):
+            with self.subTest(ceiling=ceiling):
+                self.setUp()
+                self.actionable()
+                self.enable()
+                self.r.paused = True
+                self.assertFalse(self.due())
+                if ceiling == 'credits':
+                    self.m.record['chain']['turns'] = TURN_CREDITS
+                else:
+                    self.r.ready_wakes.record['fired']['lead'] = [self.now] * 3
+                self.r.paused = False
+                self.assertFalse(self.m.tick())
+                self.assertEqual(self.queued, [])
 
     def test_spent_and_missing_budget_do_not_remint(self):
         self.actionable()
