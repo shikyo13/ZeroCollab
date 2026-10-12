@@ -31,6 +31,9 @@ export interface LiveArtifact {
 export interface LiveAgent {
   id: string;
   name: string;
+  /** What people call them on the stage: the display label when it is short, else the @handle as words
+   * ('Product Design and Accessibility' reads 'Design'). The full label stays for titles and screen readers. */
+  short: string;
   order: number;
   state: LiveAgentState;
   reason?: string;
@@ -101,6 +104,13 @@ function askText(q: { params: unknown; reason: string; tool: string; question: b
   const p = (q.params && typeof q.params === 'object' ? q.params : {}) as { message?: unknown; questions?: { question?: unknown }[] };
   const asked = typeof p.message === 'string' ? p.message : Array.isArray(p.questions) ? p.questions.map(x => x?.question).find(x => typeof x === 'string') as string | undefined : undefined;
   return clip(asked || q.reason || (q.question ? 'Has a question for you' : `Wants to use ${q.tool}`), 280);
+}
+
+/** A stage name: short labels as they are (Astra, Opus 5.5); long role titles become the handle in words. */
+export function shortName(label: string, handle: string): string {
+  if (label.length <= 12) return label;
+  const words = handle.replace(/^@/, '').split(/[-_\s]+/).filter(Boolean);
+  return words.length ? words.map(w => w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)).join(' ') : label.split(/\s+/)[0];
 }
 
 const empty = (): LiveFeed => ({ agents: [], interactions: [], approvals: [], project: '', source: 'derived', ready: false, connected: false, error: '' });
@@ -190,8 +200,8 @@ export function useLiveFeed(active: boolean): LiveFeed {
         handles.set((s.handle || id).toLowerCase(), id);
         handles.set(s.label.toLowerCase(), id);
         handles.set(id.toLowerCase(), id);
-        const a = agents.get(id) ?? { id, name: s.label, order, state: 'idle' as LiveAgentState, activity: '', since: now(), artifact: null, color: s.color, speech: '', speechAt: 0 };
-        a.name = s.label; a.color = s.color || 'var(--accent)';
+        const a = agents.get(id) ?? { id, name: s.label, short: shortName(s.label, s.handle || id), order, state: 'idle' as LiveAgentState, activity: '', since: now(), artifact: null, color: s.color, speech: '', speechAt: 0 };
+        a.name = s.label; a.short = shortName(s.label, s.handle || id); a.color = s.color || 'var(--accent)';
         if (source === 'derived') a.order = order;
         agents.set(id, a);
       });
@@ -329,9 +339,10 @@ export function useLiveFeed(active: boolean): LiveFeed {
     }
 
     // ---------- server feed ----------
-    function applyServerAgent(next: Omit<LiveAgent, 'color' | 'speech' | 'speechAt'>) {
+    function applyServerAgent(next: Omit<LiveAgent, 'color' | 'speech' | 'speechAt' | 'short'>) {
       const a = agents.get(next.id);
-      agents.set(next.id, { ...next, color: a?.color || 'var(--accent)', speech: a?.speech || '', speechAt: a?.speechAt || 0 });
+      // The feed has no handle; runtime_state (applied first) already set the stage name for this id.
+      agents.set(next.id, { ...next, short: a?.short || shortName(next.name, next.id), color: a?.color || 'var(--accent)', speech: a?.speech || '', speechAt: a?.speechAt || 0 });
     }
     function onLive(event: RoomEvent) {
       if (source !== 'server') return;
@@ -354,7 +365,7 @@ export function useLiveFeed(active: boolean): LiveFeed {
         reset();
         project = current.project_id || '';
         try {
-          const live = await api<{ project_id: string; agents: Omit<LiveAgent, 'color' | 'speech' | 'speechAt'>[]; interactions: LiveInteraction[] }>(`/api/live?project=${encodeURIComponent(project)}`);
+          const live = await api<{ project_id: string; agents: Omit<LiveAgent, 'color' | 'speech' | 'speechAt' | 'short'>[]; interactions: LiveInteraction[] }>(`/api/live?project=${encodeURIComponent(project)}`);
           if (stopped || request !== generation) return;
           source = 'server';
           applyRoom(current);

@@ -38,10 +38,10 @@
 .lv-person:focus-visible { outline: none; } .lv-person:focus-visible .lv-badge { outline: 2px solid var(--accent); outline-offset: 7px; }
 .lv-person.lv-selected .lv-badge { outline: 2px dashed var(--text-strong); outline-offset: 8px; }
 
-.lv-bubble { position: absolute; z-index: 4; box-sizing: border-box; max-height: 64px; overflow: hidden; padding: 6px 10px; border-radius: 12px; background: #191e22f2; border-left: 3px solid var(--c);
+.lv-bubble { position: absolute; z-index: 4; box-sizing: border-box; overflow: hidden; padding: 6px 10px; border-radius: 12px; background: #191e22f2; border-left: 3px solid var(--c);
   box-shadow: 0 6px 18px rgba(0, 0, 0, .4); font-size: 12.5px; line-height: 1.35; color: var(--text); animation: lv-in .28s cubic-bezier(.2, 0, 0, 1); pointer-events: none;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-.lv-bubble b { color: var(--c); font-weight: 600; }
+.lv-bubble b { color: color-mix(in srgb, var(--c) 70%, white); font-weight: 600; }
 @keyframes lv-in { from { opacity: 0; transform: translateY(6px); } }
 
 .lv-chip { position: absolute; z-index: 2; transform: translate(-50%, -100%); max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 999px; padding: 3px 12px; font-size: 12px;
@@ -73,6 +73,7 @@
 .lv-session-head { display: flex; justify-content: space-between; gap: 10px; }
 .lv-session-head small { color: var(--accent); letter-spacing: .08em; font-size: 10.5px; }
 .lv-session-head h2 { margin: 2px 0 0; font-size: 16px; }
+.lv-role { margin: 2px 0 0; color: var(--text-dim); font-size: var(--fs-xs); }
 .lv-session .lv-link { align-self: flex-start; background: none; border: 0; color: var(--accent); padding: 0; }
 .lv-people { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .lv-people li { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: var(--fs-sm); }
@@ -94,7 +95,7 @@
 .lv-talk small { color: var(--text-dim); }
 .lv-quote { display: block; color: var(--text-dim); margin-top: 1px; }
 .lv-speech { margin: 0 0 6px; padding: 5px 9px; border-left: 3px solid var(--c); background: var(--bg-msg); border-radius: 6px; font-size: var(--fs-sm); }
-.lv-speech b { color: var(--c); }
+.lv-speech b { color: color-mix(in srgb, var(--c) 70%, white); }
 .lv-muted { color: var(--text-dim); font-size: var(--fs-sm); }
 .lv-session-empty h2 { margin: 0; font-size: 15px; } .lv-session-empty p { color: var(--text-dim); font-size: var(--fs-sm); }
 .lv-error { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 7; background: #3a1f22; border: 1px solid var(--danger-border); padding: 6px 12px; border-radius: 8px; font-size: var(--fs-sm); }

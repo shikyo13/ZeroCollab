@@ -27,8 +27,7 @@ export interface StageProps {
 interface Body { x: number; y: number; vx: number; vy: number; tx: number; ty: number; waitingSince: number; shakeAt: number; hopAt: number; ring: number; phase: number }
 interface Effect { kind: 'comet' | 'baton' | 'gold' | 'answer' | 'broadcast'; from: string; to: string; label: string; color: string; start: number; dur: number; landed?: boolean }
 
-const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
-const short = (name: string) => name.length > 14 ? name.split(/\s+/)[0] : name;
+const initials = (name: string) => { const w = name.split(/\s+/).filter(Boolean); return (w.length === 1 && w[0].length <= 3 ? w[0] : w.slice(0, 2).map(x => x[0]).join('')).toUpperCase() || '?'; };
 
 export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, selectedTask, onSelectPerson, onFollowWork }: StageProps) {
   const root = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null);
@@ -83,7 +82,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   // New interactions become effects (history from the snapshot never animates).
   useEffect(() => {
     const color = (id: string) => feed.agents.find(a => a.id === id)?.color || '#54d9ed';
-    const name = (id: string) => id === 'user' ? 'you' : id === 'team' ? 'everyone' : short(feed.agents.find(a => a.id === id)?.name || id);
+    const name = (id: string) => id === 'user' ? 'you' : id === 'team' ? 'everyone' : (feed.agents.find(a => a.id === id)?.short || id);
     for (const i of [...feed.interactions].reverse()) {
       if (seen.current.has(i.id)) continue;
       seen.current.add(i.id);
@@ -212,8 +211,8 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
         style={{ '--c': a.color } as CSSProperties}
         onClick={() => onSelectPerson(a.id)} onPointerEnter={() => setHover(a.id)} onPointerLeave={() => setHover(h => h === a.id ? null : h)}
         aria-label={`${a.name}: ${stateWords(a)}${a.task_title ? `, on ${a.task_title}` : ''}${bubble && a.speech ? `. Says: ${a.speech}` : ''}`}>
-        <span className="lv-badge"><span className="lv-ring" aria-hidden="true" />{initials(a.name)}</span>
-        <span className="lv-name">{short(a.name)}</span>
+        <span className="lv-badge"><span className="lv-ring" aria-hidden="true" />{initials(a.short)}</span>
+        <span className="lv-name" title={a.name}>{a.short}</span>
         <span className="lv-doing">{stateWords(a)}</span>
         {a.artifact && !quiet && (a.artifact.kind === 'browser_frame'
           ? <span className="lv-thumb lv-thumb-live" aria-hidden="true">● browser</span>
@@ -224,7 +223,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     })}
     {bubbles.filter(b => b.rect).map(b => <div key={b.agent.id} className="lv-bubble" aria-hidden="true"
       style={{ left: b.rect!.x, top: b.rect!.y, width: b.rect!.w, '--c': b.agent.color } as CSSProperties}>
-      <b>{short(b.agent.name)}</b> {b.agent.speech}
+      <b>{b.agent.short}</b> {b.agent.speech}
     </div>)}
   </div>;
 }

@@ -36,7 +36,7 @@ export function LiveSession({ feed, focus, paused, navigate, onClose, onFocus }:
   useEffect(() => { setPinned(null); setHeld(null); setMarked(true); last.current = null; }, [key]);
   useEffect(() => { setHeld(reading ? last.current : null); }, [reading]);
 
-  const name = (id: string) => id === 'user' ? 'You' : id === 'team' ? 'everyone' : id === 'room' ? 'the room' : id === 'unassigned' ? 'nobody' : feed.agents.find(a => a.id === id)?.name || id;
+  const name = (id: string) => id === 'user' ? 'You' : id === 'team' ? 'everyone' : id === 'room' ? 'the room' : id === 'unassigned' ? 'nobody' : feed.agents.find(a => a.id === id)?.short || id;
   const people: LiveAgent[] = !focus ? [] : focus.kind === 'person'
     ? feed.agents.filter(a => a.id === focus.agent)
     : feed.agents.filter(a => a.task_id === focus.task);
@@ -73,6 +73,7 @@ export function LiveSession({ feed, focus, paused, navigate, onClose, onFocus }:
       <div>
         <small>{focus.kind === 'work' ? 'FOLLOWING THIS WORK' : 'FOLLOWING'}</small>
         <h2>{title}</h2>
+        {focus.kind === 'person' && feed.agents.find(a => a.id === focus.agent)?.name !== title && <p className="lv-role">{feed.agents.find(a => a.id === focus.agent)?.name}</p>}
       </div>
       <button type="button" onClick={onClose} aria-label="Close watch session">✕</button>
     </div>
@@ -81,7 +82,7 @@ export function LiveSession({ feed, focus, paused, navigate, onClose, onFocus }:
 
     <ul className="lv-people" aria-label="People">
       {people.length ? people.map(p => <li key={p.id} style={{ '--c': p.color } as CSSProperties}>
-        <button type="button" onClick={() => onFocus({ kind: 'person', agent: p.id })}><i aria-hidden="true" />{p.name}</button>
+        <button type="button" onClick={() => onFocus({ kind: 'person', agent: p.id })}><i aria-hidden="true" />{p.short}</button>
         <span className={`lv-state lv-${p.state}`}>{stateWords(p)}</span>
       </li>) : <li className="lv-muted">Nobody is on this right now. The conversation below is kept.</li>}
     </ul>
@@ -115,7 +116,7 @@ export function LiveSession({ feed, focus, paused, navigate, onClose, onFocus }:
 
     <section className="lv-talk" aria-label="Conversation">
       <h3>Conversation</h3>
-      {people.filter(p => p.speech).map(p => <p key={p.id} className="lv-speech" style={{ '--c': p.color } as CSSProperties}><b>{p.name}</b> {p.speech}</p>)}
+      {people.filter(p => p.speech).map(p => <p key={p.id} className="lv-speech" style={{ '--c': p.color } as CSSProperties}><b>{p.short}</b> {p.speech}</p>)}
       <ol>
         {talk.map(i => <li key={i.id}>
           <small>{clock(i.at)}</small> <b>{name(i.from)}</b> {WORDS[i.kind]} <b>{name(i.kind === 'handoff' ? i.to_owner || i.to : i.to)}</b>
