@@ -96,13 +96,17 @@ function setupInput() {
 function updateSendButton() {
     const input = document.getElementById('input');
     const group = document.querySelector('.send-group');
-    if (!input || !group) return;
+    if (!input) return;
     const hasContent = input.value.trim().length > 0 || pendingAttachments.length > 0;
-    group.classList.toggle('inactive', !hasContent);
+    const uploading = [...composerUploads.values()].some(job => job.channel === activeChannel && job.state === 'uploading');
+    document.getElementById('send').disabled = uploading;
+    group?.setAttribute('aria-busy', String(uploading));
+    group?.classList.toggle('inactive', !hasContent);
 }
 
 function sendMessage() {
     if (window.chatSessionReadonly?.(activeChannel)) return;
+    if ([...composerUploads.values()].some(job => job.channel === activeChannel && job.state === 'uploading')) return;
     const input = document.getElementById('input');
     let text = input.value.trim();
 
@@ -145,10 +149,11 @@ function sendMessage() {
         sender: username,
         channel: activeChannel,
         project_id: window.activeProjectId,
-        attachments: pendingAttachments.map(a => ({
+        attachments: [...pendingAttachments, ...(composerLinks.get(activeChannel) || []).filter(a => text.includes(a.url))].map(a => ({
             path: a.path,
             name: a.name,
             url: a.url,
+            ...(a.kind ? { kind: a.kind, size: a.size, type: a.type } : {}),
             ...(a.note ? { note: a.note } : {}),
             ...(a.source ? { source: a.source } : {}),
         })),
@@ -158,6 +163,7 @@ function sendMessage() {
     }
 
     sendServerEvent(payload);
+    composerLinks.delete(activeChannel);
 
     resetComposerInput(input);
     restartVoiceAfterEdit();
@@ -167,85 +173,166 @@ function sendMessage() {
     input.focus();
 }
 
-// --- Image paste/drop ---
+// Uploads are scoped to the original draft, including a session switch mid-upload.
+const composerUploads = new Map();
+const composerLinks = new Map();
+let composerUploadId = 0;
 
 function setupPaste() {
-    document.addEventListener('paste', async (e) => {
-        const items = e.clipboardData?.items;
-        if (!items) return;
-
-        for (const item of items) {
-            if (item.type.startsWith('image/')) {
-                e.preventDefault();
-                await uploadImage(item.getAsFile());
-            }
-        }
+    document.getElementById('input').addEventListener('paste', e => {
+        const files = [...(e.clipboardData?.items || [])].filter(item => item.kind === 'file').map(item => item.getAsFile()).filter(Boolean);
+        if (!files.length) return; // ordinary text and URL pastes keep their native behavior
+        e.preventDefault();
+        void uploadComposerFiles(files);
     });
 }
 
 function setupDragDrop() {
+    const input = document.getElementById('input');
+    const footer = input.closest('footer');
+    const inChat = target => footer.contains(target) || !!target.closest?.('#timeline');
     const dropzone = document.getElementById('dropzone');
+    dropzone.querySelector('.dropzone-inner').textContent = 'Drop images, videos or files into chat';
+    const hint = footer.querySelector('.input-hint');
+    if (hint) hint.textContent = 'Enter to send · Shift+Enter for newline · Paste/drop images, videos or files';
+    const picker = document.createElement('input');
+    picker.type = 'file'; picker.multiple = true; picker.hidden = true;
+    const attach = document.createElement('button');
+    attach.id = 'attach-files'; attach.type = 'button'; attach.textContent = '＋';
+    attach.title = 'Attach images, videos or files'; attach.setAttribute('aria-label', attach.title);
+    attach.addEventListener('click', () => { if (!window.chatSessionReadonly?.(activeChannel)) picker.click(); });
+    picker.addEventListener('change', () => { void uploadComposerFiles([...picker.files]); picker.value = ''; });
+    document.getElementById('input-row').insertBefore(attach, input);
+    footer.appendChild(picker);
+    const status = document.createElement('div');
+    status.id = 'composer-uploads'; status.setAttribute('aria-live', 'polite');
+    footer.insertBefore(status, document.getElementById('input-row'));
     let dragCount = 0;
+    document.addEventListener('dragenter', e => {
+        if (!e.dataTransfer?.types?.includes('Files') || window.chatSessionReadonly?.(activeChannel)) return;
+        if (!inChat(e.target) && dropzone.classList.contains('hidden')) return;
+        e.preventDefault(); dragCount++; dropzone.classList.remove('hidden');
+    });
+    document.addEventListener('dragleave', e => {
+        if (dropzone.classList.contains('hidden')) return;
+        if (--dragCount <= 0) { dragCount = 0; dropzone.classList.add('hidden'); }
+    });
+    document.addEventListener('dragover', e => {
+        if (!e.dataTransfer?.types?.includes('Files')) return;
+        const handled = e.defaultPrevented;
+        e.preventDefault(); // an OS file must never navigate away from the room
+        if (!handled)
+            e.dataTransfer.dropEffect = !dropzone.classList.contains('hidden') || inChat(e.target) ? 'copy' : 'none';
+    });
+    document.addEventListener('drop', e => {
+        const inComposer = inChat(e.target) || !dropzone.classList.contains('hidden');
+        dragCount = 0; dropzone.classList.add('hidden');
+        if (e.defaultPrevented) return; // e.g. Board gallery owns this drop
+        if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+        if (!inComposer || !e.dataTransfer?.files?.length) return;
+        e.preventDefault(); void uploadComposerFiles([...e.dataTransfer.files]);
+    });
+    window.addEventListener('blur', () => { dragCount = 0; dropzone.classList.add('hidden'); });
+}
 
-    document.addEventListener('dragenter', (e) => {
-        e.preventDefault();
-        dragCount++;
-        if (e.dataTransfer?.types?.includes('Files')) {
-            dropzone.classList.remove('hidden');
+function renderComposerUploads() {
+    const status = document.getElementById('composer-uploads');
+    if (!status) return;
+    status.replaceChildren();
+    for (const [id, job] of composerUploads) {
+        if (job.channel !== activeChannel) continue;
+        const chip = document.createElement('span');
+        chip.className = 'composer-upload ' + job.state;
+        chip.textContent = job.state === 'error' ? `${job.name}: ${job.error}` : `Uploading ${job.name} · ${job.progress}`;
+        if (job.state === 'error') {
+            const dismiss = document.createElement('button');
+            dismiss.type = 'button'; dismiss.textContent = '×'; dismiss.setAttribute('aria-label', `Dismiss upload error for ${job.name}`);
+            dismiss.onclick = () => { composerUploads.delete(id); renderComposerUploads(); };
+            chip.appendChild(dismiss);
         }
-    });
+        status.appendChild(chip);
+    }
+    updateSendButton(); repositionScrollAnchor();
+}
 
-    document.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        dragCount--;
-        if (dragCount <= 0) {
-            dragCount = 0;
-            dropzone.classList.add('hidden');
-        }
-    });
-
-    document.addEventListener('dragover', (e) => {
-        e.preventDefault();
-    });
-
-    document.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        dragCount = 0;
-        dropzone.classList.add('hidden');
-
-        const files = e.dataTransfer?.files;
-        if (!files) return;
-
-        for (const file of files) {
-            if (file.type.startsWith('image/')) {
-                await uploadImage(file);
+function requestComposerUpload(file, job) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload');
+        if (SESSION_TOKEN) xhr.setRequestHeader('X-Session-Token', SESSION_TOKEN);
+        xhr.timeout = 10 * 60 * 1000;
+        xhr.upload.onprogress = e => {
+            job.progress = e.lengthComputable ? Math.round(e.loaded * 100 / e.total) + '%' : 'uploading';
+            renderComposerUploads();
+        };
+        xhr.onload = () => {
+            let data;
+            try { data = JSON.parse(xhr.responseText); } catch { reject(new Error('The upload server returned an unreadable response')); return; }
+            if (xhr.status < 200 || xhr.status >= 300 || !/^\/uploads\/[a-z0-9_-][a-z0-9_.-]*$/i.test(data.url || '')) {
+                reject(new Error(data.error || `Upload failed (${xhr.status})`)); return;
             }
-        }
+            resolve(data);
+        };
+        xhr.onerror = () => reject(new Error('Upload connection lost. Try attaching the file again.'));
+        xhr.ontimeout = () => reject(new Error('Upload timed out. Try attaching the file again.'));
+        const form = new FormData(); form.append('file', file); xhr.send(form);
     });
 }
 
-async function uploadImage(file) {
-    if (window.chatSessionReadonly?.(activeChannel)) return;
-    const uploadSession = activeChannel;
-    const form = new FormData();
-    form.append('file', file);
+// Rebase the captured insertion point when the user types while an upload runs.
+function uploadAnchorPosition(anchor, text) {
+    const old = anchor.text;
+    let prefix = 0, suffix = 0;
+    while (prefix < old.length && prefix < text.length && old[prefix] === text[prefix]) prefix++;
+    while (suffix < old.length - prefix && suffix < text.length - prefix && old[old.length - 1 - suffix] === text[text.length - 1 - suffix]) suffix++;
+    if (anchor.position <= prefix) return anchor.position;
+    if (anchor.position >= old.length - suffix) return anchor.position + text.length - old.length;
+    return prefix + text.length - prefix - suffix;
+}
 
-    try {
-        const resp = await fetch('/api/upload', { method: 'POST', headers: { ...(SESSION_TOKEN ? { 'X-Session-Token': SESSION_TOKEN } : {}) }, body: form });
-        const data = await resp.json();
-
-        const attachment = { path: data.path, name: data.name, url: data.url };
-        if (activeChannel === uploadSession) pendingAttachments.push(attachment);
-        else {
-            const draft = sessionDrafts.get(uploadSession) || { text: '', attachments: [] };
-            draft.attachments.push(attachment); sessionDrafts.set(uploadSession, draft);
-        }
-
-        renderAttachments();
-    } catch (err) {
-        console.error('Upload failed:', err);
+async function uploadComposerFiles(files) {
+    if (!files.length || window.chatSessionReadonly?.(activeChannel)) return;
+    const channel = activeChannel;
+    const input = document.getElementById('input');
+    const anchor = { text: input.value, position: input.selectionStart ?? input.value.length };
+    // Register the whole batch before the first await so Send cannot race the next file.
+    const jobs = files.map(file => {
+        const id = ++composerUploadId;
+        const job = { channel, name: file.name || 'Pasted image', state: 'uploading', progress: '0%' };
+        composerUploads.set(id, job); return { id, job, file };
+    });
+    renderComposerUploads();
+    for (const { id, job, file } of jobs) {
+        try {
+            const data = await requestComposerUpload(file, job);
+            const attachment = { name: data.name || file.name || 'Pasted image', url: data.url, kind: data.kind || (file.type.startsWith('image/') ? 'image' : 'file'), size: data.size ?? file.size, type: data.type || file.type };
+            if (attachment.kind === 'image') {
+                if (channel === activeChannel) { pendingAttachments.push(attachment); renderAttachments(); }
+                else {
+                    const draft = sessionDrafts.get(channel) || { text: '', attachments: [] };
+                    draft.attachments.push(attachment); sessionDrafts.set(channel, draft);
+                }
+            } else {
+                const draft = channel === activeChannel ? null : (sessionDrafts.get(channel) || { text: '', attachments: [] });
+                const text = draft ? draft.text : input.value;
+                const pos = Math.max(0, Math.min(text.length, uploadAnchorPosition(anchor, text)));
+                const label = attachment.name.replace(/[\[\]\\\r\n]/g, ' ');
+                const link = `[${label}](${attachment.url})`;
+                const insertion = (pos && !/\s/.test(text[pos - 1]) ? '\n' : '') + link + '\n';
+                const next = text.slice(0, pos) + insertion + text.slice(pos);
+                anchor.text = next; anchor.position = pos + insertion.length;
+                if (draft) { draft.text = next; sessionDrafts.set(channel, draft); }
+                else { input.value = next; input.setSelectionRange(anchor.position, anchor.position); input.dispatchEvent(new Event('input', { bubbles: true })); }
+                composerLinks.set(channel, [...(composerLinks.get(channel) || []), attachment]);
+            }
+            composerUploads.delete(id);
+        } catch (error) { job.state = 'error'; job.error = error.message || 'Upload failed'; }
+        renderComposerUploads();
     }
 }
+
+// Kept for existing image callers, using the same accepted/error path.
+async function uploadImage(file) { await uploadComposerFiles(file ? [file] : []); }
 
 function renderAttachments() {
     const container = document.getElementById('attachments');
@@ -288,5 +375,6 @@ window._onSessionDraftSwitch = function(previous, next) {
     input.value = draft?.text || '';
     pendingAttachments = draft?.attachments ? [...draft.attachments] : [];
     renderAttachments();
+    queueMicrotask(() => { if (activeChannel === next) renderComposerUploads(); });
     input.dispatchEvent(new Event('input', { bubbles: true }));
 };

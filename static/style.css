@@ -2094,3 +2094,14 @@ footer {
 .msg-video { width: min(100%, 520px); display: grid; gap: 6px; }
 .msg-video video { display: block; width: 100%; max-height: 360px; object-fit: contain; background: #111; border-radius: 6px; }
 .msg-video a { color: var(--accent); font-size: 12px; width: fit-content; }
+
+/* Chat file uploads share the existing footer in both workspace and standalone chat. */
+#attach-files { flex:none; border:1px solid var(--border-subtle); border-radius:8px; background:var(--bg-msg); color:var(--text); width:34px; height:34px; cursor:pointer; }
+#composer-uploads { display:flex; flex-wrap:wrap; gap:6px; }
+#composer-uploads:empty { display:none; }
+.composer-upload { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; margin-bottom:6px; border:1px solid var(--border-subtle); border-radius:8px; background:var(--bg-msg); font-size:12px; overflow-wrap:anywhere; }
+.composer-upload.error { color:var(--error-color); border-color:var(--error-color); }
+.composer-upload button { color:inherit; background:none; border:0; cursor:pointer; padding:2px 6px; }
+.msg-file-link { display:inline-block; padding:7px 10px; margin:4px 0; border:1px solid var(--border-subtle); border-radius:8px; overflow-wrap:anywhere; }
+.msg-file-link small { font-size:11px; color:var(--text-dim); }
+#send:disabled { opacity:.45; cursor:wait; }
