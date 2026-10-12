@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { Followup, ProjectState, Review, Task } from '../lib/types';
 import { CardFollowLayer, followName, type CardFollow } from '../follow/Follow';
-import { CardThumbnails } from './Attachments';
+import { CardVideos, CardThumbnails } from './Attachments';
 import { AgentChip, LabelChips, RelativeTime, displayName, type Agents } from './shared';
 import { USER } from '../lib/constants';
 
@@ -144,6 +144,7 @@ export function TaskCard({
           {task.title}
         </span>
       </button>
+      <CardVideos attachments={task.attachments} />
       <div className="bd-card-meta">
         <AgentChip name={task.owner} agents={task.owner && agents[task.owner] ? {...agents, [task.owner]: {...agents[task.owner], label: followName(task.owner, agents)}} : agents} />
         <code className="bd-id">{task.id}</code>

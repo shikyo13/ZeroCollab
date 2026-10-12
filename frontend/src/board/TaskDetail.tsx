@@ -192,7 +192,7 @@ export function TaskDetail({
       )}
 
       <section className="bd-detail-section" aria-labelledby="bd-images-heading">
-        <h3 id="bd-images-heading">Images ({task.attachments?.length ?? 0})</h3>
+        <h3 id="bd-images-heading">Attachments ({task.attachments?.length ?? 0})</h3>
         <TaskAttachments key={task.id} task={task} channel={channel} />
       </section>
 

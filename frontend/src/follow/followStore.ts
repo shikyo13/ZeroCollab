@@ -6,6 +6,7 @@
  * at once. Pause freezes what is shown; resuming catches up to the latest state. */
 import { useSyncExternalStore } from 'react';
 import type { ProjectState, RoomEvent, Review, Task, TaskStatus } from '../lib/types';
+import { isVideoAttachment } from '../lib/mediaAttachment';
 import { readStored, writeStored } from '../lib/storage';
 import { STORAGE_KEYS } from '../lib/constants';
 
@@ -52,7 +53,7 @@ export interface TaskMove {
  * annotation, never a live drawing. A browser item shows the shared preview as it is now. */
 export interface PipItem {
   id: number;
-  kind: 'markup' | 'image' | 'browser';
+  kind: 'markup' | 'image' | 'video' | 'browser';
   actor: string;
   time: number;
   /** Upload url for markup and images; the preview page address for the browser. */
@@ -149,7 +150,7 @@ export function closePip(id?: number) {
   publish(true);
 }
 
-const IMAGE_URL = /^\/uploads\/[\w.-]+\.(png|jpe?g|gif|webp)$/i;
+const IMAGE_URL = /^\/uploads\/[\w.-]+\.(png|jpe?g|gif|webp|webm|mp4)$/i;
 
 let publishTimer: number | null = null;
 
@@ -288,8 +289,8 @@ function onProjectState(event: RoomEvent) {
       const last = added[added.length - 1];
       if (last) {
         pipSeen.add(last.url);
-        showPip({ kind: last.source ? 'markup' : 'image', actor: by, time, url: last.url, note: last.note, source: last.source, task: id });
-        tick(by, last.source ? 'annotated an image on' : 'attached an image to', id, time);
+        showPip({ kind: isVideoAttachment(last.url) ? 'video' : last.source ? 'markup' : 'image', actor: by, time, url: last.url, note: last.note, source: last.source, task: id });
+        tick(by, isVideoAttachment(last.url) ? 'attached a video to' : last.source ? 'annotated an image on' : 'attached an image to', id, time);
       }
     }
   }
@@ -374,8 +375,8 @@ function onMessage(event: RoomEvent) {
   if (!last) return;
   pipSeen.add(last.url);
   const time = now();
-  showPip({ kind: last.source ? 'markup' : 'image', actor: m.sender, time, url: last.url, note: last.note, source: last.source });
-  tick(m.sender, last.source ? 'annotated an image' : 'shared an image', undefined, time);
+  showPip({ kind: isVideoAttachment(last.url) ? 'video' : last.source ? 'markup' : 'image', actor: m.sender, time, url: last.url, note: last.note, source: last.source });
+  tick(m.sender, isVideoAttachment(last.url) ? 'shared a video' : last.source ? 'annotated an image' : 'shared an image', undefined, time);
   publish();
 }
 

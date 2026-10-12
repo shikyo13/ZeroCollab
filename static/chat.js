@@ -588,6 +588,10 @@ function appendMessage(msg, options = {}) {
         if (msg.attachments && msg.attachments.length > 0) {
             attachmentsHtml = '<div class="msg-attachments">';
             for (const att of msg.attachments) {
+                if (/^\/uploads\/[a-z0-9_-][a-z0-9_.-]*\.(webm|mp4)$/i.test(att.url)) {
+                    attachmentsHtml += `<div class="msg-video"><video src="${escapeHtml(att.url)}" controls playsinline preload="metadata" aria-label="${escapeHtml(att.name || 'Rendered video')}"></video><a href="${escapeHtml(att.url)}" target="_blank" rel="noopener noreferrer">Open full size ↗</a></div>`;
+                    continue;
+                }
                 attachmentsHtml += `<img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" data-source="${escapeHtml(att.source || '')}" data-url="${escapeHtml(att.url)}" onclick="openImageModal(this.dataset.url)">`;
             }
             attachmentsHtml += '</div>';

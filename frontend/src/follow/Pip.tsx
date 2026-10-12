@@ -1,6 +1,7 @@
 /* Existing Follow evidence, kept in a reserved lane. Saved images are immutable;
  * browser frames update only while their own page is visible and not being read. */
 import { useEffect, useRef, useState } from 'react';
+import { MediaAttachment } from '../components/MediaAttachment';
 import { sessionHeaders } from '../lib/api';
 import type { Task } from '../lib/types';
 import { imageNotes } from '../annotate/ImageViewer';
@@ -44,7 +45,7 @@ function useBrowserFrame(item:PipItem, frozen:boolean, hardFrozen:boolean, activ
 
 function Preview({pane,collapsed,paused,agents,tasks,onChange,onClose,onOpenTask,onNew}:{pane:Pane;collapsed:boolean;paused:boolean;agents:Agents;tasks:Task[];onChange:(patch:Partial<Pane>)=>void;onClose:()=>void;onOpenTask:(id:string)=>void;onNew:()=>void}) {
   const {item}=pane,root=useRef<HTMLElement>(null),dialog=useRef<HTMLDialogElement>(null),opener=useRef<HTMLElement|null>(null);
-  const [visible,setVisible]=useState(true),[original,setOriginal]=useState(false),[expanded,setExpanded]=useState(false),[now,setNow]=useState(Date.now()/1000);
+  const [playing,setPlaying]=useState(false),[visible,setVisible]=useState(true),[original,setOriginal]=useState(false),[expanded,setExpanded]=useState(false),[now,setNow]=useState(Date.now()/1000);
   const closeRef=useRef(onClose);closeRef.current=onClose;
   const frozen=paused||pane.held||pane.pinned||expanded||now<pane.graceUntil;
   const frame=useBrowserFrame(item,frozen,paused||pane.pinned||expanded,()=>!collapsed&&visible&&!document.hidden&&!!root.current?.getClientRects().length);
@@ -52,9 +53,9 @@ function Preview({pane,collapsed,paused,agents,tasks,onChange,onClose,onOpenTask
   useEffect(()=>{const node=root.current;if(!node)return;const observer=new IntersectionObserver(entries=>setVisible(entries[0].isIntersecting));observer.observe(node);return()=>observer.disconnect();},[]);
   useEffect(()=>{
     // Unseen/folded evidence stays available until it has actually been displayed.
-    if(!pane.viewed||collapsed||!visible||paused||pane.pinned||pane.held||expanded||now<pane.graceUntil)return;
+    if(playing||!pane.viewed||collapsed||!visible||paused||pane.pinned||pane.held||expanded||now<pane.graceUntil)return;
     const timer=setTimeout(()=>closeRef.current(),12000);return()=>clearTimeout(timer);
-  },[item.id,pane.viewed,collapsed,visible,paused,pane.pinned,pane.held,expanded,now<pane.graceUntil]);
+  },[item.id,playing,pane.viewed,collapsed,visible,paused,pane.pinned,pane.held,expanded,now<pane.graceUntil]);
   useEffect(()=>{
     if(!expanded)return;dialog.current?.showModal();return()=>{dialog.current?.close();if(opener.current?.isConnected)opener.current.focus();};
   },[expanded]);
@@ -70,7 +71,7 @@ function Preview({pane,collapsed,paused,agents,tasks,onChange,onClose,onOpenTask
     return()=>{node.removeEventListener('load',viewed);observer.disconnect();};
   },[pane.viewed,collapsed,image]);
   const notes=item.kind==='markup'?imageNotes(item.note):null;
-  const title=item.kind==='browser'?'Browser':item.kind==='markup'?'Annotation':'Screenshot';
+  const title=item.kind==='browser'?'Browser':item.kind==='markup'?'Annotation':item.kind==='video'?'Video':'Screenshot';
   const time=new Date(item.time*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   const caption=item.kind==='browser'?frame?`${pane.pinned?'Pinned browser frame':'Live browser'} · received ${Math.max(0,Math.floor(now-frame.received))}s ago${pane.held||expanded?' · held while reading':''}`:'Waiting for a browser frame':`${title} · ${time}`;
   const task=item.task?tasks.find(t=>t.id===item.task):undefined;
@@ -82,11 +83,11 @@ function Preview({pane,collapsed,paused,agents,tasks,onChange,onClose,onOpenTask
       <button className="fl-pip-btn" aria-pressed={pane.pinned} disabled={item.kind==='browser'&&!frame&&!pane.pinned} onClick={()=>onChange({pinned:!pane.pinned})}>{pane.pinned?'Unpin':'Pin'}</button>
       <button className="fl-pip-btn" aria-label={`Close ${followName(item.actor,agents)} ${title} preview`} onClick={onClose}>Close</button>
       {!!pane.updates&&<button className="fl-pip-btn fl-preview-new" onClick={onNew}>{pane.updates} new previews</button>}
-    </div><p className="fl-preview-source"><strong>{task?.title || 'Team activity'}</strong><span>{item.kind==='browser'?item.url || 'Shared browser':item.source?'Saved annotation · original available':'Saved screenshot'}</span></p></header>
+    </div><p className="fl-preview-source"><strong>{task?.title || 'Team activity'}</strong><span>{item.kind==='browser'?item.url || 'Shared browser':item.source?'Saved annotation · original available':item.kind==='video'?'Saved video':'Saved screenshot'}</span></p></header>
     {!collapsed&&<div className="fl-preview-body">
       <p className="fl-preview-caption">{caption}</p>
       {item.kind==='markup'&&item.source&&<div className="fl-preview-actions" aria-label="Annotation version"><button className="fl-pip-btn" aria-pressed={!original} onClick={()=>setOriginal(false)}>Marked</button><button className="fl-pip-btn" aria-pressed={original} onClick={()=>setOriginal(true)}>Original</button></div>}
-      {image?<button className="fl-preview-image" aria-label={`Expand ${title} image`} onClick={e=>{opener.current=e.currentTarget;setExpanded(true);}}><img src={image} alt={notes?.summary || `${title} evidence`}/></button>:<p className="fl-pip-empty">Waiting for the shared browser…</p>}
+      {item.kind==='video'?<MediaAttachment url={item.url} name={task?.title || 'Rendered video'} paused={paused} onPlayingChange={setPlaying} onLoaded={()=>{if(visible&&!collapsed)onChange({viewed:true});}}/>:image?<button className="fl-preview-image" aria-label={`Expand ${title} image`} onClick={e=>{opener.current=e.currentTarget;setExpanded(true);}}><img src={image} alt={notes?.summary || `${title} evidence`}/></button>:<p className="fl-pip-empty">Waiting for the shared browser…</p>}
       {notes&&!original&&<ol className="fl-pip-legend">{notes.marks.map(mark=><li key={mark.number}><span className="fl-pip-key" style={{background:mark.color || 'var(--accent)'}}>{mark.number}</span>{mark.text}</li>)}</ol>}
       {task&&<button className="fl-pip-link" onClick={()=>onOpenTask(task.id)}>{task.title}</button>}
     </div>}
@@ -136,3 +137,4 @@ export function FollowPip({agents,tasks,onOpenTask,onPreviewsChange,projectId}:{
       }}/>;
   })}</aside>;
 }
+

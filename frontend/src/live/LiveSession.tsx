@@ -8,6 +8,7 @@ import type { View } from '../workspace/useWorkspaceRoute';
 import { isVideo, type LiveAgent, type LiveArtifact, type LiveFeed, type LiveInteraction } from './liveFeed';
 import { stateWords } from './LiveStage';
 import { useLiveBrowser } from './useLiveBrowser';
+import { MediaAttachment } from '../components/MediaAttachment';
 
 type Shown = { owner: string; artifact: LiveArtifact };
 
@@ -92,7 +93,7 @@ export function LiveSession({ feed, focus, paused, navigate, onClose, onFocus }:
             ? browser.frame ? <img src={browser.frame} alt={`Shared browser, driven by ${name(shown.owner)}`} /> : <p className="lv-muted">{browser.error || 'Waiting for the shared browser frame.'}</p>
             : isVideo(src!)
               // Videos (rendered demos, recordings): native controls, never autoplay, no sound until asked.
-              ? <video src={src!} controls preload="metadata" playsInline aria-label={`Video from ${name(shown.owner)}`} />
+              ? <MediaAttachment url={src!} name={`Video from ${name(shown.owner)}`} className="lv-media" paused={paused} />
               : <img src={src!} alt={`${KIND[shown.artifact.kind]} from ${name(shown.owner)}`} />}
         </div>
         <p className="lv-provenance">
@@ -105,7 +106,6 @@ export function LiveSession({ feed, focus, paused, navigate, onClose, onFocus }:
             <button type="button" aria-pressed={marked} onClick={() => setMarked(true)}>Marked</button>
           </div>}
           <button type="button" aria-pressed={!!pinned} onClick={() => setPinned(pinned ? null : shown)} title={isBrowser ? 'Keep this frame; the browser keeps working' : 'Keep this picture as newer ones arrive'}>{pinned ? 'Pinned' : 'Pin'}</button>
-          {!isBrowser && isVideo(src!) && <a className="lv-open" href={src!} target="_blank" rel="noopener noreferrer">Open full size ↗</a>}
           {!isBrowser && !isVideo(src!) && window.ZeroImageReview && <button type="button" onClick={() => window.ZeroImageReview?.([{ url: src!, name: KIND[shown.artifact.kind], note: shown.artifact.note }], 0, () => undefined)}>Expand</button>}
           {newer && <button type="button" className="lv-new" onClick={() => { setPinned(null); setHeld(reading ? newest : null); }}>Newer picture ›</button>}
         </div>

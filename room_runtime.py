@@ -123,18 +123,27 @@ ACP_KIND_LABELS = {
     'search': 'searching files', 'execute': 'running a command', 'think': 'thinking', 'fetch': 'reading a web page'}
 
 
+def server_label(server):
+    """Another MCP server's name is internal (cua_repl, playwright...): say what it is for, never the raw name
+    (design #14129, opus bbecfe70)."""
+    server = str(server or '').lower()
+    if any(word in server for word in ('cua', 'computer', 'browser', 'playwright', 'puppeteer', 'chrome', 'edge')):
+        return 'using the browser'
+    return 'using a tool'
+
+
 def tool_label(name, params):
     """Plain words for a tool event; room tools by their action where it says more."""
     name, params = str(name or ''), params if isinstance(params, dict) else {}
     arguments = params
     if name == 'mcpToolCall':
         if params.get('server') != ROOM_SERVER:
-            return f"using {params['server']} tools" if params.get('server') else 'using a tool'
+            return server_label(params.get('server'))
         name, arguments = str(params.get('tool') or ''), params.get('arguments')
     elif name.startswith('mcp__'):
         server, _, tool = name[5:].partition('__')
         if server != ROOM_SERVER:
-            return f'using {server} tools'
+            return server_label(server)
         name, arguments = tool, params.get('input', params)  # Claude's tool_use block keeps arguments in input
     if name in ROOM_LABELS:
         action = arguments.get('action') if isinstance(arguments, dict) else None

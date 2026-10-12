@@ -7,6 +7,8 @@ import { annotateImage } from '../annotate';
 import { imageNotes, ImageViewer, uploadSource } from '../annotate/ImageViewer';
 import { RASTER_IMAGE_TYPES, runtime, uploadImage } from '../lib/api';
 import type { EarlierAttachment, Task, TaskAttachment } from '../lib/types';
+import { MediaAttachment } from '../components/MediaAttachment';
+import { isVideoAttachment } from '../lib/mediaAttachment';
 import { ErrorText, useAction } from './shared';
 
 /** The card shows this many newest images; adding more moves older ones to earlier images (project_room.CARD_IMAGES). */
@@ -52,12 +54,18 @@ export function CardThumbnails({ attachments }: { attachments?: TaskAttachment[]
   if (!attachments?.length) return null;
   return (
     <div className="bd-thumbs" aria-label={`${attachments.length} image${attachments.length === 1 ? '' : 's'}`}>
-      {attachments.slice(0, 3).map(a => (
+      {attachments.filter(a => !isVideoAttachment(a.url)).slice(0, 3).map(a => (
         <img key={a.url} src={a.url} alt="" loading="lazy" />
       ))}
       {attachments.length > 3 && <span className="bd-more">+{attachments.length - 3}</span>}
     </div>
   );
+}
+
+/** Video controls live outside the card's task-opening button. */
+export function CardVideos({ attachments }: { attachments?: TaskAttachment[] }) {
+  return <>{attachments?.filter(a => isVideoAttachment(a.url)).slice(0, 1).map(a =>
+    <MediaAttachment key={a.url} url={a.url} name={a.name} />)}</>;
 }
 
 /** Paste/drop/pick intake shared by the gallery and the new-task form. */
@@ -173,9 +181,9 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
         <ul className="bd-gallery">
           {attachments.map(a => (
             <li key={a.url} className="bd-gallery-item">
-              <button type="button" className="bd-image-open" onClick={() => setExpanded({ list: attachments, url: a.url })} title="Expand image and annotation notes">
+              {isVideoAttachment(a.url) ? <MediaAttachment url={a.url} name={a.name} /> : <button type="button" className="bd-image-open" onClick={() => setExpanded({ list: attachments, url: a.url })} title="Expand image and annotation notes">
                 <img src={a.url} alt={a.name} loading="lazy" />
-              </button>
+              </button>}
               <div className="bd-gallery-meta">
                 <span className="bd-gallery-name" title={a.name}>
                   {a.source ? 'Annotated: ' : ''}
@@ -183,12 +191,12 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
                 </span>
                 {a.note && <details className="bd-image-notes"><summary>Annotation notes</summary><p className="bd-gallery-note">{a.note}</p></details>}
                 <div className="bd-actions">
-                  <button type="button" className="bd-btn bd-btn-quiet" disabled={busy} onClick={() => {
+                  {!isVideoAttachment(a.url) && <button type="button" className="bd-btn bd-btn-quiet" disabled={busy} onClick={() => {
                     if (!uploadSource(a.source) && imageNotes(a.note).marks.length && !window.confirm('No original is recorded. New marks will be drawn over this image. Continue?')) return;
                     void annotate(a);
                   }}>
                     {uploadSource(a.source) ? 'Annotate original' : 'Annotate'}
-                  </button>
+                  </button>}
                   <button type="button" className="bd-btn bd-btn-quiet" disabled={busy} onClick={() => remove(a.url)}>
                     Remove
                   </button>
@@ -198,7 +206,7 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
           ))}
         </ul>
       ) : (
-        <p className="bd-muted">No images. Screenshots and mockups added here are visible to the team; agents open them on demand.</p>
+        <p className="bd-muted">No attachments. Screenshots, renders and mockups added here are visible to the team; agents open them on demand.</p>
       )}
       {full && <p className="bd-field-hint">The card shows the {CARD_IMAGES} newest images. Adding another moves an older one to Earlier images; nothing is deleted.</p>}
       {earlier.length > 0 && (
@@ -213,9 +221,9 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
           <ul className="bd-gallery">
             {earlier.map(a => (
               <li key={a.url} className="bd-gallery-item bd-gallery-earlier">
-                <button type="button" className="bd-image-open" onClick={() => setExpanded({ list: earlier, url: a.url })} title="Expand image and annotation notes">
+                {isVideoAttachment(a.url) ? <MediaAttachment url={a.url} name={a.name} /> : <button type="button" className="bd-image-open" onClick={() => setExpanded({ list: earlier, url: a.url })} title="Expand image and annotation notes">
                   <img src={a.url} alt={a.name} loading="lazy" />
-                </button>
+                </button>}
                 <div className="bd-gallery-meta">
                   <span className="bd-gallery-name" title={a.name}>{a.source ? 'Annotated: ' : ''}{a.name}</span>
                   {a.reason && <span className="bd-field-hint">{MOVED_REASON[a.reason]}{a.moved ? ` · ${new Date(a.moved * 1000).toLocaleString()}` : ''}</span>}
@@ -233,7 +241,7 @@ export function TaskAttachments({ task, channel }: { task: Task; channel: string
       )}
       {busy && <p className="bd-muted" role="status">Saving images...</p>}
       <ErrorText message={error} />
-      {expanded && expanded.list.length > 0 && createPortal(<ImageViewer images={expanded.list} initial={Math.max(0, expanded.list.findIndex(a => a.url === expanded.url))}
+      {expanded && expanded.list.length > 0 && createPortal(<ImageViewer images={expanded.list.filter(a => !isVideoAttachment(a.url))} initial={Math.max(0, expanded.list.filter(a => !isVideoAttachment(a.url)).findIndex(a => a.url === expanded.url))}
         onClose={() => setExpanded(null)} onAnnotate={attachment => void annotate(attachment)} />, document.body)}
     </ImageDropZone>
   );
