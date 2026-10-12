@@ -1267,8 +1267,10 @@ def upload_files(message, uploads, limit=8):
     own file tools. Only names inside the upload folder count; existence, kind and size come from disk."""
     if not isinstance(uploads, (str, os.PathLike)):
         return []
-    named = [(a.get('url', ''), a.get('name')) for a in message.get('attachments', [])]
-    named += [(link, None) for link in re.findall(r'/uploads/[\w.-]+', str(message.get('text', '')))]
+    named = [(a.get('url', ''), a.get('name')) for a in message.get('attachments', []) if isinstance(a, dict)]
+    # The composer pastes [name](/uploads/x.pdf); a bare or absolute link has no label.
+    named += [(link, label or None) for label, link in
+              re.findall(r'(?:\[([^\]\n]{1,120})\]\()?(?:https?://[^\s/)]+)?(/uploads/[\w.-]+)', str(message.get('text', '')))]
     root, lines, seen = Path(uploads).resolve(), [], set()
     for url, name in named:
         upload = str(url).split('/uploads/', 1)[1].rstrip('.') if '/uploads/' in str(url) else ''
@@ -1291,7 +1293,9 @@ def upload_files(message, uploads, limit=8):
 def message_text(message, origin='', uploads=None):
     text = f"#{message['id']} {message['sender']}:"
     for attachment in message.get('attachments', []):
-        url = attachment.get('url', '')
+        if not isinstance(attachment, dict):  # chat attachments are not validated server-side
+            continue
+        url = str(attachment.get('url', ''))
         if url.startswith('/uploads/'):
             url = origin + url
         text += f"\nAttachment: {attachment.get('name', 'image')} {url}"

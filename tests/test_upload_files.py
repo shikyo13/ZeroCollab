@@ -24,6 +24,12 @@ class UploadFileLines(unittest.TestCase):
         self.assertIn(f"File: spec.pdf is at {(self.uploads / '1a2b3c4d.pdf').resolve()} (file, 2.0 KB)", out)
         self.assertIn(f"File: 5e6f7a8b.webm is at {(self.uploads / '5e6f7a8b.webm').resolve()} (video, 10 bytes)", out)
 
+    def test_composer_link_keeps_its_label(self):
+        out = self.text('[Q3 plan.pdf](/uploads/1a2b3c4d.pdf) and again http://127.0.0.1:8300/uploads/1a2b3c4d.pdf',
+                        ['not a dict'])
+        self.assertIn('File: Q3 plan.pdf is at ', out)
+        self.assertEqual(out.count('File: '), 1)
+
     def test_images_missing_and_outside_files_add_nothing(self):
         out = self.text('/uploads/9c0d1e2f.png /uploads/00000000.zip /uploads/../secret.txt /uploads/..secret.txt')
         self.assertNotIn('File:', out)
