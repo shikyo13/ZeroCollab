@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import Browser, { activityLabel, type BrowserState } from '../workspace/Browser';
+import Browser, { activityLabel, type BrowserState, type BrowserPage } from '../workspace/Browser';
 import { runtime } from '../lib/api';
 import { useProjectState, useRoomEvent, useRuntimeState } from '../lib/room';
 import type { RuntimeState } from '../lib/types';
@@ -95,6 +95,11 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
   const chooserClose = useRef<HTMLButtonElement>(null), chooserOpener = useRef<HTMLElement | null>(null);
   const overflow = useRef<HTMLDetailsElement>(null);
   const [unavailable, setUnavailable] = useState<Record<string, boolean>>({});
+  const [pages, setPages] = useState<Record<string, BrowserPage>>({});
+  useEffect(() => {
+    if (browser?.pages?.length) setPages(previous => ({...previous,
+      ...Object.fromEntries(browser.pages!.map(page => [page.id, page]))}));
+  }, [browser?.pages]);
   const lastLaunch = useRef(launchRequest);
   useEffect(() => {onHasResources(tabs.tabs.length > 0);}, [tabs.tabs.length, onHasResources]);
   useEffect(() => {
@@ -114,7 +119,7 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
     if (button) {button.focus(); button.scrollIntoView({block: 'nearest', inline: 'nearest'});} else addButton.current?.focus();
   });
   const openResource = (request: PanelRequest, focus = true) => {
-    if (request.tab === 'browser' && !request.page && browser?.active_page) request = {...request, page: browser.active_page};
+    if (request.tab === 'browser' && !request.page && request.watch_agents !== true && browser?.active_page) request = {...request, page: browser.active_page};
     const id = tabs.openResource(request); setChoosing(false); show(); setAnnouncement(`Opened ${request.tab} tab.`); if (focus) focusTab(id);
   };
   useEffect(() => {
@@ -138,7 +143,8 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
   const identity = (tab: ResourceTab) => {
     if(tab.kind==='decision')return `Decision · ${project} · ${tab.request.decision_id}`;
     if (tab.kind === 'browser') {
-      const page = browser?.pages?.find(p => p.id === tab.request.page);
+      if (tab.request.watch_agents === true) return `Browser · ${project} · Agent selector`;
+      const page = pages[String(tab.request.page)];
       return `Browser · ${project} · Page ${tab.request.page || 'current'} · ${page?.title || (!tab.request.page ? browser?.title : '') || 'Untitled'} · ${page?.url || ''}`;
     }
     if (tab.kind === 'file') return `${project} · ${tab.request.ref} · ${tab.request.source_label || tab.request.sender || 'Project'} · ${tab.request.at || 'Working copy'}`;
@@ -148,16 +154,18 @@ function PanelResources({project, room, browser, onBrowser, open, show, hide, wi
     }
     return `${project} · ${tab.label} · Current worktree diff`;
   };
-  const isUnavailable = (tab: ResourceTab) => tab.kind === 'browser' && (!!unavailable[tab.id]
-    || !!(tab.request.page && browser?.pages && !browser.pages.some(p => p.id === tab.request.page)));
+  // One instance's page list says nothing about another's page. Each Browser
+  // viewer reports its own exact-page refusal through onUnavailable.
+  const isUnavailable = (tab: ResourceTab) => tab.kind === 'browser' && !!unavailable[tab.id];
   const baseLabel = (tab: ResourceTab) => tab.kind === 'browser'
-    ? browser?.pages?.find(p => p.id === tab.request.page)?.title || (!tab.request.page ? browser?.title : '') || 'Untitled page'
+    ? tab.request.watch_agents === true ? 'Agent browsers'
+      : pages[String(tab.request.page)]?.title || (!tab.request.page ? browser?.title : '') || 'Untitled page'
     : tab.kind === 'review' ? String(tab.request.path || '').replace(/\\/g, '/').split('/').pop() || 'Review' : tab.label;
   const label = (tab: ResourceTab) => {
     const title = baseLabel(tab);
     if (tabs.tabs.filter(t => baseLabel(t) === title).length < 2) return title;
     let qualifier = String(tab.request.source_label || tab.request.sender || tab.request.at || tab.kind);
-    if (tab.kind === 'browser') {try {qualifier = new URL(browser?.pages?.find(p => p.id === tab.request.page)?.url || '').host;} catch {qualifier = 'Page';}}
+    if (tab.kind === 'browser') {try {qualifier = new URL(pages[String(tab.request.page)]?.url || '').host;} catch {qualifier = 'Page';}}
     return `${title} · ${qualifier || tab.kind} · ${tabs.tabs.filter(t => baseLabel(t) === title).findIndex(t => t.id === tab.id) + 1}`;
   };
   const accessibleLabel = (tab: ResourceTab) => `${label(tab)}${isUnavailable(tab) ? ' · Closed / unavailable' : ''} · ${identity(tab)}`;

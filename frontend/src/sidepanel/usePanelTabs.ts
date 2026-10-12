@@ -11,7 +11,9 @@ function resource(request: PanelRequest): ResourceTab {
   if(kind==='decision')return {id:'decision:'+String(request.decision_id),kind,label:'Decision',request};
   if (kind === 'browser') return typeof request.page === 'string' && request.page
     ? {id: 'browser:' + request.page, kind, label: 'Browser', request: {tab: 'browser', page: request.page}}
-    : initial[0];
+    : request.watch_agents === true
+      ? {id: 'browser:agents', kind, label: 'Agent browsers', request: {tab: 'browser', watch_agents: true}}
+      : initial[0];
   const ref = String(request.ref ?? '');
   const label = kind === 'file' ? ref.replace(/\\/g, '/').split('/').pop() || 'File'
     : kind === 'review' ? `Review · ${String(request.path ?? '').replace(/\\/g, '/').split('/').pop() || request.review_id}`
@@ -38,6 +40,7 @@ export function usePanelTabs(project: string) {
         // Store descriptors only. Root indices are transient: reopening must choose their source again.
         for (const field of ['ref','sender','at','review_id','path','agent','page','decision_id']) if (typeof raw[field] === 'string') request[field] = raw[field].slice(0, 2000);
         if (raw.source_required === true) request.source_required = true;
+        if (raw.watch_agents === true) request.watch_agents = true;
         if (typeof raw.time === 'number') request.time = raw.time;
         const next = resource(request);
         if (!tabs.some(t => t.id === next.id)) tabs.push(next);
@@ -53,6 +56,7 @@ export function usePanelTabs(project: string) {
       const r = t.request, safe: PanelRequest = {tab: r.tab};
       for (const field of ['ref','sender','at','review_id','path','agent','time','page','decision_id']) if (r[field] !== undefined) safe[field] = r[field];
       if (r.root != null || r.source_required) safe.source_required = true;
+      if (r.watch_agents === true) safe.watch_agents = true;
       return safe;
     });
     writeStored(key, JSON.stringify({tabs: descriptors, selected}));

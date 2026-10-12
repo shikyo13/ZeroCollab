@@ -161,7 +161,6 @@ class Page:
         self.frame_event = asyncio.Event()
         self.stream_lock = asyncio.Lock()
         self.streaming = False
-        self.legacy_until = 0
         self.width, self.height = WIDTH, HEIGHT
 
     def summary(self, active):
@@ -651,13 +650,19 @@ class Browser:
                 page.streaming = True
 
     async def latest_frame(self, page):
-        page.legacy_until = time.monotonic() + 2
-        await self.start_stream(page)
-        if not page.frame:
-            await asyncio.wait_for(page.frame_event.wait(), 5)
-        if self.pages.get(page.id) is not page or not page.frame:
-            raise ValueError('That browser page was closed')
-        return page.frame
+        # Legacy one-shot observers must not leave a 60fps capture running.
+        async with page.stream_lock:
+            if self.pages.get(page.id) is not page or not self.status()['running']:
+                raise ValueError('That browser page was closed')
+            if page.viewers and page.streaming and page.frame:
+                return page.frame
+            try:
+                return await self.screenshot(page)
+            except ValueError:
+                if self.pages.get(page.id) is page:
+                    # A slow or disconnected capture is retryable, not a closed page.
+                    raise asyncio.TimeoutError() from None
+                raise
 
     async def stream(self, page):
         page.viewers += 1
@@ -680,7 +685,7 @@ class Browser:
         finally:
             page.viewers -= 1
             async with page.stream_lock:
-                if not page.viewers and page.streaming and time.monotonic() >= page.legacy_until:
+                if not page.viewers and page.streaming:
                     with contextlib.suppress(Exception):
                         await self.command('Page.stopScreencast', page=page)
                     page.streaming = False
@@ -981,9 +986,9 @@ class BrowserManager:
             await asyncio.sleep(1)
             for browser in list(self.instances.values()):
                 for page in list(browser.pages.values()):
-                    if page.streaming and not page.viewers and time.monotonic() >= page.legacy_until:
+                    if page.streaming and not page.viewers:
                         async with page.stream_lock:
-                            if not page.viewers and time.monotonic() >= page.legacy_until:
+                            if not page.viewers:
                                 with contextlib.suppress(Exception):
                                     await browser.command('Page.stopScreencast', page=page)
                                 page.streaming = False

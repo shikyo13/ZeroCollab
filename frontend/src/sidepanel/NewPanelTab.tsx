@@ -37,7 +37,7 @@ export default function NewPanelTab({project, projectId, room, browser, tabs, on
   return <div className="panel-new">
     <p className="panel-eyebrow">WORKSPACE</p><h2>Open beside chat</h2><p>Choose a file, review, changes or a shared browser page.</p>
     <div className="panel-choices">
-      <button onClick={() => open({tab: 'browser'})}><strong>Shared browser</strong><small>Watch or select an agent browser</small></button>
+      <button onClick={() => open({tab: 'browser', watch_agents: true})}><strong>Shared browser</strong><small>Watch or select an agent browser</small></button>
       <button onClick={() => {setMode('file'); setError('');}}><strong>File</strong><small>Read a project or agent file</small></button>
       <button onClick={() => {setMode('review'); setError('');}}><strong>File review</strong><small>The exact version a teammate sent for review</small></button>
       <button onClick={() => open({tab: 'changes'})}><strong>Changes</strong><small>What teammates have edited</small></button>
