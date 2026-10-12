@@ -38,10 +38,10 @@
 .lv-person:focus-visible { outline: none; } .lv-person:focus-visible .lv-badge { outline: 2px solid var(--accent); outline-offset: 7px; }
 .lv-person.lv-selected .lv-badge { outline: 2px dashed var(--text-strong); outline-offset: 8px; }
 
-.lv-bubble { position: absolute; z-index: 4; box-sizing: border-box; overflow: hidden; padding: 6px 10px; border-radius: 12px; background: #191e22f2; border-left: 3px solid var(--c);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .4); font-size: 12.5px; line-height: 1.35; color: var(--text); animation: lv-in .28s cubic-bezier(.2, 0, 0, 1); pointer-events: none;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-.lv-bubble b { color: color-mix(in srgb, var(--c) 70%, white); font-weight: 600; }
+/* Speech bubbles are the shared SpeechBubble (components/speech-bubble.css); the stage only places them.
+   The slot glides when a bubble changes spot. */
+.lv-bubble-slot { position: absolute; z-index: 4; transition: left .38s cubic-bezier(.2, .8, .2, 1), top .38s cubic-bezier(.2, .8, .2, 1), bottom .38s cubic-bezier(.2, .8, .2, 1); }
+.lv-bubble-slot:has(.sb-open) { z-index: 9; }
 @keyframes lv-in { from { opacity: 0; transform: translateY(6px); } }
 
 .lv-chip { position: absolute; z-index: 2; transform: translate(-50%, -100%); max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 999px; padding: 3px 12px; font-size: 12px;
@@ -106,8 +106,10 @@
   .lv-with-session .lv-body { grid-template-columns: 1fr; grid-template-rows: 300px auto; }
   .lv-session { margin: 10px 0 0; }
 }
+.lv-reduced .lv-bubble-slot { transition: none; }
 @media (prefers-reduced-motion: reduce) {
-  .lv-bubble, .lv-chip, .lv-session { animation: none; }
+  .lv-chip, .lv-session { animation: none; }
+  .lv-bubble-slot { transition: none; }
   .lv-ring, .lv-badge { transition: none; }
   .lv-waiting_on_user .lv-ring { animation: none; }
 }

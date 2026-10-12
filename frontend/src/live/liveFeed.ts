@@ -88,12 +88,13 @@ export interface LiveFeed {
 }
 
 const RING = 200;
-const SPEECH_TAIL = 160;
+// The whole current reply goes to the bubble (design d0797586 F1: opening must show all of it). The cap only
+// guards memory against a runaway stream; a real reply never reaches it.
+const SPEECH_WINDOW = 50000;
 const PUBLISH_MS = 120;
 const now = () => Date.now() / 1000;
 const flat = (text: string) => text.replace(/\s+/g, ' ').trim();
 const clip = (text: string, n: number) => { const t = flat(text); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
-const tail = (text: string, n: number) => { const t = flat(text); return t.length > n ? '…' + t.slice(t.length - n + 1) : t; };
 /** Pictures and short videos an agent shared (videos: rendered demos, recordings). */
 const IMAGE = /^\/uploads\/[\w.-]+\.(png|jpe?g|gif|webp|webm|mp4)$/i;
 export const isVideo = (url: string) => /\.(webm|mp4)(\?|$)/i.test(url);
@@ -104,6 +105,18 @@ function askText(q: { params: unknown; reason: string; tool: string; question: b
   const p = (q.params && typeof q.params === 'object' ? q.params : {}) as { message?: unknown; questions?: { question?: unknown }[] };
   const asked = typeof p.message === 'string' ? p.message : Array.isArray(p.questions) ? p.questions.map(x => x?.question).find(x => typeof x === 'string') as string | undefined : undefined;
   return clip(asked || q.reason || (q.question ? 'Has a question for you' : `Wants to use ${q.tool}`), 280);
+}
+
+/** What a speech bubble shows (Zero #14496: bubbles were cut off): the newest whole sentences that fit the
+ * window, starting at a sentence start, else at a word boundary with a leading ellipsis. Never mid-word. */
+export function speechWindow(text: string, max = SPEECH_WINDOW): string {
+  const t = flat(text);
+  if (t.length <= max) return t;
+  const cut = t.slice(-max);
+  const sentence = cut.search(/[.!?…]\s+(?=[A-Z0-9"'(@*`])/);
+  if (sentence >= 0 && sentence < max * 0.6) return cut.slice(sentence + 1).trimStart();
+  const space = cut.indexOf(' ');
+  return '…' + (space >= 0 && space < 30 ? cut.slice(space + 1) : cut);
 }
 
 /** A stage name: short labels as they are (Astra, Opus 5.5); long role titles become the handle in words. */
@@ -292,7 +305,7 @@ export function useLiveFeed(active: boolean): LiveFeed {
         if (!s || s.message !== (d.message ?? '') || s.draft && !draft) { s = { message: d.message ?? '', text: '', draft }; streams.set(d.run, s); }
         s.draft = draft;
         if (d.sealed) { a.speech = ''; if (source === 'derived') a.activity = 'working on a team decision'; }
-        else { s.text = (s.text + (d.text ?? '')).slice(-SPEECH_TAIL * 3); a.speech = tail(s.text, SPEECH_TAIL); a.speechAt = now();
+        else { s.text = (s.text + (d.text ?? '')).slice(-SPEECH_WINDOW); a.speech = speechWindow(s.text); a.speechAt = now();
           if (source === 'derived' && (!a.activity || a.activity === 'starting a turn')) a.activity = draft ? 'working' : 'writing a reply'; }
         if (source === 'derived') { if (a.state !== 'working' && a.state !== 'waiting_on_user') setState(a, 'working'); settleTask(a, d.task_id); }
       } else if (event.type === 'runtime_tool') {

@@ -90,7 +90,7 @@ export default function LiveTeam({ active, navigate }: { active: boolean; naviga
   const status = !feed.connected ? 'Reconnecting… showing the last known state' : !feed.ready ? 'Catching up with the team…'
     : `${working} working · ${asks.length ? `${asks.length} waiting on you` : 'nothing waiting on you'}${paused ? ' · paused' : ''}${reduced ? ' · reduced motion' : ''}`;
 
-  return <div className={`live-v2${focus ? ' lv-with-session' : ''}`}>
+  return <div className={`live-v2${focus ? ' lv-with-session' : ''}${reduced ? ' lv-reduced' : ''}`}>
     <header className="lv-head">
       <div className="workspace-page-heading"><h1>Live</h1><p role="status">{status}</p></div>
       <div className="lv-controls">

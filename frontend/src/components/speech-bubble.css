@@ -1,0 +1,18 @@
+/* Shared speech bubble (task bbd70aad). The box eases its width and height; the text keeps its size. */
+.speech-bubble { position: relative; box-sizing: border-box; border-radius: 12px; background: #191e22f2; border-left: 3px solid var(--c);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .4); color: var(--text); font: 12.5px/17px Inter, 'Segoe UI', system-ui, sans-serif;
+  cursor: default; outline: none; overflow: hidden;
+  transition: width .25s cubic-bezier(.42, 0, .58, 1), height .25s cubic-bezier(.42, 0, .58, 1), box-shadow .2s ease-out;
+  animation: sb-in .25s cubic-bezier(.2, 0, 0, 1); }
+.speech-bubble:focus-visible { box-shadow: 0 0 0 2px var(--accent), 0 6px 18px rgba(0, 0, 0, .4); }
+.speech-bubble.sb-open { z-index: 9; box-shadow: 0 10px 28px rgba(0, 0, 0, .55); }
+.sb-clip { position: absolute; inset: 6px 10px 6px 10px; overflow: hidden; }
+.sb-open .sb-clip { overflow-y: auto; overscroll-behavior: contain; }
+/* Collapsed: the newest lines stay in view at the bottom, and the top edge fades when there is more above. */
+.speech-bubble:not(.sb-open) .sb-text { position: absolute; left: 0; right: 0; bottom: 0; }
+.sb-faded { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px); mask-image: linear-gradient(to bottom, transparent 0, #000 22px); }
+.sb-text { overflow-wrap: anywhere; }
+.sb-text b { color: color-mix(in srgb, var(--c) 70%, white); font-weight: 600; }
+@keyframes sb-in { from { opacity: 0; transform: translateY(6px); } }
+.speech-bubble.sb-reduced { transition: none; animation: none; }
+@media (prefers-reduced-motion: reduce) { .speech-bubble { transition: none; animation: none; } }

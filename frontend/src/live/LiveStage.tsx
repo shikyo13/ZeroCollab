@@ -4,12 +4,34 @@
  * reachable); effects are drawn on an aria-hidden canvas and always have a plain-text twin. */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { isVideo, type LiveAgent, type LiveFeed, type LiveInteraction } from './liveFeed';
-import { LABEL_H, layoutStage, personRect, placeBubble, springStep, type BubbleSide, type Point, type Rect } from './liveLayout';
+import { SpeechBubble } from '../components/SpeechBubble';
+import { LABEL_H, layoutStage, overlap, personRect, placeBubble, springStep, type BubbleSide, type Point, type Rect } from './liveLayout';
 
 const MAX_MOVERS = 3;          // at most three people travel at once; the rest wait their turn
 const MAX_EFFECTS = 3;         // at most three comets or batons in the air
 const SPEECH_SHOWN_S = 9;
-const BUBBLE = { w: 230, h: 64 };
+// Speech bubbles are sized to their text (Zero #14496: bubbles were cut off), measured before placement so
+// overlap avoidance uses the real size, then resized with a soft ease as the text grows or a shorter
+// message replaces a longer one.
+const BUBBLE_FONT = '12.5px Inter, "Segoe UI", system-ui, sans-serif', BUBBLE_NAME_FONT = '600 ' + BUBBLE_FONT;
+const BUBBLE_LINE = 17, BUBBLE_PAD_X = 23, BUBBLE_PAD_Y = 12, BUBBLE_MIN = 120, BUBBLE_MAX = 280, BUBBLE_LINES = 5;
+let measureCtx: CanvasRenderingContext2D | null = null;
+export function bubbleSize(name: string, text: string): { w: number; h: number } {
+  measureCtx = measureCtx || document.createElement('canvas').getContext('2d');
+  const ctx = measureCtx!;
+  const inner = BUBBLE_MAX - BUBBLE_PAD_X;
+  ctx.font = BUBBLE_NAME_FONT; let x = ctx.measureText(name + ' ').width;
+  ctx.font = BUBBLE_FONT;
+  const space = ctx.measureText(' ').width;
+  let lines = 1, widest = x;
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const w = ctx.measureText(word).width;
+    if (x > 0 && x + w > inner) { lines++; widest = Math.max(widest, x - space); x = 0; }
+    x += Math.min(w, inner) + space;
+  }
+  widest = Math.max(widest, x - space);
+  return { w: Math.ceil(Math.min(BUBBLE_MAX, Math.max(BUBBLE_MIN, widest + BUBBLE_PAD_X + 2))), h: Math.min(lines, BUBBLE_LINES) * BUBBLE_LINE + BUBBLE_PAD_Y };
+}
 const ACTIVE: LiveAgent['state'][] = ['working', 'waiting_on_user'];
 
 export interface StageProps {
@@ -39,6 +61,12 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   const prevState = useRef(new Map<string, string>()), prevActivity = useRef(new Map<string, string>());
   const joined = useRef(new Map<string, { group: string; at: number }>());
   const [hover, setHover] = useState<string | null>(null);
+  // Each bubble's real box as the shared component reports it (the size it is easing to), and the spot an
+  // open bubble keeps while someone reads it, so growing never moves it out from under the pointer.
+  const bubbleBox = useRef(new Map<string, { w: number; h: number; open: boolean }>());
+  const heldSpot = useRef(new Map<string, { rect: Rect; side: BubbleSide; dir?: 'down' | 'up' }>());
+  const [, setBubbleTick] = useState(0);
+  const openRoom = useRef(new Map<string, number>());   // the clear height an open bubble may grow into
   const live = useRef({ paused, reduced, hover }); live.current = { paused, reduced, hover };
   const clock = useRef(0);   // animation time in ms; frozen while paused
 
@@ -187,11 +215,35 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   const now = Date.now() / 1000;
   const blockers: Rect[] = [youArea, ...layout.formations.map(f => ({ ...f.box, h: 22 })),
     ...feed.agents.map(a => { const s = layout.seats.get(a.id); return s ? personRect(s, a.state === 'idle' || a.state === 'stopped', !!a.artifact) : null; }).filter((r): r is Rect => !!r)];
-  const speakers = feed.agents.filter(a => a.speech && now - a.speechAt < SPEECH_SHOWN_S && ACTIVE.includes(a.state)).sort((p, q) => q.speechAt - p.speechAt).slice(0, 3);
+  const isOpen = (id: string) => !!bubbleBox.current.get(id)?.open;
+  const speakers = feed.agents.filter(a => a.speech && (isOpen(a.id) || (now - a.speechAt < SPEECH_SHOWN_S && ACTIVE.includes(a.state))))
+    .sort((p, q) => Number(isOpen(q.id)) - Number(isOpen(p.id)) || q.speechAt - p.speechAt).slice(0, 3);
   const bubbles: { agent: LiveAgent; rect: Rect | null; side?: BubbleSide }[] = [];
+  for (const id of [...heldSpot.current.keys()]) if (!isOpen(id) || !speakers.some(a => a.id === id)) heldSpot.current.delete(id);
   for (const agent of speakers) {
+    // An open bubble keeps its spot (and grows from its anchored edge); the others step around it.
+    const held = heldSpot.current.get(agent.id), box = bubbleBox.current.get(agent.id);
+    if (held && box?.open) {
+      // Opening grows the bubble from one edge. The direction that keeps every badge clear is chosen once,
+      // when it opens, and kept while it stays open, so the reader's edge never jumps.
+      // The open bubble may only take the free space in its column (never a badge, chip or another bubble):
+      // it opens toward the side with more room, once, and scrolls inside beyond that room.
+      const top = held.rect.y, bottom = held.rect.y + held.rect.h, x0 = held.rect.x, x1 = held.rect.x + held.rect.w;
+      const others = [...blockers, ...bubbles.flatMap(o => o.rect ? [o.rect] : [])].filter(r => r.x < x1 && r.x + r.w > x0);
+      const roomDown = Math.min(size.h, ...others.filter(r => r.y >= top + 1).map(r => r.y)) - top - 6;
+      const roomUp = bottom - Math.max(0, ...others.filter(r => r.y + r.h <= bottom - 1).map(r => r.y + r.h)) - 6;
+      if (!held.dir) held.dir = roomDown >= roomUp ? 'down' : 'up';
+      const room = Math.max(held.rect.h, held.dir === 'down' ? roomDown : roomUp);
+      openRoom.current.set(agent.id, room);
+      const h = Math.min(box.h, room);
+      bubbles.push({ agent, rect: held.dir === 'down' ? { x: x0, y: top, w: box.w, h } : { x: x0, y: bottom - h, w: box.w, h }, side: held.dir === 'up' ? 'above' : 'below' });
+      continue;
+    }
     const seat = layout.seats.get(agent.id); if (!seat) continue;
-    const spot = placeBubble(seat, BUBBLE, [...blockers, ...bubbles.flatMap(b => b.rect ? [b.rect] : [])], stage);
+    const estimate = bubbleSize(agent.short, agent.speech);
+    const boxSize = box && box.w === estimate.w ? { w: box.w, h: box.h } : estimate;
+    const spot = placeBubble(seat, boxSize, [...blockers, ...bubbles.flatMap(b => b.rect ? [b.rect] : [])], stage);
+    if (spot) heldSpot.current.set(agent.id, { ...spot });
     bubbles.push({ agent, rect: spot?.rect ?? null, side: spot?.side });
   }
 
@@ -221,10 +273,19 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
         {bubble && !bubble.rect && <span className="lv-cue" title={a.speech} aria-hidden="true">💬</span>}
       </button>;
     })}
-    {bubbles.filter(b => b.rect).map(b => <div key={b.agent.id} className="lv-bubble" aria-hidden="true"
-      style={{ left: b.rect!.x, top: b.rect!.y, width: b.rect!.w, '--c': b.agent.color } as CSSProperties}>
-      <b>{b.agent.short}</b> {b.agent.speech}
-    </div>)}
+    {bubbles.filter(b => b.rect).map(b => {
+      // A bubble above its person is anchored by its bottom edge, so it grows upward, away from the badge.
+      const up = b.side === 'above' || b.side === 'upLeft' || b.side === 'upRight';
+      const slot: CSSProperties = up ? { left: b.rect!.x, bottom: size.h - (b.rect!.y + b.rect!.h) } : { left: b.rect!.x, top: b.rect!.y };
+      return <div key={b.agent.id} className="lv-bubble-slot" style={slot}>
+        <SpeechBubble name={b.agent.short} color={b.agent.color} text={b.agent.speech} width={b.rect!.w} reduced={reduced} openMaxHeight={openRoom.current.get(b.agent.id)}
+          onSize={box => {
+            const prev = bubbleBox.current.get(b.agent.id);
+            if (prev && prev.w === box.w && Math.abs(prev.h - box.h) <= 1 && prev.open === box.open) return;
+            bubbleBox.current.set(b.agent.id, box); setBubbleTick(n => n + 1);
+          }} />
+      </div>;
+    })}
   </div>;
 }
 
