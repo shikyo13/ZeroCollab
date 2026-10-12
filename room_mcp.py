@@ -29,8 +29,8 @@ class RoomMCP(FastMCP):
 mcp = RoomMCP('project_room', instructions='These tools operate the same durable project and kanban board visible to the user. Use room_task for ownership/dependencies, room_review for peer review, room_followup for tracked next actions, and room_read(section="inbox") at checkpoints. room_update leaves progress without waking peers. room_browser shows and drives the Browser panel the user sees (status, claim, open a local preview, inspect, screenshot, release); use it to check UI changes as the user sees them and to capture before and after screenshots. Native tools remain available; your final answer is published automatically.')
 
 
-def call(tool, arguments):
-    with httpx.Client(timeout=15, trust_env=False) as client:
+def call(tool, arguments, timeout=15):
+    with httpx.Client(timeout=timeout, trust_env=False) as client:
         response = client.post(os.environ['AGENT_ROOM_URL'] + '/api/runtime/coordination/' + os.environ['AGENT_ROOM_RUN_ID'],
             headers={'X-Session-Token': os.environ['AGENT_ROOM_SESSION_TOKEN']}, json={'tool': tool, 'arguments': arguments})
     if response.status_code != 200:
@@ -225,6 +225,42 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
     content = [json.dumps(result)]
     if pixels:
         content.append(Image(data=base64.b64decode(pixels), format='jpeg'))
+    return content
+
+
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
+def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None = None, overwrite: bool = False,
+                t_ms: float | list[float] = 0, reduced: bool = False, job_id: str = '') -> list:
+    """Author motion scenes and product videos with the room's motion engine (data, never code).
+    list: bundled and project scenes. get: one scene by ref (bundled:<id> or project:<id>).
+    validate: check scene_json; returns {ok, issues: [{path, message}]}. Fix every issue, then save.
+    save: write scene_json as project:<id> (overwrite to replace). frame: render the scene at t_ms (one
+    time or up to 6) exactly as the video will look; returns /uploads PNGs plus a contact sheet you can
+    post with room_markup. export: start the video (one at a time); export_status / export_cancel job_id.
+    Field reference: Docs/motion-scene-v2.md (scene v2) in the room repository; v1 scenes (layout plus
+    beats) still work. Loop: validate until clean, save, frame 2-3 key moments and show them, then export."""
+    args = dict(action=action)
+    if scene:
+        args['scene'] = scene
+    if scene_json is not None:
+        args['scene_json'] = scene_json
+    if action == 'save':
+        args['overwrite'] = overwrite
+    if action == 'frame':
+        args['t_ms'] = t_ms
+    if action in ('frame', 'export'):
+        args['reduced'] = reduced
+    if job_id:
+        args['job_id'] = job_id
+    # Starting a headless browser and rendering up to 6 frames can take longer than a board call.
+    result = call('room_motion', args, timeout=60 if action == 'frame' else 15)
+    content = [json.dumps(result)]
+    shown = (result.get('sheet_url') or ((result.get('frames') or [{}])[0].get('url'))) if isinstance(result, dict) else None
+    if shown:
+        with httpx.Client(timeout=15, trust_env=False) as client:
+            image = client.get(os.environ['AGENT_ROOM_URL'] + shown)
+        if image.status_code == 200 and len(image.content) <= IMAGE_LIMIT:
+            content.append(Image(data=image.content, format='png'))
     return content
 
 

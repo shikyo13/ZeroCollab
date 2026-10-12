@@ -1185,7 +1185,7 @@ class ProjectRoom:
         if state.get('provider') in ROOM_TOOL_PROVIDERS or state.get('provider') == 'api':
             native = state.get('provider') in ROOM_TOOL_PROVIDERS
             lines.append('- Room tools (room_read, room_task, room_update, room_review, room_followup, room_goal, room_repository, '
-                         f"room_image, room_markup{', room_browser' if native else ''}) are provided for this turn. If any is "
+                         f"room_image, room_markup, room_motion{', room_browser' if native else ''}) are provided for this turn. If any is "
                          'missing from your tool list, say so in the chat as a harness fault and name the action it blocks; '
                          'do not report the action as done.')
             if native:
@@ -1278,6 +1278,11 @@ def coordination_tools():
                         'x1': {'type': 'number'}, 'y1': {'type': 'number'}, 'x2': {'type': 'number'}, 'y2': {'type': 'number'}, 'note': string, 'color': string},
                         'required': ['kind', 'x1', 'y1']}},
                     'summary': string, 'task_id': string, 'post': {'type': 'boolean'}}, ['image']),
+        definition('room_motion', 'Author motion scenes and product videos (JSON data, never code). list/get scenes; validate scene_json (returns issues [{path, message}]); save it as project:<id> (overwrite to replace); frame renders t_ms (one time or up to 6) exactly as the video looks, returning /uploads PNGs and a contact sheet; export starts the video; export_status; export_cancel job_id. Field reference: Docs/motion-scene-v2.md. Loop: validate until clean, save, frame key moments and show them with room_markup, then export.',
+                   {'action': {'type': 'string', 'enum': ['list', 'get', 'validate', 'save', 'frame', 'export', 'export_status', 'export_cancel']},
+                    'scene': string, 'scene_json': {'type': 'object'}, 'overwrite': {'type': 'boolean'},
+                    't_ms': {'anyOf': [{'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}, 'maxItems': 6}]},
+                    'reduced': {'type': 'boolean'}, 'job_id': string}, ['action']),
         definition('room_update', 'Post a concise progress, decision, reference, blocker, or handoff update to project memory and the chatroom without waking peers.',
                    {'kind': string, 'text': string, 'supersedes': string, 'resolves': string}, ['kind', 'text']),
         definition('room_review', 'Request peer review of an approach or patch using an explicit artifact/revision reference, or respond with findings for that exact reference. Optional files selects relative files for backend hash snapshots (otherwise declared file paths). Changed snapshots block approval; room_read review_artifact retrieves captured content. Requests remain in the inbox; notify attempts one bounded wake-up.',

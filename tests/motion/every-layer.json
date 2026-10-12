@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "id": "every-layer",
+  "name": "Every layer type",
+  "assets": [
+    {"id": "logo", "kind": "image", "ref": "/uploads/logo.png"},
+    {"id": "board-shot", "kind": "capture", "ref": "/uploads/1543d555.png", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"id": "clip", "kind": "video", "ref": "/uploads/walkthrough.webm"},
+    {"id": "music", "kind": "audio", "ref": "/uploads/bed.ogg"},
+    {"id": "inter", "kind": "font", "ref": "motion:fonts/inter.woff2"}
+  ],
+  "compositions": [{
+    "id": "main", "width": 1920, "height": 1080, "fps": {"num": 30000, "den": 1001}, "duration": 300,
+    "background": "#0f1115", "seed": 7,
+    "props_schema": {"type": "object", "required": ["title"], "properties": {
+      "title": {"type": "string", "title": "Title", "maxLength": 80, "default": "Spec to app"},
+      "accent": {"type": "string", "format": "color", "default": "#4fb3c8"},
+      "speed": {"type": "number", "minimum": 0.5, "maximum": 2, "default": 1}}},
+    "props": {"title": "Spec to working app", "accent": "#4fb3c8"},
+    "tracks": [
+      {"id": "visuals", "kind": "visual", "clips": [
+        {"id": "intro", "from": 0, "duration": 120, "layers": [
+          {"id": "bg-shape", "type": "shape", "shape": "rect", "fill": "#16181d", "width": 1920, "height": 1080},
+          {"id": "title", "type": "text", "text": {"prop": "title"}, "font_asset": "inter", "size": 96, "weight": 700,
+           "color": {"prop": "accent"}, "align": "center", "x": 960, "y": 480, "anchor_x": 0.5, "fit": "shrink", "max_width": 1600,
+           "keyframes": {"opacity": [{"frame": 0, "value": 0}, {"frame": 20, "value": 1, "easing": "ease-out"}],
+                         "y": [{"frame": 0, "value": 520}, {"frame": 30, "value": 480, "easing": {"spring": {"mass": 1, "stiffness": 120, "damping": 14}}}],
+                         "reveal": [{"frame": 0, "value": 0}, {"frame": 40, "value": 1, "easing": {"bezier": [0.2, 0, 0, 1]}}]}},
+          {"id": "logo", "type": "image", "asset": "logo", "fit": "contain", "x": 60, "y": 40, "width": 160, "height": 60},
+          {"id": "swoosh", "type": "path", "d": "M 100 900 C 600 700, 1300 1100, 1820 880", "stroke": "#4fb3c8", "stroke_width": 6,
+           "keyframes": {"progress": [{"frame": 10, "value": 0}, {"frame": 70, "value": 1, "easing": "ease-in-out"}]}},
+          {"id": "badges", "type": "group", "x": 1500, "y": 60, "layers": [
+            {"id": "badge", "type": "shape", "shape": "star", "sides": 5, "inner_radius": 0.45, "radius": 24, "fill": "#e0a33a"},
+            {"id": "badge-label", "type": "text", "text": "Live", "size": 28, "color": "#ffffff", "x": 40}]}
+        ]},
+        {"id": "demo", "from": 110, "duration": 190, "offset": 0,
+         "transition": {"kind": "fade", "duration": 10, "easing": "linear"}, "layers": [
+          {"id": "walkthrough", "type": "video", "asset": "clip", "fit": "cover", "trim": 30, "rate": 1, "muted": true,
+           "width": 1920, "height": 1080},
+          {"id": "board", "type": "capture", "asset": "board-shot", "label": "real", "caption": "Board Follow, 0.12.40",
+           "x": 1180, "y": 600, "width": 640, "height": 360,
+           "keyframes": {"scale": [{"frame": 0, "value": 0.9}, {"frame": 15, "value": 1, "easing": "ease-out"}]}},
+          {"id": "subs", "type": "captions", "size": 40, "color": "#ffffff", "background": "#000000aa", "align": "center",
+           "cues": [{"from": 0, "duration": 60, "text": "Agents pick up the spec"}, {"from": 70, "duration": 80, "text": "and ship it"}]},
+          {"id": "replay", "type": "room", "scene": {
+            "layout": {"title": "Replay", "agents": [{"id": "opus", "name": "Opus", "x": 100, "y": 100}],
+                       "board": {"x": 600, "y": 100, "columns": ["Open", "Done"]},
+                       "cards": [{"id": "c1", "title": "Ship it", "column": "Open"}]},
+            "beats": [{"at_ms": 500, "duration_ms": 800, "kind": "board", "label": "c1", "state": "Done"},
+                      {"at_ms": 0, "duration_ms": 1200, "kind": "agent", "actor": "opus", "label": "Working", "state": "working"}]}}
+        ]}
+      ]},
+      {"id": "sound", "kind": "audio", "clips": [
+        {"id": "bed", "from": 0, "duration": 300, "layers": [
+          {"id": "music", "type": "audio", "asset": "music", "volume": 0.6,
+           "keyframes": {"volume": [{"frame": 0, "value": 0}, {"frame": 30, "value": 0.6}, {"frame": 299, "value": 0, "easing": "ease-in"}]}}]}
+      ]}
+    ]
+  }]
+}

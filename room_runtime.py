@@ -35,6 +35,7 @@ from ready_wakes import ReadyWakes
 from response_claims import ResponseClaims
 from manager_wakes import ManagerWakes, install as install_manager_wakes
 import project_registry
+import live_feed
 from agent_profiles import AgentProfiles
 from team_builder import TeamBuilder
 from decision_flow import DecisionFlow
@@ -74,7 +75,7 @@ SIGNED_OUT = re.compile(r'refresh[_ ]token[_ ](?:invalidated|was revoked|expired
 # A bare 401 counts only in the turn's own error: in the CLI's log it can be an MCP server's auth failure.
 SIGNED_OUT_DETAIL = re.compile(SIGNED_OUT.pattern + r'|401 unauthorized', re.I)
 ROOM_TOOLS = {"room_read", "room_image", "room_task", "room_markup", "room_update", "room_review", "room_followup",
-              "room_repository", "room_goal", "room_team_builder", "room_decision", "room_browser"}
+              "room_repository", "room_goal", "room_team_builder", "room_decision", "room_browser", "room_motion"}
 
 
 def changing_tool(name, params):
@@ -84,7 +85,9 @@ def changing_tool(name, params):
     return not (name == 'mcpToolCall' and isinstance(params, dict) and params.get('server') == ROOM_SERVER)
 # Room tool actions that only read, with each tool's default action; every other room call can change records.
 ROOM_READS = {"room_read": None, "room_image": None, "room_task": ({"get"}, ''), "room_goal": ({"status"}, 'status'),
-              "room_team_builder": ({"get"}, 'get'), "room_decision": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status')}
+              "room_team_builder": ({"get"}, 'get'), "room_decision": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status'),
+              # save, frame (new uploads) and export change the room, so sealed turns and check-ins never reach them.
+              "room_motion": ({"list", "get", "validate", "export_status"}, 'list')}
 
 
 # What an agent is doing, in plain words, for the Board's activity strip and Follow (Zero #13855): the provider's
@@ -103,14 +106,17 @@ ROOM_LABELS = {
     'room_read': 'reading the board', 'room_image': 'looking at an image', 'room_task': 'updating the board',
     'room_markup': 'marking up a screenshot', 'room_update': 'posting a note', 'room_review': 'working on a review',
     'room_followup': 'working on a follow-up', 'room_repository': 'asking about a repository', 'room_goal': 'checking the goal',
-    'room_team_builder': 'working on the team', 'room_decision': 'taking part in a decision', 'room_browser': 'using the shared browser'}
+    'room_team_builder': 'working on the team', 'room_decision': 'taking part in a decision', 'room_browser': 'using the shared browser',
+    'room_motion': 'working on a motion scene'}
 ROOM_ACTION_LABELS = {
     ('room_task', 'get'): 'reading a task', ('room_task', 'create'): 'creating a task', ('room_task', 'claim'): 'claiming a task',
     ('room_task', 'delegate'): 'handing over a task', ('room_review', 'request'): 'asking for a review',
     ('room_review', 'respond'): 'answering a review', ('room_followup', 'create'): 'asking a teammate',
     ('room_followup', 'resolve'): 'answering a follow-up', ('room_browser', 'screenshot'): 'taking a browser screenshot',
     ('room_browser', 'open'): 'opening a page in the shared browser', ('room_browser', 'inspect'): 'inspecting a page',
-    ('room_decision', 'submit'): 'submitting to a decision', ('room_decision', 'get'): 'reading a decision'}
+    ('room_decision', 'submit'): 'submitting to a decision', ('room_decision', 'get'): 'reading a decision',
+    ('room_motion', 'validate'): 'checking a motion scene', ('room_motion', 'save'): 'saving a motion scene',
+    ('room_motion', 'frame'): 'rendering preview frames', ('room_motion', 'export'): 'exporting a video'}
 ACP_KIND_LABELS = {
     'read': 'reading files', 'edit': 'editing files', 'delete': 'deleting files', 'move': 'moving files',
     'search': 'searching files', 'execute': 'running a command', 'think': 'thinking', 'fetch': 'reading a web page'}
@@ -740,6 +746,7 @@ class RoomRuntime:
         self.project = None
         self.identity = None
         self.audit = self.data / "runtime_events.jsonl"
+        self.live = live_feed.LiveFeed(self)  # the Live view's people-centred feed (b1af7a3a)
         self.controls = ProviderControls(self)
         self.project_room = ProjectRoom(self)
         self.goals = RoomGoals(self)
@@ -799,6 +806,9 @@ class RoomRuntime:
         if persist:
             self.append_event(json.dumps({"type": kind, "time": time.time(), "data": data}, ensure_ascii=False) + "\n")
         await self.host._broadcast(json.dumps({"type": kind, "data": data}, ensure_ascii=False))
+        live = getattr(self, 'live', None)
+        if live is not None:
+            await live.publish(live.observe(kind, data))
 
     async def activity_note(self, run, kind, text):
         """A line for the Activity view (the runtime_tool feed it already shows), never the chat."""
@@ -1382,6 +1392,8 @@ class RoomRuntime:
         try:
             self.queues[name].put_nowait({'channel': channel, 'chain': chain,
                                          'requests': [request]})
+            if getattr(self, 'live', None) is not None:
+                self.live.publish_soon(self.live.woken(name, channel, request))
             run = self.running.get(name)
             if run and run.channel == channel:
                 run.steering.offer(request)
@@ -1689,7 +1701,14 @@ class RoomRuntime:
                 name = uuid.uuid4().hex[:8] + '.jpg'
                 (self.host.store.upload_dir / name).write_bytes(base64.b64decode(result['image']))
                 result['url'] = '/uploads/' + name
+                await self.live.publish(self.live.artifact(run, result['url'], 'screenshot'))
             return {**result, 'activity': self.browser.activity}
+        if tool == 'room_motion':
+            import motion_studio
+            result = await motion_studio.agent_action(self, run, arguments)
+            if isinstance(result, dict) and result.get('frames'):
+                await self.live.publish(self.live.artifact(run, result.get('sheet_url') or result['frames'][0]['url'], 'upload'))
+            return result
         if tool == 'room_team_builder':
             action = arguments.get('action', 'get')
             if action == 'get':
@@ -1741,6 +1760,9 @@ class RoomRuntime:
                     raise ValueError('While your position is sealed, attach the image to the position, not a task')
                 arguments = {**arguments, 'post': False}
             result = self.project_room.markup(run.name, run.channel, run.entry['chain'], **arguments)
+            attachment = result.get('attachment') or {}
+            await self.live.publish(self.live.artifact(run, attachment.get('url'), 'markup' if attachment.get('source') else 'upload',
+                                                       attachment.get('source', '')))
             self.project_state_soon()
             return result
         if tool == 'room_read':
@@ -2046,6 +2068,8 @@ class RoomRuntime:
             kind = 'review verdict' if tool == 'room_review' else 'follow-up resolved'
             self.project_room.bump_work(item['task_id'], actor, f"{kind} by {actor}")
         self.project_room.save()
+        if getattr(self, 'live', None) is not None:
+            await self.live.publish(self.live.recorded(actor, tool, arguments['action'], item, channel))
         text = result['summary']
         ref = {'collection': 'reviews' if tool == 'room_review' else 'followups',
                'id': item['id'], 'updated': item['updated'], 'action': arguments['action']}
@@ -2336,6 +2360,7 @@ def install(host):
     shared_browser.install(host, runtime)
     import motion_studio
     motion_studio.install(host, runtime)
+    live_feed.install(host, runtime)
     import coordination_records
     coordination_records.install(host, runtime)
     provider_setup.install(host, runtime)

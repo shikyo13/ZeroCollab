@@ -50,7 +50,9 @@ VP9 = ['-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', '-b:v', '0', '-crf', '30', '
        '-cpu-used', '4', '-row-mt', '1', '-tile-columns', '2', '-an', '-f', 'webm']
 KIT = ROOT / 'motion'
 BUNDLED = KIT / 'scenes'
-SCRIPTS = ('motion.js', 'boot.js')
+# core.js is the shared motion-core library (S1, frontend 1f9560e4); it is inlined first when it ships.
+SCRIPTS = ('core.js', 'motion.js', 'boot.js')
+OPTIONAL_SCRIPTS = ('core.js',)
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 MAX_SCENE_BYTES = 256 * 1024
 CALL_TIMEOUT = 30  # seconds for any one DevTools command; a browser that stops answering fails the job
@@ -193,12 +195,27 @@ def project_dir(runtime):
 
 
 def load(path):
+    """A saved scene of any supported version (motion_scene dispatches on it)."""
+    import motion_scene
     if path.stat().st_size > MAX_SCENE_BYTES:
         raise ValueError(f'scene file is larger than {MAX_SCENE_BYTES // 1024} KB')
-    scene = validate(json.loads(path.read_text('utf-8')))
+    scene = json.loads(path.read_text('utf-8'))
+    found = motion_scene.issues(scene)
+    if found:
+        raise ValueError(f"{found[0]['path']}: {found[0]['message']}")
     if scene['id'] != path.stem:
         raise ValueError(f'scene id {scene["id"]!r} must match its file name {path.stem!r}')
     return scene
+
+
+def drawable(scene):
+    """The v1 scene the current renderer draws for this scene, or ValueError: a v2 scene beyond a single
+    migrated room layer waits for the v2 renderer (S1/S5) and never falls back to the v1 one silently."""
+    import motion_scene
+    v1 = motion_scene.legacy(scene)
+    if v1 is None:
+        raise ValueError('This scene needs the v2 renderer (motion core S1 and layers S5), which is not installed yet')
+    return v1
 
 
 def catalogue(runtime):
@@ -220,8 +237,16 @@ def catalogue(runtime):
 
 
 def summary(ref, source, scene):
+    import motion_scene
+    v1 = motion_scene.legacy(scene)
+    if scene['version'] == 1:
+        duration = scene['duration_ms']
+    else:
+        comp = scene['compositions'][0]
+        duration = round(motion_scene.frame_ms(comp['duration'], comp['fps']))
     return {'ref': ref, 'id': scene['id'], 'name': scene.get('name') or scene['id'], 'source': source,
-            'duration_ms': scene['duration_ms'], 'beats': len(scene['beats'])}
+            'version': scene['version'], 'renderable': v1 is not None,
+            'duration_ms': duration, 'beats': len(v1['beats']) if v1 else 0}
 
 def _block(block_id, value):
     # '<' is escaped so no text inside the data can close its block.
@@ -234,7 +259,8 @@ def view_html(scene, options):
     Its meta CSP allows exactly those two inline scripts (by sha256) and nothing from the network,
     so it needs no second request and no token when loaded into a srcdoc frame.
     options: {render: bool, reduced: bool, embed: bool, t: int ms}."""
-    scripts = [(KIT / name).read_text('utf-8') for name in SCRIPTS]
+    scripts = [(KIT / name).read_text('utf-8') for name in SCRIPTS
+               if name not in OPTIONAL_SCRIPTS or (KIT / name).is_file()]
     if any('</script' in code.lower() for code in scripts):
         raise RuntimeError('motion scripts cannot be inlined')
     hashes = ' '.join("'sha256-" + base64.b64encode(hashlib.sha256(code.encode()).digest()).decode() + "'"
@@ -309,6 +335,10 @@ class Exporter:
         self.runtime = runtime
         self.current = None
         self.task = None
+        self.framing = None  # an agent's frame render (room_motion frame) shares the one render slot
+
+    def busy(self):
+        return bool(self.current and self.current['phase'] in ('starting', 'rendering', 'encoding'))
 
     def finished(self):
         folder = project_dir(self.runtime)
@@ -332,16 +362,18 @@ class Exporter:
         return path if path and path.is_file() else None
 
     def start(self, ref, reduced):
-        if self.current and self.current['phase'] in ('starting', 'rendering', 'encoding'):
+        if self.busy():
             raise RuntimeError('An export is already running; cancel it or wait for it to finish')
+        if self.framing:
+            raise RuntimeError(f'{self.framing} is rendering a preview frame; try again in a few seconds')
         base = project_dir(self.runtime)
         if not base:
             raise ValueError(PROJECT_REQUIRED)
-        encoder = require_tools(self.runtime)
         scenes, _ = catalogue(self.runtime)
         if ref not in scenes:
             raise ValueError('Unknown or invalid scene')
-        _, scene = scenes[ref]
+        scene = drawable(scenes[ref][1])
+        encoder = require_tools(self.runtime)
         self.current = {'id': uuid.uuid4().hex[:12], 'scene': ref, 'scene_id': scene['id'],
                         'name': scene.get('name') or scene['id'], 'reduced': bool(reduced), 'phase': 'starting',
                         'frame': 0, 'frames': scene['duration_ms'] * FPS // 1000, 'width': WIDTH, 'height': HEIGHT,
@@ -529,9 +561,11 @@ async def render(page, job, sink, profile):
             raise RuntimeError('The scene did not become ready within 10 seconds')
 
         job['phase'] = 'rendering'
-        for i in range(job['frames']):
+        # An export seeks every frame; an agent's preview (room_motion frame) seeks only the times it asked for.
+        seeks = job.get('times') or [round(i * 1000 / FPS, 4) for i in range(job['frames'])]
+        for i, ms in enumerate(seeks):
             check()
-            await evaluate(f'window.__seek({round(i * 1000 / FPS, 4)})', wait=True)
+            await evaluate(f'window.__seek({ms})', wait=True)
             shot = await call('Page.captureScreenshot', format='png', fromSurface=True,
                               clip={'x': 0, 'y': 0, 'width': WIDTH, 'height': HEIGHT, 'scale': 1})
             await sink(base64.b64decode(shot['data']))
@@ -545,6 +579,152 @@ async def render(page, job, sink, profile):
         elif proc.returncode is None:
             proc.kill()
             await proc.wait()
+
+
+# ---- agent tool: room_motion (task 78f77506, motion-agent-interface/CONTRACT.md r2) -----------------
+
+MAX_FRAMES = 6
+FRAME_SECONDS = 30
+AGENT_READS = ('list', 'get', 'validate', 'export_status')
+
+
+def save_scene(runtime, scene, overwrite=False):
+    """Write a valid scene to the open project's motion/scenes/<id>.json, atomically. The file name is the
+    validated id (no separators), bundled scenes are never written, and an existing id needs overwrite."""
+    import motion_scene
+    base = project_dir(runtime)
+    if not base:
+        raise ValueError(PROJECT_REQUIRED)
+    found = motion_scene.issues(scene)
+    if found:
+        raise ValueError(f"The scene is not valid ({len(found)} issue(s)); call validate first. "
+                         f"First: {found[0]['path']}: {found[0]['message']}")
+    data = json.dumps(scene, indent=1, ensure_ascii=False)
+    if len(data.encode()) > MAX_SCENE_BYTES:
+        raise ValueError(f'scene is larger than {MAX_SCENE_BYTES // 1024} KB')
+    folder = base / 'scenes'
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{scene['id']}.json"
+    if path.exists() and not overwrite:
+        raise ValueError(f"project:{scene['id']} already exists; pass overwrite true to replace it")
+    partial = folder / f".{scene['id']}.{uuid.uuid4().hex[:6]}.tmp"
+    partial.write_text(data, 'utf-8')
+    os.replace(partial, path)
+    return f"project:{scene['id']}"
+
+
+def contact_sheet(pngs, times):
+    """One PNG of up to 6 frames in a 3-column grid at 640x360 each, labelled with their times."""
+    import io
+    from PIL import Image, ImageDraw
+    w, h = 640, 360
+    cols = min(3, len(pngs))
+    rows = (len(pngs) + cols - 1) // cols
+    sheet = Image.new('RGB', (cols * w, rows * h), '#000000')
+    draw = ImageDraw.Draw(sheet)
+    for i, (png, ms) in enumerate(zip(pngs, times)):
+        frame = Image.open(io.BytesIO(png)).convert('RGB').resize((w, h))
+        x, y = (i % cols) * w, (i // cols) * h
+        sheet.paste(frame, (x, y))
+        draw.rectangle((x, y, x + 110, y + 26), fill='#000000')
+        draw.text((x + 8, y + 6), f'{ms / 1000:.2f} s', fill='#ffffff')
+    out = io.BytesIO()
+    sheet.save(out, 'PNG')
+    return out.getvalue()
+
+
+async def render_frames(runtime, scene, times, reduced):
+    """PNG bytes of the scene at each time (ms), through the same page and __seek(ms) as export, so a
+    preview frame is pixel-identical to that frame of the video."""
+    work = Path(tempfile.mkdtemp(prefix='zerocollab-motion-frame-'))
+    job = {'times': times, 'frames': len(times), 'frame': 0, 'phase': 'starting'}
+    pngs = []
+
+    async def sink(png):
+        pngs.append(png)
+    try:
+        page = work / 'scene.html'
+        page.write_text(view_html(scene, {'render': True, 'reduced': bool(reduced)}), 'utf-8')
+        await asyncio.wait_for(render(page, job, sink, work / 'profile'), FRAME_SECONDS)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f'The preview frames did not render within {FRAME_SECONDS} seconds') from None
+    finally:
+        await remove_tree(work)
+    return pngs
+
+
+async def agent_action(runtime, run, arguments):
+    """room_motion for an agent turn. Reads are open; save/frame/export change the room (changes_room), so
+    sealed decision turns and manager check-ins never reach them. No argument names a path, URL or binary."""
+    import motion_scene
+    exporter = runtime.motion
+    action = arguments.get('action', 'list')
+    found, invalid = catalogue(runtime)
+    if action == 'list':
+        return {'project': runtime.identity, 'scenes': [summary(ref, s, scene) for ref, (s, scene) in found.items()],
+                'invalid': invalid, 'export': {'format': 'webm', 'width': WIDTH, 'height': HEIGHT, 'fps': FPS,
+                                               'project_folder': project_dir(runtime) is not None}}
+    if action == 'export_status':
+        current = exporter.current if exporter.current and exporter.current.get('project') == runtime.identity else None
+        return {'current': public(current), 'exports': exporter.finished()}
+    if action == 'validate':
+        scene = arguments.get('scene_json')
+        found_issues = motion_scene.issues(scene)
+        if found_issues:
+            return {'ok': False, 'issues': found_issues}
+        return {'ok': True, 'summary': summary(f"project:{scene['id']}", 'project', scene), 'checks': []}
+    if action == 'save':
+        scene = arguments.get('scene_json')
+        ref = save_scene(runtime, scene, bool(arguments.get('overwrite')))
+        await runtime.activity_note(run, 'motion', f'Saved motion scene {ref}')
+        return {'ref': ref, 'summary': summary(ref, 'project', scene)}
+    if action == 'export_cancel':
+        job = exporter.cancel(str(arguments.get('job_id', '')))
+        if not job:
+            raise ValueError('No running export with that id')
+        return job
+    ref = arguments.get('scene')
+    if not isinstance(ref, str) or ref not in found:
+        raise ValueError('Unknown or invalid scene; use a ref from list, such as bundled:m01 or project:<id>')
+    scene = found[ref][1]
+    if action == 'get':
+        return scene
+    if action == 'export':
+        job = exporter.start(ref, bool(arguments.get('reduced')))
+        await runtime.activity_note(run, 'motion', f'Started a video export of {ref}')
+        return job
+    if action != 'frame':
+        raise ValueError('action must be list, get, validate, save, frame, export, export_status or export_cancel')
+    drawn = drawable(scene)
+    times = arguments.get('t_ms', 0)
+    times = times if isinstance(times, list) else [times]
+    if not 1 <= len(times) <= MAX_FRAMES or any(isinstance(t, bool) or not isinstance(t, (int, float))
+                                                 or not 0 <= t <= drawn['duration_ms'] for t in times):
+        raise ValueError(f"t_ms must be one time or a list of 1 to {MAX_FRAMES} times from 0 to {drawn['duration_ms']} ms")
+    if exporter.busy():
+        job = public(exporter.current)
+        raise RuntimeError(f"A video export is rendering ({job['frame']} of {job['frames']} frames); try again after it")
+    if exporter.framing:
+        raise RuntimeError(f'{exporter.framing} is rendering preview frames; try again in a few seconds')
+    exporter.framing = run.name
+    try:
+        if not shared_browser.executable():
+            raise Unavailable('Preview frames need Microsoft Edge, Google Chrome or Chromium')
+        pngs = await render_frames(runtime, drawn, [round(t, 4) for t in times], arguments.get('reduced'))
+    finally:
+        exporter.framing = None
+    folder = runtime.host.store.upload_dir
+    frames = []
+    for t, png in zip(times, pngs):
+        name = uuid.uuid4().hex[:8] + '.png'
+        (folder / name).write_bytes(png)
+        frames.append({'t_ms': t, 'url': '/uploads/' + name})
+    sheet = None
+    if len(pngs) > 1:
+        name = uuid.uuid4().hex[:8] + '.png'
+        (folder / name).write_bytes(contact_sheet(pngs, times))
+        sheet = '/uploads/' + name
+    return {'scene': ref, 'frames': frames, 'sheet_url': sheet, 'width': WIDTH, 'height': HEIGHT, 'checks': []}
 
 
 # ---- routes -----------------------------------------------------------------------------------
@@ -585,7 +765,10 @@ def install(host, runtime):
         entry = found.get(q.get('scene', ''))
         if not entry:
             return JSONResponse({'error': 'Unknown or invalid scene'}, 404)
-        scene = entry[1]
+        try:
+            scene = drawable(entry[1])
+        except ValueError as exc:
+            return JSONResponse({'error': str(exc)}, 409)
         try:
             t = max(0, min(scene['duration_ms'], int(q.get('t', '0'))))
         except ValueError:
@@ -649,7 +832,7 @@ if __name__ == '__main__':
     args = ap.parse_args()
 
     async def cli():
-        scene = load(args.scene)
+        scene = drawable(load(args.scene))
         ffmpeg = require_tools(None)['path']
         job = {'frames': scene['duration_ms'] * FPS // 1000, 'phase': 'starting', 'frame': 0}
         work = Path(tempfile.mkdtemp(prefix='zerocollab-motion-'))
