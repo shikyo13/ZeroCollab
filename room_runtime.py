@@ -1714,17 +1714,22 @@ class RoomRuntime:
                 await self.live.publish(self.live.artifact(run, result['url'], 'screenshot'))
             return {**result, 'activity': self.browser.activity}
         if tool == 'room_motion':
+            import motion_agent
             import motion_studio
             if arguments.get('action') == 'publish':
-                import motion_agent
                 result = await motion_agent.publish(self, run, arguments)
                 self.project_state_soon()
                 await self.live.publish(self.live.artifact(run, result['url'], 'upload'))
                 return result
-            result = await motion_studio.agent_action(self, run, arguments)
-            if isinstance(result, dict) and result.get('frames'):
+            try:
+                result = await motion_studio.agent_action(self, run, arguments)
+            except (RuntimeError, motion_studio.Unavailable) as exc:
+                # A busy renderer or a missing browser is an answer for the agent, not a server fault (500).
+                raise ValueError(str(exc)) from None
+            # Only frame returns a list of frames; an export job's 'frames' is its frame count.
+            if isinstance(result, dict) and isinstance(result.get('frames'), list) and result['frames']:
                 await self.live.publish(self.live.artifact(run, result.get('sheet_url') or result['frames'][0]['url'], 'upload'))
-            return result
+            return motion_agent.render_note(result)
         if tool == 'room_team_builder':
             action = arguments.get('action', 'get')
             if action == 'get':

@@ -34,7 +34,11 @@ def call(tool, arguments, timeout=15):
         response = client.post(os.environ['AGENT_ROOM_URL'] + '/api/runtime/coordination/' + os.environ['AGENT_ROOM_RUN_ID'],
             headers={'X-Session-Token': os.environ['AGENT_ROOM_SESSION_TOKEN']}, json={'tool': tool, 'arguments': arguments})
     if response.status_code != 200:
-        return {'error': response.json().get('error', 'Room request failed')}
+        try:
+            error = response.json().get('error')
+        except ValueError:  # a plain-text server error page, not the room's JSON
+            error = None
+        return {'error': error or f'Room request failed (HTTP {response.status_code})'}
     return response.json()
 
 
@@ -239,9 +243,10 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     time or up to 6) exactly as the video will look; returns /uploads PNGs plus a contact sheet you can
     post with room_markup. export: start the video (one at a time); export_status / export_cancel job_id.
     publish job_id: deliver a finished video into this chat (post false to skip), and task_id attaches it
-    to a task you own; it plays inline there. Field reference: Docs/motion-scene-v2.md (scene v2) in the
-    room repository; v1 scenes (layout plus beats) still work. Loop: validate until clean, save, frame 2-3
-    key moments and show them, export, then publish."""
+    to a task you own; it plays inline there. Rendering today: v1 scenes only (layout plus beats; start
+    from get bundled:m01). v2 scenes (Docs/motion-scene-v2.md) validate and save, but frame and export
+    refuse them until the v2 renderer ships; validate and save then return a warning. Loop: validate until
+    clean, save, frame 2-3 key moments and show them, export, then publish."""
     args = dict(action=action)
     if scene:
         args['scene'] = scene
@@ -260,7 +265,10 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     # Starting a headless browser and rendering up to 6 frames can take longer than a board call.
     result = call('room_motion', args, timeout=60 if action == 'frame' else 15)
     content = [json.dumps(result)]
-    shown = (result.get('sheet_url') or ((result.get('frames') or [{}])[0].get('url'))) if isinstance(result, dict) else None
+    shown = None
+    # Only frame returns rendered images; an export job's 'frames' is its frame count.
+    if action == 'frame' and isinstance(result, dict) and isinstance(result.get('frames'), list) and result['frames']:
+        shown = result.get('sheet_url') or result['frames'][0].get('url')
     if shown:
         with httpx.Client(timeout=15, trust_env=False) as client:
             image = client.get(os.environ['AGENT_ROOM_URL'] + shown)

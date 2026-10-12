@@ -12,6 +12,19 @@ import uuid
 from team_builder import text
 
 MAX_VIDEO_BYTES = 1024 * 1024 * 1024  # an exported scene of up to 10 minutes stays far below this
+# Remove with the v2 renderer (motion-design S5, task 45047b9a): until then only v1 scenes, and v2 scenes that
+# are a migrated v1 scene, render (demo-marketing #14460).
+NOT_RENDERABLE = ('Valid, but this install renders v1 scenes only (layout plus beats) until the v2 renderer ships; '
+                  'frame and export will refuse this scene. It saves and keeps, and renders once the v2 renderer is '
+                  'installed. For a video you need now, author it as v1.')
+
+
+def render_note(result):
+    """validate and save: say up front when a valid scene can't be rendered on this install."""
+    summary = result.get('summary') if isinstance(result, dict) else None
+    if isinstance(summary, dict) and summary.get('renderable') is False:
+        result['warnings'] = [*result.get('warnings', []), NOT_RENDERABLE]
+    return result
 
 
 def share(source, target):
