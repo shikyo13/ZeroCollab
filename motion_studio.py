@@ -235,25 +235,38 @@ def render_plan(scene, composition=None):
             'duration_ms': motion_scene.frame_ms(comp['duration'], comp['fps'])}
 
 
-def require_silent_composition(scene, composition):
-    """Audio is still S3 work; do not silently export an authored soundtrack without its sound."""
-    def has_audio(node):
-        if isinstance(node, dict):
-            if node.get('hidden'):
-                return False
-            if (node.get('type') in ('audio', 'voiceover') or
-                    node.get('type') == 'video' and not node.get('muted', False)
-                    and node.get('volume', 1) != 0):
-                return True
-            return any(has_audio(v) for v in node.values())
-        return isinstance(node, list) and any(has_audio(v) for v in node)
+def require_silent_composition(scene, composition, runtime=None):
+    """Sound requires a host-installed worker before admission or page startup."""
     if scene['version'] == 2:
+        from motion_audio import contains_sound, require_worker
         comp = next(c for c in scene['compositions'] if c['id'] == composition)
-        if has_audio(comp):
-            raise ValueError('Audio mixing is not available yet; mute video layers or remove audio and voiceover layers before export')
+        if contains_sound(comp):
+            require_worker(runtime)
 
 
 MAX_INLINE_ASSET_BYTES = 64 * 1024 * 1024  # total raw bytes in one generated page
+
+
+def resolved_asset_path(ref, runtime):
+    """One authority for picture and audio originals; no scene-supplied path."""
+    import motion_scene
+    if ref.startswith('/uploads/') and motion_scene.UPLOAD.fullmatch(ref):
+        root = getattr(getattr(getattr(runtime, 'host', None), 'store', None), 'upload_dir', None)
+        if root is None:
+            raise ValueError('Upload assets need the room upload directory')
+        root = Path(root).resolve()
+        path = (root / ref.removeprefix('/uploads/')).resolve()
+    elif motion_scene.KIT_ASSET.fullmatch(ref):
+        root = KIT.resolve()
+        path = (root / ref.removeprefix('motion:')).resolve()
+    elif motion_scene.FILEREF.fullmatch(ref):
+        path = Path(runtime.project_room.references().lookup(ref.removeprefix('fileref:'))[0]).resolve()
+        root = path.parent  # The registry authorizes this exact original; no scene-supplied path.
+    else:
+        raise ValueError('Asset ref must be an upload, motion kit asset or registered original')
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ValueError('Asset is missing or outside its allowed directory')
+    return path
 
 
 def resolved_frame_input(scene, composition, runtime):
@@ -268,22 +281,7 @@ def resolved_frame_input(scene, composition, runtime):
         if ref in sources:
             raw_hash, src = sources[ref]
         else:
-            if ref.startswith('/uploads/') and motion_scene.UPLOAD.fullmatch(ref):
-                root = getattr(getattr(getattr(runtime, 'host', None), 'store', None), 'upload_dir', None)
-                if root is None:
-                    raise ValueError('Upload assets need the room upload directory')
-                root = Path(root).resolve()
-                path = (root / ref.removeprefix('/uploads/')).resolve()
-            elif motion_scene.KIT_ASSET.fullmatch(ref):
-                root = KIT.resolve()
-                path = (root / ref.removeprefix('motion:')).resolve()
-            elif motion_scene.FILEREF.fullmatch(ref):
-                path = Path(runtime.project_room.references().lookup(ref.removeprefix('fileref:'))[0]).resolve()
-                root = path.parent  # The registry authorizes this exact original; no scene-supplied path.
-            else:
-                raise ValueError('Asset ref must be an upload, motion kit asset or registered original')
-            if not path.is_relative_to(root) or not path.is_file():
-                raise ValueError(f'Asset {asset["id"]} is missing or outside its allowed directory')
+            path = resolved_asset_path(ref, runtime)
             if total + path.stat().st_size > MAX_INLINE_ASSET_BYTES:
                 raise ValueError('A motion page can inline at most 64 MiB of asset data')
             with path.open('rb') as stream:
@@ -512,7 +510,7 @@ class Exporter:
             raise ValueError('Unknown or invalid scene')
         scene = drawable(scenes[ref][1])
         plan = render_plan(scene)
-        require_silent_composition(scene, plan.get('composition'))
+        require_silent_composition(scene, plan.get('composition'), self.runtime)
         if encoder is None:
             encoder = require_tools(self.runtime, format)
         from motion_encode import profile
@@ -607,17 +605,44 @@ def public(job):
 
 
 async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=None, runtime=None):
-    """Render every frame of scene and pipe it into ffmpeg, writing a VP9 WebM to out.
-    Returns the sha256 of each frame's PNG in order. No frame is stored on disk. ffmpeg is always
-    stopped before this returns, including on cancellation or room shutdown."""
+    """Prepare sound once, then capture exact picture frames with generated captions."""
+    from contextlib import AsyncExitStack
+    from motion_render import file_io
+
+    check = check_cancel or (lambda: None)
+    require_silent_composition(scene, job.get('composition') or render_plan(scene).get('composition'), runtime)
     page = work / 'scene.html'
-    require_silent_composition(scene, job.get('composition') or render_plan(scene).get('composition'))
+    options = {'render': True, 'reduced': bool(reduced), 'transparent': job.get('transparent', False),
+               **({'composition': job['composition']} if job.get('composition') else {})}
+    await file_io(lambda: page.write_text(view_html(scene, options, runtime), 'utf-8'))
+    check()
+    async with AsyncExitStack() as prepared:
+        audio = None
+        if job.get('renderer') == 'v2':
+            from motion_audio import contains_sound, page_plan, prepare, voice_cache
+            comp = next(c for c in scene['compositions'] if c['id'] == job['composition'])
+            plan, assets = await page_plan(page, job, work, check) if contains_sound(comp) else ({'sounds': []}, {})
+            if plan['sounds']:
+                job['audio_phase'] = 'preparing'
+                cache = await voice_cache(runtime)
+                audio = await prepared.enter_async_context(prepare(
+                    plan, assets, job['fps'], job['frames'], ffmpeg, work, cache,
+                    lambda ref: resolved_asset_path(ref, runtime),
+                    profile_name=job.get('profile', 'webm'), check_cancel=check))
+                options['voice_captions'] = audio.captions
+                job['audio'] = audio.receipt
+                job['audio_phase'] = 'ready'
+                await file_io(lambda: page.write_text(view_html(scene, options, runtime), 'utf-8'))
+        return await encode_video_page(page, out, work, job, ffmpeg,
+                                       check_cancel=check, audio=audio.wav if audio else None)
+
+
+async def encode_video_page(page, out, work, job, ffmpeg, *, check_cancel, audio=None):
+    """Existing PNG ordered sink, with an optional exact-duration mixed WAV input."""
     from motion_encode import output_args, profile
     from motion_render import FrameClock, file_io
+    from motion_audio_process import _join, STOP_SECONDS
     import subprocess
-    await file_io(lambda: page.write_text(view_html(scene, {'render': True, 'reduced': bool(reduced),
-        'transparent': job.get('transparent', False),
-        **({'composition': job['composition']} if job.get('composition') else {})}, runtime), 'utf-8'))
     if check_cancel:
         check_cancel()
     selected_name = job.get('profile', 'webm')
@@ -628,13 +653,21 @@ async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=N
     if selected.sequence:
         (work / 'frames').mkdir()
         destination = work / 'frames' / '%06d.png'
-    flags = VP9 if selected_name == 'webm' else output_args(selected_name)
-    encoder = await asyncio.create_subprocess_exec(
+    flags = output_args(selected_name, audio=True) if audio else (VP9 if selected_name == 'webm' else output_args(selected_name))
+    spawning = asyncio.create_task(asyncio.create_subprocess_exec(
         ffmpeg, '-y', '-loglevel', 'error', '-f', 'image2pipe',
         '-framerate', f'{clock.num}/{clock.den}', '-c:v', 'png',
-        '-i', '-', *flags, str(destination),
+        '-i', '-', *(['-i', str(audio), '-map', '0:v:0', '-map', '1:a:0'] if audio else []),
+        *flags, str(destination),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-        creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == 'nt' else 0)
+        creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == 'nt' else 0))
+    try:
+        encoder = await asyncio.shield(spawning)
+    except BaseException:
+        encoder = await _join(spawning)
+        encoder.kill()
+        await _join(asyncio.create_task(encoder.wait()))
+        raise
     errors = asyncio.create_task(encoder.stderr.read())
 
     async def failure():
@@ -687,10 +720,15 @@ async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=N
             await file_io(archive)
         return hashes
     finally:
-        if encoder.returncode is None:
-            encoder.kill()
-            await encoder.wait()
-        errors.cancel()
+        async def close_encoder():
+            try:
+                if encoder.returncode is None:
+                    encoder.kill()
+                await asyncio.wait_for(encoder.wait(), STOP_SECONDS)
+            finally:
+                errors.cancel()
+                await asyncio.gather(errors, return_exceptions=True)
+        await _join(asyncio.create_task(close_encoder()), propagate=True)
 
 
 async def render(page, job, sink, profile, *, check_cancel=None):

@@ -138,7 +138,14 @@ async def file_io(function, *args):
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        await task
+        # Repeated cancellation must not detach a filesystem thread while its
+        # owned temporary directory is being torn down (audio preparation).
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        task.result()
         raise
 
 
