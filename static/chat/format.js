@@ -81,14 +81,16 @@ async function detectPlatform() {
 // --- File references ---
 // Absolute paths (C:/x/y.py, /home/x/y.py, MSYS /c/x), repository paths (static/chat.js:42) and
 // file names (app.py) become links that open the file in the workspace side panel. Plain text
-// stops a path at whitespace; inline code may hold an absolute path with spaces.
+// stops a path at whitespace, except spaced Windows folders ending in a file extension.
+// Inline code and explicit Markdown links may hold absolute paths with spaces anywhere.
 const FILE_EXTS = 'py|pyi|js|mjs|cjs|ts|tsx|jsx|css|scss|html|md|json|jsonl|toml|yaml|yml|ini|cfg|txt|ps1|psm1|sh|bat|cmd|cs|csproj|sln|go|rs|java|kt|c|h|cpp|hpp|rb|php|sql|lua|gd|tscn|tres|xml|svg|lock|log';
 const FILE_SEG = String.raw`\.?[\w-]+(?:\.[\w-]+)*`;  // never ends in a sentence's full stop
-// Folders of an absolute Windows path may hold spaces (Program Files (x86), Microsoft VS Code); the file name may not.
+// Spaced folders in prose are unambiguous only with a final file extension.
 const FILE_DIR = String.raw`\.?[\w-]+(?:[. ]\(?[\w-]+\)?)*`;
+const FILE_WITH_EXT = String.raw`${FILE_SEG}\.[A-Za-z][A-Za-z0-9]{0,7}`;
 const FILE_LINE = String.raw`(?::\d+(?:-\d+|:\d+)?|#L\d+(?:-L?\d+)?)?`;
 const FILE_REF = new RegExp(String.raw`(?<![\w./\\:@-])(?:` +
-    String.raw`(?<abs>[A-Za-z]:[\\/](?:${FILE_DIR}[\\/])*${FILE_SEG}` +
+    String.raw`(?<abs>[A-Za-z]:[\\/](?:(?:${FILE_DIR}[\\/])*${FILE_WITH_EXT}|(?:${FILE_SEG}[\\/])*${FILE_SEG})` +
     String.raw`|/(?:[A-Za-z]|Users|home|tmp|opt|var|etc|usr|mnt)/(?:${FILE_SEG}/)*${FILE_SEG})` +
     String.raw`|(?<rel>(?:\.?[\w-]+/)+[\w-]+(?:\.[\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,7})` +
     String.raw`|(?<bare>[\w-]+(?:\.[\w-]+)*\.(?:${FILE_EXTS}))` +
