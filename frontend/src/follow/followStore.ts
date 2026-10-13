@@ -78,7 +78,7 @@ export interface FollowSnapshot {
   pips: PipItem[];
 }
 
-const TEXT_TAIL = 180;
+const TEXT_TAIL = 50000; // runaway guard; the bubble owns visual collapse, not source truncation
 const TICKER_KEPT = 30;
 const MOVE_SHOWN_MS = 6000;
 const RECONCILE_QUIET_SECONDS = 10;
@@ -225,8 +225,8 @@ function onDelta(event: RoomEvent) {
     streams.set(d.run, stream);
   }
   stream.draft = draft;
-  // Keep a bounded window; only the tail is ever shown.
-  stream.text = d.sealed ? '' : (stream.text + (d.text ?? '')).slice(-TEXT_TAIL * 3);
+  // Retain the current reply for expanded reading; cap only runaway streams.
+  stream.text = d.sealed ? '' : (stream.text + (d.text ?? '')).slice(-TEXT_TAIL);
   entry.text = d.sealed ? 'Sealed position' : tail(stream.text);
   entry.updated = now();
   publish();

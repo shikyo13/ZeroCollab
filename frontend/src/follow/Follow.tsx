@@ -1,11 +1,12 @@
 /* Follow the current executing task from the server, with explicit event links taking priority. */
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { sessionTitle } from '../lib/room';
 import type { RunInfo, Task } from '../lib/types';
 import { type Agents } from '../board/shared';
 import { STATUS_LABELS } from '../board/shared';
 import { reconcileRuns, setFollowing, setPaused, useFollow, type AgentLive, type FollowSnapshot, type TaskMove } from './followStore';
 import './follow.css';
+import { SpeechBubble } from '../components/SpeechBubble';
 
 /** What follow mode adds to one task card. */
 export interface CardFollow {
@@ -95,10 +96,10 @@ export function FollowBanner({ unplaced, agents }: { unplaced: AgentLive[]; agen
       <button type="button" className="fl-btn" onClick={() => setPaused(!snap.paused)}>{snap.paused ? 'Resume' : 'Pause'} · Space</button>
       <button type="button" className="fl-btn" onClick={() => setFollowing(false)}>Stop · Esc</button>
     </div>
-    {unplaced.filter(e => e.text).sort((a,b)=>b.updated-a.updated).slice(0, 3).map(entry => <p key={entry.agent} className="fl-banner-bubble" style={{ '--agent-color': agentColor(entry.agent, agents) } as React.CSSProperties}>
-      <strong>{followName(entry.agent, agents)}</strong> {entry.text}
-      <small> · not tied to one task</small>
-    </p>)}
+    {unplaced.filter(e => e.text).sort((a,b)=>b.updated-a.updated).slice(0, 3).map(entry => <div key={entry.agent}>
+      <CardSpeech name={followName(entry.agent, agents)} color={agentColor(entry.agent, agents)} text={entry.text} />
+      <small>Not tied to one task</small>
+    </div>)}
   </section>;
 }
 
@@ -157,14 +158,27 @@ export function FollowTicker({ tasks, agents, onOpenTask }: { tasks: Task[]; age
   </section>;
 }
 
+/** Normal-flow geometry lets the card grow with the shared bubble without covering task controls. */
+function CardSpeech({ name, color, text }: { name: string; color: string; text: string }) {
+  const host = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = host.current; if (!el) return;
+    const observer = new ResizeObserver(() => setWidth(el.clientWidth));
+    setWidth(el.clientWidth); observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return <div ref={host} className="fl-card-speech" onClick={e => e.stopPropagation()}>
+    {width > 0 && <SpeechBubble name={name} color={color} text={text} width={width} maxLines={5} />}
+  </div>;
+}
+
 /** The commentary bubble, tool chip and move trail drawn on a card. */
 export function CardFollowLayer({ follow, agents, part }: { follow: CardFollow; agents: Agents; part: 'bubble' | 'body' }) {
   const { live, move } = follow;
   if (part === 'bubble') {
     if (!live?.text) return null;
-    return <p className="fl-bubble" style={{ '--agent-color': agentColor(live.agent, agents) } as React.CSSProperties}>
-      <span><strong>{followName(live.agent, agents)}</strong> {live.text}</span>
-    </p>;
+    return <CardSpeech name={followName(live.agent, agents)} color={agentColor(live.agent, agents)} text={live.text} />;
   }
   return <>
     {live?.tool && <p className="fl-tool" title="The tool the provider reported; providers do not report its arguments here.">
