@@ -17,9 +17,9 @@ Write these five lines first, in your task check-in. If one is missing, ask, don
 |-|-|
 | Viewer | A developer who has never seen ZeroCollab |
 | The one promise | You ask once; a team of agents builds, reviews and checks it |
-| Proof on screen | A card moves Open to Done while three agents hand off |
+| Proof on screen | The real request, then the finished result clicked through (a card reaching Done alone proves nothing) |
 | Length and shape | 20 s, 16:9, no voice |
-| Source material | Real captures (list the /uploads files) or "synthetic, labelled" |
+| Source material | Real recordings (`fileref:` takes) and captures, or "synthetic, labelled" |
 
 One promise per video. A second promise is a second video.
 
@@ -42,15 +42,27 @@ Then map rows to beats (v1) or clips (v2). Keep the table in the check-in; revie
 - **Hold the result.** The final state (card in Done, finished page) stays still for at least 2 s.
 - **First 2 s carry the promise.** Someone who stops watching at 2 s should still know what this is.
 - **20 s is about 4-6 ideas.** 30 s is 6-8. More than that is a list, not a demo.
+- **Keep it moving, but calm** (Zero's bar, `Docs/research/demo-references/quality-bar.md` Q1 and Q11):
+  - something moves at least half the time, and no still hold lasts over 3 s;
+  - easy to follow, never bouncy or hyper: no easing that overshoots on product footage or the camera. Use
+    `ease-in-out`, `expo-out` or `premium`; keep `spring-*` for small decorative graphics;
+  - each camera move takes 0.6-1.2 s, and the view holds at least 0.8 s after every click;
+  - clicks and typing play at real speed. Only waiting is sped up, and then a `badge` text such as
+    "Time-lapse x8" sits on a `fixed` track for as long as the speed-up lasts.
 
 ## 4. Typography and layout (1920x1080)
 
-- Body text 48 px or larger, titles 96 px or larger. Captions sit in the lower third, inside a 96 px safe margin.
+- Use the brand text `style`s (Docs/motion-render2.md, Brand kit) instead of hand-set sizes: `display` or
+  `title` for 1-4 word headlines, `subtitle` for the one line under them, `kicker` above, `badge` for
+  "Example project" or "Time-lapse". Put them on a `fixed` track so the camera never moves them.
+- Body text 48 px or larger. Captions sit in the lower third, inside a 96 px safe margin.
+- In product footage the focal text (task title, names, evidence) must read at 1080p: at least 32 px tall
+  after framing and zoom, in the app's own typography.
 - No more than about 12 words on screen at once outside a caption.
 - Use the same short names chat uses (Frontend, Design, QA), never job titles or internal ids.
 - Room screenshots are usually much wider than 16:9 (2.4-2.9:1). With `fit: contain` they letterbox and
-  their text is small. Show the part that matters: keyframe `scale` together with `x`/`y` so the zoom ends
-  on the region you're talking about (for example the preview lane), and check it with `frame`.
+  their text is small. Frame the part that matters with a composition `camera` keyframe that names the
+  capture's `layer` and a `region` in its own pixels, and check it with `frame`.
 - Label synthetic content as synthetic in the scene `source` and, if it could be mistaken for real, on screen.
 - On a `capture` layer, set `"label": "synthetic"` for anything that isn't a real room capture (mockups,
   edited or staged screenshots). The renderer then draws a fixed "Simulated" badge, which zooming can't
@@ -58,6 +70,33 @@ Then map rows to beats (v1) or clips (v2). Keep the table in the check-in; revie
 - **Browser chrome and the OS are personal.** Bookmarks, tabs, the address bar, other windows and the
   taskbar stay out of every frame. Frame inside the app viewport: put the capture in a sized `group` that
   shows only the app area, then check the top and bottom edges with `frame`.
+
+## 4b. Real product footage (recorder, cursor, follow camera)
+
+AUTHORING.md "Record real product footage" has the calls. The craft:
+- **Plan the take before recording.** One take per beat, 10-30 s, driven slowly: pause about a second on
+  each target before clicking, so the follow camera has something to land on. Short takes stay under the
+  64 MiB page limit and are easy to re-record.
+- **Plan for device scale 1.** Takes record at device scale 1 (1280x800 CSS px) today, so plan wide framing
+  and keep follow `zoom` at about 1.6 or less. Footage shown above about 1.15 screen px per recorded px goes
+  soft, and no camera move fixes that. Device scale 2 is pending desktop; until then, a shot that must zoom
+  further is softer, whatever the camera does.
+- **Inspect the raw take first** (`inspect` with `url="fileref:<id>"`), so a bad take is caught before it is
+  built on.
+- **Use what `import_asset` returns.** It gives a muted `video` layer and a `cursor` layer, plus the take's
+  `width`, `height` and `aspect`. Size the video box to that aspect, and put the cursor layer in the same
+  group as the video at the same x and y: the pointer is drawn in the video's box. A sized
+  `frame: "window"` group around both clips them together. Then set `camera.follow` to the cursor layer.
+  Add explicit camera keyframes only where follow frames the wrong thing.
+- **Present it as the product.** Give the footage `frame: "window"` on a `studio` (dark) or `paper` (light)
+  backdrop. Never set `motion_blur` on product footage, because it reads as defocus on UI text.
+- **Hide secrets with `redact`, never blur.** Keys, emails and account names get a `redact` box inside the
+  footage's group, so it moves and zooms with the footage. Check it on every frame where the secret shows.
+- **Speed ramps:** keyframe the video's `speed` only over waiting (the video must be `muted`), with the
+  time-lapse badge on screen while it runs. Return to speed 1 at least 0.7 s before the next click, and
+  don't start the next ramp until at least `idle_ms` (default 1.2 s) after the last click. The cursor's
+  travel and the follow hold run on recording time, so they shrink on screen while speed is above 1, and
+  the 0.8 s hold collapses.
 
 ## 5. Motion grammar: one movement means one thing
 
@@ -103,19 +142,33 @@ Render frames at the first second, the busiest moment and the last second. On th
 - [ ] The final frame shows the result, held still.
 Fix, save with `overwrite: true`, and render frames again. Only then export.
 
-## 8. Known tool behaviour (0.12.44)
+After the export, measure it before showing anyone:
+`room_motion(action="inspect", job_id=<export job>, sheets=["contact", "motion"])`.
+- [ ] `moving_share` is at least 0.5 and `longest_hold_s` is at most 3 (Q1). Look at the motion chart for
+  long flat stretches.
+- [ ] The probe shows 1920x1080 at 30 fps or more (Q8).
+- [ ] Score the rest of Q1-Q11 in `Docs/research/demo-references/quality-bar.md` from the sheets, and put
+  the scores in the publish note. Use `vs` against a reference or an earlier cut when you're improving one.
 
-- v2 scenes render: text, image, capture, video, shape, path, captions, group and room layers, with
-  keyframes and transitions. `frame` and `export` draw the same frames.
-- **No sound yet.** An `audio` layer or an unmuted `video` layer validates with a warning, and `export`
-  refuses it. Set `"muted": true` on video layers and leave audio out.
-- **First composition only.** `frame` and `export` use the first composition; put the video you want first.
-- **Assets:** room uploads (`/uploads/<file>`) only, at most 64 MB per scene. Validation does not check that
-  an upload exists: the templates use `/uploads/replace-*.png` placeholders, so replace every one first.
+## 8. Known tool behaviour (0.12.48)
+
+- v2 scenes render: text, image, capture, video, shape, path, captions, group, room, cursor and redact
+  layers, with keyframes, transitions, the composition camera and the brand kit. `frame` and `export` draw
+  the same frames.
+- **Not yet installed:** `ui` layers (real Board components) validate but need frontend's bundle to render,
+  so record the real app instead for now.
+- **No sound yet.** An `audio` or `voiceover` layer, or an unmuted `video` layer, validates with a warning,
+  and `export` refuses it. Set `"muted": true` on video layers and leave audio out.
+- **First composition only.** `frame` and `export` use the first composition; put the video you want first,
+  or use `variant`.
+- **Assets:** room uploads (`/uploads/<file>`), kit files (`motion:<path>`) and registered originals
+  (`fileref:<id>`: recordings and pasted paths, read where they lie), at most 64 MiB per page. Validation
+  does not check that an upload exists: the templates use `/uploads/replace-*.png` placeholders, so replace
+  every one first.
 - **Formats:** `export` takes a `profile` (see AUTHORING.md, Export formats). Only WebM profiles `publish`
-  into chat; for the others, share the job's download link.
-- **Render time** is about 2-3 s per second of video. Plan 45-60 s for a 20 s export; scenes with large
-  screenshots take longer.
+  into chat; for the others, share the job's download link. MP4 isn't available yet.
+- **Render time:** room-only scenes take about 2-3 s per second of video. Scenes heavy with screenshots or footage
+  take up to about 6 s per second at 30 fps, and about 11-15 s at 60 fps, until faster capture lands. Plan for it.
 - **Text limits:** scene `source` is at most 200 characters and `name` at most 80. Put long provenance
   (which captures are real) in the publish note instead.
 - One export or frame render runs at a time. If busy, wait; don't loop. Always call `export_status` before
@@ -127,7 +180,8 @@ Fix, save with `overwrite: true`, and render frames again. Only then export.
   result, cta, accent. Three capture assets to replace.
 - `templates/feature-announcement-15s.json`: badge, feature name, highlighted screenshot, benefit, where
   to find it. Props include the highlight box centre.
-Both are v2 and render on 0.12.44. Neither uses sound.
+Both are v2 and render on 0.12.48. Neither uses sound. Both predate the brand kit and the camera: for new
+work, swap their hand-set sizes for `style`s and their scale-and-x/y zooms for camera keyframes.
 
 ## 10. Deliver
 
