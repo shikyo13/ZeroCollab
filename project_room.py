@@ -8,7 +8,7 @@ import time
 import urllib.parse
 import uuid
 from collections import namedtuple
-from coordination_records import TASK_HISTORY
+from coordination_records import MAX_BATCH_RESOLVE, TASK_HISTORY
 from pathlib import Path, PurePosixPath
 from coordination_records import CoordinationRecords, bounded
 from coordination_queue import receipt_key
@@ -1414,8 +1414,9 @@ def coordination_tools():
         definition('room_review', 'Request peer review of an approach or patch using an explicit artifact/revision reference, or respond with findings for that exact reference. Optional files selects relative files for backend hash snapshots (otherwise declared file paths). Changed snapshots block approval; room_read review_artifact retrieves captured content. Requests remain in the inbox; notify attempts one bounded wake-up.',
                    {'action': {'type': 'string', 'enum': ['request', 'respond', 'cancel']}, 'task_id': string, 'review_id': string, 'reviewer': string,
                     'files': {'type': 'array', 'items': string}, 'revision': string, 'text': string, 'verdict': {'type': 'string', 'enum': ['approved', 'changes_requested']}, 'notify': {'type': 'boolean'}}, ['action']),
-        definition('room_followup', 'Create a durable action/question for a teammate, optionally linked to a task; resolve with its result or cancel with a reason. Open items stay in the assignee inbox. notify attempts one bounded wake-up; there is no polling or automatic repeated reminder.',
-                   {'action': {'type': 'string', 'enum': ['create', 'resolve', 'cancel']}, 'followup_id': string, 'task_id': string,
+        definition('room_followup', 'Create a durable action/question for a teammate, optionally linked to a task; resolve with its result or cancel with a reason. Open items stay in the assignee inbox. notify attempts one bounded wake-up; there is no polling or automatic repeated reminder. To answer several follow-ups with the same result (for example one release receipt), resolve once with followup_ids instead of followup_id: each record resolves and each requester is told, with one chat line.',
+                   {'action': {'type': 'string', 'enum': ['create', 'resolve', 'cancel']}, 'followup_id': string,
+                    'followup_ids': {'type': 'array', 'items': string, 'maxItems': MAX_BATCH_RESOLVE}, 'task_id': string,
                     'assigned_to': string, 'text': string, 'result': string, 'notify': {'type': 'boolean'}}, ['action']),
         definition('room_repository', 'Ask the user to add a repository (action add) or replace the primary (action replace). Use an existing absolute repository root, or create true for a new folder. Only the user approves. Running turns can finish and queued work is kept. Task/review paths may use key:relative/path; bare task paths are pinned to the primary when claimed.',
                    {'path': string, 'create': {'type': 'boolean'}, 'reason': string, 'action': {'type': 'string', 'enum': ['add', 'replace']}}, ['path', 'reason']),

@@ -2090,6 +2090,11 @@ class RoomRuntime:
         # A review verdict or a follow-up result is what its recipient is waiting on, so it always
         # wakes them (or joins their running turn); notify=False only quiets new requests.
         notify = arguments.pop('notify', True) or arguments.get('action') in ('respond', 'resolve')
+        if tool == 'room_followup' and arguments.get('followup_ids'):
+            if arguments.get('action') != 'resolve' or arguments.get('followup_id'):
+                raise ValueError('followup_ids is for resolve only, without followup_id')
+            return await self.resolve_followups(actor, arguments['followup_ids'], arguments.get('result', ''),
+                                                channel, chain)
         method = self.project_room.records.review if tool == 'room_review' else self.project_room.records.followup
         result = method(actor, **arguments)
         if not result['changed']:
@@ -2119,16 +2124,49 @@ class RoomRuntime:
         if notify:
             for recipient in dict.fromkeys(result['notify']):
                 if recipient != actor:
-                    if recipient == item.get('planning_manager'):
-                        # A result stays durable without resetting the planner to ordinary native authority.
-                        deliveries[recipient] = {'status': 'deferred', 'queued': False,
-                            'reason': 'Automatic planning result recorded; bounded manager check-in observes the changed work.'}
-                        continue
-                    deliveries[recipient] = self.notify_participant(recipient, channel, chain,
-                        text + '\nRead room_read(section="inbox") for the full request/findings and coordinate with the team.', ref)
+                    deliveries[recipient] = self.deliver_record(recipient, [item], channel, chain, text, ref)
         self.ready_wakes.schedule()
         self.project_state_soon()
         return {'record': item, 'changed': True, 'deliveries': deliveries}
+
+    def deliver_record(self, recipient, items, channel, chain, text, ref):
+        """Tell one waiting party about a changed review or follow-up. Shared by single and batch resolve so the
+        planning rule can't drift: a result for the planning manager stays durable without resetting the planner
+        to ordinary native authority (backend 7c9ce73b)."""
+        if any(item.get('planning_manager') == recipient for item in items):
+            return {'status': 'deferred', 'queued': False,
+                    'reason': 'Automatic planning result recorded; bounded manager check-in observes the changed work.'}
+        return self.notify_participant(recipient, channel, chain,
+            text + '\nRead room_read(section="inbox") for the full request/findings and coordinate with the team.', ref)
+
+    async def resolve_followups(self, actor, followup_ids, result, channel, chain):
+        """One result for several follow-ups: each record resolves and each waiting party is woken, but the chat
+        gets one line naming them all (harness retro 1b999d3b: a staging receipt posted once per follow-up)."""
+        outcome = self.project_room.records.resolve_followups(actor, followup_ids, result)
+        changed = outcome['changed']
+        if not changed:
+            return {'records': outcome['items'], 'changed': False, 'deliveries': {}}
+        for item in changed:
+            item.setdefault('channel', channel)
+            if item.get('task_id'):
+                self.project_room.bump_work(item['task_id'], actor, f'follow-up resolved by {actor}')
+        self.project_room.save()
+        if getattr(self, 'live', None) is not None:
+            for item in changed:
+                await self.live.publish(self.live.recorded(actor, 'room_followup', 'resolve', item, channel))
+        text = outcome['summary']
+        refs = [{'collection': 'followups', 'id': i['id'], 'updated': i['updated'], 'action': 'resolve'} for i in changed]
+        self.host.store.add(actor, text, channel=channel,
+                            metadata={'no_route': True, 'chain': chain, 'coordination_ref': refs[0], 'coordination_refs': refs})
+        deliveries = {}
+        for recipient, items in outcome['notify'].items():
+            if recipient == actor:
+                continue
+            ref = next(r for r in refs if r['id'] == items[0]['id'])
+            deliveries[recipient] = self.deliver_record(recipient, items, channel, chain, text, ref)
+        self.ready_wakes.schedule()
+        self.project_state_soon()
+        return {'records': changed, 'changed': True, 'deliveries': deliveries}
 
     async def ask(self, run, tool, params, reason, question=False):
         identifier = uuid.uuid4().hex

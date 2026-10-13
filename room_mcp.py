@@ -140,10 +140,15 @@ def room_review(action: str, task_id: str = '', review_id: str = '', reviewer: s
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
 def room_followup(action: str, followup_id: str = '', task_id: str = '', assigned_to: str = '',
-                  text: str = '', result: str = '', notify: bool = True) -> dict:
-    """Create a durable next action/question for a participant, optionally linked to a task. Resolve with a concrete result, or cancel with a reason. Open items remain in the assignee's inbox. notify attempts one bounded wake-up; no polling, automatic reminders or agent spawning. A resolve always notifies the other party, since they are waiting on the result."""
-    return call('room_followup', dict(action=action, followup_id=followup_id, task_id=task_id,
-                                     assigned_to=assigned_to, text=text, result=result, notify=notify))
+                  text: str = '', result: str = '', notify: bool = True,
+                  followup_ids: list[str] | None = None) -> dict:
+    """Create a durable next action/question for a participant, optionally linked to a task. Resolve with a concrete result, or cancel with a reason. Open items remain in the assignee's inbox. notify attempts one bounded wake-up; no polling, automatic reminders or agent spawning. A resolve always notifies the other party, since they are waiting on the result.
+    To answer several follow-ups with the same result (for example one release receipt), resolve once with followup_ids (up to 20) instead of followup_id: each record resolves and each requester is told, with one chat line. An id you can't resolve refuses the whole call."""
+    args = dict(action=action, followup_id=followup_id, task_id=task_id,
+                assigned_to=assigned_to, text=text, result=result, notify=notify)
+    if followup_ids:
+        args['followup_ids'] = followup_ids
+    return call('room_followup', args)
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})

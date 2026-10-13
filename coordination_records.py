@@ -8,6 +8,7 @@ from pathlib import Path
 
 # Entries kept per task: check-ins, review/follow-up activity and automatic ownership/status events.
 TASK_HISTORY = 20
+MAX_BATCH_RESOLVE = 20  # follow-ups one resolve call may close with a shared result
 # Free-text limits. Over-limit text is refused, never cut, so the author learns before the record is saved.
 # Requests, follow-ups, results and cancellations are stored in full, so they match findings: 4000 kept
 # refusing ordinary multi-point reviews and forced agents to split one record into several.
@@ -120,11 +121,15 @@ class CoordinationRecords:
             raise ValueError('Coordination item was not found')
         return item
 
+    @staticmethod
+    def note_task(actor, task, text):
+        task['updates'].append({'by': actor, 'text': excerpt(text), 'time': time.time()})
+        task['updates'] = task['updates'][-TASK_HISTORY:]
+        task['updated'] = time.time()
+
     def save(self, actor, task, text):
         if task:
-            task['updates'].append({'by': actor, 'text': excerpt(text), 'time': time.time()})
-            task['updates'] = task['updates'][-TASK_HISTORY:]
-            task['updated'] = time.time()
+            self.note_task(actor, task, text)
         self.room.save()
 
     def capture(self, task, files=None):
@@ -399,6 +404,38 @@ class CoordinationRecords:
             raise ValueError('Choose create, resolve or cancel')
         self.save(actor, task, summary)
         return {'item': item, 'changed': True, 'notify': recipients, 'summary': excerpt(summary)}
+
+    def resolve_followups(self, actor, followup_ids, result):
+        """Resolve several follow-ups with one result (harness retro 1b999d3b: one release receipt was posted
+        once per follow-up). Every id is checked before any changes, so a bad id refuses the whole call.
+        Already-closed items are skipped, as a single resolve would. One task update and one summary per call."""
+        ids = list(dict.fromkeys(str(i) for i in followup_ids or ()))
+        if not 1 <= len(ids) <= MAX_BATCH_RESOLVE:
+            raise ValueError(f'Resolve 1 to {MAX_BATCH_RESOLVE} follow-ups at once')
+        if not str(result).strip():
+            raise ValueError('Record the result or cancellation reason')
+        result = bounded(result, 'result')
+        items = [self.record('followups', identifier) for identifier in ids]
+        refused = [i['id'] for i in items if actor not in ('user', i['assigned_to'], i['created_by'])]
+        if refused:
+            raise ValueError('Only the assignee, requester or user can resolve: ' + ', '.join(refused))
+        changed = [i for i in items if i['status'] == 'open']
+        if not changed:
+            return {'items': items, 'changed': [], 'notify': {}}
+        # Looked up before anything changes, so a missing task also refuses the whole call.
+        tasks = [self.task(task_id) for task_id in dict.fromkeys(i['task_id'] for i in changed if i['task_id'])]
+        now = time.time()
+        for item in changed:
+            item.update(status='resolved', result=result, updated=now)
+        summary = f"Follow-ups {', '.join(i['id'] for i in changed)} resolved by {actor}: {result}"
+        for task in tasks:
+            self.note_task(actor, task, summary)
+        self.room.save()
+        # Each waiting party is told once, naming its own records (the assignee when the requester resolved).
+        notify = {}
+        for item in changed:
+            notify.setdefault(item['assigned_to'] if actor == item['created_by'] else item['created_by'], []).append(item)
+        return {'items': items, 'changed': changed, 'notify': notify, 'summary': excerpt(summary)}
 
     def inbox(self, actor):
         reviews = self.room.state.get('reviews', [])
