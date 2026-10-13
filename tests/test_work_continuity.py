@@ -61,7 +61,8 @@ class Continuity(unittest.TestCase):
 
     def turn(self, name='worker', progress=None, files=0, outcome='completed', continuity=''):
         """A finished turn, as run_turn's end reports it."""
-        requests = [{'chain': self.chain, 'continuity': continuity}] if continuity else [{'chain': self.chain}]
+        requests = ([{'chain': self.chain, 'continuity': continuity, 'task_id': self.task_id}] if continuity
+                    else [{'chain': self.chain}])  # as enqueue's routing records a room-started turn
         run = SimpleNamespace(name=name, id=f'run{len(self.calls)}{time.time_ns()}', started_at=time.time() - 1,
                               progress=progress if progress is not None else {self.task_id: {'checkin'}},
                               file_changes=files, entry={'chain': self.chain, 'requests': requests}, channel='general')
@@ -119,6 +120,14 @@ class Progress(Continuity):
         wc.mark_record(run, self.room, other)
         self.assertEqual(set(run.progress), {self.task_id})  # K2: another agent's task never counts
 
+    def test_a_checkin_counts_when_history_is_full(self):
+        # harness 766dbd7f note 1: history is capped, so the newest entry, not the count, shows a check-in.
+        run = SimpleNamespace(name='worker', progress={})
+        before = {**self.task(), 'updates': [{'time': 1, 'text': 'a'}, {'time': 2, 'text': 'b'}]}
+        after = {**self.task(), 'updates': [{'time': 2, 'text': 'b'}, {'time': 3, 'text': 'c'}]}
+        wc.mark_task(run, before, after)
+        self.assertEqual(run.progress, {self.task_id: {'checkin'}})
+
 
 class Lifecycle(Continuity):
     """security bd0329f9: a sent wake with no turn is retried, then surfaces; Stop holds it."""
@@ -144,6 +153,32 @@ class Lifecycle(Continuity):
         self.turn()  # the agent moves the task again: the stall closes itself
         self.assertEqual(item['status'], 'resolved')
         self.assertNotIn('stall', self.task())
+
+    def test_lost_ask_wake_after_restart_is_retried_then_escalated_once(self):
+        # systems 334307bc B1: the outstanding ask-wake itself goes through retry and exhaustion.
+        self.turn(name='peer', progress={})
+        item = self.room.records.followup('lead', 'create', assigned_to='peer', task_id=self.task_id, text='check this')['item']
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + 1), ['woke'])
+        self.drain('peer')  # the delivery is lost: no turn starts
+        restored = ProjectRoom(self.r)
+        restored.use_project('p')
+        restored.change_limits({'ready_task_wakes': 1}, save=False)
+        restored.chains = self.room.chains
+        self.r.project_room = self.room = restored
+        self.r.paused = True
+        self.assertIsNone(self.tick(wc.ASK_GRACE_SECONDS + wc.RETRY_SECONDS))  # Stop holds it
+        self.r.paused = False
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + wc.RETRY_SECONDS + 1), ['woke'])
+        self.drain('peer')
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + 2 * wc.RETRY_SECONDS + 2), ['opened'])
+        self.assertEqual([d[1] for d in self.delivered if d[0] == 'peer'], [item['id']] * 2)  # MAX_SENDS, no more
+        self.assertEqual([d[0] for d in self.delivered[2:]], ['lead'])  # the stall item reaches the lead
+        stall, = [f for f in self.room.state['followups'] if f['created_by'] == 'system']
+        self.assertEqual(stall['assigned_to'], 'lead')
+        self.assertIn(f"follow-up {item['id']} for peer is unanswered", stall['text'])
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + 3 * wc.RETRY_SECONDS), [])  # one item only
+        self.room.records.followup('peer', 'resolve', followup_id=item['id'], result='done')
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + 3 * wc.RETRY_SECONDS + 1), ['closed'])
 
     def test_stop_holds_until_resume(self):
         self.turn()
@@ -174,6 +209,14 @@ class Watchdog(Continuity):
         self.assertEqual(self.tick(wc.IDLE_WAKE_SECONDS - 5), [])
         self.assertEqual(self.tick(wc.IDLE_WAKE_SECONDS + 1), ['woke'])
         self.assertTrue(self.calls[0]['key'].startswith('idle:worker:'))
+
+    def test_watchdog_wakes_count_toward_spinning(self):
+        # harness 766dbd7f B1: a task its owner never marks waiting is not woken forever.
+        for n in range(wc.SPIN_TURNS):
+            self.turn(progress={}, continuity=f'idle:worker:r{n}')
+        self.assertEqual(self.tick(wc.IDLE_WAKE_SECONDS + 1), ['opened'])
+        self.assertEqual(self.calls, [])  # no further watchdog wake
+        self.assertEqual(self.tick(2 * wc.IDLE_WAKE_SECONDS), [])
 
     def test_spinning_continuations_surface(self):
         for n in range(wc.SPIN_TURNS):

@@ -49,7 +49,8 @@ def mark_task(run, before, after):
         return
     before = before or {}
     kinds = {field for field in ('status', 'next_action', 'evidence') if before.get(field) != after.get(field)}
-    if len(after.get('updates') or []) > len(before.get('updates') or []):
+    newest = lambda task: next(((u.get('time'), u.get('text')) for u in reversed(task.get('updates') or [])), None)
+    if newest(after) != newest(before):  # history is capped (TASK_HISTORY), so its length can't show a check-in
         kinds.add('checkin')
     if kinds:
         run.progress.setdefault(after['id'], set()).update(kinds)
@@ -77,10 +78,10 @@ def finished(runtime, run, outcome):
     for claim in state['claims'].values():
         if claim['agent'] == run.name and claim['status'] != 'done':
             claim.update(status='done', at=now)  # a turn ran: every wake waiting for this agent is answered
-    continued = next((q['continuity'] for q in run.entry.get('requests', [])
-                      if (q.get('continuity') or '').startswith('continue:')), '')
+    continued = next((q for q in run.entry.get('requests', [])
+                      if (q.get('continuity') or '').startswith(('continue:', 'idle:')) and q.get('task_id')), None)
     if continued:
-        task_id = continued.split(':')[2]
+        task_id = continued['task_id']  # a room-started turn on this task, continued or woken by the watchdog
         substantive = run.file_changes or SUBSTANTIVE & set(progress.get(task_id, ()))
         state['spin'][task_id] = 0 if substantive else state['spin'].get(task_id, 0) + 1
     for task_id in progress:
@@ -143,7 +144,8 @@ def send(runtime, room, state, name, wake, now, actions):
     """One wake through its claim. True when something was queued for this agent."""
     key, kind, task_id, prompt, chain, channel, record = wake
     claim = state['claims'].setdefault(key, {'agent': name, 'task': task_id, 'kind': kind, 'sends': 0,
-                                             'status': 'due', 'at': now})
+                                             'status': 'due', 'at': now,
+                                             'record': [record[0], record[1]['id']] if record else None})
     if claim['status'] in ('done', 'exhausted'):
         return False
     if claim['status'] == 'sent':
@@ -205,9 +207,16 @@ def continuation(runtime, state, name, last, now):
 
 def unseen_ask(runtime, state, name, last, now):
     """C3: the oldest open ask for this agent that changed after its last turn started and has waited ASK_GRACE."""
-    if any(c['agent'] == name and c['kind'] == 'ask' and c['status'] == 'sent' for c in state['claims'].values()):
-        return None  # one outstanding ask-wake per recipient (K3)
     room_state, seen = runtime.project_room.state, last.get('started', state['since'])
+    for key, claim in state['claims'].items():
+        if claim['agent'] == name and claim['kind'] == 'ask' and claim['status'] == 'sent':
+            # One outstanding ask-wake per recipient (K3). It is this one again, so a lost delivery is retried and
+            # then exhausted into a visible stall rather than staying silently sent (systems 334307bc B1).
+            kind, item = ask_record(room_state, claim)
+            if item is None:
+                claim.update(status='done', at=now)  # answered or withdrawn meanwhile
+                continue
+            return ask_wake(runtime, key, kind, item, last)
     asks = [('followups', f) for f in room_state.get('followups', [])
             if f['status'] == 'open' and f['assigned_to'] == name and f['created_by'] != name]
     asks += [('reviews', r) for r in room_state.get('reviews', []) if r['status'] == 'pending' and r['reviewer'] == name]
@@ -216,11 +225,23 @@ def unseen_ask(runtime, state, name, last, now):
     if not due:
         return None
     stamp, kind, item = due[0]
+    return ask_wake(runtime, f"ask:{item['id']}:{stamp}", kind, item, last)
+
+
+def ask_wake(runtime, key, kind, item, last):
     noun = 'Follow-up' if kind == 'followups' else 'Review request'
     prompt = (f"Work continuity: {noun.lower()} {item['id']} for you is unanswered (task {item.get('task_id') or 'none'}). "
               'Read room_read(section="inbox") and act on it, or answer it with what it is waiting for.')
     channel = item.get('channel') or last.get('channel') or runtime.default_channel()
-    return f"ask:{item['id']}:{stamp}", 'ask', item.get('task_id', ''), prompt, None, channel, (kind, item)
+    return key, 'ask', item.get('task_id', ''), prompt, None, channel, (kind, item)
+
+
+def ask_record(room_state, claim):
+    """The ask a claim was sent for, while it is still waiting; (kind, None) once answered or gone."""
+    kind, record_id = claim.get('record') or (None, None)
+    waiting = {'followups': 'open', 'reviews': 'pending'}.get(kind)
+    item = next((x for x in room_state.get(kind, []) if x['id'] == record_id and x['status'] == waiting), None) if waiting else None
+    return kind, item
 
 
 def watchdog(runtime, state, name, last, now):
@@ -228,9 +249,9 @@ def watchdog(runtime, state, name, last, now):
     since = max(last.get('ended', 0), state['since'])
     if now - since < IDLE_WAKE_SECONDS:
         return None
-    task = next(iter(ready_tasks(runtime, name)), None)
+    task = next((t for t in ready_tasks(runtime, name) if state['spin'].get(t['id'], 0) < SPIN_TURNS), None)
     if not task:
-        return None
+        return None  # a spinning task is a stall for the lead, never woken again (harness 766dbd7f B1)
     chain = last.get('chain') or runtime.ready_wakes.record['chains'].get(task['id'])
     prompt = (f"Work continuity: you have been idle for {int((now - since) / 60)} minutes while task {task['id']} "
               f"({task['title']}) is working with a next action, as recorded: {quoted(task)}\nContinue it now, or record "
@@ -263,8 +284,15 @@ def team_wake(runtime, room, state, idle, now, actions):
 def stalls(runtime, room, state, now, actions):
     for key, claim in list(state['claims'].items()):
         task_id, name = claim.get('task'), claim['agent']
+        if claim['kind'] == 'ask':
+            kind, item = ask_record(room.state, claim)
+            if claim['status'] == 'exhausted' and item is not None:
+                noun = 'follow-up' if kind == 'followups' else 'review request'
+                open_stall(runtime, room, state, f"ask:{item['id']}", name,
+                           f"{noun} {item['id']} for {name} is unanswered", claim['reason'], actions)
+            continue
         task = next((t for t in room.state['tasks'] if t['id'] == task_id), None) if task_id else None
-        if not task or claim['kind'] in ('ask', 'team'):
+        if not task or claim['kind'] == 'team':
             continue
         reason = ''
         if claim['status'] == 'exhausted':
@@ -274,34 +302,47 @@ def stalls(runtime, room, state, now, actions):
         elif claim['kind'] == 'idle' and claim['status'] == 'sent' and now - claim['at'] >= IDLE_WAKE_SECONDS:
             reason = f'still idle {IDLE_WAKE_SECONDS // 60} minutes after the room woke it'
         if reason and not task_hold(runtime, task, name):
-            open_stall(runtime, room, state, task, name, reason, actions)
+            open_stall(runtime, room, state, task['id'], name, subject(task, name), reason, actions, task)
     for task_id, count in state['spin'].items():
         task = next((t for t in room.state['tasks'] if t['id'] == task_id), None)
         if task and count >= SPIN_TURNS and not task_hold(runtime, task, task['owner']):
-            open_stall(runtime, room, state, task, task['owner'],
-                       f'{count} continued turns with no status, evidence or file change', actions)
-    for task_id in list(state['stalls']):
-        task = next((t for t in room.state['tasks'] if t['id'] == task_id), None)
+            open_stall(runtime, room, state, task_id, task['owner'], subject(task, task['owner']),
+                       f'{count} room-started turns with no status, evidence or file change', actions, task)
+    for key in list(state['stalls']):
+        if key.startswith('ask:'):
+            claims = [c for c in state['claims'].values() if c['kind'] == 'ask' and (c.get('record') or [None, None])[1] == key[4:]]
+            if (not claims or any(c['status'] == 'done' for c in claims)
+                    or all(ask_record(room.state, c)[1] is None for c in claims)):
+                clear_stall(runtime, room, state, key, 'It was answered, or its recipient has had a turn since.', actions)
+            continue
+        task = next((t for t in room.state['tasks'] if t['id'] == key), None)
         if not task or task_hold(runtime, task, task.get('owner')):
-            state['spin'].pop(task_id, None)
-            clear_stall(runtime, room, state, task_id, 'It is no longer ready work.', actions)
+            state['spin'].pop(key, None)
+            clear_stall(runtime, room, state, key, 'It is no longer ready work.', actions)
 
 
-def open_stall(runtime, room, state, task, name, reason, actions):
-    if task['id'] in state['stalls']:
+def subject(task, name):
+    return f"{name}'s task {task['id']} ({task['title']}) is ready work that isn't moving"
+
+
+def open_stall(runtime, room, state, key, name, about, reason, actions, task=None):
+    """One durable item per stall (a task id, or ask:<record id>), adopted by its prefix after a crash."""
+    if key in state['stalls']:
         return
     lead = lead_of(runtime)
     recipient = lead if lead and lead != name else 'user'
-    prefix = f"{STALL_PREFIX} {name} {task['id']}"
+    prefix = f"{STALL_PREFIX} {name} {key}"
     item = next((f for f in room.state.get('followups', []) if f['status'] == 'open' and f['created_by'] == SYSTEM
-                 and f['assigned_to'] == recipient and f['text'].startswith(prefix)), None)  # adopt after a crash
+                 and f['assigned_to'] == recipient and f['text'].startswith(prefix)), None)
     if item is None:
-        text = (f"{prefix}: {name}'s task {task['id']} ({task['title']}) is ready work that isn't moving: {reason}. "
-                "Wake or redirect them, reassign it, or record what it waits for. This closes itself when it moves.")
-        item = room.records.followup(SYSTEM, 'create', task_id=task['id'], assigned_to=recipient, text=text)['item']
+        text = (f"{prefix}: {about}: {reason}. Wake or redirect them, reassign it, or record what it waits for. "
+                'This closes itself when it moves.')
+        item = room.records.followup(SYSTEM, 'create', task_id=task['id'] if task else '', assigned_to=recipient,
+                                     text=text)['item']
         actions.append(('opened', item, recipient))
-    state['stalls'][task['id']] = {'item': item['id'], 'agent': name, 'reason': reason}
-    task['stall'] = {'reason': reason, 'item': item['id']}
+    state['stalls'][key] = {'item': item['id'], 'agent': name, 'reason': reason}
+    if task is not None:
+        task['stall'] = {'reason': reason, 'item': item['id']}
 
 
 def clear_stall(runtime, room, state, task_id, result, actions=None):
