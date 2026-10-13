@@ -33,6 +33,7 @@ MIN_TIMESTAMP_STEP_MS = .001
 MAX_ENCODE_SECONDS = 300
 ENCODE_SECONDS_PER_CAPTURE_SECOND = 10
 ENCODE_TIMEOUT_HEADROOM_SECONDS = 30
+CANCEL_POLL_SECONDS = .1
 MIN_CONTAINER_BYTES = 32
 MAX_ERROR_CHARS = 500
 MAX_SCROLL_DELTA = 100000
@@ -55,9 +56,10 @@ async def joined(awaitable):
 
 
 class Recording:
-    def __init__(self, browser, page, encoder, max_seconds, fps, folder):
+    def __init__(self, browser, page, encoder, max_seconds, fps, folder, *, recording_id=None, coordinator=None):
         self.browser, self.page, self.encoder = browser, page, encoder
-        self.id = uuid.uuid4().hex[:12]
+        self.id = recording_id or uuid.uuid4().hex[:12]
+        self.coordinator = coordinator
         self.project, self.browser_id, self.page_id = browser.project, browser.id, page.id
         self.width, self.height, self.fps = page.width, page.height, fps
         self.started_at, self.started = time.time(), time.monotonic()
@@ -191,10 +193,17 @@ class Recording:
         if self.finish_task is None:
             self.reason = reason
             self.duration_ms = max(1, math.ceil(min(self.elapsed(), self.max_seconds*MS_PER_SECOND)))
-            self.phase = 'encoding'
+            self.phase = 'draining' if self.coordinator else 'encoding'
             if self.timer is not asyncio.current_task():
                 self.timer.cancel()
-            self.finish_task = asyncio.create_task(self.finish())
+            if self.coordinator:
+                self.coordinator.reason = self.reason
+                if self.coordinator.job['stage'] == 'capture':
+                    self.coordinator.job['phase'] = 'draining'
+                self.finish_task = self.coordinator.task
+                self.coordinator.stopped.set()
+            else:
+                self.finish_task = asyncio.create_task(self.finish())
         return self.status(paths=True)
 
     async def stop(self, reason='requested'):
@@ -213,16 +222,14 @@ class Recording:
             await self.stop(reason)
 
     def check_cancelled(self):
-        if self.cancelled:
+        if self.cancelled or self.coordinator and self.coordinator.ticket.stop.is_set():
             raise ValueError('Recording was cancelled before publication')
 
     async def finish(self):
         completed = False
         try:
             await self.browser.recording_detached(self)
-            await self.queue.put(None)
-            self.writer_ending = True
-            await asyncio.shield(self.writer)
+            await self.join_writer()
             self.check_cancelled()
             if self.error:
                 raise ValueError('Recording spool failed: ' + self.error)
@@ -246,7 +253,7 @@ class Recording:
             else:
                 await joined(self.spawn_posix(args))
             self.check_cancelled()
-            code = await asyncio.wait_for(self.process.wait(), min(MAX_ENCODE_SECONDS, self.max_seconds*ENCODE_SECONDS_PER_CAPTURE_SECOND+ENCODE_TIMEOUT_HEADROOM_SECONDS))
+            code = await self.wait_encoder(min(MAX_ENCODE_SECONDS, self.max_seconds*ENCODE_SECONDS_PER_CAPTURE_SECOND+ENCODE_TIMEOUT_HEADROOM_SECONDS))
             self.check_cancelled()
             self.frames = await joined(asyncio.to_thread(encoded_frames, self.folder))
             self.check_cancelled()
@@ -265,7 +272,7 @@ class Recording:
         finally:
             # Each cleanup step runs even if another raises unexpectedly. No finalizer
             # exception may strand the take in encoding or escape browser shutdown.
-            for step in (self.close_encoder, self.join_writer):
+            for step in (self.close_encoder, self.join_writer, self.join_timer):
                 try:
                     await joined(step())
                 except (Exception, asyncio.CancelledError) as exc:
@@ -301,6 +308,24 @@ class Recording:
         self.process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL,
                                                            stderr=asyncio.subprocess.DEVNULL)
 
+    async def wait_encoder(self, timeout):
+        deadline = time.monotonic() + timeout
+        waiter = asyncio.create_task(self.process.wait())
+        try:
+            while not waiter.done():
+                self.check_cancelled()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError('Recording encode timed out')
+                await asyncio.wait({waiter}, timeout=min(CANCEL_POLL_SECONDS, remaining))
+            self.check_cancelled()
+            return waiter.result()
+        finally:
+            if not waiter.done():
+                with contextlib.suppress(ProcessLookupError):
+                    self.process.kill()
+                await joined(asyncio.shield(waiter))
+
     async def close_encoder(self):
         if self.process:
             try:
@@ -316,6 +341,11 @@ class Recording:
             await self.queue.put(None)
             self.writer_ending = True
         await asyncio.shield(self.writer)
+
+    async def join_timer(self):
+        if self.timer is not asyncio.current_task():
+            self.timer.cancel()
+            await asyncio.gather(self.timer, return_exceptions=True)
 
     def cleanup(self, keep_original):
         temporary = [self.folder / name for name in self.spool_files]

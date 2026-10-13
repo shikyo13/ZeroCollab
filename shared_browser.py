@@ -281,8 +281,7 @@ class Browser:
         self.generation += 1
         page.frame_event.set()
 
-        if page.recording:
-            self.schedule(page.recording.stop('page_closed'))
+        self.stop_page_recordings(page, 'page_closed')
 
     async def receive(self):
         try:
@@ -581,7 +580,7 @@ class Browser:
 
     async def close(self):
         for recording in list(self.recordings.values()):
-            if recording.phase in ('recording', 'encoding'):
+            if recording.phase not in ('done', 'failed'):
                 with contextlib.suppress(ValueError):
                     try:
                         await asyncio.wait_for(recording.stop('instance_closed'), RECORDING_CLOSE_GRACE_SECONDS)
@@ -684,40 +683,26 @@ class Browser:
             raise ValueError('Recording needs 0 < max_seconds <= 120 and fps 30 or 60')
         if self.pages.get(page.id) is not page or not self.status()['running']:
             raise ValueError('Recording needs an open page of this browser instance')
-        if any(r.phase in ('recording', 'encoding') for r in self.recordings.values()):
+        if any(r.phase not in ('done', 'failed') for r in self.recordings.values()):
             raise ValueError('This browser instance is already recording or encoding')
-        from motion_studio import require_tools, project_dir
-        from browser_recording import Recording, probe_transport
-        project = self.project
-        encoder = await asyncio.to_thread(require_tools, self.runtime, 'webm')
-        await asyncio.to_thread(probe_transport, encoder['path'])
-        if (project != self.runtime.identity or self.pages.get(page.id) is not page
-                or not self.status()['running']):
-            raise ValueError('Browser or project changed while preparing recording')
-        if any(r.phase in ('recording', 'encoding') for r in self.recordings.values()):
-            raise ValueError('This browser instance is already recording or encoding')
-        folder = project_dir(self.runtime)
-        if not folder:
-            raise ValueError('Recording needs a project')
-        first = await self.screenshot(page)
-        if project != self.runtime.identity or self.pages.get(page.id) is not page:
-            raise ValueError('Browser or project changed while preparing recording')
-        recording = Recording(self, page, encoder['path'], max_seconds, fps, folder / 'recordings')
-        self.recordings[recording.id] = page.recording = recording
+        from browser_recording_coordinator import RecordingCoordinator
+        gate = getattr(getattr(self.runtime, 'host', None), 'media_jobs', None)
+        if gate is None:
+            raise ValueError('The shared media admission gate is not installed')
+        recording = RecordingCoordinator(self, page, gate, max_seconds, fps)
+        self.recordings[recording.id] = recording
         while len(self.recordings) > MAX_RETAINED_RECORDINGS:
             retired = next((key for key, take in self.recordings.items()
                             if take.phase in ('done', 'failed')), None)
             if retired is None:
                 break
             self.recordings.pop(retired)
-        recording.push(first)
-        try:
-            await self.start_stream(page)
-        except Exception:
-            with contextlib.suppress(ValueError):
-                await recording.stop('capture_start_failed')
-            raise
         return recording.status()
+
+    def stop_page_recordings(self, page, reason):
+        for recording in self.recordings.values():
+            if recording.page is page and recording.phase not in ('done', 'failed'):
+                recording.begin_stop(reason)
 
     def record_status(self, recording_id):
         if not isinstance(recording_id, str):
@@ -737,7 +722,7 @@ class Browser:
 
     async def recording_detached(self, recording):
         page = recording.page
-        if page.recording is recording:
+        if page.recording is recording or getattr(page.recording, 'take', None) is recording:
             page.recording = None
         async with page.stream_lock:
             if page.streaming and not page.viewers and not page.recording:
@@ -875,9 +860,7 @@ class Browser:
             if action == 'screenshot':
                 return {**self.status(page), 'image': base64.b64encode(await self.screenshot(page)).decode()}
             if action == 'resize':
-                if page.recording:
-                    with contextlib.suppress(ValueError):
-                        await page.recording.stop('viewport_changed')
+                self.stop_page_recordings(page, 'viewport_changed')
                 page.width = max(360, min(1600, int(arguments.get('width', WIDTH))))
                 page.height = max(300, min(1000, int(arguments.get('height', HEIGHT))))
                 await self.command('Emulation.setDeviceMetricsOverride', {'width': page.width, 'height': page.height, 'deviceScaleFactor': 1, 'mobile': False}, page=page)
