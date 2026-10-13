@@ -51,7 +51,8 @@ class LiveContext(unittest.TestCase):
         (deploy / 'current.json').write_text('{}', 'utf-8')
         three_hours_ago = time.time() - 3 * 3600
         os.utime(deploy / 'current.json', (three_hours_ago, three_hours_ago))
-        self.runtime.deployment = SimpleNamespace(root=deploy)
+        # reload(): the maintenance gate read by the live context (release-48 0012), open here.
+        self.runtime.deployment = SimpleNamespace(root=deploy, reload=lambda: {'admission': 'open'})
         self.room.task('worker', 'update', self.main, labels=['frontend'])
         review = next(r for r in self.room.state['reviews'] if r['task_id'] == self.main)
         self.room.records.review('peer', 'respond', review_id=review['id'], revision='v1', verdict='approved', text='ok')
