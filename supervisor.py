@@ -13,7 +13,7 @@ through the spool LIVE/data/deploy/ (contract: room follow-up a30afc6a):
 
   releases/<id>/        packaged by release_pack.py
   requests/<id>.json    written by the app when the human approves a release; taken as <id>.taken
-  maintenance.json      written here only: {seq, deployment_id, admission, writes, interrupt, reason}
+  maintenance.json      supervisor gates; app atomically closes agent writes after tab acknowledgements
   current.json          RELEASE.json of the deployed release; the app serves it as /api/version
   status.json           supervisor state, for display
   receipts/<id>.json    terminal result: deployed, aborted, rejected, rolled_back,
@@ -53,6 +53,7 @@ SPOOL = DATA / 'deploy'
 HANDBACK = SPOOL / 'handback.json'  # {kind}: the other app used the room's data last; the next room opens Stopped
 # Read as text by the desktop app with run.py's: both must declare it before desktop opens this room's data.
 ROOM_WRITER_PROTOCOL = 1
+AGENT_RELEASE_PROTOCOL = 1  # host capability; installation requires a separate user handover
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 REQUEST_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # Data records snapshotted for an exact restore; everything else in data/ is left alone.
@@ -210,6 +211,7 @@ class Supervisor:
         # updated is epoch seconds, refreshed every few seconds by heartbeat() so the UI can tell it is alive.
         with self.status_lock:
             self.status.update(values, state=state or self.status.get('state'), updated=time.time(),
+                               agent_release_protocol=AGENT_RELEASE_PROTOCOL,
                                child_pid=self.child.pid if self.child and self.child.poll() is None else None,
                                release_id=(read_json(SPOOL / 'current.json') or {}).get('id'))
             write_json(SPOOL / 'status.json', self.status)
@@ -219,10 +221,11 @@ class Supervisor:
             time.sleep(5)
             self.set_status()
 
-    def gate(self, admission, writes, deployment_id='', interrupt=False, reason=''):
+    def gate(self, admission, writes, deployment_id='', interrupt=False, reason='', version=''):
         seq = (read_json(SPOOL / 'maintenance.json') or {}).get('seq', 0) + 1
         write_json(SPOOL / 'maintenance.json', {'seq': seq, 'deployment_id': deployment_id, 'admission': admission,
-                                                'writes': writes, 'interrupt': interrupt, 'reason': reason, 'updated': now()})
+                                                'writes': writes, 'interrupt': interrupt, 'reason': reason,
+                                                'version': version, 'updated': now()})
         return seq
 
     # ----- room HTTP -----
@@ -281,11 +284,16 @@ class Supervisor:
             self.get(path)
         return seq
 
-    def open_gate(self, deployment_id, resume):
+    def open_gate(self, deployment_id, resume, request=None):
         seq = self.gate('open', 'open', deployment_id, reason='Deployment finished')
         if not self.acknowledged(seq, wait=30):
             raise RuntimeError('App did not acknowledge reopening')
-        if resume:
+        if (request or {}).get('approved_by') == 'release-manager:astra':
+            # Never call user Resume for an agent deployment: it clears Stop.
+            response = self.client.post('/api/runtime/deployments/control/' + deployment_id,
+                                        json={'action': 'release'}, timeout=20)
+            response.raise_for_status()
+        elif resume:
             self.client.post('/api/runtime/resume', json={}).raise_for_status()
 
     # ----- server process -----
@@ -418,7 +426,7 @@ class Supervisor:
         (SPOOL / 'stop.request').unlink(missing_ok=True)
         (SPOOL / 'open.request').unlink(missing_ok=True)
         journal = read_json(SPOOL / 'journal.json')
-        if journal and journal.get('phase') in ('taken', 'draining', 'gated'):
+        if journal and journal.get('phase') in ('taken', 'composing', 'draining', 'gated'):
             # Crashed before the server was touched: reopen the room and record the abort.
             Deployment.finish_receipt(journal, 'aborted', 'Supervisor restarted during the drain; room was not changed.')
             (SPOOL / 'journal.json').unlink()
@@ -490,7 +498,7 @@ class Supervisor:
         write_json(SPOOL / 'journal.json', journal)
         detail = f'Verified release {expect or "(unversioned)"} on restart.'
         try:
-            self.open_gate(journal['id'], resume=not journal.get('was_paused'))
+            self.open_gate(journal['id'], resume=not journal.get('was_paused'), request=journal.get('request'))
         except Exception as exc:
             detail += f' Reopening the room reported: {exc}'[:800]
         Deployment.finish_receipt(journal, outcome, detail)
@@ -571,7 +579,8 @@ class Deployment:
 
     @staticmethod
     def finish_receipt(journal, status, detail):
-        receipt = {key: journal.get(key) for key in ('id', 'release_id', 'previous_release_id', 'backup', 'request', 'started')}
+        receipt = {key: journal.get(key) for key in ('id', 'release_id', 'previous_release_id',
+                   'previous_manifest_sha', 'backup', 'request', 'started')}
         receipt.update(status=status, detail=detail, steps=journal.get('steps', []), finished=now())
         write_json(SPOOL / 'receipts' / f'{journal["id"]}.json', receipt)
         return receipt
@@ -615,11 +624,31 @@ class Deployment:
         if previous and previous.get('id') == release_id:
             raise ValueError(f'Release {release_id} is already deployed')
         self.journal.update(release_id=release_id, request=request, previous_release_id=(previous or {}).get('id'),
+                            previous_manifest_sha=(previous or {}).get('manifest_sha'),
                             backup=str(SPOOL / 'backups' / self.journal['id']))
         self.request = request
         self.previous = previous
         self.backup = Path(self.journal['backup'])
         self.step(f'Took request for release {release_id} ({self.release.get("subject", "")[:120]}), approved by {request["approved_by"]}')
+        if self.agent_request():
+            if request.get('protocol') != AGENT_RELEASE_PROTOCOL or request.get('interrupt') is not False:
+                raise ValueError('Agent request protocol is unsupported')
+            self.agent_status()  # server-side authority again after atomic take
+
+    def agent_request(self):
+        return self.journal.get('request', {}).get('approved_by') == 'release-manager:astra'
+
+    def agent_status(self):
+        result = self.sup.get('/api/runtime/deployments/control/' + self.journal['id'])
+        if result.get('protocol') != AGENT_RELEASE_PROTOCOL:
+            raise Abort('App does not support this agent deployment protocol')
+        return result
+
+    def agent_action(self, action):
+        response = self.sup.client.post('/api/runtime/deployments/control/' + self.journal['id'],
+                                        json={'action': action}, timeout=20)
+        response.raise_for_status()
+        return response.json()
 
     def plan(self):
         """Files to write and delete, refusing live edits made outside a deployment."""
@@ -655,11 +684,22 @@ class Deployment:
             # Without the gate a turn or write could start after the last idle check and be cut off.
             raise ValueError('The running app has no maintenance gate; it must be bootstrapped externally first')
         self.gate_supported = True
+        if self.agent_request():
+            until = time.monotonic() + 120
+            self.step('Waiting for all room tabs to be idle', phase='composing')
+            while self.agent_status()['composing']['busy']:
+                if sup.stop_requested() or time.monotonic() >= until:
+                    raise Abort('Room tabs remained busy or Stop was requested')
+                time.sleep(.5)
+            self.agent_action('announce')
         deadline = time.monotonic() + max(30, min(int(request.get('drain_seconds') or 600), 3600))
-        self.seq = sup.gate('closed', 'open', self.journal['id'], reason='Deployment: finishing current agent turns')
+        self.seq = sup.gate('closed', 'open', self.journal['id'], reason='Deployment: finishing current agent turns',
+                            version=self.release.get('version', ''))
         self.step('Admission closed; waiting for current turns to finish', phase='draining')
         interrupted = False
         while not sup.acknowledged(self.seq, idle=True):
+            if self.agent_request():
+                self.agent_status()  # revocation, project/Stop/evidence changes abort the drain
             if sup.stop_requested():
                 raise Abort('Room stop requested during the drain')
             if time.monotonic() >= deadline:
@@ -670,7 +710,12 @@ class Deployment:
                 self.step('Drain deadline reached; interrupting turns as the request allows')
                 deadline = time.monotonic() + 60
             time.sleep(1)
-        self.seq = sup.gate('closed', 'blocked', self.journal['id'], reason='Deployment in progress')
+        if self.agent_request():
+            # App event loop checks idle acknowledgements and closes writes in
+            # one synchronous step; a client report cannot race an HTTP reply.
+            self.seq = self.agent_action('block')['seq']
+        else:
+            self.seq = sup.gate('closed', 'blocked', self.journal['id'], reason='Deployment in progress')
         if not sup.acknowledged(self.seq, idle=True, wait=30):
             raise Abort('App did not acknowledge the write gate')
         self.step('Agents idle and writes blocked', phase='gated')
@@ -734,7 +779,8 @@ class Deployment:
         # which release is running (the new one, or the previous one after a rollback).
         self.journal.update(reopen_expect=expect, reopen_outcome=outcome)
         self.step('Reopening the room', phase='reopening')
-        self.sup.open_gate(self.journal['id'], resume=not self.journal.get('was_paused'))
+        self.sup.open_gate(self.journal['id'], resume=not self.journal.get('was_paused'),
+                           request=self.journal.get('request'))
 
     # ----- rollback -----
     def restore(self):
@@ -799,6 +845,8 @@ class Deployment:
             self.plan()
             self.drain()
             sup = self.sup
+            if self.agent_request():
+                self.agent_status()  # last policy check before stopping; never interrupt turns
             stopped = True  # From here any failure may have touched the server.
             self.step('Stopping the room server', phase='stopping')
             if not sup.stop_child(graceful=False):
@@ -813,6 +861,11 @@ class Deployment:
             if not stopped:
                 if self.gate_supported:
                     self.sup.gate('open', 'open', self.journal['id'], reason='Deployment aborted')
+                    if self.agent_request():
+                        try:
+                            self.agent_action('release')
+                        except Exception:
+                            pass  # receipt retains the abort; reconnect also clears old UI locks
                 status = 'rejected' if self.journal['phase'] == 'taken' else 'aborted'
                 return self.finish(status, f'{exc}'[:1500])
             return self.rollback(str(exc)[:1000])

@@ -292,6 +292,8 @@ def install(host, runtime):
     runtime.deployment = state
     from release_manager import ReleaseManager
     runtime.release_manager = ReleaseManager(runtime, Path(__file__).resolve().parent)
+    from release_maintenance import ReleaseMaintenance
+    release_maintenance = ReleaseMaintenance(host, runtime, state)
     host.app.add_middleware(MutationGate, state=state)
     import mcp_bridge
     mcp_bridge.deployment = state
@@ -319,6 +321,31 @@ def install(host, runtime):
         return {'seq_applied': gate['seq'], 'admission': gate['admission'], 'writes': gate['writes'],
                 'active_runs': active, 'active_mutations': mutations, 'release_id': state.version.get('id', ''),
                 'project_id': runtime.identity, 'paused': runtime.paused}
+
+    @host.app.get('/api/runtime/deployments/control/{identifier}')
+    async def release_control_status(identifier: str):
+        try:
+            return release_maintenance.status(identifier)
+        except (OSError, ValueError, TypeError) as exc:
+            return JSONResponse({'error': str(exc)}, 409)
+
+    @host.app.post('/api/runtime/deployments/control/{identifier}')
+    async def release_control_action(identifier: str, request: Request):
+        # Existing UI/session authentication applies; managed run tokens cannot
+        # reach this route. MutationGate counts it normally, with no exemption.
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or set(body) != {'action'}:
+                raise ValueError('Choose a maintenance action only')
+            if body['action'] == 'announce':
+                return release_maintenance.announce(identifier)
+            if body['action'] == 'block':
+                return await release_maintenance.block(identifier)
+            if body['action'] == 'release':
+                return await release_maintenance.release(identifier)
+            raise ValueError('Unknown maintenance action')
+        except (OSError, ValueError, TypeError, TimeoutError) as exc:
+            return JSONResponse({'error': str(exc)}, 409)
 
     def board_reviews(ids):
         records = {r.get('id'): r for r in runtime.project_room.state.get('reviews', [])}
