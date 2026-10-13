@@ -37,6 +37,9 @@ MAX_SECONDS = 600             # longer videos are measured over their first ten 
 TIMEOUT = 180
 MAX_TIMES = 6
 CACHE_LIMIT = 32              # analyses kept in memory; least recently used is dropped first
+# Analysis is background work: on Windows FFmpeg runs below normal priority so the desktop stays responsive
+# (Zero #15103). The constant only exists on Windows; elsewhere 0 leaves the default.
+WORKER_PRIORITY = getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0)
 _cache = OrderedDict()
 _cache_lock = threading.Lock()
 
@@ -58,7 +61,8 @@ def ffprobe_path(ffmpeg):
 
 
 def _run(args):
-    done = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=TIMEOUT)
+    done = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=TIMEOUT,
+                          creationflags=WORKER_PRIORITY)
     if done.returncode:
         raise RuntimeError((done.stderr.strip().splitlines() or ['FFmpeg failed'])[-1][:300])
     return done
@@ -199,7 +203,7 @@ def frames(ffmpeg, path, times, out_dir, stem):
 def _encode_rgb(ffmpeg, pixels, width, height, out):
     done = subprocess.run([str(ffmpeg), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'rawvideo',
                            '-pix_fmt', 'rgb24', '-s', f'{width}x{height}', '-i', '-', str(out)],
-                          input=bytes(pixels), capture_output=True, timeout=TIMEOUT)
+                          input=bytes(pixels), capture_output=True, timeout=TIMEOUT, creationflags=WORKER_PRIORITY)
     if done.returncode:
         raise RuntimeError(done.stderr.decode('utf-8', 'replace').strip()[-300:] or 'FFmpeg failed')
     return out
