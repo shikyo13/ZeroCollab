@@ -78,6 +78,12 @@ def worker(directory):
     with contextlib.redirect_stdout(io.StringIO()):
         materialize(SimpleNamespace(spool=package.parent.parent, release_id=package.name,
                                     target=candidate, source=None))
+    # This host-owned module is deliberately excluded from application packages,
+    # but ReleaseManager imports it on startup. Supply the same trusted helper
+    # that performed materialization, without copying host config or data.
+    import release_pack
+    helper = Path(release_pack.__file__).resolve().read_bytes()
+    (candidate / 'release_pack.py').write_bytes(helper)
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0))
         port = probe.getsockname()[1]
@@ -130,6 +136,8 @@ def worker(directory):
                 raise ValueError('Candidate unauthenticated API restriction failed')
         # Package tampering while the candidate ran also invalidates this proof.
         check_release(package)
+        if (candidate / 'release_pack.py').read_bytes() != helper:
+            raise ValueError('Host packaging helper changed during rehearsal')
     finally:
         if proc.poll() is None:
             proc.kill()
