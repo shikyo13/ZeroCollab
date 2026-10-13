@@ -53,6 +53,12 @@ RELEASE_GRANTEE = 'astra'
 # The per-turn live context (Docs/agent-profiles.md layer 3): its size budget and how many waiting items it lists.
 LIVE_CONTEXT_CHARS = 2400
 LIVE_CONTEXT_ITEMS = 8
+# Manifest-bound live checks (Astra 93fed9db/78336e2a): a manager decision pins the tasks and owners that must accept
+# an installed manifest; each owner (or the user) records passed or failed for that exact manifest.
+MANIFEST_SHA = re.compile(r'[0-9a-f]{64}')
+MAX_RELEASE_CHECK_TASKS = 32
+MAX_ACCEPTANCE_LOG = 20
+ACCEPTANCE_RESULTS = ('passed', 'failed')
 # The lead's load line flags anyone above these (opus 02fb548e).
 LOAD_WORKING_LIMIT = 1
 LOAD_REVIEW_LIMIT = 3
@@ -511,7 +517,7 @@ class ProjectRoom:
 
     def task(self, actor, action, task_id='', title='', details='', paths=None, owner='', status='', update='', depends_on=None, labels=None, attachments=None,
              next_action=None, priority=None, wait=None, evidence=None, next_action_state=None,
-             close_reason='', close_pointer=''):
+             close_reason='', close_pointer='', acceptance=None):
         tasks = self.state['tasks']
         closing = None
         task = next((t for t in tasks if t['id'] == task_id), None)
@@ -629,6 +635,10 @@ class ProjectRoom:
             if any(not isinstance(v, str) or len(v) > 2400 for v in evidence.values()):
                 raise ValueError('Evidence entries must be text of at most 2400 characters')
             task['evidence'] = {**task.get('evidence', {}), **evidence}
+        accepted = None
+        if acceptance is not None:
+            accepted = self.acceptance_entry(task, actor, action, acceptance)
+            task['acceptance_log'] = (task.get('acceptance_log', []) + [accepted])[-MAX_ACCEPTANCE_LOG:]
         if labels is not None:
             task['labels'] = task_labels(labels)
         moved_images = []
@@ -697,6 +707,8 @@ class ProjectRoom:
             events.append(f"transfer proposed to {task['transfer']['to']}; current owner retained until accepted")
         elif task['owner'] != previous['owner']:
             events.append('claimed' if task['owner'] == actor else f"assigned to {task['owner']}" if task['owner'] else 'released')
+        if accepted:
+            events.append(f"live check {accepted['result']} on manifest {accepted['manifest_sha'][:12]}")
         if closing:
             events.append(f"closed as {closing['reason']}: {closing['pointer']}")
         elif previous and task['status'] != previous['status']:
@@ -757,6 +769,27 @@ class ProjectRoom:
             self.bump_work(task, actor, f"external change by {actor}: {', '.join(changed)}")
         elif task.get('next_action_state') == 'ready' and previous.get('next_action_state') != 'ready':
             task['work_cause'] = 'initial readiness'
+
+    @staticmethod
+    def acceptance_entry(task, actor, action, value):
+        """One live-check result for one installed manifest, by the task's current owner or the user; the writer and
+        time are the room's, never the caller's. Unstructured evidence.acceptance is left as it is."""
+        if action != 'update':
+            raise ValueError('Record acceptance with an update')
+        if actor != 'user' and actor != task.get('owner'):
+            raise ValueError("Only the task's owner or the user can record its live check")
+        if not isinstance(value, dict) or not {'manifest_sha', 'result'} <= set(value) <= {'manifest_sha', 'result', 'text'}:
+            raise ValueError('acceptance needs manifest_sha and result, and may add text')
+        if not isinstance(value['manifest_sha'], str) or not MANIFEST_SHA.fullmatch(value['manifest_sha']):
+            raise ValueError('acceptance.manifest_sha is the 64-hex installed manifest')
+        if value['result'] not in ACCEPTANCE_RESULTS:
+            raise ValueError('acceptance.result is passed or failed')
+        entry = {'manifest_sha': value['manifest_sha'], 'result': value['result'], 'by': actor, 'time': time.time()}
+        if value.get('text') is not None:
+            if not isinstance(value['text'], str) or len(value['text']) > 2400:
+                raise ValueError('acceptance.text is at most 2400 characters')
+            entry['text'] = value['text']
+        return entry
 
     def closure(self, task, tasks, actor, reason, pointer):
         """Check a closure without changing anything; apply_closure makes the changes once the update is accepted.
@@ -898,9 +931,39 @@ class ProjectRoom:
             result['message_id'] = message['id']
         return result
 
-    def note(self, actor, kind, text, supersedes='', resolves=''):
+    def release_binding(self, actor, value):
+        """A decision's release_checks (Astra 93fed9db/78336e2a): one installed manifest and the tasks whose owners
+        must check it live. Only the room's selected manager or the user binds; each task's owner is pinned now,
+        so a later transfer cannot substitute who accepts."""
+        manager = getattr(getattr(self.runtime, 'manager_wakes', None), 'selected_manager', lambda: None)()
+        if actor != 'user' and actor != manager:
+            raise ValueError("Only the room's manager or the user can bind release checks")
+        if not isinstance(value, dict) or set(value) != {'manifest_sha', 'tasks'}:
+            raise ValueError('release_checks needs exactly manifest_sha and tasks')
+        sha, ids = value['manifest_sha'], value['tasks']
+        if not isinstance(sha, str) or not MANIFEST_SHA.fullmatch(sha):
+            raise ValueError('release_checks.manifest_sha is the 64-hex installed manifest')
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= MAX_RELEASE_CHECK_TASKS
+                or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids)):
+            raise ValueError(f'release_checks.tasks lists 1-{MAX_RELEASE_CHECK_TASKS} distinct task ids')
+        board = {t['id']: t for t in self.state['tasks']}
+        pinned = []
+        for task_id in ids:
+            task = board.get(task_id)
+            if task is None or task.get('closure'):
+                raise ValueError(f'Release check task {task_id} is not an open or delivered task on the board')
+            if not task.get('owner'):
+                raise ValueError(f'Release check task {task_id} has no owner to accept it')
+            pinned.append({'id': task_id, 'owner': task['owner']})
+        return {'manifest_sha': sha, 'tasks': pinned}
+
+    def note(self, actor, kind, text, supersedes='', resolves='', release_checks=None):
         if kind not in ('progress', 'decision', 'reference', 'blocker', 'handoff') or not str(text).strip():
             raise ValueError('Provide a progress, decision, reference, blocker, or handoff update')
+        if release_checks is not None:
+            if kind != 'decision':
+                raise ValueError('release_checks belong on a decision')
+            release_checks = self.release_binding(actor, release_checks)
         text = bounded(text, 'note')
         if supersedes and resolves:
             raise ValueError('Choose supersedes or resolves, not both')
@@ -916,6 +979,8 @@ class ProjectRoom:
         note = {'id': uuid.uuid4().hex[:8], 'by': actor, 'kind': kind, 'text': text, 'time': time.time()}
         if kind in ('decision', 'reference'):
             note['status'] = 'active'
+        if release_checks:
+            note['release_checks'] = release_checks
         if old:
             old.update(status='superseded' if supersedes else 'resolved', replaced_by=note['id'])
             note['supersedes' if supersedes else 'resolves'] = old['id']
@@ -1247,6 +1312,15 @@ class ProjectRoom:
             flat = ' '.join(str(text).split())
             return flat if len(flat) <= limit else flat[:limit - 4] + ' ...'
         lines = ['Live context (this turn, from the board):']
+        deployment = getattr(self.runtime, 'deployment', None)
+        gate = deployment.reload() if deployment is not None else {}
+        if gate.get('admission') == 'closed':
+            # Read now from the maintenance record, never saved into a prompt (Astra 78336e2a).
+            details = [short(gate[key], 160) if key == 'reason' else f"{label} {short(gate[key], 40)}"
+                       for key, label in (('reason', ''), ('version', 'version'), ('deployment_id', 'deployment'))
+                       if isinstance(gate.get(key), (str, int)) and str(gate[key]).strip()]
+            lines.append('- Room update in progress' + (f" ({'; '.join(details)})" if details else '')
+                         + ': work that changes the room waits until it reopens.')
         if main:
             lines.append(f"- Main task: {main['id']} [{main['status']}] {short(main['title'], 140)}"
                          + (f"; next: {short(main['next_action'], 300)}" if main.get('next_action') else ''))
@@ -1519,13 +1593,14 @@ def coordination_tools():
     return [
         definition('room_read', 'Read shared project state or your pending review/follow-up inbox. Filter tasks/reviews/followups by task_id, owner or status. limit/offset are characters; paginate with next_offset. Messages include attachments.',
                    {'section': {'type': 'string', 'enum': ['overview', 'spec', 'tasks', 'memory', 'messages', 'patches', 'participants', 'inbox', 'reviews', 'followups', 'review_artifact']}, 'offset': {'type': 'integer'}, 'limit': {'type': 'integer'}, 'query': string, 'after_id': {'type': 'integer'}, 'task_id': string, 'owner': string, 'status': string}),
-        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override. To end a task that delivered nothing itself, update with close_reason and close_pointer instead of status done: duplicate/superseded point at the task carrying the work on (dependents move there), parked/wont_do at that task or a decision note; a closure skips the review and installation gates, cancels the task\'s open reviews and follow-ups, clears any pending transfer or wait, and is reopened by setting a status. A closed task shows status done with its closure; status reports count it as closed, never as delivered.',
+        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. acceptance {manifest_sha, result passed|failed, text} records your live check of one installed release (owner or user only; the room keeps who and when). get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override. To end a task that delivered nothing itself, update with close_reason and close_pointer instead of status done: duplicate/superseded point at the task carrying the work on (dependents move there), parked/wont_do at that task or a decision note; a closure skips the review and installation gates, cancels the task\'s open reviews and follow-ups, clears any pending transfer or wait, and is reopened by setting a status. A closed task shows status done with its closure; status reports count it as closed, never as delivered.',
                    {'action': {'type': 'string', 'enum': ['get', 'create', 'claim', 'update', 'delegate', 'accept', 'release']}, 'task_id': string, 'title': string, 'details': string, 'owner': string, 'status': string,
                     'paths': {'type': 'array', 'items': string}, 'depends_on': {'type': 'array', 'items': string}, 'labels': {'type': 'array', 'items': string},
                     'attachments': {'type': 'array', 'items': {'type': 'object', 'properties': {'url': string, 'name': string, 'note': string, 'source': string}, 'required': ['url']}},
                     'next_action': string, 'next_action_state': {'type': 'string', 'enum': sorted(NEXT_ACTION_STATES)},
                     'priority': {'type': 'integer', 'minimum': 1, 'maximum': 5},
                     'wait': {'type': 'object'}, 'evidence': {'type': 'object'}, 'update': string,
+                    'acceptance': {'type': 'object', 'properties': {'manifest_sha': string, 'result': {'type': 'string', 'enum': ['passed', 'failed']}, 'text': string}},
                     'close_reason': {'type': 'string', 'enum': list(CLOSE_REASONS)}, 'close_pointer': string}, ['action']),
         definition('room_markup', 'Show instead of describe: share an uploaded image with the team, optionally marked up with numbered boxes, arrows and pins (x/y are fractions 0..1 of width/height; a pin uses x1,y1). Draws a new PNG whose note lists each mark. Posts it to this channel unless post is false; task_id adds it to a task you own.',
                    {'image': {'type': 'string', 'description': '/uploads/<file> url from chat or a task'},
@@ -1548,8 +1623,9 @@ def coordination_tools():
                     'fps': {'type': 'number', 'exclusiveMinimum': 0, 'maximum': 10},
                     'sheets': {'type': 'array', 'items': {'type': 'string', 'enum': ['contact', 'dense', 'motion', 'shots', 'frames']},
                                'maxItems': 5}}, ['action']),
-        definition('room_update', 'Post a concise progress, decision, reference, blocker, or handoff update to project memory and the chatroom without waking peers.',
-                   {'kind': string, 'text': string, 'supersedes': string, 'resolves': string}, ['kind', 'text']),
+        definition('room_update', 'Post a concise progress, decision, reference, blocker, or handoff update to project memory and the chatroom without waking peers. The room manager (or the user) can add release_checks {manifest_sha, tasks} to a decision: the tasks whose owners must check that installed release live; each owner then records room_task update acceptance {manifest_sha, result passed|failed, text}.',
+                   {'kind': string, 'text': string, 'supersedes': string, 'resolves': string,
+                    'release_checks': {'type': 'object', 'properties': {'manifest_sha': string, 'tasks': {'type': 'array', 'items': string, 'maxItems': 32}}}}, ['kind', 'text']),
         definition('room_review', 'Request peer review of an approach or patch using an explicit artifact/revision reference, or respond with findings for that exact reference. Optional files selects relative files for backend hash snapshots (otherwise declared file paths). Changed snapshots block approval; room_read review_artifact retrieves captured content. Requests remain in the inbox; notify attempts one bounded wake-up.',
                    {'action': {'type': 'string', 'enum': ['request', 'respond', 'cancel']}, 'task_id': string, 'review_id': string, 'reviewer': string,
                     'files': {'type': 'array', 'items': string}, 'revision': string, 'text': string, 'verdict': {'type': 'string', 'enum': ['approved', 'changes_requested']}, 'notify': {'type': 'boolean'}}, ['action']),

@@ -67,8 +67,8 @@ def room_task(action: str, task_id: str = '', title: str = '', details: str = ''
               priority: int | None = None, wait: dict | None = None, evidence: dict | None = None,
               next_action_state: str | None = None,
               close_reason: Literal['duplicate', 'superseded', 'parked', 'wont_do'] | None = None,
-              close_pointer: str = '') -> dict:
-    """Get, create, claim, update, delegate, accept or release a kanban task. get returns the full record: history, details, attachments, reviews/followups and execution_state (executing, queued, waiting_on_human, needs_attention, blocked, waiting_on_dependency, in_review, idle). Other actions return a compact receipt (state, next_action, counts). delegate proposes a transfer; the current owner keeps the task until the recipient calls accept. next_action records the next executable step; priority is 1 (highest) to 5. wait {kind: followup|review, record_id} links an open request to the user on this task while you wait for them ({} clears it; a next_action is required). evidence records implementation, review, installation and acceptance separately. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the task's area (e.g. frontend, backend, docs; up to 4) and group the user's board. attachments replaces the task's image list: [{url: '/uploads/<file>', name, note}] (the card shows the 8 newest; when more are added, older ones move to earlier images instead of failing, and the receipt lists them; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews and dependencies before marking done; the user can override. next_action_state (owner or user only): ready opts this task in to one automatic wake per external change when the room's ready_task_wakes setting is on; deferred or waiting stops that; empty clears it.
+              close_pointer: str = '', acceptance: dict | None = None) -> dict:
+    """Get, create, claim, update, delegate, accept or release a kanban task. get returns the full record: history, details, attachments, reviews/followups and execution_state (executing, queued, waiting_on_human, needs_attention, blocked, waiting_on_dependency, in_review, idle). Other actions return a compact receipt (state, next_action, counts). delegate proposes a transfer; the current owner keeps the task until the recipient calls accept. next_action records the next executable step; priority is 1 (highest) to 5. wait {kind: followup|review, record_id} links an open request to the user on this task while you wait for them ({} clears it; a next_action is required). evidence records implementation, review, installation and acceptance separately. acceptance {manifest_sha, result: passed|failed, text} records your live check of one installed release (owner or user only; the room keeps who and when). Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the task's area (e.g. frontend, backend, docs; up to 4) and group the user's board. attachments replaces the task's image list: [{url: '/uploads/<file>', name, note}] (the card shows the 8 newest; when more are added, older ones move to earlier images instead of failing, and the receipt lists them; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews and dependencies before marking done; the user can override. next_action_state (owner or user only): ready opts this task in to one automatic wake per external change when the room's ready_task_wakes setting is on; deferred or waiting stops that; empty clears it.
     To end a task that delivered nothing itself, update with close_reason and close_pointer instead of status done: duplicate or superseded point at the task that carries the work on (its dependents are moved there), parked or wont_do point at that task or a decision note. A closure skips the review and installation gates because it claims no delivery, cancels the task's open reviews and follow-ups, clears any pending transfer or wait, shows its reason on the board, and is reopened by setting a status. A closed task reads status done with a closure record: count it as closed, never as delivered work."""
     args = dict(action=action, task_id=task_id, title=title, details=details,
                 paths=paths, owner=owner, status=status, update=update, depends_on=depends_on,
@@ -76,6 +76,9 @@ def room_task(action: str, task_id: str = '', title: str = '', details: str = ''
                 wait=wait, evidence=evidence, next_action_state=next_action_state)
     if close_reason or close_pointer:
         args.update(close_reason=close_reason or '', close_pointer=close_pointer)
+    if acceptance is not None:
+        # The live check of an installed release: {manifest_sha, result: passed|failed, text?}, owner or user only.
+        args['acceptance'] = acceptance
     return call('room_task', args)
 
 
@@ -131,9 +134,14 @@ def room_markup(image: str, marks: list[dict] | None = None, summary: str = '', 
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
-def room_update(kind: str, text: str, supersedes: str = '', resolves: str = '') -> dict:
-    """Record concise progress, decision, reference, blocker or handoff information without waking peers. Use reference for shared project facts teammates should reuse: caches, helper scripts, data paths. A decision or reference can retire an active earlier one of the same kind by id: supersedes (replaced by this one) or resolves (no longer applies). Only current decisions and references appear in turn context."""
-    return call('room_update', {'kind': kind, 'text': text, 'supersedes': supersedes, 'resolves': resolves})
+def room_update(kind: str, text: str, supersedes: str = '', resolves: str = '',
+                release_checks: dict | None = None) -> dict:
+    """Record concise progress, decision, reference, blocker or handoff information without waking peers. Use reference for shared project facts teammates should reuse: caches, helper scripts, data paths. A decision or reference can retire an active earlier one of the same kind by id: supersedes (replaced by this one) or resolves (no longer applies). Only current decisions and references appear in turn context.
+    The room manager (or the user) can add release_checks {manifest_sha: the 64-hex installed manifest, tasks: up to 32 task ids} to a decision: the tasks whose current owners must check that release live. Each owner then records room_task update acceptance {manifest_sha, result: passed|failed, text}."""
+    args = {'kind': kind, 'text': text, 'supersedes': supersedes, 'resolves': resolves}
+    if release_checks is not None:
+        args['release_checks'] = release_checks
+    return call('room_update', args)
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
