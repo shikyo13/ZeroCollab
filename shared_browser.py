@@ -35,7 +35,7 @@ WINDOWS_JOB_LIMIT_KILL_ON_CLOSE = 0x2000
 
 class WindowsBrowserProcess:
     """A suspended launch assigned to a kill-on-close job before it can create children."""
-    def __init__(self, args, *, priority_class=0):
+    def __init__(self, args, *, priority_class=0, env=None, cwd=None):
         if priority_class not in (0, subprocess.BELOW_NORMAL_PRIORITY_CLASS):
             raise ValueError('Windows worker priority must be default or below normal')
         import ctypes
@@ -75,7 +75,7 @@ class WindowsBrowserProcess:
             self.handle, thread, self.pid, _ = _winapi.CreateProcess(
                 None, subprocess.list2cmdline(args), None, None, False,
                 subprocess.CREATE_NO_WINDOW | WINDOWS_CREATE_SUSPENDED | priority_class,
-                None, None, subprocess.STARTUPINFO())
+                env, cwd, subprocess.STARTUPINFO())
             if not self.kernel.AssignProcessToJobObject(self.job, self.handle):
                 raise ctypes.WinError(ctypes.get_last_error())
             if self.kernel.ResumeThread(thread) == 0xFFFFFFFF:
