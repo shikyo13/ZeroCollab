@@ -1757,7 +1757,7 @@ class RoomRuntime:
             # Only frame returns a list of frames; an export job's 'frames' is its frame count.
             if isinstance(result, dict) and isinstance(result.get('frames'), list) and result['frames']:
                 await self.live.publish(self.live.artifact(run, result.get('sheet_url') or result['frames'][0]['url'], 'upload'))
-            return motion_agent.render_note(result, arguments.get('scene_json'))
+            return motion_agent.render_note(result, arguments.get('scene_json'), self)
         if tool == 'room_team_builder':
             action = arguments.get('action', 'get')
             if action == 'get':

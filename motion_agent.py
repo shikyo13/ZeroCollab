@@ -60,9 +60,10 @@ def has_layer(node, kind):
     return any(layer.get('type') == kind for layer in layers(node))
 
 
-def render_note(result, scene=None):
+def render_note(result, scene=None, runtime=None):
     """validate and save: say up front what export will refuse for a valid scene, so the agent fixes it before
-    spending a render (harness 0216d3b8): a missing v2 renderer, and sound, which export can't mix yet."""
+    spending a render (harness 0216d3b8): a missing v2 renderer, and sound while this room has no offline audio
+    worker installed (systems 896c58e9). runtime lets the export rule see the host's voice registry."""
     import motion_studio
     summary = result.get('summary') if isinstance(result, dict) else None
     if not isinstance(summary, dict):
@@ -81,14 +82,14 @@ def render_note(result, scene=None):
             warnings.append(VOICE_CAPTIONS)
         for comp in scene.get('compositions', []):
             try:
-                # The exporter's own rule (systems 57cf037 covers voiceover), so the warning matches the refusal
-                # and stops by itself once the audio mix ships.
-                motion_studio.require_silent_composition(scene, comp['id'])
-            except ValueError:
+                # The exporter's own admission rule, so the warning matches its refusal: sound exports once the
+                # host has the offline voice worker, and the helper's own message says what is missing.
+                motion_studio.require_silent_composition(scene, comp['id'], runtime=runtime)
+            except ValueError as exc:
                 warnings.append(f"Composition {comp['id']} has sound (an audio or voiceover layer, or a video layer "
-                                "that isn't muted). Export refuses it until audio mixing ships: set \"muted\": true "
-                                'on video layers and remove audio and voiceover layers before export. frame previews '
-                                'work as they are.')
+                                f"that isn't muted), and export will refuse it here: {exc}. Until then, set "
+                                '"muted": true on video layers and remove audio and voiceover layers to export; '
+                                'frame previews work as they are.')
     if warnings:
         result['warnings'] = warnings
     return result
@@ -196,7 +197,7 @@ async def variant(runtime, run, arguments):
         return {'ok': False, 'issues': found}
     await runtime.activity_note(run, 'motion', f"Saved {ref}, a variant of {arguments.get('scene')} ({wanted})")
     return render_note({'ok': True, 'ref': ref, 'composition': wanted, 'props': comp['props'],
-                        'summary': motion_studio.summary(ref, 'project', scene)}, scene)
+                        'summary': motion_studio.summary(ref, 'project', scene)}, scene, runtime)
 
 
 def _pointer(path, op):
@@ -306,7 +307,7 @@ async def patch(runtime, run, arguments):
         return {'ok': False, 'issues': found}  # the stored scene is unchanged
     await runtime.activity_note(run, 'motion', f"Edited {saved} ({len(arguments['ops'])} change(s))")
     return render_note({'ok': True, 'ref': saved, 'applied': len(arguments['ops']),
-                        'summary': motion_studio.summary(saved, 'project', edited)}, edited)
+                        'summary': motion_studio.summary(saved, 'project', edited)}, edited, runtime)
 
 
 def upload_path(runtime, url):

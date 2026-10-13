@@ -37,12 +37,12 @@ For a profile that doesn't publish, `export_status` gives the job's `video_url`;
 |-|-|-|
 | v1 (layout plus beats) | yes | yes |
 | v2: text, image, capture, video, shape, path, captions, group and room layers, with keyframes and transitions | yes | yes |
-| v2 with sound (an `audio` layer, or a `video` layer that isn't `"muted": true`) | yes, with a warning | frames yes; `export` refuses it until audio mixing ships |
+| v2 with sound (an `audio` layer, or a `video` layer that isn't `"muted": true`) | yes, with a warning | frames yes; `export` mixes it once the room's offline voice worker is installed, and refuses it until then |
 
 `frame` and `export` draw the same frame through the same seek, so a preview frame is exactly that frame of the video.
 
 Not available yet:
-- Sound in exports. Mute video layers and leave out audio layers.
+- Sound in exports on a room without the offline voice worker (`Docs/motion-audio.md`). validate and save say so; mute video layers and leave out audio and voiceover layers to export there.
 - Rendering a composition other than the first in place. Use `variant` (below), which saves the one you choose as its own scene.
 
 ## Templates, edits and real assets

@@ -2,7 +2,7 @@
 
 Task 6ff4919d (slice S2 of Docs/motion-core.md). Code: `motion_scene.py`. This file pins the names that S1 (motion-core), S3 (render farm), S4 (Studio), S5 (layers) and S6 (`room_motion`) share. Rename nothing here without updating all of them.
 
-**Rendering:** v2 scenes render through the S5 renderer (`Docs/motion-render2.md`); v1 and migrated v1 scenes keep their original renderer. Sound is not exported yet: `export` refuses a composition with an `audio` layer or an unmuted `video` layer, and `room_motion` validate and save warn first. `frame` and `export` use the first composition.
+**Rendering:** v2 scenes render through the S5 renderer (`Docs/motion-render2.md`); v1 and migrated v1 scenes keep their original renderer. Sound (an `audio` or `voiceover` layer, or an unmuted `video` layer) exports once the room's offline voice worker is installed; until then `export` refuses it, and `room_motion` validate and save say what is missing. `frame` and `export` use the first composition.
 
 A scene is JSON data, never code. Validation returns every problem as `[{path, message}]`, for example `{"path": "scene.compositions[0].tracks[0].clips[1].from", "message": "overlaps clip 1 by more than its transition"}`. An empty list means valid. At most 100 issues are reported.
 
@@ -137,7 +137,7 @@ A `cursor` layer is the pointer recorded with a screen recording (desktop's reco
 
 ### Sound
 
-Proposed by systems (task 6e90b5b7, `Docs/motion-audio.md`), which owns synthesis and the mix. Until the mix ships, `export` refuses sound (audio, voiceover, or unmuted video) and `room_motion` validate and save warn about it first.
+Proposed by systems (task 6e90b5b7, `Docs/motion-audio.md`), which owns synthesis and the mix. Export mixes sound once the host has the offline voice worker (`motion/voices/registry.json` with the default voice); without it, `export` refuses sound (audio, voiceover, or unmuted video) and `room_motion` validate and save report the missing worker first.
 
 - `audio` and `voiceover` layers sit only on audio tracks, and audio tracks hold only them. Neither takes the transform.
 - Sound plays at one `rate` from one `trim` per clip: only `volume` can be keyframed. Source time in seconds is (trim + (local frame + offset) * rate) * fps.den / fps.num, using the composition's fps.

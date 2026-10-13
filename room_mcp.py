@@ -291,8 +291,9 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     chat (post false to skip), and task_id attaches it to a task you own; it plays inline there. Other
     profiles are not published; share their video_url from export_status. Author new work as v2
     (Docs/motion-scene-v2.md: compositions, layers, keyframes, transitions); v1 room replays (get
-    bundled:m01) still render. frame and export use the first composition. Sound is not exported yet:
-    export refuses audio layers and unmuted video, and validate and save warn first.
+    bundled:m01) still render. frame and export use the first composition. Sound (audio, voiceover,
+    unmuted video) exports once this room's offline voice worker is installed; until then export refuses it,
+    and validate and save say what is missing.
     variant scene new_id: save a template re-render as project:<new_id>, with composition (default first)
     and props overriding its props, checked against props_schema. patch scene ops: RFC 6902 JSON Patch on a
     saved project scene (for example replace /compositions/0/props/title); nothing is written unless the
