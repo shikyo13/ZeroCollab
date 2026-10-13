@@ -170,6 +170,32 @@ def room_goal(action: str = 'status', goal_id: str = '', evidence: str = '') -> 
     return call('room_goal', dict(action=action, goal_id=goal_id, evidence=evidence))
 
 
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': True, 'openWorldHint': False})
+def room_release(action: Literal['list', 'stage', 'rehearse', 'request', 'status', 'verify', 'rollback'] = 'status',
+                 repository: str = '', commit: str = '', reviews: list[str] | None = None, release_id: str = '',
+                 manifest_sha: str = '', expected_manifest_sha: str = '', idempotency_key: str = '', id: str = '',
+                 deployment_id: str = '') -> dict:
+    """The room's release pipeline, without the browser (Zero #15583). Only the profile Zero has granted release
+    permission to can change anything; the room takes who you are from this turn, never from arguments, and
+    rollback always goes to the release installed just before. If this tool refuses or is unavailable, report
+    that; never use the Updates page, credentials or files instead.
+    list: staged releases. stage repository commit (40 hex) reviews (1-12 approved review ids, 8 hex): package
+    exactly that reviewed commit. rehearse release_id manifest_sha: an isolated rehearsal of it. request
+    release_id manifest_sha expected_manifest_sha (the installed one) idempotency_key: ask to install it, under
+    Zero's grant, his Stop and the typing guard. status (id optional, 32 hex): the current deployment, gate and
+    jobs, or one job or deployment receipt. verify deployment_id: check an installed release. rollback
+    expected_manifest_sha idempotency_key: return to the release installed just before."""
+    args = {'action': action}
+    for key, value in dict(repository=repository, commit=commit, release_id=release_id, manifest_sha=manifest_sha,
+                           expected_manifest_sha=expected_manifest_sha, idempotency_key=idempotency_key, id=id,
+                           deployment_id=deployment_id).items():
+        if value:
+            args[key] = value
+    if reviews is not None:
+        args['reviews'] = reviews
+    return call('room_release', args, timeout=60)
+
+
 @mcp.tool(annotations={'readOnlyHint': True, 'destructiveHint': False, 'openWorldHint': False})
 def room_skill(action: Literal['list', 'load'] = 'list', name: str = '', file: str = '') -> dict:
     """Your approved skills. list gives each name and when to use it; load name returns its full procedure, which you then follow; load name with file returns one of that skill's listed extra files. Only your own skills load."""

@@ -79,7 +79,7 @@ SIGNED_OUT = re.compile(r'refresh[_ ]token[_ ](?:invalidated|was revoked|expired
 SIGNED_OUT_DETAIL = re.compile(SIGNED_OUT.pattern + r'|401 unauthorized', re.I)
 ROOM_TOOLS = {"room_read", "room_image", "room_task", "room_markup", "room_update", "room_review", "room_followup",
               "room_repository", "room_goal", "room_team_builder", "room_decision", "room_browser", "room_motion",
-              "room_skill"}
+              "room_skill", "room_release"}
 
 
 def changing_tool(name, params):
@@ -91,7 +91,8 @@ def changing_tool(name, params):
 ROOM_READS = {"room_read": None, "room_image": None, "room_skill": None, "room_task":({"get"}, ''), "room_goal": ({"status"}, 'status'),
               "room_team_builder": ({"get"}, 'get'), "room_decision": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status'),
               # save, frame (new uploads) and export change the room, so sealed turns and check-ins never reach them.
-              "room_motion": ({"list", "get", "validate", "export_status", "job_status"}, 'list')}
+              "room_motion": ({"list", "get", "validate", "export_status", "job_status"}, 'list'),
+              "room_release": ({"list", "status"}, 'status')}
 
 
 # What an agent is doing, in plain words, for the Board's activity strip and Follow (Zero #13855): the provider's
@@ -111,7 +112,7 @@ ROOM_LABELS = {
     'room_markup': 'marking up a screenshot', 'room_update': 'posting a note', 'room_review': 'working on a review',
     'room_followup': 'working on a follow-up', 'room_repository': 'asking about a repository', 'room_goal': 'checking the goal',
     'room_team_builder': 'working on the team', 'room_decision': 'taking part in a decision', 'room_browser': 'using the shared browser',
-    'room_motion': 'working on a motion scene', 'room_skill': 'reading a skill'}
+    'room_motion': 'working on a motion scene', 'room_skill': 'reading a skill', 'room_release': 'working on a release'}
 ROOM_ACTION_LABELS = {
     ('room_task', 'get'): 'reading a task', ('room_task', 'create'): 'creating a task', ('room_task', 'claim'): 'claiming a task',
     ('room_task', 'delegate'): 'handing over a task', ('room_review', 'request'): 'asking for a review',
@@ -1875,6 +1876,18 @@ class RoomRuntime:
                 self.decisions.save()
             await self.decisions.publish(self.decisions.find(result['id']))
             return result
+        if tool == 'room_release':
+            # Tools-only release pipeline (Zero #15583, Astra c61b1280): strict public arguments only
+            # (release_interface), the caller from the authenticated run, authority decided by the host core.
+            import release_interface
+            action = arguments.get('action', 'status')
+            validated = release_interface.arguments(action, {k: v for k, v in arguments.items() if k != 'action'})
+            manager = getattr(self, 'release_manager', None)
+            if manager is None:
+                raise ValueError('room_release is not available in this room yet: nothing was staged, deployed or '
+                                 'rolled back. Report the missing tool; do not use the Updates page or files instead.')
+            return await manager.action({'profile': run.name, 'project': self.identity, 'run': run.id},
+                                        action, validated)
         if tool == 'room_skill':
             if arguments.get('action', 'list') == 'list':
                 return {'skills': agent_skills.listing(run.skills)}
