@@ -11,7 +11,13 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from
 import './speech-bubble.css';
 
 export const BUBBLE_LINE_PX = 17;
-const PAD_Y = 12, OPEN_MAX_PX = 320, LEAVE_DELAY_MS = 180;
+const PAD_Y = 12, OPEN_MAX_PX = 320, LEAVE_DELAY_MS = 180, EDGE_PX = 2;
+
+/** Replies are written in markdown; a bubble reads them as plain sentences. Bold markers, code ticks,
+ * link targets and heading marks go (stream-safe: an unclosed marker never shows as "**"); the words stay. */
+export function plainSpeech(text: string): string {
+  return text.replace(/\*\*/g, '').replace(/`+/g, '').replace(/\[([^\]\n]+)\]\([^)\s]+\)/g, '$1').replace(/^#{1,6}\s+/gm, '');
+}
 
 export interface SpeechBubbleProps {
   name: string;
@@ -73,14 +79,24 @@ export function SpeechBubble({ name, color, text, width, maxLines = 5, reduced =
 
   // Open and reading: follow a streaming reply only while the reader is at the bottom.
   const atBottom = useRef(true);
+  // While an open bubble scrolls, the edge with more text beyond it fades, so a cut line reads as "more".
+  const [more, setMore] = useState({ above: false, below: false });
+  const edges = () => {
+    const el = clip.current; if (!el) return;
+    atBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+    const next = { above: el.scrollTop > EDGE_PX, below: el.scrollTop + el.clientHeight < el.scrollHeight - EDGE_PX };
+    setMore(m => m.above === next.above && m.below === next.below ? m : next);
+  };
   useEffect(() => {
     const el = clip.current; if (!el || !open) return;
     if (atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [text, open, natural]);
+    edges();
+  }, [text, open, natural, h]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shown = plainSpeech(text);
 
   return <div ref={box} className={`speech-bubble${open ? ' sb-open' : ''}${reduced ? ' sb-reduced' : ''}${className ? ' ' + className : ''}`}
     style={{ ...style, width, height: h, '--c': color } as CSSProperties}
-    role="note" tabIndex={0} aria-expanded={open} aria-label={`${name} says: ${text}`}
+    role="note" tabIndex={0} aria-expanded={open} aria-label={`${name} says: ${shown}`}
     onPointerEnter={() => { window.clearTimeout(leave.current); setHover(true); }}
     onPointerLeave={() => { window.clearTimeout(leave.current); leave.current = window.setTimeout(() => setHover(false), LEAVE_DELAY_MS); }}
     onFocus={() => setFocused(true)}
@@ -90,9 +106,9 @@ export function SpeechBubble({ name, color, text, width, maxLines = 5, reduced =
       if (e.key === 'Escape') { e.stopPropagation(); setPinned(false); setHover(false); setFocused(false); }
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setPinned(p => !p); }
     }}>
-    <div ref={clip} className={`sb-clip${faded ? ' sb-faded' : ''}`}
-      onScroll={e => { const el = e.currentTarget; atBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4; }}>
-      <div ref={inner} className="sb-text"><b>{name}</b> {text}</div>
+    <div ref={clip} className={`sb-clip${faded ? ' sb-faded' : ''}${open && more.above ? ' sb-more-above' : ''}${open && more.below ? ' sb-more-below' : ''}`}
+      onScroll={edges}>
+      <div ref={inner} className="sb-text"><b>{name}</b> {shown}</div>
     </div>
   </div>;
 }

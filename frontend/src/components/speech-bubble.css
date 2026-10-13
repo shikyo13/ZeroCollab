@@ -11,6 +11,11 @@
 /* Collapsed: the newest lines stay in view at the bottom, and the top edge fades when there is more above. */
 .speech-bubble:not(.sb-open) .sb-text { position: absolute; left: 0; right: 0; bottom: 0; }
 .sb-faded { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px); mask-image: linear-gradient(to bottom, transparent 0, #000 22px); }
+/* Open and scrolling: fade whichever edge has more text beyond it. */
+.sb-more-above { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px); mask-image: linear-gradient(to bottom, transparent 0, #000 18px); }
+.sb-more-below { -webkit-mask-image: linear-gradient(to top, transparent 0, #000 18px); mask-image: linear-gradient(to top, transparent 0, #000 18px); }
+.sb-more-above.sb-more-below { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%); }
 .sb-text { overflow-wrap: anywhere; }
 .sb-text b { color: color-mix(in srgb, var(--c) 70%, white); font-weight: 600; }
 @keyframes sb-in { from { opacity: 0; transform: translateY(6px); } }

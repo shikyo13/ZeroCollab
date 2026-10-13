@@ -4,8 +4,8 @@
  * reachable); effects are drawn on an aria-hidden canvas and always have a plain-text twin. */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { isVideo, type LiveAgent, type LiveFeed, type LiveInteraction } from './liveFeed';
-import { SpeechBubble } from '../components/SpeechBubble';
-import { LABEL_H, layoutStage, overlap, personRect, placeBubble, springStep, type BubbleSide, type Point, type Rect } from './liveLayout';
+import { plainSpeech, SpeechBubble } from '../components/SpeechBubble';
+import { LABEL_H, layoutStage, overlap, placeBubble, speechBlocker, springStep, type BubbleSide, type Point, type Rect } from './liveLayout';
 
 const MAX_MOVERS = 3;          // at most three people travel at once; the rest wait their turn
 const MAX_EFFECTS = 3;         // at most three comets or batons in the air
@@ -24,7 +24,7 @@ export function bubbleSize(name: string, text: string): { w: number; h: number }
   ctx.font = BUBBLE_FONT;
   const space = ctx.measureText(' ').width;
   let lines = 1, widest = x;
-  for (const word of text.split(/\s+/).filter(Boolean)) {
+  for (const word of plainSpeech(text).split(/\s+/).filter(Boolean)) {
     const w = ctx.measureText(word).width;
     if (x > 0 && x + w > inner) { lines++; widest = Math.max(widest, x - space); x = 0; }
     x += Math.min(w, inner) + space;
@@ -214,7 +214,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   // Speech: newest three active speakers, each in a clear spot or as a cue by the person.
   const now = Date.now() / 1000;
   const blockers: Rect[] = [youArea, ...layout.formations.map(f => ({ ...f.box, h: 22 })),
-    ...feed.agents.map(a => { const s = layout.seats.get(a.id); return s ? personRect(s, a.state === 'idle' || a.state === 'stopped', !!a.artifact) : null; }).filter((r): r is Rect => !!r)];
+    ...feed.agents.map(a => { const s = layout.seats.get(a.id); return s ? speechBlocker(s, a.state === 'idle' || a.state === 'stopped', !!a.artifact) : null; }).filter((r): r is Rect => !!r)];
   const isOpen = (id: string) => !!bubbleBox.current.get(id)?.open;
   const speakers = feed.agents.filter(a => a.speech && (isOpen(a.id) || (now - a.speechAt < SPEECH_SHOWN_S && ACTIVE.includes(a.state))))
     .sort((p, q) => Number(isOpen(q.id)) - Number(isOpen(p.id)) || q.speechAt - p.speechAt).slice(0, 3);
