@@ -100,7 +100,7 @@
 .ws-popover-actions { display: flex; gap: 8px; }
 .ws-popover .ws-danger { background: var(--danger-surface); color: var(--danger-text); border-color: var(--danger-border); font-weight: 650; }
 .ws-roster-menu { width: min(420px, calc(100vw - 112px)); max-width: none; max-height: calc(100dvh - 84px); overflow: auto; }
-.ws-roster-menu ul { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; max-height: 60dvh; overflow: auto; }
+.ws-roster-menu ul { list-style: none; margin: 0 -12px 10px 0; padding: 0 12px 0 0; display: grid; gap: 8px; max-height: 60dvh; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
 .ws-roster-menu li { display: grid; grid-template-columns: 24px minmax(0, 1fr) minmax(0, 84px); align-items: center; gap: 10px; }
 .ws-roster-menu .ws-avatar { border-color: var(--bg-input); }
 .ws-roster-name { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
