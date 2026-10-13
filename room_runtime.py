@@ -53,6 +53,18 @@ from steering_delivery import SteeringDelivery
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
+_ROOM_TOOLS_FINGERPRINT = None
+
+
+def room_tools_fingerprint():
+    """The installed room tools as an agent sees them: the MCP server's source (its tool signatures and docs) and the
+    local tool definitions. Computed once per process; an install restarts the process, so a new release is seen."""
+    global _ROOM_TOOLS_FINGERPRINT
+    if _ROOM_TOOLS_FINGERPRINT is None:
+        source = (ROOT / 'room_mcp.py').read_bytes().replace(b'\r\n', b'\n')
+        local = json.dumps(coordination_tools(), sort_keys=True).encode('utf-8')
+        _ROOM_TOOLS_FINGERPRINT = hashlib.sha256(source + b'\n' + local).hexdigest()
+    return _ROOM_TOOLS_FINGERPRINT
 # Interim text that is only status narration ("I'm checking the board.") may stay in Activity. Anything
 # longer, on several lines, or not opening like narration posts: losing an answer is worse than one extra
 # line in chat (QA c0950fb6, Zero #12974).
@@ -572,7 +584,9 @@ class Run:
             self.instructions += '\nAdditional repositories (key -> your isolated worktree):\n' + '\n'.join(
                 f'{key} -> {path}' for key, path in sorted(extra.items()))
             self.instructions += '\nUse key:relative/path for task reservations, review files and local file tools in additional repositories. Bare task paths are pinned to the primary when claimed.'
-        self.instruction_hash = hashlib.sha256(self.instructions.encode('utf-8')).hexdigest()
+        # The room tools' definitions are part of what a resumed session carries, so a change to them (an install
+        # adding a parameter or a tool) starts a fresh session once, as an instruction change does (qa 9a3ae6e6).
+        self.instruction_hash = hashlib.sha256((self.instructions + '\n' + room_tools_fingerprint()).encode('utf-8')).hexdigest()
         self.previous_session = {} if self.manager_audit else manager.project_room.previous_session(self)
         audit_record = getattr(getattr(manager, 'manager_wakes', None), 'record', {})
         if self.manager_audit:
