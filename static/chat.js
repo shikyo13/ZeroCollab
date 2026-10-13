@@ -454,6 +454,7 @@ function reconnectSocket(socket) {
     connectionProbe = null;
     // Don't wait for a dead transport's closing handshake, or accept its late events.
     socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
+    window.ReleaseComposing?.detach(socket);
     socket.close();
     ws = null;
     setRoomConnection('reconnecting');
@@ -484,6 +485,7 @@ function connectWebSocket() {
     ws.onopen = () => {
         if (socket !== ws) return;
         console.log('WebSocket connected');
+        window.ReleaseComposing?.attach(socket);
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
@@ -497,6 +499,7 @@ function connectWebSocket() {
             if (connectionProbe?.id === event.id) connectionProbe = null;
             return;
         }
+        if (window.ReleaseComposing?.handle(event)) return;
         handleServerEvent(event);
         if (event.type === 'history_complete') watchConnection(socket);
     };
@@ -504,6 +507,7 @@ function connectWebSocket() {
     ws.onclose = (e) => {
         if (socket !== ws) return;
         // A cookie can be missing or revoked. Reloading would loop and lose drafts.
+        window.ReleaseComposing?.detach(socket);
         if (e.code === CONFIG.sessionRejectedCode) {
             clearInterval(connectionWatch);
             clearTimeout(reconnectTimer);

@@ -71,6 +71,7 @@ window.FileReferences = (() => {
     }
 
     function renderChoice(channel, upload, changed) {
+        window.ReleaseComposing?.changed();
         const host = document.getElementById('composer-file-choice');
         if (!host) return;
         host.replaceChildren();
@@ -120,5 +121,5 @@ window.FileReferences = (() => {
     }
 
     return Object.freeze({ clipboardPaths, isReferencePath, mediaURL, authenticatedURL, register,
-        offerFiles, renderChoice, clearChoice, explainFailure });
+        offerFiles, renderChoice, clearChoice, explainFailure, hasPendingChoice: () => choices.size > 0 });
 })();

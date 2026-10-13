@@ -8,7 +8,9 @@
 .fl-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fl-toggle-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
 .fl-toggle.is-on { border-color: var(--accent-border); background: var(--accent-surface); color: var(--accent-text); }
-.fl-toggle.is-on .fl-toggle-dot { background: var(--accent); animation: fl-pulse 1.6s ease-in-out infinite; }
+/* A few pulses when Follow turns on or an event arrives (the dot is keyed to the newest event), then a still
+   dot: an endless pulse kept the tab painting at idle (Zero 0bb2bdcf, QA e9e7b841). */
+.fl-toggle.is-on .fl-toggle-dot { background: var(--accent); animation: fl-pulse 1.6s ease-in-out 3; }
 .fl-toggle.is-paused .fl-toggle-dot { background: var(--warning); animation: none; }
 
 .fl-avatar {

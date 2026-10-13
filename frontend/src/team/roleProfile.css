@@ -1,0 +1,13 @@
+.tm-role-profile { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--bd-border); border-radius: var(--bd-radius); min-width: 0; }
+.tm-role-profile h3, .tm-role-profile h4, .tm-role-profile p { margin: 0; }
+.tm-role-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.tm-role-head h3 { font-size: 15px; }
+.tm-role-head span { font-size: 13px; }
+.tm-role-core { margin: 0; padding: 12px; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; scrollbar-gutter: stable; background: var(--bd-surface-2); border-radius: 6px; }
+.tm-role-core:focus-visible { outline: 2px solid var(--bd-accent); outline-offset: 2px; }
+.tm-role-current { min-width: 0; }
+.tm-role-current summary { cursor: pointer; font-size: 13px; color: var(--bd-muted); margin-bottom: 8px; }
+.tm-role-skills { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.tm-role-skills li { overflow-wrap: anywhere; }
+.tm-role-skills p { color: var(--bd-muted); font-size: 13px; margin-top: 4px; }
+.tm-role-note { padding: 10px 12px; border-left: 2px solid var(--bd-success); background: var(--bd-surface-2); }

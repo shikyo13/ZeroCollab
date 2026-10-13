@@ -9,6 +9,12 @@ import { LABEL_H, layoutStage, overlap, placeBubble, speechBlocker, springStep, 
 
 const MAX_MOVERS = 3;          // at most three people travel at once; the rest wait their turn
 const MAX_EFFECTS = 3;         // at most three comets or batons in the air
+// The animation loop runs only while something moves (Zero 0bb2bdcf: an always-on loop kept a CPU core busy).
+const MAX_FRAME_MS = 50;       // a frame never advances motion further than this, however late it runs
+const SETTLE = { px: 0.25, pxPerS: 1 };       // a spring this close and this slow is at rest: snap it and stop
+const SHAKE = { ms: 480, cycles: 34, px: 7 }; // one head shake after a failed turn
+const HOP = { ms: 320, px: 8 };               // the small hop when a comet or baton lands
+const EFFECT_TAIL_MS = 1700;   // an effect stays drawn this long after it lands (ring, fade)
 const SPEECH_SHOWN_S = 9;
 // Speech bubbles are sized to their text (Zero #14496: bubbles were cut off), measured before placement so
 // overlap avoidance uses the real size, then resized with a soft ease as the text grows or a shorter
@@ -46,7 +52,7 @@ export interface StageProps {
   onFollowWork: (taskId: string) => void;
 }
 
-interface Body { x: number; y: number; vx: number; vy: number; tx: number; ty: number; waitingSince: number; shakeAt: number; hopAt: number; ring: number; phase: number }
+interface Body { x: number; y: number; vx: number; vy: number; tx: number; ty: number; waitingSince: number; shakeAt: number; hopAt: number; ring: number }
 interface Effect { kind: 'comet' | 'baton' | 'gold' | 'answer' | 'broadcast'; from: string; to: string; label: string; color: string; start: number; dur: number; landed?: boolean }
 
 const initials = (name: string) => { const w = name.split(/\s+/).filter(Boolean); return (w.length === 1 && w[0].length <= 3 ? w[0] : w.slice(0, 2).map(x => x[0]).join('')).toUpperCase() || '?'; };
@@ -60,15 +66,15 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   const seen = useRef(new Set<string>());
   const prevState = useRef(new Map<string, string>()), prevActivity = useRef(new Map<string, string>());
   const joined = useRef(new Map<string, { group: string; at: number }>());
-  const [hover, setHover] = useState<string | null>(null);
   // Each bubble's real box as the shared component reports it (the size it is easing to), and the spot an
   // open bubble keeps while someone reads it, so growing never moves it out from under the pointer.
   const bubbleBox = useRef(new Map<string, { w: number; h: number; open: boolean }>());
   const heldSpot = useRef(new Map<string, { rect: Rect; side: BubbleSide; dir?: 'down' | 'up' }>());
   const [, setBubbleTick] = useState(0);
   const openRoom = useRef(new Map<string, number>());   // the clear height an open bubble may grow into
-  const live = useRef({ paused, reduced, hover }); live.current = { paused, reduced, hover };
+  const live = useRef({ paused, reduced }); live.current = { paused, reduced };
   const clock = useRef(0);   // animation time in ms; frozen while paused
+  const kick = useRef(() => {});   // starts the animation loop if it is resting; set by the loop's effect
 
   useLayoutEffect(() => {
     const el = root.current; if (!el) return;
@@ -98,13 +104,14 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     for (const a of feed.agents) {
       const seat = layout.seats.get(a.id); if (!seat) continue;
       let b = bodies.current.get(a.id);
-      if (!b) { b = { x: seat.x, y: seat.y, vx: 0, vy: 0, tx: seat.x, ty: seat.y, waitingSince: 0, shakeAt: -1e9, hopAt: -1e9, ring: 0, phase: [...a.id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 6283, 7) / 1000 }; bodies.current.set(a.id, b); }
+      if (!b) { b = { x: seat.x, y: seat.y, vx: 0, vy: 0, tx: seat.x, ty: seat.y, waitingSince: 0, shakeAt: -1e9, hopAt: -1e9, ring: 0 }; bodies.current.set(a.id, b); }
       if (b.tx !== seat.x || b.ty !== seat.y) { b.tx = seat.x; b.ty = seat.y; b.waitingSince = t; }
       if (a.state === 'failed' && prevState.current.get(a.id) && prevState.current.get(a.id) !== 'failed') b.shakeAt = t;
       if (a.activity && prevActivity.current.has(a.id) && prevActivity.current.get(a.id) !== a.activity) b.ring += 60;
       prevState.current.set(a.id, a.state); prevActivity.current.set(a.id, a.activity);
     }
     for (const id of [...bodies.current.keys()]) if (!layout.seats.has(id)) bodies.current.delete(id);
+    kick.current();
   }, [feed.agents, layout]);
 
   // New interactions become effects (history from the snapshot never animates).
@@ -118,26 +125,39 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
       const e = effectFor(i, color, name);
       if (e) queued.current.push(e);
     }
+    if (queued.current.length) kick.current();
   }, [feed.interactions, feed.agents]);
 
-  // Animation loop: springs toward seats (three movers at most), bob, shake, effects on canvas.
+  // Pausing freezes the clock and lets the loop rest; resuming or switching reduced motion restarts it.
+  useEffect(() => { kick.current(); }, [paused, reduced]);
+
+  // Animation loop: springs toward seats (three movers at most), shake, hop and effects on canvas. It runs
+  // only while one of those is in motion and rests otherwise; kick() restarts it on the event that creates
+  // work (a seat or state change, a new interaction, resume). Nothing moves at rest: each motion means one thing.
   useEffect(() => {
-    let raf = 0, last = performance.now();
+    let raf = 0, last = 0, canvasDrawn = false;
     const ctx = canvas.current?.getContext('2d');
+    const written = new WeakMap<HTMLElement, { transform: string; ring: string }>();   // skip unchanged writes
+    const schedule = () => { if (!raf) raf = requestAnimationFrame(frame); };
     const frame = (now: number) => {
-      const real = Math.min(50, now - last); last = now;
-      const { paused, reduced, hover } = live.current;
-      // One animation clock for motion, effects, bob, shake and hop. It stands still while paused, so
-      // effects freeze exactly and nothing snaps on resume, at any refresh rate.
+      raf = 0;
+      const real = last ? Math.min(MAX_FRAME_MS, now - last) : 0; last = now;
+      const { paused, reduced } = live.current;
+      // One animation clock for motion, effects, shake and hop. It stands still while paused, so effects
+      // freeze exactly and nothing snaps on resume, at any refresh rate.
       if (!paused) clock.current += real;
       const t = clock.current, dt = paused ? 0 : real / 1000;
+      let busy = false;
       if (!paused) {
         const moving = [...bodies.current.values()].filter(b => Math.hypot(b.tx - b.x, b.ty - b.y) > 2);
         const allowed = new Set(reduced ? moving : moving.sort((p, q) => p.waitingSince - q.waitingSince).slice(0, MAX_MOVERS));
         for (const b of bodies.current.values()) {
           if (reduced) { b.x = b.tx; b.y = b.ty; b.vx = b.vy = 0; continue; }
-          if (!allowed.has(b) && Math.hypot(b.tx - b.x, b.ty - b.y) > 2) continue;
+          if (!allowed.has(b) && Math.hypot(b.tx - b.x, b.ty - b.y) > 2) { busy = true; continue; }   // waiting its turn
           [b.x, b.vx] = springStep(b.x, b.vx, b.tx, dt); [b.y, b.vy] = springStep(b.y, b.vy, b.ty, dt);
+          if (Math.abs(b.tx - b.x) < SETTLE.px && Math.abs(b.ty - b.y) < SETTLE.px && Math.hypot(b.vx, b.vy) < SETTLE.pxPerS) {
+            b.x = b.tx; b.y = b.ty; b.vx = b.vy = 0;
+          } else busy = true;
         }
         while (effects.current.length < MAX_EFFECTS && queued.current.length) effects.current.push({ ...queued.current.shift()!, start: t });
       }
@@ -146,18 +166,27 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
         let x = b.x, y = b.y;
         // Offsets come from the frozen clock while paused, so pausing holds people exactly where they are.
         if (!reduced) {
-          if (hover !== id) y += Math.sin(t / 650 + b.phase) * 2.5;
-          const s = (t - b.shakeAt) / 480; if (s >= 0 && s < 1) x += Math.sin(s * 34) * 7 * (1 - s);
-          const h = (t - b.hopAt) / 320; if (h >= 0 && h < 1) y -= 8 * Math.sin(Math.PI * h);
+          const s = (t - b.shakeAt) / SHAKE.ms; if (s >= 0 && s < 1) { x += Math.sin(s * SHAKE.cycles) * SHAKE.px * (1 - s); busy ||= !paused; }
+          const h = (t - b.hopAt) / HOP.ms; if (h >= 0 && h < 1) { y -= HOP.px * Math.sin(Math.PI * h); busy ||= !paused; }
         }
-        el.style.transform = `translate(${x}px, ${y}px)`;
-        el.style.setProperty('--ring', `${b.ring}deg`);
+        const transform = `translate(${x}px, ${y}px)`, ring = `${b.ring}deg`, prev = written.get(el);
+        if (prev?.transform !== transform) el.style.transform = transform;
+        if (prev?.ring !== ring) el.style.setProperty('--ring', ring);
+        written.set(el, { transform, ring });
       }
-      if (ctx && canvas.current) drawEffects(ctx, canvas.current, t, paused, reduced);
-      raf = requestAnimationFrame(frame);
+      if (ctx && canvas.current) {
+        if (effects.current.length) {
+          drawEffects(ctx, canvas.current, t, paused, reduced); canvasDrawn = true;
+          busy ||= !paused;
+        } else if (canvasDrawn) {
+          ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.current.width, canvas.current.height); canvasDrawn = false;
+        }
+      }
+      if (busy || queued.current.length && !paused) schedule(); else last = 0;
     };
-    raf = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(raf);
+    kick.current = schedule;
+    schedule();   // place everyone once on mount
+    return () => { cancelAnimationFrame(raf); kick.current = () => {}; };
   }, []);
 
   function centre(id: string): Point {
@@ -207,7 +236,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
         if (r < 1) { ctx.globalAlpha = 1 - r; ctx.strokeStyle = e.kind === 'gold' ? '#f0c674' : e.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(B.x, B.y, 24 + 20 * r, 0, 7); ctx.stroke(); ctx.globalAlpha = 1; }
       }
     }
-    effects.current = effects.current.filter(e => (t - e.start) < e.dur + 1700);
+    effects.current = effects.current.filter(e => (t - e.start) < e.dur + EFFECT_TAIL_MS);
   }
   function land(e: Effect, t: number) { const b = bodies.current.get(e.to); if (b) b.hopAt = t; }
 
@@ -261,7 +290,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
       return <button key={a.id} type="button" ref={el => { if (el) nodes.current.set(a.id, el); else nodes.current.delete(a.id); }}
         className={`lv-person lv-${a.state}${quiet ? ' lv-quiet' : ''}${selectedPerson === a.id ? ' lv-selected' : ''}`}
         style={{ '--c': a.color } as CSSProperties}
-        onClick={() => onSelectPerson(a.id)} onPointerEnter={() => setHover(a.id)} onPointerLeave={() => setHover(h => h === a.id ? null : h)}
+        onClick={() => onSelectPerson(a.id)}
         aria-label={`${a.name}: ${stateWords(a)}${a.task_title ? `, on ${a.task_title}` : ''}${bubble && a.speech ? `. Says: ${a.speech}` : ''}`}>
         <span className="lv-badge"><span className="lv-ring" aria-hidden="true" />{initials(a.short)}</span>
         <span className="lv-name" title={a.name}>{a.short}</span>

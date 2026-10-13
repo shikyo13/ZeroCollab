@@ -2,6 +2,7 @@
  * hints, handle generation, model/effort catalogs and archive semantics. */
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { runtime } from '../lib/api';
+import { RoleProfile } from './RoleProfile';
 import type { AgentState } from '../lib/types';
 import { ErrorText, Field, useAction } from '../board/shared';
 import { HANDLE_PATTERN, LIMITS, RESERVED_HANDLES } from '../lib/constants';
@@ -335,7 +336,9 @@ export function ProfileEditor({
       {catalog?.loading ? <p className="bd-muted">Loading model choices…</p>
         : (catalog?.error || catalog?.effort_note) && <p className={catalog?.error ? 'bd-error' : 'bd-muted'}>{catalog?.error || catalog?.effort_note}</p>}
 
-      <Field label="Background and personal prompt" hint={`${draft.background.length.toLocaleString()} / ${LIMITS.profileText.toLocaleString()} characters · added to this agent's instructions alongside the shared collaboration rules.`}>
+      {editing && <RoleProfile key={profile!.id} name={profile!.id} guarded={dirty || save.busy || archive.busy} />}
+
+      <Field label="Background and personal prompt" hint={`${draft.background.length.toLocaleString()} / ${LIMITS.profileText.toLocaleString()} characters · used when no approved role profile is active; kept as the fallback after revocation.`}>
         <textarea
           value={draft.background}
           rows={9}

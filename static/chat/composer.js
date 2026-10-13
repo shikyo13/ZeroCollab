@@ -34,6 +34,7 @@ function menuKey(e, menuId, itemSelector, index, pick) {
 function resetComposerInput(input) {
     input.value = '';
     input.style.height = 'auto';
+    window.ReleaseComposing?.changed();
 }
 
 function setupInput() {
@@ -255,6 +256,7 @@ function offerComposerFiles(files) {
 }
 
 function renderComposerUploads() {
+    queueMicrotask(() => window.ReleaseComposing?.changed());
     const status = document.getElementById('composer-uploads');
     if (!status) return;
     status.replaceChildren();
@@ -337,6 +339,7 @@ function insertComposerAttachment(attachment, channel, anchor) {
     if (draft) { draft.text = next; sessionDrafts.set(channel, draft); }
     else { input.value = next; input.setSelectionRange(anchor.position, anchor.position); input.dispatchEvent(new Event('input', { bubbles: true })); }
     composerLinks.set(channel, [...(composerLinks.get(channel) || []), attachment]);
+    window.ReleaseComposing?.changed();
 }
 
 async function transferComposerFiles(items, operation, request) {
@@ -380,6 +383,7 @@ async function referenceComposerFiles(refs) {
 async function uploadImage(file) { await uploadComposerFiles(file ? [file] : []); }
 
 function renderAttachments() {
+    queueMicrotask(() => window.ReleaseComposing?.changed());
     const container = document.getElementById('attachments');
     container.innerHTML = '';
 
@@ -401,6 +405,7 @@ function removeAttachment(index) {
 }
 
 function clearAttachments() {
+    queueMicrotask(() => window.ReleaseComposing?.changed());
     pendingAttachments = [];
     document.getElementById('attachments').innerHTML = '';
     repositionScrollAnchor();
@@ -423,3 +428,12 @@ window._onSessionDraftSwitch = function(previous, next) {
     queueMicrotask(() => { if (activeChannel === next) renderComposerUploads(); });
     input.dispatchEvent(new Event('input', { bubbles: true }));
 };
+
+// Boolean snapshot includes retained inactive chats and unfinished file choices.
+window.ReleaseComposing?.register(() => {
+    if (document.getElementById('input')?.value.length || pendingAttachments.length || composerUploads.size || FileReferences.hasPendingChoice()) return true;
+    for (const [channel, draft] of sessionDrafts) {
+        if (channel !== activeChannel && (draft.text.length || draft.attachments.length)) return true;
+    }
+    return false;
+});

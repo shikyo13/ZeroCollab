@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, errorMessage, runtime, sessionToken } from '../lib/api';
 import { useRoomEvent } from '../lib/room';
-import './deployments.css';
+import './deployments.css'
+import { ReleaseGrantControl } from './ReleaseGrant';
 
 type Release = { id: string; commit: string; version?: string; title?: string; subject?: string; notes?: string; created: string | number; manifest_sha: string; files: { path: string; sha256: string }[]; deletions: string[]; rehearsal?: string; rehearsal_passed?: boolean; rollback?: string; relation?: 'newer' | 'older' | 'current'; reviews?: BoardReview[] };
 type BoardReview = { id: string; status: string; reviewer?: string; revision?: string; task_id?: string; task_title?: string };
@@ -172,6 +173,7 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
     <div className="deploy-heading"><div><h2 id="deploy-title">Updates</h2></div></div>
     <p className="bd-muted">Review a release and approve it here. The supervisor handles the restart and saves the result.</p>
     <SupervisorStatus feed={feed} />
+    <ReleaseGrantControl />
     {error && <p role="status" className="deploy-warning">{feed.reload ? 'The room restarted; reload to reconnect.' : 'Cannot refresh deployment status. Controls are disabled until the connection returns.'} <button className="bd-btn" onClick={() => feed.reload ? window.location.reload() : void refresh()}>{feed.reload ? 'Reload room' : 'Retry'}</button></p>}
     {!data && !error && <p role="status">Loading deployments…</p>}
     {data && <>

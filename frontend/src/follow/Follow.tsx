@@ -52,12 +52,13 @@ function Avatar({ name, agents }: { name: string; agents: Agents }) {
 
 /** Header pill: turn follow on (and go to the Board) or off. */
 export function FollowToggle({ onStart }: { onStart: () => void }) {
-  const { following, paused } = useFollow();
+  const { following, paused, ticker } = useFollow();
   const label = !following ? 'Follow team' : paused ? 'Following paused' : 'Following team';
   return <button type="button" className={`fl-toggle${following ? ' is-on' : ''}${paused ? ' is-paused' : ''}`} aria-pressed={following}
     title={following ? 'Stop following (Esc)' : 'Watch the team work live on the Board'}
     onClick={() => { if (following) setFollowing(false); else { setFollowing(true); onStart(); } }}>
-    <span className="fl-toggle-dot" aria-hidden="true" />
+    {/* Keyed to the newest event, so the dot replays its few pulses when something happens, then rests. */}
+    <span key={ticker[0]?.id ?? 0} className="fl-toggle-dot" aria-hidden="true" />
     {label}
   </button>;
 }
@@ -107,8 +108,14 @@ function clock(time: number): string {
   return new Date(time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+// Ticker motion: one pass per new event, never a loop (Zero 0bb2bdcf: a per-frame loop kept a CPU core busy).
+const TICKER = { pxPerMs: 0.032, holdMs: 1400, maxStepMs: 64 };
+
 /** Header strip of actual recent events. Native scrolling keeps every task link reachable.
- * Motion freezes on Pause, hover, keyboard focus, background tabs and reduced motion. */
+ * A new event shows first; after a short hold, overflow scrolls once to the oldest, holds, returns to the
+ * newest and rests until the next event. Every phase waits while someone hovers or focuses the strip, the
+ * tab is hidden or reduced motion is on (checked live), and continues from where it stopped afterwards. */
+type TickerPhase = 'lead' | 'scroll' | 'tail' | 'return' | 'done';
 export function FollowTicker({ tasks, agents, onOpenTask }: { tasks: Task[]; agents: Agents; onOpenTask: (id: string) => void }) {
   const snap = useFollow();
   const titles = useMemo(() => new Map(tasks.map(t => [t.id, t.title])), [tasks]);
@@ -117,28 +124,47 @@ export function FollowTicker({ tasks, agents, onOpenTask }: { tasks: Task[]; age
     const node = viewport.current;
     if (!node || !snap.following || snap.paused) return;
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-    let frame = 0;
-    let previous = 0;
-    let position = node.scrollLeft;
-    let holdUntil = 0;
-    const move = (time: number) => {
-      const held = reduced.matches || document.hidden || node.matches(':hover, :focus-within');
-      const elapsed = previous ? Math.min(time - previous, 64) : 0;
-      previous = time;
-      const end = node.scrollWidth - node.clientWidth;
-      if (held) position = node.scrollLeft;
-      else if (end > 0 && time >= holdUntil) {
-        position += elapsed * 0.032;
-        if (position >= end) {
-          position = 0;
-          holdUntil = time + 1400;
-        }
-        node.scrollLeft = position;
-      }
-      frame = window.requestAnimationFrame(move);
+    let phase: TickerPhase = 'lead', frame = 0, timer = 0, previous = 0, position = 0, settling = 0;
+    const held = () => reduced.matches || document.hidden || node.matches(':hover, :focus-within');
+    const halt = () => { window.cancelAnimationFrame(frame); window.clearTimeout(timer); frame = timer = previous = 0; };
+    const hold = (next: TickerPhase) => { timer = window.setTimeout(() => { timer = 0; phase = next; advance(); }, TICKER.holdMs); };
+    // Runs the current phase, unless it is already running or the strip is held; a held phase stays pending.
+    const advance = () => {
+      if (frame || timer || held()) return;
+      if (phase === 'lead') hold('scroll');
+      else if (phase === 'scroll') frame = window.requestAnimationFrame(step);
+      else if (phase === 'tail') hold('return');
+      else if (phase === 'return') { node.scrollLeft = 0; phase = 'done'; }
     };
-    frame = window.requestAnimationFrame(move);
-    return () => window.cancelAnimationFrame(frame);
+    const step = (time: number) => {
+      frame = 0;
+      if (held()) { previous = 0; return; }                 // advance() continues after hover, focus or a hidden tab
+      const end = node.scrollWidth - node.clientWidth;
+      if (end <= 0) { phase = 'done'; return; }             // nothing hidden to scroll to
+      if (!previous) position = node.scrollLeft;          // continue from wherever the reader left it
+      position = Math.min(end, position + (previous ? Math.min(time - previous, TICKER.maxStepMs) : 0) * TICKER.pxPerMs);
+      previous = time;
+      node.scrollLeft = position;
+      if (position < end) { frame = window.requestAnimationFrame(step); return; }
+      previous = 0; phase = 'tail'; advance();
+    };
+    // Becoming held stops any frame or hold timer at once; the phase waits and resumes where it stopped.
+    const recheck = () => { if (held()) halt(); else advance(); };
+    // During pointerleave and focusout the strip still matches :hover and :focus-within, so look one frame later.
+    const settle = () => { if (!settling) settling = window.requestAnimationFrame(() => { settling = 0; advance(); }); };
+    if (!held()) node.scrollLeft = 0;   // show the newest, unless someone is reading the strip right now
+    advance();
+    node.addEventListener('pointerleave', settle);
+    node.addEventListener('focusout', settle);
+    document.addEventListener('visibilitychange', recheck);
+    reduced.addEventListener('change', recheck);
+    return () => {
+      halt(); window.cancelAnimationFrame(settling);
+      node.removeEventListener('pointerleave', settle);
+      node.removeEventListener('focusout', settle);
+      document.removeEventListener('visibilitychange', recheck);
+      reduced.removeEventListener('change', recheck);
+    };
   }, [snap.following, snap.paused, snap.ticker[0]?.id]);
   if (!snap.following) return null;
   return <section className={`fl-ticker${snap.paused ? ' is-paused' : ''}`} aria-label="Live team events">
