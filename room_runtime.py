@@ -32,6 +32,7 @@ import provider_store
 import provider_keys
 from provider_controls import ProviderControls
 from coordination_state import pending_human_wait
+import coordination_records
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
 from room_goals import RoomGoals
 from ready_wakes import ReadyWakes
@@ -2223,7 +2224,12 @@ class RoomRuntime:
             return await self.resolve_followups(actor, arguments['followup_ids'], arguments.get('result', ''),
                                                 channel, chain)
         method = self.project_room.records.review if tool == 'room_review' else self.project_room.records.followup
-        result = method(actor, **arguments)
+        try:
+            result = method(actor, **arguments)
+        except coordination_records.RuleRefused as refused:
+            if refused.record:
+                self.announce_system_record(refused.record, channel)  # E5's bell item, opened by this refusal
+            raise
         if not result['changed']:
             return {'record': result['item'], 'changed': False, 'deliveries': {}}
         item = result['item']
@@ -2260,11 +2266,23 @@ class RoomRuntime:
         """Tell one waiting party about a changed review or follow-up. Shared by single and batch resolve so the
         planning rule can't drift: a result for the planning manager stays durable without resetting the planner
         to ordinary native authority (backend 7c9ce73b)."""
+        if recipient == coordination_records.SYSTEM:
+            return {'status': 'skipped', 'queued': False, 'reason': 'The room itself created this record; nobody is woken.'}
         if any(item.get('planning_manager') == recipient for item in items):
             return {'status': 'deferred', 'queued': False,
                     'reason': 'Automatic planning result recorded; bounded manager check-in observes the changed work.'}
         return self.notify_participant(recipient, channel, chain,
             text + '\nRead room_read(section="inbox") for the full request/findings and coordinate with the team.', ref)
+
+    def announce_system_record(self, item, channel):
+        """A follow-up the room opened for the user (E5's continue-or-stop item): one system line in the chat and a
+        board refresh, so the bell shows it now. The user is never woken; the bell is the delivery."""
+        item.setdefault('channel', channel)
+        self.project_room.save()
+        ref = {'collection': 'followups', 'id': item['id'], 'updated': item['updated'], 'action': 'create'}
+        self.host.store.add(coordination_records.SYSTEM, f"Follow-up {item['id']} for {item['assigned_to']}: {item['text']}",
+                            channel=channel, metadata={'no_route': True, 'coordination_ref': ref})
+        self.project_state_soon()
 
     async def resolve_followups(self, actor, followup_ids, result, channel, chain):
         """One result for several follow-ups: each record resolves and each waiting party is woken, but the chat

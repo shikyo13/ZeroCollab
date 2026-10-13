@@ -58,7 +58,8 @@ class LiveContext(unittest.TestCase):
         review = next(r for r in self.room.state['reviews'] if r['task_id'] == self.main)
         self.room.records.review('peer', 'respond', review_id=review['id'], revision='v1', verdict='approved', text='ok')
         for n in range(project_room.SCOPE_REVIEW_ROUNDS + 1):
-            self.room.records.review('worker', 'request', task_id=self.side, reviewer='peer', revision=f'r{n}', text='again')
+            # As the user: E5 refuses an agent's request past the cap, and the scope line still has to show it.
+            self.room.records.review('user', 'request', task_id=self.side, reviewer='peer', revision=f'r{n}', text='again')
         lead = self.room.live_context(self.run_for('lead'))
         self.assertIn('Release train: 1 open tasks approved and waiting (1 user-visible); last install 3.0 h ago. CUT A RELEASE', lead)
         self.assertIn(f'{self.side} {project_room.SCOPE_REVIEW_ROUNDS + 1} rounds', lead)

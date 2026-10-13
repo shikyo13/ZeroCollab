@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from project_room import ProjectRoom
+from coordination_records import RuleRefused
+from project_room import SCOPE_REVIEW_ROUNDS, ProjectRoom
 
 
 class Rules(unittest.TestCase):
@@ -48,6 +49,66 @@ class OneWorkingTask(Rules):
         self.room.task('worker', 'update', self.first, status='working')
         self.room.task('user', 'update', self.second, status='working')
         self.assertEqual(self.status(self.second), 'working')
+
+
+class ScopeCap(Rules):
+    """E5: past SCOPE_REVIEW_ROUNDS distinct revisions, an agent's new review request waits for the user."""
+
+    def request(self, revision, reviewer='peer', actor='worker'):
+        return self.room.records.review(actor, 'request', task_id=self.first, reviewer=reviewer,
+                                        revision=revision, text='check')
+
+    def fill(self):
+        for n in range(SCOPE_REVIEW_ROUNDS):
+            self.request(f'r{n}')
+
+    def bell(self):
+        return [f for f in self.room.state.get('followups', []) if f.get('kind') == 'scope_cap']
+
+    def test_round_nine_is_refused_once_with_one_bell_item(self):
+        self.fill()
+        self.request('r0', reviewer='other')  # a parallel review of a counted revision is the same round
+        with self.assertRaises(RuleRefused) as first:
+            self.request('r8')
+        self.assertIn(f'has had {SCOPE_REVIEW_ROUNDS} review rounds', str(first.exception))
+        item = first.exception.record
+        self.assertEqual((item['created_by'], item['assigned_to'], item['task_id']), ('system', 'user', self.first))
+        with self.assertRaises(RuleRefused) as again:
+            self.request('r9')
+        self.assertIsNone(again.exception.record)  # still open: no second item
+        self.assertEqual(len(self.bell()), 1)
+        self.request('r8', actor='user')  # the user is never refused
+        pending = next(r for r in self.room.state['reviews'] if r['reviewer'] == 'other' and r['status'] == 'pending')
+        self.room.records.review('other', 'respond', review_id=pending['id'], revision='r0', verdict='approved',
+                                 text='ok')  # verdicts are never refused, even past the cap
+
+    def test_only_the_user_answers_and_resolve_grants_eight_more(self):
+        self.fill()
+        with self.assertRaises(RuleRefused) as refused:
+            self.request('r8')
+        item = refused.exception.record
+        for actor, action in (('worker', 'resolve'), ('peer', 'cancel')):
+            with self.assertRaisesRegex(ValueError, 'only the user answers'):
+                self.room.records.followup(actor, action, followup_id=item['id'], result='go on')
+        with self.assertRaisesRegex(ValueError, 'only the user answers'):
+            self.room.records.resolve_followups('worker', [item['id']], 'go on')
+        result = self.room.records.followup('user', 'resolve', followup_id=item['id'], result='continue')
+        self.assertEqual(result['notify'], ['system'])  # the runtime skips delivery to the room itself
+        for n in range(SCOPE_REVIEW_ROUNDS, 2 * SCOPE_REVIEW_ROUNDS):
+            self.request(f'r{n}')
+        with self.assertRaises(RuleRefused) as next_window:
+            self.request('r99')
+        self.assertNotEqual(next_window.exception.record['id'], item['id'])  # a new window, a new item
+
+    def test_cancel_stops_new_requests_without_another_item(self):
+        self.fill()
+        with self.assertRaises(RuleRefused) as refused:
+            self.request('r8')
+        self.room.records.followup('user', 'cancel', followup_id=refused.exception.record['id'], result='stop')
+        with self.assertRaisesRegex(ValueError, 'E5: stopped by the user'):
+            self.request('r9')
+        self.assertEqual(len(self.bell()), 1)
+        self.request('r9', actor='user')
 
 
 if __name__ == '__main__':

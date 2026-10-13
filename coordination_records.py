@@ -21,6 +21,10 @@ HISTORY_TEXT = 1600
 # Characters of one captured review file returned to a workspace tab; a whole capture is at most 2 MB.
 ARTIFACT_TEXT = 1_000_000
 REVIEW_FIELDS = ('id', 'task_id', 'revision', 'status', 'reviewer', 'owner', 'requested_by', 'created', 'updated')
+# The room's own actor for records it creates (Docs/process-enforcement.md S5): reserved as an agent id and handle,
+# set only by server code, and never woken.
+SYSTEM = 'system'
+SCOPE_ANSWER = 'E5: only the user answers a scope-cap item (resolve to allow more review rounds, cancel to stop)'
 
 
 def bounded(text, kind):
@@ -30,6 +34,14 @@ def bounded(text, kind):
         raise ValueError(f'{kind.capitalize()} too long: {len(text)} characters; the limit is {limit}. '
                          'Shorten it, or put the detail in a file and cite its path.')
     return text
+
+
+class RuleRefused(ValueError):
+    """A process rule's refusal that also opened a record for the user (E5's bell item), which the runtime announces."""
+
+    def __init__(self, message, record=None):
+        super().__init__(message)
+        self.record = record
 
 
 def excerpt(text, limit=HISTORY_TEXT):
@@ -297,6 +309,53 @@ class CoordinationRecords:
         return {**item, 'changed_files': [] if settled else self.changed_files(item, hashes, drift),
                 'fingerprinted': bool(item.get('snapshot', {}).get('files'))}
 
+    def scope_cap(self, task, revision):
+        """E5, the scope cap (Docs/process-enforcement.md, Zero #16116 and 67ad9590): a task gets SCOPE_REVIEW_ROUNDS
+        distinct reviewed revisions plus what the user grants. An agent's request for a new revision past that is
+        refused, and the first refusal opens one continue-or-stop item for the user. Parallel reviews of a counted
+        revision are the same round, and verdicts are never refused, so work already in review can finish."""
+        from project_room import SCOPE_REVIEW_ROUNDS
+        revisions = {r['revision'] for r in self.room.state.get('reviews', []) if r['task_id'] == task['id']}
+        if revision in revisions:
+            return
+        cap = task.get('scope_cap') or {}
+        if cap.get('stopped'):
+            raise ValueError(f"E5: stopped by the user. Task {task['id']} takes no new review revisions from agents; "
+                             'the user can request one directly, or the coordinator can split the rest into a new task.')
+        limit = SCOPE_REVIEW_ROUNDS + cap.get('allowance', 0)
+        if len(revisions) < limit:
+            return
+        items = self.room.state.setdefault('followups', [])
+        item = next((f for f in items if f['id'] == cap.get('item') and f['status'] == 'open'), None)
+        opened = None
+        if item is None:
+            now = time.time()
+            item = opened = {'id': uuid.uuid4().hex[:8], 'task_id': task['id'], 'created_by': SYSTEM,
+                             'assigned_to': 'user', 'kind': 'scope_cap', 'status': 'open', 'result': '',
+                             'text': f"E5: task {task['id']} ({task['title']}) has had {len(revisions)} review rounds. "
+                                     f'Resolve to allow {SCOPE_REVIEW_ROUNDS} more; cancel to stop new review '
+                                     'requests on it; or ask the coordinator to split it.',
+                             'created': now, 'updated': now}
+            items.append(item)
+            task['scope_cap'] = {**cap, 'item': item['id']}
+            self.save(SYSTEM, task, f"Follow-up {item['id']} for user: {item['text']}")
+        raise RuleRefused(f"E5: task {task['id']} has had {len(revisions)} review rounds (limit {limit}). The user "
+                          f"decides in bell item {item['id']}: resolve for {SCOPE_REVIEW_ROUNDS} more rounds, or cancel "
+                          'to stop. Or ask the coordinator to split the work.', opened)
+
+    @staticmethod
+    def scope_answer(item, task):
+        """The user's answer to a scope-cap item (security S1: only actor user reaches here): resolve grants
+        SCOPE_REVIEW_ROUNDS more rounds and lifts a stop, cancel stops new review requests from agents."""
+        from project_room import SCOPE_REVIEW_ROUNDS
+        cap = {key: value for key, value in (task.get('scope_cap') or {}).items() if key != 'item'}
+        if item['status'] == 'resolved':
+            cap['allowance'] = cap.get('allowance', 0) + SCOPE_REVIEW_ROUNDS
+            cap.pop('stopped', None)
+        else:
+            cap['stopped'] = True
+        task['scope_cap'] = cap
+
     def review(self, actor, action, task_id='', review_id='', reviewer='', revision='', text='', verdict='', files=None):
         reviews = self.room.state.get('reviews', [])
         if action == 'request':
@@ -312,6 +371,8 @@ class CoordinationRecords:
             for item in reviews:
                 if (item['task_id'], item['reviewer'], item['revision']) == (task_id, reviewer, revision) and item['status'] == 'pending':
                     return {'item': item, 'changed': False, 'notify': []}
+            if actor != 'user':
+                self.scope_cap(task, revision)
             snapshot, blobs = self.capture(task, files)
             item = {'id': uuid.uuid4().hex[:8], 'task_id': task_id, 'requested_by': actor,
                     'owner': task['owner'], 'reviewer': reviewer, 'revision': revision,
@@ -387,6 +448,8 @@ class CoordinationRecords:
             recipients = [assigned_to]
         elif action in ('resolve', 'cancel'):
             item = self.record('followups', followup_id)
+            if item.get('kind') == 'scope_cap' and actor != 'user':
+                raise ValueError(SCOPE_ANSWER)
             allowed = ('user', item['assigned_to'], item['created_by']) if action == 'resolve' else ('user', item['created_by'])
             if actor not in allowed:
                 raise ValueError('Only the assignee, requester or user can resolve; only requester/user can cancel')
@@ -398,6 +461,8 @@ class CoordinationRecords:
             task = self.task(item['task_id']) if item['task_id'] else None
             item.update(status='resolved' if action == 'resolve' else 'cancelled',
                         result=result, updated=time.time())
+            if item.get('kind') == 'scope_cap' and task:
+                self.scope_answer(item, task)
             summary = f"Follow-up {item['id']} {item['status']} by {actor}: {result}"
             recipients = [item['assigned_to'] if action == 'cancel' or actor == item['created_by'] else item['created_by']]
         else:
@@ -416,6 +481,8 @@ class CoordinationRecords:
             raise ValueError('Record the result or cancellation reason')
         result = bounded(result, 'result')
         items = [self.record('followups', identifier) for identifier in ids]
+        if actor != 'user' and any(i.get('kind') == 'scope_cap' for i in items):
+            raise ValueError(SCOPE_ANSWER)
         refused = [i['id'] for i in items if actor not in ('user', i['assigned_to'], i['created_by'])]
         if refused:
             raise ValueError('Only the assignee, requester or user can resolve: ' + ', '.join(refused))
@@ -427,6 +494,8 @@ class CoordinationRecords:
         now = time.time()
         for item in changed:
             item.update(status='resolved', result=result, updated=now)
+            if item.get('kind') == 'scope_cap' and item['task_id']:
+                self.scope_answer(item, self.task(item['task_id']))
         summary = f"Follow-ups {', '.join(i['id'] for i in changed)} resolved by {actor}: {result}"
         for task in tasks:
             self.note_task(actor, task, summary)
