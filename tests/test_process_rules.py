@@ -65,13 +65,13 @@ class OneWorkingTask(Rules):
 class ScopeCap(Rules):
     """E5: past SCOPE_REVIEW_ROUNDS distinct revisions, an agent's new review request waits for the user."""
 
-    def request(self, revision, reviewer='peer', actor='worker'):
-        return self.room.records.review(actor, 'request', task_id=self.first, reviewer=reviewer,
+    def request(self, revision, reviewer='peer', actor='worker', task_id=None):
+        return self.room.records.review(actor, 'request', task_id=task_id or self.first, reviewer=reviewer,
                                         revision=revision, text='check')
 
-    def fill(self):
+    def fill(self, task_id=None):
         for n in range(SCOPE_REVIEW_ROUNDS):
-            self.request(f'r{n}')
+            self.request(f'r{n}', task_id=task_id)
 
     def bell(self):
         return [f for f in self.room.state.get('followups', []) if f.get('kind') == 'scope_cap']
@@ -124,6 +124,24 @@ class ScopeCap(Rules):
         with self.assertRaises(RuleRefused) as asked_again:
             self.request('r10')  # no rounds granted: the next request asks the user again
         self.assertIsNotNone(asked_again.exception.record)
+
+    def test_finishing_or_closing_the_task_withdraws_its_item_without_answering_it(self):
+        # opus dc60d194: a split under 447d752a must not cost the user a click.
+        self.fill()
+        with self.assertRaises(RuleRefused) as refused:
+            self.request('r8')
+        self.room.task('user', 'update', self.first, status='done')  # done (the user, past the pending reviews)
+        item = next(f for f in self.bell() if f['id'] == refused.exception.record['id'])
+        self.assertEqual(item['status'], 'cancelled')
+        task = next(t for t in self.room.state['tasks'] if t['id'] == self.first)
+        self.assertNotIn('stopped', task['scope_cap'])  # withdrawn, not the user's stop
+        self.assertNotIn('allowance', task['scope_cap'])
+        self.fill(self.second)
+        with self.assertRaises(RuleRefused):
+            self.request('r8', task_id=self.second)
+        self.room.task('worker', 'update', self.second, close_reason='superseded', close_pointer=self.first)
+        self.assertEqual([f['status'] for f in self.bell()], ['cancelled', 'cancelled'])  # no user action
+        self.assertNotIn('stopped', next(t for t in self.room.state['tasks'] if t['id'] == self.second)['scope_cap'])
 
     def test_reusing_a_revision_after_a_verdict_is_a_new_round(self):
         for n in range(SCOPE_REVIEW_ROUNDS - 2):

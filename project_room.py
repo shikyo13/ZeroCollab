@@ -772,6 +772,13 @@ class ProjectRoom:
             for other in tasks:
                 if task['id'] in other.get('depends_on', []) and other['status'] != 'done':
                     self.bump_work(other, actor, f"dependency {task['id']} finished")
+            # E5: a finished task takes no more review rounds, so its open scope-cap item asks the user nothing
+            # (opus dc60d194). Withdrawn, not answered: no rounds are granted and no stop is recorded. A closure
+            # already cancels it with the task's other open follow-ups (apply_closure).
+            now = time.time()
+            for item in self.state.get('followups', []):
+                if item['task_id'] == task['id'] and item['status'] == 'open' and item.get('kind') == 'scope_cap':
+                    item.update(status='cancelled', result=f"Task {task['id']} is done; no decision needed.", updated=now)
         self.save()
         view = self.task_view(task)
         if moved_images:

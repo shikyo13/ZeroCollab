@@ -17,8 +17,8 @@ import time
 from durable import atomic_write
 from release_maintenance import active_runs
 
-OLD = 'c80ee0beecc196f54c1c9b366d107b27f6c4a4fbfa5ac66e6f83941549da8ed4'
-NEW = 'db785089451b0e8d35db879f9006e208dc13f2c8f73333e3d1a35f150346579d'
+OLD = 'db785089451b0e8d35db879f9006e208dc13f2c8f73333e3d1a35f150346579d'
+NEW = '475254cae22d85c812f2d4d62e4254d59bcc252870bfcbf2b5130a1a3cec77fb'
 REQUEST = 'host-handover.request.json'
 ACK = 'host-handover.ack.json'
 REOPEN = 'host-handover.reopen.json'
