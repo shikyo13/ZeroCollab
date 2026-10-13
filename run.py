@@ -150,6 +150,21 @@ def _take_room_writer(data_dir, handoff):
     return lease, previous if previous not in (None, "web") else None
 
 
+def _publish_cli_homes(data_dir):
+    """Under the writer lease: name the Codex and Claude homes this room's agents sign in with, so the desktop
+    app can confirm it shares them (cli_homes.py, desktop b23dbef7). Paths only; no home is opened. When they
+    can't be named, the old marker goes too, so the desktop app reads missing rather than a stale match."""
+    import cli_homes
+    try:
+        cli_homes.write_marker(data_dir, cli_homes.effective_homes())
+    except (OSError, ValueError) as exc:
+        logging.getLogger(__name__).warning("CLI home marker not written: %s", exc)
+        try:
+            (Path(data_dir) / cli_homes.MARKER_FILENAME).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def main():
     for name in ("uvicorn.error", "uvicorn.access"):
         logging.getLogger(name).addFilter(SessionLogFilter())
@@ -191,6 +206,7 @@ def main():
     # Before anything writes: the web room and the desktop app never run on the same data at once.
     global _writer
     _writer, start_stopped = _take_room_writer(paths["data"], handoff)
+    _publish_cli_homes(paths["data"])
 
     # Configure the FastAPI app (creates shared store)
     from app import app, configure, set_event_loop, store as _store_ref
