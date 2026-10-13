@@ -3,6 +3,7 @@ import os
 import base64
 import json
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from mcp.server.fastmcp import FastMCP, Image
@@ -35,9 +36,10 @@ def call(tool, arguments, timeout=15):
             headers={'X-Session-Token': os.environ['AGENT_ROOM_SESSION_TOKEN']}, json={'tool': tool, 'arguments': arguments})
     if response.status_code != 200:
         try:
-            error = response.json().get('error')
+            body = response.json()
         except ValueError:  # a plain-text server error page, not the room's JSON
-            error = None
+            body = None
+        error = body.get('error') if isinstance(body, dict) else None
         return {'error': error or f'Room request failed (HTTP {response.status_code})'}
     return response.json()
 
@@ -235,15 +237,19 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
 def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None = None, overwrite: bool = False,
                 t_ms: float | list[float] = 0, reduced: bool = False, job_id: str = '', task_id: str = '',
-                note: str = '', name: str = '', post: bool = True) -> list:
+                note: str = '', name: str = '', post: bool = True,
+                profile: Literal['webm', 'vp9-alpha', 'av1', 'prores4444', 'gif', 'png', 'png-sequence'] = 'webm') -> list:
     """Author motion scenes and product videos with the room's motion engine (data, never code).
     list: bundled and project scenes. get: one scene by ref (bundled:<id> or project:<id>).
     validate: check scene_json; returns {ok, issues: [{path, message}]}. Fix every issue, then save.
     save: write scene_json as project:<id> (overwrite to replace). frame: render the scene at t_ms (one
     time or up to 6) exactly as the video will look; returns /uploads PNGs plus a contact sheet you can
-    post with room_markup. export: start the video (one at a time); export_status / export_cancel job_id.
-    publish job_id: deliver a finished video into this chat (post false to skip), and task_id attaches it
-    to a task you own; it plays inline there. Rendering today: v1 scenes only (layout plus beats; start
+    post with room_markup. export: start the video (one at a time) in profile webm (default), vp9-alpha
+    or av1 (WebM), prores4444 (.mov with alpha), gif, png (first frame only; use frame for a chosen time)
+    or png-sequence (.zip of numbered frames); a profile this room's FFmpeg can't encode is refused, never
+    swapped. export_status / export_cancel job_id. publish job_id: deliver a finished WebM export into this
+    chat (post false to skip), and task_id attaches it to a task you own; it plays inline there. Other
+    profiles are not published; share their video_url from export_status. Rendering today: v1 scenes only (layout plus beats; start
     from get bundled:m01). v2 scenes (Docs/motion-scene-v2.md) validate and save, but frame and export
     refuse them until the v2 renderer ships; validate and save then return a warning. Loop: validate until
     clean, save, frame 2-3 key moments and show them, export, then publish."""
@@ -258,6 +264,8 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
         args['t_ms'] = t_ms
     if action in ('frame', 'export'):
         args['reduced'] = reduced
+    if action == 'export':
+        args['profile'] = profile
     if job_id:
         args['job_id'] = job_id
     if action == 'publish':

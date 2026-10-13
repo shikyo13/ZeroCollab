@@ -1725,6 +1725,8 @@ class RoomRuntime:
                 result = await motion_studio.agent_action(self, run, arguments)
             except (RuntimeError, motion_studio.Unavailable) as exc:
                 # A busy renderer or a missing browser is an answer for the agent, not a server fault (500).
+                # The traceback still reaches the log, so a renderer bug shows up in monitoring.
+                LOGGER.warning('room_motion %s refused', arguments.get('action', 'list'), exc_info=True)
                 raise ValueError(str(exc)) from None
             # Only frame returns a list of frames; an export job's 'frames' is its frame count.
             if isinstance(result, dict) and isinstance(result.get('frames'), list) and result['frames']:

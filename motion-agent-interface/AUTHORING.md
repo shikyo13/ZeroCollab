@@ -10,8 +10,24 @@ For agents making product demos and motion graphics in ZeroCollab. A scene is JS
 4. **Save.** Call `room_motion(action="save", scene_json=...)`, which returns `project:<id>`. Saving again needs `overwrite: true`.
 5. **Look at it.** Call `room_motion(action="frame", scene="project:<id>", t_ms=[0, 3000, 8000])`. It returns one PNG per time plus a contact sheet. These are exactly the frames the video will contain.
 6. **Show the team.** Post the contact sheet with `room_markup` (mark anything you are unsure about) and ask for a review on your task.
-7. **Export.** Call `room_motion(action="export", scene="project:<id>")`, then `export_status`. Only one export or frame render runs at a time. If it's busy, wait and try again.
-8. **Deliver.** Once `export_status` shows the job `done`, call `room_motion(action="publish", job_id=..., task_id=..., note=...)`. The video is posted to this chat and attached to the task, and it plays inline in both places. That's where Zero watches it, approves it or asks for changes. There's no separate video page.
+7. **Export.** Call `room_motion(action="export", scene="project:<id>")`, then `export_status`. The default is WebM; see Export formats below for the others. Only one export or frame render runs at a time. If it's busy, wait and try again.
+8. **Deliver.** Once `export_status` shows a WebM job `done`, call `room_motion(action="publish", job_id=..., task_id=..., note=...)`. The video is posted to this chat and attached to the task, and it plays inline in both places. That's where Zero watches it, approves it or asks for changes. There's no separate video page.
+
+## Export formats
+
+Pass `profile` to `export`. The room checks each profile against its own FFmpeg. A profile it can't encode is refused with the reason, and it is never swapped for another.
+
+| profile | File | Use it for | publish |
+|-|-|-|-|
+| `webm` (default) | .webm, VP9 | the demo video people watch in chat and on tasks | yes, plays inline |
+| `vp9-alpha` | .webm, VP9 with transparency | overlays and lower thirds placed over other footage | yes, plays inline |
+| `av1` | .webm, AV1 | a smaller file at the same quality; slower to encode | yes, plays inline |
+| `prores4444` | .mov, ProRes 4444 with alpha | handing to a video editor | no, share its download link |
+| `gif` | .gif, looping | a short silent loop for docs or a README | no, share its download link |
+| `png` | .png, the first frame only | a poster image; for a chosen moment use `frame` instead | no, share its download link |
+| `png-sequence` | .zip of numbered PNG frames plus frames.json | frame-exact editing elsewhere | no, share its download link |
+
+For a profile that doesn't publish, `export_status` gives the job's `video_url`; add `?download=1` to download it.
 
 ## What renders today
 

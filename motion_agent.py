@@ -40,9 +40,14 @@ async def publish(runtime, run, arguments):
     path = exporter.video(job_id)
     if not path:
         raise ValueError('No finished export with that job_id in this project; check export_status')
+    job = next((j for j in exporter.finished() if j.get('id') == job_id), {})
+    # Only WebM plays inline in chat and on tasks (systems b1883cae). video() found the file from the job's
+    # profile, so its suffix is the container; exports from before profiles are WebM.
+    if path.suffix.lower() != '.webm':
+        raise ValueError(f"This {job.get('profile') or path.suffix.lstrip('.')} export downloads from its link; "
+                         f"publish posts WebM videos. Share /api/runtime/motion/exports/{job_id}/video?download=1")
     if path.stat().st_size > MAX_VIDEO_BYTES:
         raise ValueError('The exported video is larger than 1 GB')
-    job = next((j for j in exporter.finished() if j.get('id') == job_id), {})
     title = text(arguments.get('name') or f"{job.get('name') or job_id}.webm", 'Video name', 120)
     note = text(arguments.get('note') or '', 'Video note', 2000, required=False)
     room = runtime.project_room
