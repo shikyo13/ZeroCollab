@@ -1214,6 +1214,11 @@ class RoomRuntime:
     async def start(self):
         self.loop = asyncio.get_running_loop()
         self.data.mkdir(parents=True, exist_ok=True)
+        handover = getattr(self, 'handover', None)
+        if handover is not None:
+            # Host handover bridge (desktop f0ef18fa): a durable ack holds the room before any project setup,
+            # queue restoration or admission, so a restart mid-handover never replays or admits work.
+            handover.startup_hold()
         saved = load_workspace(self.data / "workspace.json")
         self.paused = saved.get("paused", False)
         # Before any await: a Stop clicked during an update must hold the room, never an older saved paused flag.
@@ -1356,7 +1361,8 @@ class RoomRuntime:
                 self.deployment.leave_mutation()
 
     def turn_admission_open(self):
-        return (not getattr(self, 'repository_transition', None)
+        return (not getattr(getattr(self, 'handover', None), 'held', False)
+                and not getattr(self, 'repository_transition', None)
                 and not getattr(self, 'manual_stop_pending', False)
                 and (not self.deployment or self.deployment.admission_open())
                 and not getattr(self, 'deploy_refresh_pending', False))
@@ -1364,6 +1370,12 @@ class RoomRuntime:
     async def beat(self):
         import mcp_bridge
         while True:
+            handover = getattr(self, 'handover', None)
+            if handover is not None:
+                try:
+                    await handover.tick()  # first: it owns the checkpoint resume_deploy_checks would unlink
+                except Exception:
+                    LOGGER.exception('Host handover check failed; its hold stays in force')
             try:
                 await self.resume_deploy_checks()
             except Exception:
@@ -1444,6 +1456,10 @@ class RoomRuntime:
 
     def enqueue(self, name, channel="general", message="", prompt="", chain=None, routing=None, ref=None):
         if self.deployment and self.deployment.rehearsal:
+            return False
+        if getattr(getattr(self, 'handover', None), 'exit_ready', False):
+            # The handover checkpoint is hashed and the server is exiting: a later entry would be lost, so it is
+            # refused and its durable record stays in the inbox (notify_participant reports it as dropped).
             return False
         if not self.owns_channel(channel):
             # Every wake path (mentions, goals, delegation, task starts) ends here; agents only work
@@ -2609,6 +2625,10 @@ class RoomRuntime:
 
     async def user_resume(self, latch_only):
         """The user's Resume (POST /api/runtime/resume): the only thing that clears the latch."""
+        handover = getattr(self, 'handover', None)
+        if handover is not None and handover.held:
+            # Security B2: only this user route reaches it; the bridge refuses before its bound and records it.
+            await handover.release_for_user()
         if latch_only:
             _, note = self.manual_stop_call('clear_user_stop', self.unpause, state='running')
             self.defer_manual_stop('resume')
@@ -2875,7 +2895,9 @@ class RoomRuntime:
                 await manager.close()
             except Exception:
                 LOGGER.exception('The release manager did not close cleanly')
-        if self.deployment and self.deployment.reload()['writes'] == 'blocked':
+        if getattr(getattr(self, 'handover', None), 'exit_ready', False):
+            pass  # host handover: the hashed checkpoint is final and writes are blocked; queues are kept as saved
+        elif self.deployment and self.deployment.reload()['writes'] == 'blocked':
             if not self.running:
                 self.save_deploy_queue()
         else:
@@ -2908,6 +2930,15 @@ def install(host):
         host.media_jobs.begin_close()  # signal only, no join
 
     host.app.router.on_shutdown.insert(0, stop_media_admission)
+    submit = host.media_jobs.submit
+
+    def held_submit(job, **options):
+        # A deployment or host handover holds new heavy media jobs as it holds agent turns (desktop f0ef18fa).
+        if not runtime.turn_admission_open():
+            raise ValueError('The room is paused for an update; start this media job again when it finishes.')
+        return submit(job, **options)
+
+    host.media_jobs.submit = held_submit
     host.agents.runtime = runtime
     host.runtime = runtime
     import room_deploy

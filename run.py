@@ -215,6 +215,18 @@ def main():
     import app as room_app
     from room_runtime import install
     runtime = install(room_app)
+    # Host handover bridge (desktop f0ef18fa): built after install(), which installs the deployment host. Its exit
+    # request is graceful: Uvicorn stops serving, runs lifespan shutdown and so runtime.close(), never runtime.stop().
+    from host_handover import HostHandover
+    server_box = {}
+
+    def request_exit():
+        server = server_box.get('server')
+        if server is None:
+            raise RuntimeError('The web server has not started; the handover cannot request its exit')
+        server.should_exit = True
+
+    runtime.handover = HostHandover(runtime, ROOT, request_exit)
     runtime.start_stopped = handback_notice(start_stopped) if start_stopped else None
 
     # Share stores with the MCP bridge
@@ -304,7 +316,10 @@ def main():
 
     # No per-message deflate: the room is served on this machine, and compressing every broadcast for
     # every browser tab cost about a quarter of the event loop (py-spy on 0.12.28, task f91a332e).
-    uvicorn.run(app, host=host, port=port, log_level="info", ws_per_message_deflate=False)
+    # An explicit Server (the same as uvicorn.run) so the host handover can ask it to exit gracefully.
+    server = server_box['server'] = uvicorn.Server(
+        uvicorn.Config(app, host=host, port=port, log_level="info", ws_per_message_deflate=False))
+    server.run()
 
 
 if __name__ == "__main__":
