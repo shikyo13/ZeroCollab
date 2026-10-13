@@ -43,6 +43,8 @@ from fastapi import Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 import shared_browser
+from motion_jobs import Cancelled, validate_result
+from motion_studio_jobs import submit_owned
 
 ROOT = Path(__file__).resolve().parent
 # VP9 in WebM: about 5 s to encode 20 s of 1080p30 on the reference machine, far below capture time.
@@ -66,10 +68,6 @@ RENDER_FLAGS = ['--headless=new', '--disable-gpu', '--do-not-de-elevate', '--hid
                 '--disable-lcd-text', '--font-render-hinting=none', '--force-device-scale-factor=1',
                 '--force-color-profile=srgb', f'--window-size={WIDTH},{HEIGHT}', '--allow-file-access-from-files',
                 '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1']
-
-
-class Cancelled(Exception):
-    pass
 
 
 class Unavailable(Exception):
@@ -438,17 +436,34 @@ def require_tools(runtime, format='webm'):
 
 
 class Exporter:
-    """One export at a time: a render is CPU-heavy and owns a headless browser while it runs."""
+    """Existing export/frame owners share the host's one heavy-job lease."""
 
     def __init__(self, runtime):
         self.runtime = runtime
         self.current = None
-        self.task = None
-        self.framing = None  # an agent's frame render (room_motion frame) shares the one render slot
+        self.task = None  # compatibility: newest export owner, never cancellation authority
+        self.tasks = set()
         self.generation = 0
+        self.capability = None
+
+    @property
+    def gate(self):
+        return self.runtime.host.media_jobs
+
+    def _submit(self, job, operation, *, publish_result=None):
+        project = self.runtime.identity
+
+        def check_project():
+            if self.runtime.identity != project:
+                raise Cancelled('The project changed during the media job')
+
+        ticket = submit_owned(self.gate, job, operation, check_project, publish_result=publish_result)
+        self.tasks.add(ticket.task)
+        ticket.task.add_done_callback(self.tasks.discard)
+        return ticket
 
     def busy(self):
-        return bool(self.current and self.current['phase'] in ('starting', 'rendering', 'encoding'))
+        return bool(self.current and self.current['phase'] in ('starting', 'rendering', 'encoding', 'publishing'))
 
     def finished(self):
         folder = project_dir(self.runtime)
@@ -481,45 +496,25 @@ class Exporter:
         path = folder / 'exports' / f'{job_id}.{extension}'
         return path if path.is_file() else None
 
-    async def prepare_start(self, ref, reduced, format='webm'):
-        """Probe off-loop, then admit atomically on the room loop.
+    async def prepare_start(self, ref, reduced, format='webm', *, owner='user'):
+        """Return a queued export immediately; cold probes run after admission."""
+        return self.start(ref, reduced, format, owner=owner)
 
-        A busy export/preview may appear, or the project may change, while the
-        worker thread checks codecs. start() repeats admission after the await.
-        """
-        project = self.runtime.identity
-        if self.busy():
-            raise RuntimeError('An export is already running; cancel it or wait for it to finish')
-        if self.framing:
-            raise RuntimeError(f'{self.framing} is rendering a preview frame; try again in a few seconds')
-        encoder = await asyncio.to_thread(require_tools, self.runtime, format)
-        if self.runtime.identity != project:
-            raise ValueError('Project changed while preparing the export; try again')
-        return self.start(ref, reduced, format, encoder=encoder)
-
-    def start(self, ref, reduced, format='webm', *, encoder=None):
-        if self.busy():
-            raise RuntimeError('An export is already running; cancel it or wait for it to finish')
-        if self.framing:
-            raise RuntimeError(f'{self.framing} is rendering a preview frame; try again in a few seconds')
+    def start(self, ref, reduced, format='webm', *, encoder=None, owner='user'):
         base = project_dir(self.runtime)
         if not base:
             raise ValueError(PROJECT_REQUIRED)
         scenes, _ = catalogue(self.runtime)
         if ref not in scenes:
             raise ValueError('Unknown or invalid scene')
-        scene = drawable(scenes[ref][1])
+        scene = json.loads(json.dumps(drawable(scenes[ref][1])))
         plan = render_plan(scene)
         require_silent_composition(scene, plan.get('composition'), self.runtime)
-        if encoder is None:
-            encoder = require_tools(self.runtime, format)
         from motion_encode import profile
         selected = profile(format)
-        capability = encoder['formats'][format]
-        if not capability['available']:
-            raise Unavailable(capability.get('reason') or f'{format} is not available in this encoder')
         self.generation += 1
-        self.current = {'id': uuid.uuid4().hex[:12], 'scene': ref, 'scene_id': scene['id'],
+        job = {'id': uuid.uuid4().hex[:12], 'scene': ref, 'scene_id': scene['id'],
+                        'kind': 'export', 'owner': owner,
                         'generation': self.generation,
                         'name': scene.get('name') or scene['id'], 'reduced': bool(reduced), 'phase': 'starting',
                         'frame': 0, 'frames': 1 if format == 'png' else plan['duration'],
@@ -529,67 +524,166 @@ class Exporter:
                         'transparent': selected.alpha and plan['renderer'] == 'v2',
                         'mime': selected.mime, 'codec': 'vp9' if format == 'webm' else selected.encoder,
                         'created': time.time(),
-                        'project': self.runtime.identity,
-                        'encoder': {k: encoder[k] for k in ('version', 'license')}}
-        job = self.current
-        self.task = asyncio.create_task(self.run(job, scene, base / 'exports', encoder['path']))
-        return public(job)
+                        'project': self.runtime.identity}
+        async def operation(ticket, check):
+            from motion_render import file_io
+            self.current = job
+            # Even the old synchronous start() fallback is inside the lease.
+            checked = await file_io(require_tools, self.runtime, format) if encoder is None else encoder
+            check()
+            capability = checked['formats'][format]
+            if not capability['available']:
+                raise Unavailable(capability.get('reason') or f'{format} is not available in this encoder')
+            job['encoder'] = {k: checked[k] for k in ('version', 'license')}
+            return await self.run(job, scene, base / 'exports', checked['path'], check)
+        ticket = self._submit(job, operation)
+        self.task = ticket.task
+        if ticket.lease is not None:
+            self.current = job
+        return self.gate.status(ticket.key[0], project=ticket.key[2]) | public(job)
 
-    def cancel(self, job_id):
-        job = self.current
-        if not job or job['id'] != job_id:
+    def cancel(self, job_id, *, actor='user', is_user=False, generation=None):
+        ticket = self.gate.entries.get(job_id)
+        if not ticket or ticket.job['kind'] != 'export' or ticket.key[2] != self.runtime.identity:
             return None
-        if job['phase'] in ('starting', 'rendering', 'encoding'):
-            job['cancel'] = True
-        return public(job)
+        return self.gate.cancel(job_id, ticket.key[1] if generation is None else generation,
+                                project=self.runtime.identity, actor=actor, is_user=is_user)
+
+    async def capabilities(self, *, owner='user'):
+        """Cold scenes-page probes are deduplicated owned jobs, not queue bypasses."""
+        try:
+            path = ffmpeg_path(self.runtime)
+            stamp = (path, Path(path).stat().st_mtime_ns)
+            if stamp in _encoder_cache:
+                checked = require_tools(self.runtime)
+                return {'available': True, 'reason': None, 'license': checked['license']}
+        except (Unavailable, OSError) as exc:
+            return {'available': False, 'reason': str(exc), 'license': None}
+        key = (self.runtime.identity, stamp)
+        if self.capability is None or self.capability[0] != key or self.capability[1].terminal_at is not None:
+            job = {'kind': 'capability', 'owner': owner, 'project': self.runtime.identity}
+            async def operation(ticket, check):
+                from motion_render import file_io
+                checked = await file_io(require_tools, self.runtime)
+                check()
+                return {'available': True, 'reason': None, 'license': checked['license']}
+            self.capability = (key, self._submit(job, operation))
+        ticket = self.capability[1]
+        answer = await self.gate.reply(ticket)
+        if answer['phase'] == 'done':
+            return answer['result']
+        if answer['phase'] in ('failed', 'cancelled', 'unavailable'):
+            return {'available': False, 'reason': answer.get('error') or answer['phase'], 'license': None}
+        return {'available': None, 'pending': True, 'reason': 'Preparing encoder capabilities',
+                'license': None, 'job': answer}
+
+    def submit_frame(self, ref, scene, times, reduced, *, owner, run=None):
+        """Backend may call this and use gate.reply/status; never wrap in a second lease."""
+        scene = json.loads(json.dumps(drawable(scene)))
+        plan = render_plan(scene)
+        times = list(times)
+        if not 1 <= len(times) <= MAX_FRAMES or any(isinstance(t, bool) or not isinstance(t, (int, float))
+                or not 0 <= t <= plan['duration_ms'] for t in times):
+            raise ValueError(f't_ms must contain 1 to {MAX_FRAMES} times within the composition')
+        times = [round(t, 4) for t in times]
+        job = {'kind': 'frame', 'owner': owner, 'project': self.runtime.identity,
+               'scene': ref, 'frames': len(times), 'frame': 0}
+        upload_dir = self.runtime.host.store.upload_dir
+        async def operation(ticket, check):
+            from motion_render import file_io
+            from motion_audio_process import _join
+            created = []
+            complete = False
+            try:
+                check()
+                if not shared_browser.executable():
+                    raise Unavailable('Preview frames need Microsoft Edge, Google Chrome or Chromium')
+                pngs = await render_frames(self.runtime, scene, times, reduced, check_cancel=check, job=job)
+                sheet = await file_io(contact_sheet, pngs, times) if len(pngs) > 1 else None
+                payloads = list(pngs) + ([sheet] if sheet is not None else [])
+                paths = [upload_dir / (uuid.uuid4().hex[:8] + '.png') for _ in payloads]
+                answer = validate_result({'scene': ref,
+                    'frames': [{'t_ms': t, 'url': '/uploads/' + path.name} for t, path in zip(times, paths)],
+                    'sheet_url': '/uploads/' + paths[-1].name if sheet is not None else None,
+                    'width': plan['width'], 'height': plan['height'], 'checks': []})
+                check()
+                for path, png in zip(paths, payloads):
+                    created.append(path)
+                    await file_io(path.write_bytes, png)
+                    check()
+                complete = True
+                return answer
+            finally:
+                if not complete:
+                    async def cleanup():
+                        for path in created:
+                            await file_io(lambda p=path: p.unlink(missing_ok=True))
+                    await _join(asyncio.create_task(cleanup()), propagate=True)
+        async def show(answer):
+            if run is not None:
+                await self.runtime.live.publish(self.runtime.live.artifact(
+                    run, answer.get('sheet_url') or answer['frames'][0]['url'], 'upload'))
+        return self._submit(job, operation, publish_result=show)
 
     async def close(self):
         """Room shutdown: stop a running export so its browser and ffmpeg end with the room."""
-        if self.task and not self.task.done():
-            self.task.cancel()
-            await asyncio.gather(self.task, return_exceptions=True)
+        from motion_audio_process import _join
+        tasks = list(self.tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await _join(asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True)), propagate=True)
 
-    async def run(self, job, scene, folder, ffmpeg):
+    async def run(self, job, scene, folder, ffmpeg, check):
+        from motion_render import file_io
+        from motion_audio_process import _join
         extension = job.get('format', 'webm')
         partial = folder / f'{job["id"]}.part.{extension}'
-        work = Path(tempfile.mkdtemp(prefix='zerocollab-motion-'))
+        final = folder / f'{job["id"]}.{extension}'
+        metadata = folder / f'{job["id"]}.json'
+        work = None
+        committed = False
         try:
+            check()
+            work = Path(tempfile.mkdtemp(prefix='zerocollab-motion-'))
             folder.mkdir(parents=True, exist_ok=True)
             started = time.perf_counter()
-            def check():
-                if (job.get('cancel') or self.current is not job or
-                        job['generation'] != self.generation or job['project'] != self.runtime.identity):
-                    raise Cancelled()
-
             hashes = await export_video(scene, job['reduced'], partial, work, job, ffmpeg,
                                         check_cancel=check, runtime=self.runtime)
             check()
             job['render_s'] = round(time.perf_counter() - started, 2)
-            final = folder / f'{job["id"]}.{extension}'
-            os.replace(partial, final)
             from motion_render import FrameClock
             fps = job.get('fps', FPS)
             clock = FrameClock(fps['num'], fps['den']) if isinstance(fps, dict) else FrameClock(fps)
-            job.update(phase='done', finished=time.time(), bytes=final.stat().st_size,
-                       seconds=float(clock.ms(job['frames']) / 1000),
-                       frames_digest=hashlib.sha256(''.join(hashes).encode()).hexdigest(),
-                       video_url=f'/api/runtime/motion/exports/{job["id"]}/video')
-            (folder / f'{job["id"]}.json').write_text(json.dumps(public(job), indent=1), 'utf-8')
-        except Cancelled:
-            job.update(phase='cancelled', finished=time.time())
-        except asyncio.CancelledError:
-            job.update(phase='cancelled', finished=time.time(), error='The room shut down during the export')
+            result = {**public(job), 'phase': 'done', 'finished': time.time(), 'bytes': partial.stat().st_size,
+                      'seconds': float(clock.ms(job['frames']) / 1000),
+                      'frames_digest': hashlib.sha256(''.join(hashes).encode()).hexdigest(),
+                      'video_url': f'/api/runtime/motion/exports/{job["id"]}/video'}
+            result = validate_result(result)
+            check()
+            await file_io(os.replace, partial, final)
+            check()
+            await file_io(metadata.write_text, json.dumps(result, indent=1), 'utf-8')
+            check()
+            job.update({k: v for k, v in result.items() if k not in ('phase', 'finished')})
+            committed = True
+            return result
+        except BaseException:
+            committed = False
             raise
-        except Exception as exc:  # reported to the user as the job's error, never retried
-            job.update(phase='failed', finished=time.time(), error=str(exc) or type(exc).__name__)
         finally:
-            # Cleanup never changes the outcome: a browser that was just killed can hold its
-            # profile files for a moment on Windows (frontend c0977a2f), so retry, then give up.
-            await remove_tree(work)
-            try:
-                partial.unlink(missing_ok=True)
-            except OSError:
-                pass
+            parent = asyncio.current_task()
+            async def cleanup():
+                if work is not None:
+                    await remove_tree(work)
+                keep = committed and not parent.cancelling()
+                try:
+                    check()
+                except Cancelled:
+                    keep = False
+                for path in (partial,) if keep else (partial, final, metadata):
+                    await file_io(lambda p=path: p.unlink(missing_ok=True))
+            await _join(asyncio.create_task(cleanup()), propagate=True)
 
 
 async def remove_tree(path, attempts=50):
@@ -833,13 +927,21 @@ def contact_sheet(pngs, times):
     return out.getvalue()
 
 
-async def render_frames(runtime, scene, times, reduced):
+async def render_frames(runtime, scene, times, reduced, *, check_cancel=None, job=None):
     """PNG bytes of the scene at each time (ms), through the same page and __seek(ms) as export, so a
     preview frame is pixel-identical to that frame of the video."""
+    from motion_audio_process import _join
+    def check():
+        if check_cancel:
+            check_cancel()
+        if runtime.identity != project:
+            raise Cancelled()
+    project = runtime.identity
+    check()
     work = Path(tempfile.mkdtemp(prefix='zerocollab-motion-frame-'))
     plan = render_plan(scene)
-    project = runtime.identity
-    job = {**plan, 'times': times, 'frames': len(times), 'frame': 0, 'phase': 'starting'}
+    job = job if job is not None else {}
+    job.update({**plan, 'times': times, 'frames': len(times), 'frame': 0, 'phase': 'starting'})
     pngs = []
 
     async def sink(png):
@@ -848,17 +950,13 @@ async def render_frames(runtime, scene, times, reduced):
         page = work / 'scene.html'
         from motion_render import file_io
         await file_io(lambda: page.write_text(view_html(scene, {'render': True, 'reduced': bool(reduced)}, runtime), 'utf-8'))
-        def check():
-            if runtime.identity != project:
-                raise Cancelled()
         check()
         await asyncio.wait_for(render(page, job, sink, work / 'profile', check_cancel=check), FRAME_SECONDS)
     except asyncio.TimeoutError:
         raise RuntimeError(f'The preview frames did not render within {FRAME_SECONDS} seconds') from None
     finally:
-        await remove_tree(work)
-    if runtime.identity != project:
-        raise Cancelled()
+        await _join(asyncio.create_task(remove_tree(work)), propagate=True)
+    check()
     return pngs
 
 
@@ -875,7 +973,8 @@ async def agent_action(runtime, run, arguments):
                                                'project_folder': project_dir(runtime) is not None}}
     if action == 'export_status':
         current = exporter.current if exporter.current and exporter.current.get('project') == runtime.identity else None
-        return {'current': public(current), 'exports': exporter.finished()}
+        return {'current': public(current), 'exports': exporter.finished(),
+                'media_jobs': exporter.gate.snapshot(runtime.identity)}
     if action == 'validate':
         scene = arguments.get('scene_json')
         found_issues = motion_scene.issues(scene)
@@ -888,7 +987,8 @@ async def agent_action(runtime, run, arguments):
         await runtime.activity_note(run, 'motion', f'Saved motion scene {ref}')
         return {'ref': ref, 'summary': summary(ref, 'project', scene)}
     if action == 'export_cancel':
-        job = exporter.cancel(str(arguments.get('job_id', '')))
+        job = exporter.cancel(str(arguments.get('job_id', '')), actor=run.name,
+                              generation=arguments.get('generation'))
         if not job:
             raise ValueError('No running export with that id')
         return job
@@ -899,43 +999,18 @@ async def agent_action(runtime, run, arguments):
     if action == 'get':
         return scene
     if action == 'export':
-        job = await exporter.prepare_start(ref, bool(arguments.get('reduced')), arguments.get('profile', 'webm'))
+        job = await exporter.prepare_start(ref, bool(arguments.get('reduced')), arguments.get('profile', 'webm'),
+                                           owner=run.name)
         await runtime.activity_note(run, 'motion', f'Started a video export of {ref}')
         return job
     if action != 'frame':
         raise ValueError('action must be list, get, validate, save, frame, export, export_status or export_cancel')
-    drawn = drawable(scene)
-    plan = render_plan(drawn)
     times = arguments.get('t_ms', 0)
     times = times if isinstance(times, list) else [times]
-    if not 1 <= len(times) <= MAX_FRAMES or any(isinstance(t, bool) or not isinstance(t, (int, float))
-                                                 or not 0 <= t <= plan['duration_ms'] for t in times):
-        raise ValueError(f"t_ms must be one time or a list of 1 to {MAX_FRAMES} times from 0 to {plan['duration_ms']} ms")
-    if exporter.busy():
-        job = public(exporter.current)
-        raise RuntimeError(f"A video export is rendering ({job['frame']} of {job['frames']} frames); try again after it")
-    if exporter.framing:
-        raise RuntimeError(f'{exporter.framing} is rendering preview frames; try again in a few seconds')
-    exporter.framing = run.name
-    try:
-        if not shared_browser.executable():
-            raise Unavailable('Preview frames need Microsoft Edge, Google Chrome or Chromium')
-        pngs = await render_frames(runtime, drawn, [round(t, 4) for t in times], arguments.get('reduced'))
-    finally:
-        exporter.framing = None
-    folder = runtime.host.store.upload_dir
-    frames = []
-    for t, png in zip(times, pngs):
-        name = uuid.uuid4().hex[:8] + '.png'
-        (folder / name).write_bytes(png)
-        frames.append({'t_ms': t, 'url': '/uploads/' + name})
-    sheet = None
-    if len(pngs) > 1:
-        name = uuid.uuid4().hex[:8] + '.png'
-        (folder / name).write_bytes(contact_sheet(pngs, times))
-        sheet = '/uploads/' + name
-    return {'scene': ref, 'frames': frames, 'sheet_url': sheet,
-            'width': plan['width'], 'height': plan['height'], 'checks': []}
+    ticket = exporter.submit_frame(ref, scene, times, arguments.get('reduced'),
+                                   owner=run.name, run=run)
+    from motion_agent import job_answer
+    return job_answer(await exporter.gate.reply(ticket))
 
 
 # ---- routes -----------------------------------------------------------------------------------
@@ -953,15 +1028,14 @@ def install(host, runtime):
     async def scenes(request: Request):
         if wrong_project(request.query_params.get('project')):
             return JSONResponse({'error': changed}, 409)
+        project = runtime.identity
         found, invalid = catalogue(runtime)
         if project_dir(runtime) is None:
             export = {'available': False, 'reason': PROJECT_REQUIRED, 'license': None}
         else:
-            try:
-                encoder = await asyncio.to_thread(require_tools, runtime)  # cached after the first check
-                export = {'available': True, 'reason': None, 'license': encoder['license']}
-            except Unavailable as exc:
-                export = {'available': False, 'reason': str(exc), 'license': None}
+            export = await exporter.capabilities()
+        if runtime.identity != project:
+            return JSONResponse({'error': changed}, 409)
         return {'project': runtime.identity, 'scenes': [summary(ref, s, scene) for ref, (s, scene) in found.items()],
                 'invalid': invalid,
                 'export': {**export, 'format': 'webm', 'codec': 'vp9', 'mime': 'video/webm',
@@ -999,7 +1073,8 @@ def install(host, runtime):
         if wrong_project(request.query_params.get('project')):
             return JSONResponse({'error': changed}, 409)
         current = exporter.current if exporter.current and exporter.current.get('project') == runtime.identity else None
-        return {'current': public(current), 'exports': exporter.finished()}
+        return {'current': public(current), 'exports': exporter.finished(),
+                'media_jobs': exporter.gate.snapshot(runtime.identity)}
 
     @host.app.post('/api/runtime/motion/exports')
     async def start(request: Request):
@@ -1026,7 +1101,7 @@ def install(host, runtime):
             body = {}
         if not isinstance(body, dict) or body.get('project') != runtime.identity:
             return JSONResponse({'error': changed}, 409)
-        job = exporter.cancel(job_id)
+        job = exporter.cancel(job_id, is_user=True)
         return job if job else JSONResponse({'error': 'No running export with that id'}, 404)
 
     @host.app.get('/api/runtime/motion/exports/{job_id}/video')
