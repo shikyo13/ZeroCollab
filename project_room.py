@@ -40,6 +40,10 @@ CLOSE_REASONS = ('duplicate', 'superseded', 'parked', 'wont_do')
 CARRIED_ON = ('duplicate', 'superseded')
 # Owner-set readiness for ready-task wakes; never inferred from text, status or labels ('' clears it).
 NEXT_ACTION_STATES = {'ready', 'deferred', 'waiting', ''}
+# C6 (Docs/work-continuity.md r4): what a waiting task may name as its wait.
+MAX_WAIT_ON = 4
+WAIT_COLLECTIONS = {'task': 'tasks', 'review': 'reviews', 'followup': 'followups'}
+RELEASE_VERSION = re.compile(r'\d+(\.\d+){1,3}')
 # Changes to these fields by anyone other than the owner are new work for the owner (work_rev).
 SEMANTIC_FIELDS = ('status', 'owner', 'transfer', 'depends_on', 'wait', 'next_action', 'next_action_state', 'paths')
 # The board holds at most TASK_LIMIT tasks. Finished tasks that nothing open still references move,
@@ -528,7 +532,7 @@ class ProjectRoom:
 
     def task(self, actor, action, task_id='', title='', details='', paths=None, owner='', status='', update='', depends_on=None, labels=None, attachments=None,
              next_action=None, priority=None, wait=None, evidence=None, next_action_state=None,
-             close_reason='', close_pointer='', acceptance=None):
+             close_reason='', close_pointer='', acceptance=None, wait_on=None):
         tasks = self.state['tasks']
         closing = None
         task = next((t for t in tasks if t['id'] == task_id), None)
@@ -655,6 +659,20 @@ class ProjectRoom:
                 task['next_action_state'] = next_action_state
             else:
                 task.pop('next_action_state', None)
+        if previous and task['owner'] != previous['owner']:
+            task.pop('wait_on', None)  # a wait is its owner's; a new owner names their own
+        if wait_on is not None:
+            if not human and actor != task['owner']:
+                raise ValueError("Only the task's owner or the user can set wait_on")
+            refs = self.wait_refs(wait_on, task['id'])
+            if refs:
+                task['wait_on'] = refs
+            else:
+                task.pop('wait_on', None)
+        if not previous or any(task.get(k) != previous.get(k) for k in ('next_action', 'next_action_state', 'wait_on')):
+            # C6 (Docs/work-continuity.md r4): when this task's wait last changed. A wait's checks are keyed on it,
+            # so re-deferring with a new reason or new references re-arms them, and an unchanged wait never repeats.
+            task['wait_since'] = time.time()
         if evidence is not None:
             if not isinstance(evidence, dict) or set(evidence) - {'implementation', 'review', 'installation', 'acceptance'}:
                 raise ValueError('Evidence keys: implementation, review, installation, acceptance')
@@ -1060,6 +1078,34 @@ class ProjectRoom:
         self.state['notes'].append(note)
         self.save()
         return note
+
+    def wait_refs(self, value, own_id):
+        """wait_on (C6a): up to MAX_WAIT_ON references the task waits for, each {task|review|followup: id} or
+        {release: version}. Ids must exist now; an empty list clears it."""
+        shapes = 'each entry is {task: id}, {review: id}, {followup: id} or {release: "0.12.55"}'
+        if not isinstance(value, list) or len(value) > MAX_WAIT_ON:
+            raise ValueError(f'wait_on lists up to {MAX_WAIT_ON} references; {shapes}')
+        refs = []
+        for ref in value:
+            if not isinstance(ref, dict) or len(ref) != 1:
+                raise ValueError(f'wait_on: {shapes}')
+            (kind, ident), = ref.items()
+            if kind == 'release':
+                if not isinstance(ident, str) or not RELEASE_VERSION.fullmatch(ident):
+                    raise ValueError('wait_on release is a version such as "0.12.55"')
+            elif kind in WAIT_COLLECTIONS:
+                found = isinstance(ident, str) and any(x.get('id') == ident for x in self.state.get(WAIT_COLLECTIONS[kind], []))
+                if kind == 'task' and isinstance(ident, str) and not found:
+                    found = bool(self.archived_task(ident))  # archived means finished: satisfied at once
+                if not found:
+                    raise ValueError(f'wait_on {kind} {ident} was not found')
+                if kind == 'task' and ident == own_id:
+                    raise ValueError('A task cannot wait on itself')
+            else:
+                raise ValueError(f'wait_on: {shapes}')
+            if {kind: ident} not in refs:
+                refs.append({kind: ident})
+        return refs
 
     def live_check_due(self, task):
         """L1 gate (backend 7a62b62a C2): why an agent may not yet end or hand on this task, or ''. It applies while the
@@ -1751,7 +1797,7 @@ def coordination_tools():
     return [
         definition('room_read', 'Read shared project state or your pending review/follow-up inbox. Filter tasks/reviews/followups by task_id, owner or status. limit/offset are characters; paginate with next_offset. Messages include attachments.',
                    {'section': {'type': 'string', 'enum': ['overview', 'spec', 'tasks', 'memory', 'messages', 'patches', 'participants', 'inbox', 'reviews', 'followups', 'review_artifact']}, 'offset': {'type': 'integer'}, 'limit': {'type': 'integer'}, 'query': string, 'after_id': {'type': 'integer'}, 'task_id': string, 'owner': string, 'status': string}),
-        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. acceptance {manifest_sha, result passed|failed, text} records your live check of one installed release (owner or user only; the room keeps who and when). get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override. To end a task that delivered nothing itself, update with close_reason and close_pointer instead of status done: duplicate/superseded point at the task carrying the work on (dependents move there), parked/wont_do at that task or a decision note; a closure skips the review and installation gates, cancels the task\'s open reviews and follow-ups, clears any pending transfer or wait, and is reopened by setting a status. A closed task shows status done with its closure; status reports count it as closed, never as delivered. next_action_state (owner or user only): a working task with a next_action is continued by the room after a turn that moved it, and its idle owner is woken after 10 minutes; waiting or deferred (with the reason on the task), or a wait, stops that. ready also opts in to one wake per external change; empty clears it.',
+        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. acceptance {manifest_sha, result passed|failed, text} records your live check of one installed release (owner or user only; the room keeps who and when). get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override. To end a task that delivered nothing itself, update with close_reason and close_pointer instead of status done: duplicate/superseded point at the task carrying the work on (dependents move there), parked/wont_do at that task or a decision note; a closure skips the review and installation gates, cancels the task\'s open reviews and follow-ups, clears any pending transfer or wait, and is reopened by setting a status. A closed task shows status done with its closure; status reports count it as closed, never as delivered. next_action_state (owner or user only): a working task with a next_action is continued by the room after a turn that moved it, and its idle owner is woken after 10 minutes; waiting or deferred (with the reason on the task), or a wait, stops that. ready also opts in to one wake per external change; empty clears it. A waiting or deferred task is not forgotten: wait_on (owner or user only, up to 4 of {task: id}, {review: id}, {followup: id} or {release: version}; [] clears it) names what it waits for, and the room wakes the owner once when all are met. A wait that names nothing is re-checked: its owner is woken once if it has not changed in 3 hours. A task whose last dependency finishes wakes its owner once.',
                    {'action': {'type': 'string', 'enum': ['get', 'create', 'claim', 'update', 'delegate', 'accept', 'release']}, 'task_id': string, 'title': string, 'details': string, 'owner': string, 'status': string,
                     'paths': {'type': 'array', 'items': string}, 'depends_on': {'type': 'array', 'items': string}, 'labels': {'type': 'array', 'items': string},
                     'attachments': {'type': 'array', 'items': {'type': 'object', 'properties': {'url': string, 'name': string, 'note': string, 'source': string}, 'required': ['url']}},
@@ -1759,7 +1805,9 @@ def coordination_tools():
                     'priority': {'type': 'integer', 'minimum': 1, 'maximum': 5},
                     'wait': {'type': 'object'}, 'evidence': {'type': 'object'}, 'update': string,
                     'acceptance': {'type': 'object', 'properties': {'manifest_sha': string, 'result': {'type': 'string', 'enum': ['passed', 'failed']}, 'text': string}},
-                    'close_reason': {'type': 'string', 'enum': list(CLOSE_REASONS)}, 'close_pointer': string}, ['action']),
+                    'close_reason': {'type': 'string', 'enum': list(CLOSE_REASONS)}, 'close_pointer': string,
+                    'wait_on': {'type': 'array', 'maxItems': MAX_WAIT_ON, 'items': {'type': 'object',
+                                'properties': {'task': string, 'review': string, 'followup': string, 'release': string}}}}, ['action']),
         definition('room_markup', 'Show instead of describe: share an uploaded image with the team, optionally marked up with numbered boxes, arrows and pins (x/y are fractions 0..1 of width/height; a pin uses x1,y1). Draws a new PNG whose note lists each mark. Posts it to this channel unless post is false; task_id adds it to a task you own.',
                    {'image': {'type': 'string', 'description': '/uploads/<file> url from chat or a task'},
                     'marks': {'type': 'array', 'items': {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['box', 'arrow', 'pin']},

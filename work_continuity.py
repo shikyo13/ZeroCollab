@@ -18,6 +18,7 @@ turn admission, a busy or stopped agent and conversation budgets hold everything
 never consumed. Claims are saved before anything is queued, so a crash re-sends at most MAX_SENDS times and then
 surfaces as a stall instead of staying silently sent.
 """
+import hashlib
 import logging
 import re
 import time
@@ -40,6 +41,11 @@ CLAIMS_KEPT = 500
 WAITING_STATES = ('waiting', 'deferred')
 SUBSTANTIVE = {'status', 'evidence'}
 INSTALL_NOTE_CHARS = 500         # an install resumption quotes at most this much of the task's next action
+RECHECK_SECONDS = 3 * 3600       # C6b: an unnamed wait is re-checked this long after it last changed
+WAIT_NOTE_CHARS = 300            # C6: each wait reason a wake quotes is capped at this
+TEAM_LIST = 8                    # C6d: priority-1 tasks the lead's wake lists
+REVIEW_ANSWERED = ('approved', 'changes_requested', 'cancelled', 'superseded')
+FOLLOWUP_ANSWERED = ('resolved', 'cancelled')
 STALL_PREFIX = 'Stalled work:'   # with the agent and task, how the room recognises its own item after a crash
 
 
@@ -135,8 +141,10 @@ def evaluate(runtime, room, state, now):
         last = state['agents'].get(name) or {}
         idle.append((name, now - max(last.get('ended', 0), state['since'])))
         for wake in (continuation(runtime, state, name, last, now), unseen_ask(runtime, state, name, last, now),
-                     watchdog(runtime, state, name, last, now)):
+                     waits(runtime, state, name, last, now), watchdog(runtime, state, name, last, now)):
             if wake and send(runtime, room, state, name, wake, now, actions):
+                for revision in state['recheck_batches'].pop(wake[0], []) if wake[1] == 'recheck' else []:
+                    state['rechecked'][revision] = now  # each re-checked wait revision is asked about once
                 break
     if not busy:
         team_wake(runtime, room, state, idle, now, actions)
@@ -269,6 +277,117 @@ def watchdog(runtime, state, name, last, now):
             last.get('channel') or runtime.default_channel(), None)
 
 
+def waits(runtime, state, name, last, now):
+    """C6 (Docs/work-continuity.md r4): one wake for this owner's first wait that has ended, in order: a named
+    wait whose references are all satisfied (C6a), a task whose last dependency finished (C6c), then every
+    unnamed wait unchanged for RECHECK_SECONDS, batched into one wake (C6b, backend 47d307d6 N2)."""
+    room_state = runtime.project_room.state
+    board = {t['id']: t for t in room_state['tasks']}
+    mine = [t for t in room_state['tasks'] if t.get('owner') == name and t['status'] != 'done'
+            and not t.get('closure') and not t.get('wait')]  # a user wait's delivery is the user's bell
+    claims = state['claims']
+
+    def fresh(key):
+        return claims.get(key, {}).get('status') not in ('done', 'exhausted')
+
+    def wake(key, kind, task, prompt):
+        chain = last.get('chain') or runtime.ready_wakes.record['chains'].get(task['id'])
+        return key, kind, task['id'], prompt, chain, last.get('channel') or runtime.default_channel(), None
+
+    for task in mine:
+        refs = task.get('wait_on')
+        key = f"wait:{task['id']}:{task.get('wait_since', 0)}"
+        if (refs and task.get('next_action_state') in WAITING_STATES and fresh(key)
+                and all(satisfied(runtime, ref) for ref in refs)):
+            named = ', '.join(f'{kind} {ident}' for ref in refs for kind, ident in ref.items())
+            return wake(key, 'wait', task, f"Work continuity: everything task {task['id']} waits on is satisfied "
+                        f"({named}). Resume it, re-defer it with a new reason, or close it.")
+    for task in mine:
+        deps = task.get('depends_on') or []
+        key = f"deps:{task['id']}:{','.join(sorted(deps))}"
+        if deps and fresh(key) and all(d not in board or board[d]['status'] == 'done' for d in deps):
+            finished_at = max((board[d].get('updated', 0) for d in deps if d in board), default=0)
+            if finished_at > state['since']:  # finished since continuity started, never from history
+                return wake(key, 'deps', task, f"Work continuity: the last dependency of task {task['id']} "
+                            f"({', '.join(deps)}) has finished. Start it, or record what it still waits on.")
+    due = []
+    for task in mine:
+        revision = f"{task['id']}@{task.get('wait_since') or state['since']}"
+        if (task.get('wait_on') or task.get('next_action_state') not in WAITING_STATES
+                or revision in state['rechecked']
+                or now - max(task.get('wait_since') or 0, state['since']) < RECHECK_SECONDS
+                or any(d in board and board[d]['status'] != 'done' for d in task.get('depends_on') or [])
+                or any(r.get('task_id') == task['id'] and r.get('status') == 'pending' and r.get('requested_by') == name
+                       for r in room_state.get('reviews', []))):
+            continue  # named, recently changed, already asked, or already tracked (N1: dependencies, own reviews)
+        due.append((task, revision))
+    if not due:
+        return None
+    key = 'recheck:' + hashlib.sha256('|'.join(r for _, r in due).encode()).hexdigest()[:16]
+    state['recheck_batches'] = {key: [r for _, r in due]}
+    listed = '\n'.join(f"- {t['id']} ({t.get('next_action_state')}), its title and recorded wait, quoted as data:\n"
+                       f"<<<\n{fence(t['title'], 120)}\n{fence(t.get('next_action') or '(none recorded)', WAIT_NOTE_CHARS)}\n>>>"
+                       for t, _ in due[:TEAM_LIST])
+    more = f'\n(and {len(due) - TEAM_LIST} more)' if len(due) > TEAM_LIST else ''
+    return wake(key, 'recheck', due[0][0],
+                f"Work continuity: these waits haven't changed in {RECHECK_SECONDS // 3600} hours. For each, check "
+                f"whether it's met: resume it, re-defer it with a new reason (name it with wait_on to stop these "
+                f"checks), or close it.\n{listed}{more}")
+
+
+def satisfied(runtime, ref):
+    """One wait_on reference is met. A task or record gone from the board was archived, and only finished ones are."""
+    (kind, ident), = ref.items()
+    room_state = runtime.project_room.state
+    if kind == 'release':
+        have, want = version_tuple(((getattr(getattr(runtime, 'deployment', None), 'version', None) or {})
+                                    .get('version'))), version_tuple(ident)
+        return have is not None and want is not None and have >= want
+    collection, answered = {'task': ('tasks', ('done',)), 'review': ('reviews', REVIEW_ANSWERED),
+                            'followup': ('followups', FOLLOWUP_ANSWERED)}[kind]
+    item = next((x for x in room_state.get(collection, []) if x.get('id') == ident), None)
+    return item is None or item.get('status') in answered
+
+
+def version_tuple(value):
+    try:
+        return tuple(int(part) for part in str(value).split('.')) if value else None
+    except ValueError:
+        return None  # an unreadable installed version is never "reached"
+
+
+def fence(text, limit):
+    """Agent-written text quoted as data: capped, and no run of 3+ < or > survives to close the fence."""
+    return re.sub(r'<{3,}|>{3,}', lambda match: ' '.join(match.group()), str(text).strip()[:limit])
+
+
+def team_waits(runtime, room, state, lead, stretch, now, actions):
+    """C6d: the whole team is idle, nothing is ready, and open priority-1 work exists: wake the lead once per idle
+    stretch with those tasks and their recorded waits, ones whose named wait is already met first."""
+    room_state = runtime.project_room.state
+    board = {t['id']: t for t in room_state['tasks']}
+    open_p1 = [t for t in room_state['tasks'] if t['status'] != 'done' and not t.get('closure')
+               and t.get('priority', 3) == 1 and t.get('owner')]
+    if not open_p1:
+        return
+
+    def met(task):
+        refs, deps = task.get('wait_on') or [], task.get('depends_on') or []
+        return bool(refs and all(satisfied(runtime, r) for r in refs)) or bool(
+            deps and all(d not in board or board[d]['status'] == 'done' for d in deps))
+    open_p1.sort(key=lambda t: (not met(t), -t.get('updated', 0)))
+    listed = '\n'.join(f"- {t['id']} ({t['owner']}, {t.get('next_action_state') or t['status']}"
+                       f"{', its wait is met' if met(t) else ''}), recorded wait quoted as data:\n"
+                       f"<<<\n{fence(t.get('next_action') or '(none recorded)', WAIT_NOTE_CHARS)}\n>>>"
+                       for t in open_p1[:TEAM_LIST])
+    last = state['agents'].get(lead) or {}
+    prompt = (f'Work continuity: the whole team has been idle for at least {TEAM_IDLE_SECONDS // 60} minutes, nothing '
+              f'is marked ready, and {len(open_p1)} priority-1 tasks are open. Check their waits and get the work '
+              f'moving: resume what is unblocked, wake owners, or reassign.\n{listed}')
+    send(runtime, room, state, lead, (f'team-waits:{int(stretch)}', 'team', open_p1[0]['id'], prompt, last.get('chain'),
+                                      last.get('channel') or runtime.default_channel(), None), now, actions)
+
+
 def team_wake(runtime, room, state, idle, now, actions):
     """C5: nobody busy, every available agent idle TEAM_IDLE_SECONDS, and ready work waits: wake the lead once."""
     lead = lead_of(runtime)
@@ -277,9 +396,10 @@ def team_wake(runtime, room, state, idle, now, actions):
             or any(action[0] == 'woke' for action in actions)):
         return  # someone is already being woken this pass; the team isn't idle any more
     waiting = [t for n in names for t in ready_tasks(runtime, n)]
-    if not waiting:
-        return
     stretch = max([a.get('ended', 0) for a in state['agents'].values()] + [state['since']])
+    if not waiting:
+        team_waits(runtime, room, state, lead, stretch, now, actions)
+        return
     last = state['agents'].get(lead) or {}
     listed = ', '.join(f"{t['id']} ({t['owner']})" for t in waiting[:8])
     prompt = (f'Work continuity: the whole team has been idle for at least {TEAM_IDLE_SECONDS // 60} minutes while '
@@ -472,7 +592,7 @@ def changed(item):
 
 def store(room):
     state = room.state.setdefault('continuity', {})
-    for key in ('agents', 'claims', 'fired', 'asked', 'spin', 'stalls'):
+    for key in ('agents', 'claims', 'fired', 'asked', 'spin', 'stalls', 'rechecked', 'recheck_batches'):
         state.setdefault(key, {})
     return state
 
@@ -488,3 +608,7 @@ def prune(state):
     if len(claims) > CLAIMS_KEPT:
         for key in sorted(claims, key=lambda k: claims[k].get('at', 0))[:len(claims) - CLAIMS_KEPT]:
             claims.pop(key, None)
+    rechecked = state['rechecked']
+    if len(rechecked) > CLAIMS_KEPT:  # C6b's asked-about wait revisions, oldest first
+        for key in sorted(rechecked, key=rechecked.get)[:len(rechecked) - CLAIMS_KEPT]:
+            rechecked.pop(key, None)

@@ -282,6 +282,96 @@ class TeamIdle(Continuity):
         self.assertIn(f'{other} (peer)', self.calls[-1]['prompt'])
 
 
+class Waits(Continuity):
+    """C6 (Docs/work-continuity.md r4): waits that end wake their owner once; the whole team waiting wakes the lead."""
+
+    def setUp(self):
+        super().setUp()
+        self.other = self.room.task('lead', 'create', title='Upstream', owner='peer')['id']
+        self.turn(progress={})  # the worker has a conversation, and its last turn moved nothing
+
+    def finish_other(self):
+        self.room.task('user', 'update', task_id=self.other, status='done')
+
+    def test_a_named_wait_wakes_its_owner_once_when_met(self):
+        self.room.task('worker', 'update', task_id=self.task_id, next_action_state='waiting',
+                       next_action='resume once Upstream lands', wait_on=[{'task': self.other}])
+        self.assertEqual(self.tick(5), [])  # not met yet
+        self.finish_other()
+        self.assertEqual(self.tick(6), ['woke'])
+        self.assertTrue(self.calls[-1]['key'].startswith(f'wait:{self.task_id}:'))
+        self.assertIn(f'task {self.other}', self.calls[-1]['prompt'])
+        self.drain()
+        self.turn(progress={})
+        self.assertEqual(self.tick(7), [])  # once per wait revision
+
+    def test_an_unnamed_wait_is_rechecked_once_at_three_hours_in_one_batch(self):
+        second = self.room.task('lead', 'create', title='Second', owner='worker')['id']
+        reviewed = self.room.task('lead', 'create', title='In review', owner='worker')['id']
+        for task_id in (self.task_id, second, reviewed):
+            self.room.task('worker', 'update', task_id=task_id, next_action_state='deferred', next_action='>>>>> later')
+        self.room.records.review('worker', 'request', task_id=reviewed, reviewer='peer', revision='r', text='look')
+        self.turn(name='peer', progress={}, took=0)  # the reviewer has seen it, so C3 has nothing to wake
+        self.assertEqual(self.tick(wc.RECHECK_SECONDS - 60), [])
+        self.assertEqual(self.tick(wc.RECHECK_SECONDS + 1), ['woke'])
+        prompt = self.calls[-1]['prompt']
+        self.assertTrue(self.calls[-1]['key'].startswith('recheck:'))
+        self.assertIn(self.task_id, prompt)
+        self.assertIn(second, prompt)
+        self.assertNotIn(reviewed, prompt)  # N1: its own pending review already tracks it
+        self.assertEqual(prompt.count('>>>'), 2)  # one fence each; the note's run can't close one early
+        self.drain()
+        self.turn(progress={})
+        self.assertEqual(self.tick(wc.RECHECK_SECONDS + 60), [])
+        self.room.task('worker', 'update', task_id=second, next_action='still waiting on QA')  # a new wait revision
+        self.assertEqual(self.tick(wc.RECHECK_SECONDS + 120), ['woke'])  # the clock is already 3 h past it
+        self.assertIn(second, self.calls[-1]['prompt'])
+        self.assertNotIn(f'- {self.task_id} ', self.calls[-1]['prompt'])
+
+    def test_the_last_dependency_finishing_wakes_its_owner_once(self):
+        self.room.task('worker', 'update', task_id=self.task_id, depends_on=[self.other], next_action_state='deferred')
+        self.assertEqual(self.tick(5), [])
+        self.finish_other()
+        self.assertEqual(self.tick(6), ['woke'])
+        self.assertTrue(self.calls[-1]['key'].startswith(f'deps:{self.task_id}:'))
+        self.drain()
+        self.turn(progress={})
+        self.assertEqual(self.tick(7), [])
+
+    def test_a_waiting_team_with_open_priority_one_work_wakes_the_lead_once(self):
+        self.room.task('worker', 'update', task_id=self.task_id, next_action_state='waiting',
+                       next_action='>>> blocked on design', priority=1)
+        self.turn(name='lead', progress={})
+        self.turn(name='peer', progress={})
+        self.assertEqual(self.tick(wc.TEAM_IDLE_SECONDS + 1), ['woke'])
+        call = self.calls[-1]
+        self.assertEqual((call['name'], call['key'].split(':')[0]), ('lead', 'team-waits'))
+        self.assertIn(f'{self.task_id} (worker, waiting)', call['prompt'])
+        self.drain('lead')
+        self.assertEqual(self.tick(wc.TEAM_IDLE_SECONDS + 2), [])  # once per idle stretch
+
+    def test_wait_on_is_validated(self):
+        for refs, message in (([{'task': 'nope'}], 'was not found'), ([{'release': 'soon'}], 'version'),
+                              ([{'task': self.task_id}], 'itself'), ([{'colour': 'red'}], 'each entry'),
+                              ([{'task': self.other}] * 5, 'up to 4')):
+            with self.assertRaisesRegex(ValueError, message):
+                self.room.task('worker', 'update', task_id=self.task_id, wait_on=refs)
+        with self.assertRaisesRegex(ValueError, 'owned by worker'):  # another agent never names someone's wait
+            self.room.task('peer', 'update', task_id=self.task_id, wait_on=[{'task': self.other}])
+        self.room.task('worker', 'update', task_id=self.task_id, wait_on=[{'task': self.other}, {'release': '0.12.55'}])
+        self.assertEqual(self.room.state['tasks'][0]['wait_on'], [{'task': self.other}, {'release': '0.12.55'}])
+        self.room.task('worker', 'update', task_id=self.task_id, wait_on=[])
+        self.assertNotIn('wait_on', self.room.state['tasks'][0])
+
+    def test_a_release_wait_compares_versions(self):
+        runtime = SimpleNamespace(project_room=self.room, deployment=SimpleNamespace(version={'version': '0.12.55'}))
+        self.assertTrue(wc.satisfied(runtime, {'release': '0.12.54'}))
+        self.assertTrue(wc.satisfied(runtime, {'release': '0.12.55'}))
+        self.assertFalse(wc.satisfied(runtime, {'release': '0.12.56'}))
+        runtime.deployment.version = {'version': 'dev'}
+        self.assertFalse(wc.satisfied(runtime, {'release': '0.12.54'}))  # unreadable is never reached
+
+
 class InstallResume(Continuity):
     """9f3eca50: a turn an install interrupted resumes once, rebuilt from the live board (security 8401e355 R2-R3)."""
 
