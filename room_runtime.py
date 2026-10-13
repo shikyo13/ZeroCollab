@@ -827,6 +827,9 @@ class RoomRuntime:
         self.manual_stop_deferred = None  # 'stop' or 'resume', for a latch that could not record the click
         # Clicks are latched at once; their room effects run one at a time under this lock, in click order.
         self.manual_stop_effects = asyncio.Lock()
+        # This runtime checks completion_allowed before queueing and again before a turn (Astra 3a7da7ef); the
+        # release core refuses to consume completions without this marker.
+        self.release_completion_guarded = True
         self.release_wakes_lock = threading.Lock()
 
     def handles(self, name):
@@ -1245,6 +1248,7 @@ class RoomRuntime:
         if self.start_stopped:
             # Before the heartbeat exists, so no queued entry, ready wake, goal step or manager check-in runs first.
             await self.stop(notice=self.start_stopped)
+        self.consume_release_completions()  # after setup, the checkpoint and any start_stopped Stop
         self.restore_release_wakes()  # after the checkpoint, which may already hold some of them; none while stopped
         self.heartbeat = asyncio.create_task(self.beat())
         await self.refresh()
@@ -1364,6 +1368,7 @@ class RoomRuntime:
                 await self.resume_deploy_checks()
             except Exception:
                 LOGGER.exception('Post-deployment provider refresh failed; turns remain held')
+            self.consume_release_completions()  # once per beat; it skips a blocked room itself
             if self.deployment and self.deployment.reload()["writes"] == "blocked":
                 self.manager_wakes.held = True
                 await asyncio.sleep(.25)
@@ -1596,7 +1601,10 @@ class RoomRuntime:
                 # An ordinary request covers this interval; do not mix timer authority into it.
                 self.manager_wakes.covered(entry['requests'])
                 entry['requests'] = [q for q in entry['requests'] if not q.get('manager_audit')]
+            # A release completion revoked after it was queued (grant, Stop, identity) is dropped from this turn only;
+            # its record stays pending, and the other requests merged into the entry are kept (Astra 3a7da7ef).
             requests = [r for r in entry['requests'] if not r.get('_steer_delivered') and current_request(r, name, self.project_room.state, receipts)
+                        and (not r.get('release_key') or self.release_completion_allowed(r['release_key'], name))
                         and self.goals.accepts(r) and self.team_builder.accepts(r) and self.decisions.accepts(r)
                         and self.ready_wakes.accepts(r) and self.manager_wakes.accepts(r)]
             if not requests:
@@ -2771,6 +2779,29 @@ class RoomRuntime:
         self.restore_release_wakes()
         return added
 
+    def consume_release_completions(self):
+        """The release core's completion consumer (Astra 3a7da7ef): a synchronous, bounded scan that persists new
+        terminal receipts through enqueue_release_completion. It holds its own mutation and skips a blocked, closing
+        or rehearsal room. Absent in rooms without the core."""
+        consume = getattr(getattr(self, 'release_manager', None), 'consume_completions', None)
+        if callable(consume):
+            try:
+                consume()
+            except Exception:
+                LOGGER.exception('Release completion consumer failed; completions stay with the core')
+
+    def release_completion_allowed(self, key, recipient):
+        """The core's read-only check that a completion may still be delivered (receipt, project, grant revision,
+        Stop, installed identity). Fails closed: no core or method, an error or anything but True keeps it pending."""
+        allowed = getattr(getattr(self, 'release_manager', None), 'completion_allowed', None)
+        if not callable(allowed):
+            return False
+        try:
+            return allowed(key, recipient) is True
+        except Exception:
+            LOGGER.exception('Release completion check failed; %s stays pending', key)
+            return False
+
     def release_receipted(self, key, recipient):
         mark = f'release:{key}'
         return any(session.startswith(recipient + ':') and mark in delivered
@@ -2810,6 +2841,8 @@ class RoomRuntime:
         restored = 0
         for key, record in due:
             name = record['recipient']
+            if not self.release_completion_allowed(key, name):
+                continue  # stays pending for a later restore, once the core allows it again
             if name in self.queues and not self.release_wake_waiting(name, key) and self.enqueue(
                     name, self.default_channel(), prompt=record['prompt'], routing={'release_key': key, 'human': False}):
                 restored += 1
