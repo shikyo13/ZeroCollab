@@ -41,6 +41,7 @@ class ReleaseManager:
         self.jobs = {}
         self.active = None
         self.closing = False
+        self.check_admitted = {}
 
     def _path(self, relative):
         path = (self.root / relative).resolve()
@@ -67,11 +68,11 @@ class ReleaseManager:
             raise ValueError('Release record must be an object')
         return value
 
-    def _caller(self, caller):
+    def _caller(self, caller, donor=False):
         if not isinstance(caller, dict) or set(caller) != {'profile', 'project', 'run'}:
             raise ValueError('A managed room caller is required')
         rt = self.runtime
-        if caller['profile'] != 'astra' or caller['project'] != rt.identity:
+        if (not donor and caller['profile'] != 'astra') or caller['project'] != rt.identity:
             raise ValueError('Release actions belong to the active release manager')
         run = next((run for run in rt.running.values() if run.id == caller['run']), None)
         if run is None or run.name != caller['profile']:
@@ -79,9 +80,25 @@ class ReleaseManager:
 
     async def action(self, caller, action, supplied):
         values = arguments(action, supplied)
-        self._caller(caller)
+        self._caller(caller, donor=action in ('check', 'status', 'intake'))
         if action == 'status':
+            if values.get('id'):
+                from release_intake import public_check, handoffs, stored_check
+                record = stored_check(self, values['id'])
+                if record and record.get('project') == caller['project']:
+                    return public_check(record)
+                handoff = next((r for r in handoffs(self) if r['id'] == values['id']), None)
+                if handoff:
+                    return handoff
             return self.status(values.get('id'))
+        if action == 'intake':
+            from release_intake import collection, handoffs
+            with self.state.lock:
+                return {'checks': [{k: r[k] for k in ('id', 'status', 'profile', 'commit', 'created')}
+                                   for r in collection(self, 'checks')
+                                   if r.get('project') == caller['project']],
+                        'handoffs': [{k: r[k] for k in ('id', 'check_id', 'state', 'task_ids', 'release_id', 'deployed') if k in r}
+                                     for r in handoffs(self)]}
         if action in ('request', 'rollback'):
             # Durable idempotency also works after the gate closes or install
             # changes current.json. This only reports a previously queued id.
@@ -91,12 +108,33 @@ class ReleaseManager:
                 return self.status(prior['id'])
         if self.closing or not self.state.admission_open():
             raise ValueError('Release operations wait until the room reopens')
+        if action == 'check':
+            from release_intake import CHECK_INTERVAL, prepare, revalidate
+            now = time.monotonic()
+            if now - self.check_admitted.get(caller['profile'], -CHECK_INTERVAL) < CHECK_INTERVAL:
+                raise ValueError('E4: wait thirty seconds before another donor check')
+            context = prepare(self, caller, values)
+            revalidate(self, context)
+            result = self.start_check(caller, context)
+            self.check_admitted[caller['profile']] = now
+            return result
         if action in MUTATIONS:
             self.state.release_grant.require(caller, self.runtime.profiles.items.get('astra'))
+            if action in ('handoff', 'disposition', 'archive'):
+                from release_intake import mutate
+                if not self.state.enter_mutation():
+                    raise ValueError('The deployment write gate is closed')
+                try:
+                    return mutate(self, caller, action, values)
+                finally:
+                    self.state.leave_mutation()
             if action == 'stage':
                 from release_stage import prepare, revalidate
                 context = prepare(self, caller, values)
                 revalidate(self, context)
+                from release_intake import stage_snapshot
+                with self.state.lock:
+                    stage_snapshot(self, context)
                 return self.start_stage(caller, context)
             if action == 'rehearse':
                 from release_rehearse import prepare
@@ -218,6 +256,25 @@ class ReleaseManager:
                'deadline': time.time() + STAGE_SECONDS, 'project': caller['project'], 'stop': threading.Event()}
         self._launch(job, lambda: self._stage_job(job, context))
         return self._job_answer(job)
+
+    def start_check(self, caller, context):
+        from release_stage import STAGE_SECONDS
+        job = {'id': uuid.uuid4().hex, 'action': 'check', 'state': 'running',
+               'deadline': time.time() + STAGE_SECONDS, 'project': caller['project'], 'stop': threading.Event()}
+        self._launch(job, lambda: self._check_job(job, context))
+        return self._job_answer(job)
+
+    async def _check_job(self, job, context):
+        from release_intake import run_check
+        try:
+            job.update(state='complete', result=await run_check(self, job, context))
+        except asyncio.CancelledError:
+            job['stop'].set()
+            job.update(state='cancelled', error='Donor check cancelled')
+        except Exception:
+            job.update(state='failed', error='E4: donor check refused or failed; no handoff or release was published')
+        finally:
+            self._release_job(job)
 
     async def _stage_job(self, job, context):
         from release_stage import stage

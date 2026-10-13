@@ -65,7 +65,7 @@ def _same_source_path(entry, payload_path):
     return isinstance(path, str) and (path == payload_path or path.endswith('/' + payload_path))
 
 
-def review_coverage(package, predecessor, review_ids, records, artifact_root):
+def review_coverage(package, predecessor, review_ids, records, artifact_root, *, report_uncovered=False):
     """Verify Security f92cae36 P1 against immutable review snapshots.
 
     Both packages must already be produced by release_pack. Review ids select
@@ -139,8 +139,8 @@ def review_coverage(package, predecessor, review_ids, records, artifact_root):
         else:
             coverage[path] = {'sha256': digest, 'normalized_sha256': normalized,
                               'reviews': matches}
-    if missing:
+    if missing and not report_uncovered:
         raise ValueError('No approved snapshot covers payload bytes: ' + ', '.join(sorted(missing)))
     return {'manifest_sha': candidate['manifest_sha'],
             'predecessor_manifest_sha': old['manifest_sha'],
-            'coverage': coverage, 'deletions': []}
+            'coverage': coverage, 'deletions': [], **({'uncovered': sorted(missing)} if report_uncovered else {})}

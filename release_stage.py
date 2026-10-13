@@ -54,6 +54,12 @@ def worker(directory):
     pack.git = bounded_git
     if pack.git(repo, 'rev-parse', '--verify', data['commit'] + '^{commit}').decode().strip() != data['commit']:
         raise ValueError('The immutable commit did not resolve exactly')
+    if data.get('intake_check'):
+        if pack.git(repo, 'rev-parse', '--verify', data['base'] + '^{commit}').decode().strip() != data['base']:
+            raise ValueError('E4: declared base did not resolve exactly')
+        pack.git(repo, 'merge-base', '--is-ancestor', data['base'], data['commit'])
+        for dependency in data['dependency_records'].values():
+            pack.git(repo, 'merge-base', '--is-ancestor', dependency['commit'], data['commit'])
     entries = pack.tree(repo, data['commit'])
     if len(entries) > MAX_FILES:
         raise ValueError('Release exceeds the file limit')
@@ -74,7 +80,7 @@ def worker(directory):
     if sum(p.stat().st_size for p in (package / 'payload').rglob('*') if p.is_file()) > MAX_BYTES:
         raise ValueError('Filtered payload exceeds the byte limit')
     coverage = review_coverage(package, Path(data['predecessor']), data['reviews'], data['records'],
-                               Path(data['artifacts']))
+                               Path(data['artifacts']), report_uncovered=data.get('intake_check', False))
     pack.write_json(directory / 'result.json', {'release_id': package.name, **coverage})
 
 
@@ -193,10 +199,13 @@ async def stage(manager, job, context):
             raise ValueError('Stage worker fingerprint differs from its predecessor')
         with manager.state.lock, approval_lock(manager.root):
             check()
+            from release_intake import stage_snapshot
+            dispositions = stage_snapshot(manager, context, result)
             receipt = {**result, 'repository': context['repository_key'], 'commit': context['commit'],
                        'reviews': context['reviews'], 'profile': context['caller']['profile'],
                        'project': context['caller']['project'], 'run': context['caller']['run'],
-                       'grant_revision': context['grant_revision'], 'created': time.time()}
+                       'grant_revision': context['grant_revision'], 'created': time.time(),
+                       'handoff_dispositions': dispositions}
             atomic_json(package / 'stage.json', receipt)
             atomic_json(package / 'review.json', {'release_id': identifier, 'manifest_sha': result['manifest_sha'],
                                                    'reviews': context['reviews']})
@@ -208,6 +217,11 @@ async def stage(manager, job, context):
                          'repository', 'commit', 'reviews', 'project')
                 if not existing or any(existing.get(key) != receipt.get(key) for key in fixed):
                     raise ValueError('Package already exists; inspect its recorded staging identity')
+                # An existing package cannot acquire new inclusion claims.
+                def handoff_identity(rows):
+                    return [(r['id'], r['check_id'], r['state'], r.get('reason'), r.get('target')) for r in rows]
+                if handoff_identity(existing.get('handoff_dispositions', [])) != handoff_identity(dispositions):
+                    raise ValueError('E4: existing stage has a different handoff set; use a new reviewed commit')
             else:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(package, destination)

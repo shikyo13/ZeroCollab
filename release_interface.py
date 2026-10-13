@@ -8,7 +8,7 @@ import re
 
 
 PROTOCOL = 1
-MUTATIONS = frozenset({'stage', 'rehearse', 'request', 'rollback'})
+MUTATIONS = frozenset({'stage', 'rehearse', 'request', 'rollback', 'handoff', 'disposition', 'archive'})
 FIELDS = {
     'list': frozenset(),
     'stage': frozenset({'repository', 'commit', 'reviews'}),
@@ -17,6 +17,11 @@ FIELDS = {
     'status': frozenset({'id'}),
     'verify': frozenset({'deployment_id'}),
     'rollback': frozenset({'expected_manifest_sha', 'idempotency_key'}),
+    'check': frozenset({'repository', 'commit', 'reviews', 'base', 'dependencies'}),
+    'handoff': frozenset({'check_id'}),
+    'archive': frozenset({'check_id'}),
+    'disposition': frozenset({'handoff_id', 'disposition', 'reason', 'target'}),
+    'intake': frozenset(),
 }
 PATTERNS = {
     'repository': r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}',
@@ -27,6 +32,10 @@ PATTERNS = {
     'idempotency_key': r'[A-Za-z0-9_-]{1,64}',
     'id': r'[0-9a-f]{32}',
     'deployment_id': r'[0-9a-f]{32}',
+    'check_id': r'[0-9a-f]{32}',
+    'handoff_id': r'[0-9a-f]{32}',
+    'base': r'[0-9a-f]{40}',
+    'disposition': r'open|deferred|dropped',
 }
 
 
@@ -38,15 +47,28 @@ def arguments(action, value):
     deployment journal/receipt. Jobs and requests use server-generated UUID hex.
     """
     if not isinstance(action, str) or action not in FIELDS:
-        raise ValueError('Choose list, stage, rehearse, request, status, verify or rollback')
+        raise ValueError('Unknown release action')
     if not isinstance(value, dict):
         raise ValueError('Release arguments must be an object')
     expected = FIELDS[action]
-    if set(value) - expected or (action != 'status' and set(value) != expected):
+    optional = {'status': {'id'}, 'check': {'dependencies'}, 'disposition': {'target'}}.get(action, set())
+    if set(value) - expected or expected - optional - set(value):
         raise ValueError('Unexpected or missing release arguments')
-    result = {}
+    result = {'dependencies': []} if action == 'check' else {'target': ''} if action == 'disposition' else {}
     for name, item in value.items():
-        if name == 'reviews':
+        if name == 'dependencies':
+            if (not isinstance(item, list) or len(item) > 12 or any(
+                    not isinstance(i, str) or not re.fullmatch(r'(?:[0-9a-f]{12}|[0-9a-f]{32})', i)
+                    for i in item) or len(set(item)) != len(item)):
+                raise ValueError('Choose at most twelve distinct release or check dependencies')
+            result[name] = list(item)
+        elif name in ('reason', 'target'):
+            if (not isinstance(item, str) or len(item) > (1000 if name == 'reason' else 160)
+                    or any(ord(c) < 32 and c not in '\n\t' for c in item)
+                    or (name == 'reason' and not item.strip())):
+                raise ValueError('A bounded reason and optional target are required')
+            result[name] = item.strip()
+        elif name == 'reviews':
             if (not isinstance(item, list) or not 1 <= len(item) <= 12
                     or any(not isinstance(review, str) or not re.fullmatch(r'[0-9a-f]{8}', review)
                            for review in item)
