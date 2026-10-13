@@ -633,17 +633,24 @@ async def inspect(runtime, run, arguments):
 
 async def inspect_job(runtime, run, ticket, ref, vs, path, vs_path, ffmpeg, options):
     """The owned inspect. Its thread owns FFmpeg; a cancel sets the job's stop event and this joins the thread
-    before the slot is freed, however often it is cancelled itself. A cancelled or failed job publishes nothing
-    and removes only the sheets it added (media r2, QA r4b)."""
+    before the slot is freed, however often it is cancelled itself. Its notices are published while it still
+    holds the slot, each behind a fence, so a cancel or a project switch stops them (media 08560b03 B1). A job
+    that ends before publishing removes only the sheets it added (media r2, QA r4b)."""
     import motion_jobs
     import video_analysis
     jobs = runtime.host.media_jobs
     lease = await jobs.wait(ticket)  # cancelled while queued: wait() gives back anything it was granted
     ticket.job['phase'] = 'running'
-    created, interrupted = [], False
+    created, interrupted, published = [], False, False
     phase, result, error = 'failed', None, None
-    try:
+
+    def fence():
         ticket.check_cancel()
+        if (runtime.identity or '') != ticket.key[2]:
+            raise motion_jobs.Cancelled('The project changed')
+
+    try:
+        fence()
         worker = asyncio.get_running_loop().run_in_executor(
             None, inspect_files, ffmpeg, path, vs_path, options, runtime.host.store.upload_dir, ticket.stop, created)
         while not worker.done():
@@ -653,8 +660,17 @@ async def inspect_job(runtime, run, ticket, ref, vs, path, vs_path, ffmpeg, opti
                 interrupted = True
                 ticket.stop.set()
         answer = {'video': ref, **({'vs': vs} if vs else {}), **worker.result()}
-        ticket.check_cancel()  # publication fence: nothing from a cancelled job or a changed project
-        result, phase = motion_jobs.validate_result(answer), 'done'
+        result = motion_jobs.validate_result(answer)  # bounded before anything is published
+        fence()
+        if result['sheets']:
+            published = True  # from here the sheets are referenced, so they stay whatever happens next
+            await runtime.live.publish(runtime.live.artifact(run, result['sheets'][0]['url'], 'upload'))
+            fence()
+        await runtime.activity_note(run, 'motion', f'Inspected {ref}' + (f' against {vs}' if vs else ''))
+        fence()
+        phase = 'done'
+    except asyncio.CancelledError:
+        interrupted, phase = True, 'cancelled'
     except (motion_jobs.Cancelled, video_analysis.Cancelled):
         phase = 'cancelled'
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
@@ -666,15 +682,11 @@ async def inspect_job(runtime, run, ticket, ref, vs, path, vs_path, ffmpeg, opti
         LOGGER.exception('room_motion inspect failed')
         error = f'Inspect failed: {exc}'
     finally:
-        if phase != 'done':
+        if phase != 'done' and not published:
             for made in created:
                 with contextlib.suppress(OSError):
                     made.unlink()
-        jobs.finish(lease, phase=phase, result=result, error=error)
-    if ticket.job['phase'] == 'done':
-        if result['sheets']:
-            await runtime.live.publish(runtime.live.artifact(run, result['sheets'][0]['url'], 'upload'))
-        await runtime.activity_note(run, 'motion', f'Inspected {ref}' + (f' against {vs}' if vs else ''))
+        jobs.finish(lease, phase=phase, result=result if phase == 'done' else None, error=error)
     if interrupted:
         raise asyncio.CancelledError
 

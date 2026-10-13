@@ -90,7 +90,7 @@ def changing_tool(name, params):
 ROOM_READS = {"room_read": None, "room_image": None, "room_skill": None, "room_task":({"get"}, ''), "room_goal": ({"status"}, 'status'),
               "room_team_builder": ({"get"}, 'get'), "room_decision": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status'),
               # save, frame (new uploads) and export change the room, so sealed turns and check-ins never reach them.
-              "room_motion": ({"list", "get", "validate", "export_status"}, 'list')}
+              "room_motion": ({"list", "get", "validate", "export_status", "job_status"}, 'list')}
 
 
 # What an agent is doing, in plain words, for the Board's activity strip and Follow (Zero #13855): the provider's
@@ -900,7 +900,7 @@ class RoomRuntime:
         if identity is None:
             identity = project_registry.identity_for(self, project)
         jobs = getattr(self.host, 'media_jobs', None)
-        if jobs is not None and jobs.loop is not None and self.identity:
+        if jobs is not None and jobs.loop is not None and self.identity and identity != self.identity:
             # Before the identity changes: the old project's queued media jobs end and running ones are told to stop.
             jobs.invalidate_project(self.identity)
         self.project = project
