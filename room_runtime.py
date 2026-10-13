@@ -2502,6 +2502,39 @@ def install(host):
         except (ValueError, KeyError, TypeError) as exc:
             return JSONResponse({'error': str(exc)}, 400)
 
+    @host.app.get('/api/runtime/profiles/{name}/core')
+    async def profile_core(name: str):
+        """The approved role core on record and the drafted one awaiting the user's review (b8bc48b6)."""
+        try:
+            current = runtime.profiles.core_state(name)
+        except ValueError as exc:
+            return JSONResponse({'error': str(exc)}, 404)
+        try:
+            return {'current': current, 'draft': await asyncio.to_thread(runtime.profiles.core_draft, name)}
+        except (OSError, ValueError) as exc:
+            return {'current': current, 'draft': None, 'draft_error': str(exc)}
+
+    @host.app.post('/api/runtime/profiles/{name}/core')
+    async def change_profile_core(name: str, request: Request):
+        """approve (with the digest of the draft the user reviewed) or revoke. Only this user route sets the
+        approval fields (security 3a00bef2 A2); agents' room tools never reach it."""
+        try:
+            body = await request.json()
+            action = body.get('action') if isinstance(body, dict) else None
+            async with runtime.profile_lock:
+                if action == 'approve':
+                    approved_at = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+                    result = await asyncio.to_thread(runtime.profiles.approve_core, name, body.get('digest'),
+                                                     approved_at)
+                elif action == 'revoke':
+                    result = runtime.profiles.revoke_core(name)
+                else:
+                    raise ValueError('Choose approve (with the reviewed digest) or revoke')
+            await runtime.publish_status()
+            return {**result, 'note': 'Applies from the agent\'s next turn, which starts a fresh session once.'}
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            return JSONResponse({'error': str(exc)}, 400)
+
     @host.app.post('/api/runtime/profiles/{name}/archive')
     async def archive_profile(name: str, request: Request):
         try:
