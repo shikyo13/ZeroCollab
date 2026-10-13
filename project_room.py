@@ -48,6 +48,8 @@ ARCHIVE_BATCH = 20
 STALE_SECONDS = 600
 # Providers whose turns get the room MCP server (native_adapters: codex/claude flags, antigravity config).
 ROOM_TOOL_PROVIDERS = {'codex', 'claude', 'antigravity'}
+# The one profile the release grant can be bound to (Astra 15859); room_release is named only in its turns.
+RELEASE_GRANTEE = 'astra'
 # The per-turn live context (Docs/agent-profiles.md layer 3): its size budget and how many waiting items it lists.
 LIVE_CONTEXT_CHARS = 2400
 LIVE_CONTEXT_ITEMS = 8
@@ -1056,6 +1058,12 @@ class ProjectRoom:
         decisions = getattr(self.runtime, 'decisions', None)
         return [m for m in messages if not (decisions and decisions.hidden(m, run.name))]
 
+    @staticmethod
+    def release_manager(name):
+        """Whether to name room_release in this agent's turn (harness 541d8351): Claude loads MCP tools deferred, so
+        an unnamed tool goes unused. Only the fixed grantee profile; everyone else's prompt is unchanged."""
+        return name == RELEASE_GRANTEE
+
     def context(self, run, changes=None):
         # A local model's context window can lower the room limit for its turns (room_runtime.local_input_budget).
         maximum = min(self.limits['input_chars'], getattr(run, 'input_budget', None) or self.limits['input_chars'])
@@ -1326,7 +1334,8 @@ class ProjectRoom:
             native = state.get('provider') in ROOM_TOOL_PROVIDERS
             lines.append('- Room tools (room_read, room_task, room_update, room_review, room_followup, room_goal, room_repository, '
                          f"room_image, room_markup, room_motion{', room_browser' if native else ''}"
-                         f"{', room_skill' if getattr(run, 'skills', None) else ''}) are provided for this turn. If any is "
+                         f"{', room_skill' if getattr(run, 'skills', None) else ''}"
+                         f"{', room_release' if native and self.release_manager(run.name) else ''}) are provided for this turn. If any is "
                          'missing from your tool list, say so in the chat as a harness fault and name the action it blocks; '
                          'do not report the action as done.')
             if native:
