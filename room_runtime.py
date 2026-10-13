@@ -830,6 +830,7 @@ class RoomRuntime:
         self.decisions = DecisionFlow(self)
         self.profile_lock = asyncio.Lock()
         self.deploy_held = {}
+        self.install_interrupted = {}  # agent -> ids of a turn an install interrupted, resumed on reopen (9f3eca50)
         self.wake_notices = {}  # agent (or room:chat) -> the unavailable state last announced in chat
         self.notice_lines = {}  # the same keys -> that announcement's chat message id, removed once it no longer applies
         self.deployment = None
@@ -1386,6 +1387,32 @@ class RoomRuntime:
                     await self.refresh()
             finally:
                 self.deployment.leave_mutation()
+        if self.install_interrupted and not getattr(self, 'deploy_refresh_pending', False):
+            # Installed, rolled back or aborted: each turn the install interrupted resumes once, after the queued
+            # work already restored, and only if the live board still says it should (security 8401e355 R2).
+            interrupted, self.install_interrupted = self.install_interrupted, {}
+            for record in interrupted.values():
+                try:
+                    work_continuity.resume_after_install(self, record)
+                except Exception:
+                    LOGGER.exception('Resuming %s after the install failed; the watchdog covers its ready work',
+                                     record.get('agent'))
+
+    def install_interrupt(self, name, deployment_id):
+        """An install is about to cancel this agent's running turn (9f3eca50). Remember ids only, never the turn's
+        request or routing (security 8401e355 R2), and mark the run so its end skips Stop's wording and goal pause."""
+        run = self.running.get(name)
+        if run is None or name in self.install_interrupted:
+            return
+        run.install_interrupted = True
+        task_id = work_continuity.interrupted_task(self, run)
+        if not task_id:
+            return  # nothing owned to resume; its chat stays in history and the watchdog covers ready work
+        latch = self.latch_now()
+        self.install_interrupted[name] = {
+            'agent': name, 'task_id': task_id, 'deployment_id': str(deployment_id or '')[:64],
+            'stop_generation': latch['generation'] if latch else None,
+            'chain': (run.entry or {}).get('chain'), 'channel': run.channel}
 
     def turn_admission_open(self):
         return (not getattr(getattr(self, 'handover', None), 'held', False)
@@ -1756,12 +1783,15 @@ class RoomRuntime:
             self.check_room_tools(run)
         except asyncio.CancelledError:
             outcome = "cancelled"
-            if self.goals.goal and self.goals.goal['owner'] == name:
+            installing = getattr(run, 'install_interrupted', False)  # an install's interrupt, not the user's Stop
+            if self.goals.goal and self.goals.goal['owner'] == name and not installing:
                 self.goals.pause('Goal lead turn cancelled.')
-            self.states[name].update(state="ready", detail="Stopped; pending work cleared")
+            self.states[name].update(state="ready", detail="Interrupted for an install; resumes after it"
+                                     if installing else "Stopped; pending work cleared")
             self.wake_notices.pop(name, None)
             await run.finish_message(partial=True)
-            self.host.store.add("system", f"{name} stopped.", channel=run.channel)
+            self.host.store.add("system", f"{name} was interrupted for an install and resumes after it."
+                                if installing else f"{name} stopped.", channel=run.channel)
         except Exception as exc:
             outcome = "failed"
             if self.goals.goal and self.goals.goal['owner'] == name:
@@ -2595,7 +2625,8 @@ class RoomRuntime:
         for name, entry in self.deploy_held.items():
             if name not in self.running:
                 pending.setdefault(name, []).insert(0, entry)
-        atomic_json(self.deployment.root / 'pending-wakes.json', {'project_id': self.identity, 'queues': pending})
+        atomic_json(self.deployment.root / 'pending-wakes.json', {'project_id': self.identity, 'queues': pending,
+                                                                  'interrupted': list(self.install_interrupted.values())})
 
     def restore_deploy_queue(self):
         if not self.deployment:
@@ -2609,6 +2640,12 @@ class RoomRuntime:
             if name in self.queues:
                 for entry in entries:
                     self.queues[name].restore(entry)
+        # Interrupted turns: ids only, at most one per known agent; resumed from the live board once admission
+        # opens (resume_deploy_checks). Keyed by agent, so a repeated restore after a failed start adds nothing.
+        for record in saved.get('interrupted') or []:
+            if isinstance(record, dict) and record.get('agent') in self.states and isinstance(record.get('task_id'), str):
+                self.install_interrupted[record['agent']] = {key: record.get(key) for key in
+                    ('agent', 'task_id', 'deployment_id', 'stop_generation', 'chain', 'channel')}
         # The checkpoint remains until startup verification opens admission.
         self.deploy_checkpoint_restored = bool(saved)
 

@@ -52,6 +52,7 @@ class DeployCandidateTests(unittest.IsolatedAsyncioTestCase):
         host = SimpleNamespace(app=FastAPI())
         runtime = SimpleNamespace(data=data, project_room=SimpleNamespace(state=state), running={}, states={})
         room_deploy.install(host, runtime)
+        self.state = host.deployment
         self.spool = spool
         self.client = AsyncClient(transport=ASGITransport(app=host.app), base_url='http://test')
         self.addAsyncCleanup(self.client.aclose)
@@ -82,6 +83,33 @@ class DeployCandidateTests(unittest.IsolatedAsyncioTestCase):
         record = (await self.approve(self.new)).json()
         self.assertEqual(record['release_id'], self.new['id'])
         self.assertFalse(record['rollback'])
+        self.assertIs(record['interrupt'], False)
+
+    async def test_install_now_interrupts_only_from_the_users_route(self):
+        # 9f3eca50, security 8401e355 R1: an explicit opt-in on the room's route; a literal bool only.
+        body = {'release_id': self.new['id'], 'manifest_sha': self.new['manifest_sha'], 'interrupt': True, 'drain_seconds': 30}
+        with self.assertRaisesRegex(ValueError, 'only Install now'):
+            room_deploy.approve_release(self.state, body)  # the tray's call: no opt-in
+        with self.assertRaisesRegex(ValueError, 'only Install now'):
+            room_deploy.approve_release(self.state, body, allow_offline=True, allow_interrupt=True)
+        refused = await self.approve(self.new, interrupt='yes')
+        self.assertIn('true or false', refused.json()['error'])
+        self.assertFalse(list((self.spool / 'requests').glob('*.json')))
+        record = (await self.approve(self.new, interrupt=True, drain_seconds=30)).json()
+        self.assertIs(record['interrupt'], True)
+        self.assertEqual(record['drain_seconds'], 30)
+
+    async def test_an_agent_install_always_drains_briefly_then_interrupts(self):
+        # opus 7cdd51bd: no agent holds up an install; server policy, whatever the agent path's body says.
+        approval = {'approved_by': 'release-manager:astra', 'project_id': 'p', 'profile_id': 'astra', 'run_id': 'r',
+                    'protocol': 1, 'grant_revision': 1, 'grant_decision': 'user-enabled', 'expected_manifest_sha': 'x',
+                    'stop_generation': 0, 'idempotency_key': 'k', 'acceptance_receipt': 'a'}
+        body = {'release_id': self.new['id'], 'manifest_sha': self.new['manifest_sha'], 'rollback': False, 'interrupt': False}
+        with self.assertRaisesRegex(ValueError, 'only Install now'):
+            room_deploy._approve_release_locked(self.state, {**body, 'interrupt': True}, approval=approval)
+        record = room_deploy._approve_release_locked(self.state, body, approval=approval)
+        self.assertIs(record['interrupt'], True)
+        self.assertEqual(record['drain_seconds'], room_deploy.AGENT_DRAIN_SECONDS)
 
 
 if __name__ == '__main__':

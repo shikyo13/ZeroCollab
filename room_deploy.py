@@ -18,6 +18,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 TERMINAL = {'deployed', 'aborted', 'rolled_back', 'rollback_failed', 'conflict', 'recovery_required', 'rejected'}
+AGENT_DRAIN_SECONDS = 30   # an agent-requested install: running turns get this long, then are interrupted (9f3eca50)
 
 
 def read_json(path, default=None):
@@ -62,25 +63,28 @@ def approval_lock(root):
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def approve_release(state, body, *, allow_offline=False, supervisor_online=None):
+def approve_release(state, body, *, allow_offline=False, supervisor_online=None, allow_interrupt=False):
     """One fingerprinted approval path for the room and native controller.
 
     Offline validation returns a transport without writing a request. The tray
     starts the existing supervisor (or bootstraps an unversioned room) and must
     validate this same fingerprint again before queuing an online request.
+    allow_interrupt is passed only by the room's own approve route (Install now).
     """
     with state.lock, approval_lock(state.root):
         return _approve_release_locked(state, body, allow_offline=allow_offline,
-                                       supervisor_online=supervisor_online)
+                                       supervisor_online=supervisor_online, allow_interrupt=allow_interrupt)
 
 
 def _approve_release_locked(state, body, *, allow_offline=False, supervisor_online=None,
-                            approval=None):
+                            approval=None, allow_interrupt=False):
     """Shared queue core; caller holds both approval locks.
 
     approval is server-produced agent audit metadata, never an HTTP/tool body.
     Agent policy must validate the grant, Stop, acceptance and expected current
-    fingerprint under the same locks before entering this core.
+    fingerprint under the same locks before entering this core. An interrupting
+    request (Install now, 9f3eca50) is the user's room route only: never an agent
+    approval, the tray or an offline transport (security 8401e355 R1).
     """
     state.version = read_json(state.root / 'current.json', {}) or {}
     item = state.release(body.get('release_id'))
@@ -106,15 +110,23 @@ def _approve_release_locked(state, body, *, allow_offline=False, supervisor_onli
         raise ValueError('A deployment is already queued')
     if state.reload()['writes'] != 'open' or state.gate['admission'] != 'open':
         raise ValueError('The room is closed for deployment or recovery')
-    if body.get('interrupt', False) is not False:
-        raise ValueError('This control waits for current turns; interrupt deployment is not enabled')
+    interrupt = body.get('interrupt', False)
+    if not isinstance(interrupt, bool):
+        raise ValueError('interrupt must be true or false')
+    if interrupt and (not allow_interrupt or approval is not None or allow_offline):
+        raise ValueError('This control waits for current turns; only Install now on the Updates page interrupts them')
     seconds = body.get('drain_seconds', 600)
     if not isinstance(seconds, int) or isinstance(seconds, bool) or not 10 <= seconds <= 3600:
         raise ValueError('Drain time must be between 10 and 3600 seconds')
+    if approval is not None:
+        # No agent holds up an install (opus 7cdd51bd): an agent-requested install always gets a short drain, then
+        # interrupts running turns; queues are kept and interrupted turns resume after it. Server policy, never
+        # the caller's body; the user's own Stop still wins over it.
+        interrupt, seconds = True, AGENT_DRAIN_SECONDS
     identifier = uuid.uuid4().hex
     record = {'id': identifier, 'release_id': item['id'], 'manifest_sha': item['manifest_sha'],
               'approved_by': 'user', 'approved_at': time.time(), 'drain_seconds': seconds,
-              'interrupt': False, 'rollback': body.get('rollback') is True or item['relation'] == 'older'}
+              'interrupt': interrupt, 'rollback': body.get('rollback') is True or item['relation'] == 'older'}
     if approval is not None:
         if allow_offline or not isinstance(approval, dict) or approval.get('approved_by') != 'release-manager:astra':
             raise ValueError('Invalid agent approval context')
@@ -307,7 +319,12 @@ def install(host, runtime):
         gate = state.reload()
         # Explicit interrupt cancels active provider turns; it never discards pending wakes.
         if gate.get('interrupt') and gate['admission'] == 'closed':
-            tasks = [s.get('task') for name, s in runtime.states.items() if name in runtime.running]
+            names = [name for name in runtime.states if name in runtime.running]
+            mark = getattr(runtime, 'install_interrupt', None)
+            for name in names:
+                if mark:
+                    mark(name, gate.get('deployment_id', ''))  # resumed after the install (9f3eca50)
+            tasks = [runtime.states[name].get('task') for name in names]
             for task in tasks:
                 if task:
                     task.cancel()
@@ -368,7 +385,7 @@ def install(host, runtime):
     async def approve(request: Request):
         try:
             body = await request.json()
-            return approve_release(state, body)
+            return approve_release(state, body, allow_interrupt=True)  # the user's Updates page only
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             return JSONResponse({'error': str(exc)}, 409)
 
