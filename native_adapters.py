@@ -481,6 +481,12 @@ async def codex(run, prompt, *, audit_disabled=()):
         await rpc.request("initialize", {"clientInfo": {"name": "zerocollab_local", "version": "0.1.0"},
                                          "capabilities": {"experimentalApi": True}})
         await rpc.send({"jsonrpc": "2.0", "method": "initialized"})
+        if root := await skills_root(run):
+            # Per process, before the thread starts: Codex finds the approved skills without a CODEX_HOME change.
+            try:
+                await rpc.request('skills/extraRoots/set', {'extraRoots': [str((root / 'skills').resolve())]})
+            except RuntimeError as exc:
+                await run.manager.activity_note(run, 'skills', f'Codex skills root refused ({exc}); room_skill still serves them.')
         thread_params = {"cwd": str(run.worktree),
                          "approvalPolicy": "never" if run.automatic_tool_approvals else "on-request",
                          "sandbox": "read-only" if audit else ("danger-full-access" if run.automatic_tool_approvals else "workspace-write"),
@@ -655,6 +661,21 @@ async def antigravity(run, prompt):
     raise RuntimeError("Antigravity disconnected before completing its turn")
 
 
+async def skills_root(run):
+    """This run's checked skills-only folder, or None. Checked before every launch, so a hand-edited folder
+    under data/ never reaches a provider; room_skill still serves every approved skill either way."""
+    import agent_skills
+    skills = getattr(run, 'skills', None)
+    if not skills or getattr(run, 'manager_audit', None):
+        return None
+    folder = agent_skills.plugin_folder(run.manager.data, run.name, run.profile, skills)
+    reason = await asyncio.to_thread(agent_skills.build_plugin, folder, skills)
+    if reason:
+        await run.manager.activity_note(run, 'skills', f'Native skills not delivered ({reason}); room_skill still serves them.')
+        return None
+    return folder
+
+
 async def claude(run, prompt):
     audit = bool(getattr(run, 'manager_audit', None))
     if audit:
@@ -676,6 +697,8 @@ async def claude(run, prompt):
         args += ['--model', run.settings['model']]
     if run.settings['effort']:
         args += ['--effort', run.settings['effort']]
+    if plugin := await skills_root(run):
+        args += ['--plugin-dir', str(plugin)]
     relay_env, relay_args = relay_setup(run, 'claude')
     args += relay_args
     env = {**relay_env, **({'CLAUDE_CODE_EFFORT_LEVEL': run.settings['effort']} if run.settings['effort'] else {})}
