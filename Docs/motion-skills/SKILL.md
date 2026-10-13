@@ -49,6 +49,9 @@ Then map rows to beats (v1) or clips (v2). Keep the table in the check-in; revie
 - No more than about 12 words on screen at once outside a caption.
 - Use the same short names chat uses (Frontend, Design, QA), never job titles or internal ids.
 - Label synthetic content as synthetic in the scene `source` and, if it could be mistaken for real, on screen.
+- On a `capture` layer, set `"label": "synthetic"` for anything that isn't a real room capture (mockups,
+  edited or staged screenshots). The renderer then draws a fixed "Simulated" badge, which zooming can't
+  scale away. The templates default to `"real"`: change it whenever you drop in a mockup.
 
 ## 5. Motion grammar: one movement means one thing
 
@@ -78,8 +81,8 @@ Learned from the first end-to-end runs (QA b5cc1270, S5 renders of `project:zc-d
   beat with state `Running` first, or they read "Available" while working.
 - **Show the ask.** Open the room with a `caption` beat that quotes the request, so the work has a reason.
 - **Keep handoffs few** (2-3 in 20 s). In a v2 `room` layer, handoff chips fade after the handoff lands and
-  the room is scaled to fill the frame. In a plain v1 scene, chips stay on screen and the room uses only
-  the left 60% of the frame.
+  the room is scaled to fill the frame. In a plain v1 scene, chips stay on screen and the room draws at its
+  authored coordinates (the old 20 s demo layout used about 60% of the frame).
 - `board` beats move a card by id (`label`) to a column name (`state`); both must exist in the layout.
 - Beat times (`at_ms`) count from the start of the room's clip, not the start of the video.
 
