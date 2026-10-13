@@ -2,7 +2,7 @@
 (task 6ff4919d; Docs/motion-core.md slice S2; field reference in Docs/motion-scene-v2.md).
 
 A scene is JSON, never code. v2 adds compositions (size, rational fps, duration in frames, props),
-tracks, clips, layers (text, image, video, audio, shape, path, captions, group, capture, room),
+tracks, clips, layers (LAYER_TYPES: text, media, shapes, groups, room replays, ui, cursor, sound, redact),
 per-property keyframes with easing, clip transitions, an asset manifest and a props schema.
 
     issues(scene)      -> [{path, message}], dispatched on scene['version'] (empty list: valid)
@@ -33,7 +33,12 @@ MAX_LAYERS = 1000
 MAX_KEYFRAMES = 400
 
 LAYER_TYPES = ('text', 'image', 'video', 'audio', 'shape', 'path', 'captions', 'group', 'capture', 'room', 'ui',
-               'cursor', 'voiceover')
+               'cursor', 'voiceover', 'redact')
+# Storyboard gaps (Zero #8289, systems c1f63907 and 8b88efef, drawn by render2 in s7-build): a redact box covers
+# keys, emails or account names inside footage, always solid (a blur can leave a secret partly recoverable,
+# Zero #15092); video.speed is a keyframable ramp, and source time is its frame-by-frame integral.
+REDACT_FORBIDDEN = ('opacity', 'blur')  # transform fields that would let footage show through a redact box
+VIDEO_SPEED_MAX = 64
 # Sound (systems 6e90b5b7, Docs/motion-audio.md r1, pinned in 3e2fee27): audio layers gain a role, looping and
 # explicit ducking under named voice layers; a voiceover layer is narration synthesized once by a local voice,
 # named by an opaque registry id (never a path or URL). Both sit only on audio tracks.
@@ -42,7 +47,7 @@ AUDIO_ROLES = ('voice', 'music', 'sfx')
 VOICE_ID = re.compile(r'^[a-z0-9]{1,16}:[a-z0-9][a-z0-9._-]{0,63}$')
 # Demo-grade presentation (motion-design 28cb5faf, pinned in 524774cb): named text styles, a window frame around
 # media, and the cursor recorded with a clip (desktop d590dce6 sidecar), drawn by render2 in its source's box.
-TEXT_STYLES = ('display', 'title', 'headline', 'subtitle', 'kicker', 'lt-name', 'lt-role', 'caption')
+TEXT_STYLES = ('display', 'title', 'headline', 'subtitle', 'kicker', 'lt-name', 'lt-role', 'caption', 'badge')
 BACKDROPS = ('studio', 'paper')  # paper is light and warm; brand text styles switch to ink colours on it
 # text.stagger (motion-design 8bd4558b): words enter one after another with expo-out. All integers except rise.
 STAGGER_EVERY_MAX = 120
@@ -83,7 +88,7 @@ TYPE_FIELDS = {
                 'label': ('enum', ('real', 'synthetic')), 'caption': ('text', 200), 'frame': ('enum', ('window',))},
     'video': {'asset': ('asset', ('video',)), 'fit': ('enum', ('contain', 'cover', 'fill', 'none')),
               'trim': (INT, 0, 10 ** 7), 'rate': (NUM, 0.1, 8), 'volume': (NUM, 0, 1), 'muted': ('bool',),
-              'frame': ('enum', ('window',))},
+              'frame': ('enum', ('window',)), 'speed': (NUM, 0, VIDEO_SPEED_MAX)},
     'audio': {'asset': ('asset', ('audio',)), 'trim': (INT, 0, 10 ** 7), 'rate': (NUM, 0.1, 8), 'volume': (NUM, 0, 1),
               'role': ('enum', AUDIO_ROLES), 'loop': ('bool',), 'duck': ('duck',)},
     'voiceover': {'text': ('text', 4000), 'voice': ('voice',), 'rate': (NUM, 0.5, 2), 'volume': (NUM, 0, 1),
@@ -105,11 +110,13 @@ TYPE_FIELDS = {
     # scale 2), and event frames convert to time on the recording's own clock.
     'cursor': {'source': ('text', 48), 'events': ('cursor',), 'viewport': ('viewport',), 'fps': ('rate',),
                'size': (NUM, 4, 400), 'color': ('color',)},
+    # The box is the transform's x, y, width and height; color fills it.
+    'redact': {'color': ('color',)},
 }
 REQUIRED = {'text': ('text',), 'image': ('asset',), 'capture': ('asset',), 'video': ('asset',), 'audio': ('asset',),
             'shape': ('shape',), 'path': ('d',), 'captions': ('cues',), 'group': ('layers',), 'room': ('scene',),
             'ui': ('component', 'label', 'data'), 'cursor': ('source', 'events', 'viewport', 'fps'),
-            'voiceover': ('text', 'voice')}
+            'voiceover': ('text', 'voice'), 'redact': ()}
 COMMON = ('id', 'type', 'name', 'keyframes', 'hidden')
 
 
@@ -687,12 +694,39 @@ class V2:
                 self.value(layer[name], f'{path}.{name}', spec)
         if kind == 'ui':
             self.ui(layer, path, length)
+        keyed = layer['keyframes'] if isinstance(layer.get('keyframes'), dict) else {}
+        if kind == 'redact':
+            self.redact(layer, path, keyed)
+        if kind == 'video' and ('speed' in layer or 'speed' in keyed) and layer.get('muted') is not True:
+            # render2 retimes the picture by speed, but the mix plays a video's sound from trim at its rate
+            # (core audioPlan), so sound would drift from the picture (motion-design f7e45de7).
+            r.add(f'{path}.muted', "speed retimes only the picture; its sound can't follow, so set muted true")
         if 'keyframes' in layer:
             # Sound plays at one rate from one trim per clip (systems' mix); only its volume moves.
             fixed = ('rate', 'trim') if kind in SOUND_TYPES else ()
             animatable = {**({n: ('num', lo, hi) for n, (lo, hi) in TRANSFORM.items()} if visual else {}),
                           **{n: s for n, s in fields.items() if s[0] in (NUM, INT, 'color') and n not in fixed}}
             self.keyframes(layer['keyframes'], f'{path}.keyframes', animatable, length)
+
+    def redact(self, layer, path, keyed):
+        """A redact box must conceal: a size, set or keyframed (render2 sizes it 0 x 0 otherwise), no opacity or
+        blur of its own, and only a literal opaque colour, so no field or prop can make it see-through
+        (systems 56fac624: blur 12, opacity 0.2 and #00000000 validated and concealed nothing)."""
+        r = self.r
+        for name in ('width', 'height'):
+            if name not in layer and name not in keyed:
+                r.add(f'{path}.{name}', 'is required: the box to cover (set it or keyframe it)')
+        for name in REDACT_FORBIDDEN:
+            if name in layer or name in keyed:
+                r.add(f'{path}.{name}', 'a redact box is always fully opaque and sharp; it takes no opacity or blur')
+        colours = [(f'{path}.color', layer['color'])] if 'color' in layer else []
+        if isinstance(keyed.get('color'), list):
+            colours += [(f'{path}.keyframes.color[{i}].value', key.get('value'))
+                        for i, key in enumerate(keyed['color']) if isinstance(key, dict)]
+        for where, value in colours:
+            if not (isinstance(value, str) and COLOR.match(value)
+                    and (len(value) in (4, 7) or value[7:].lower() == 'ff')):
+                r.add(where, 'must be an opaque colour written out (#rgb, #rrggbb or #rrggbbff), not a prop')
 
     def ui(self, layer, path, length):
         """A 'ui' layer: the initial snapshot in data, then states [{frame, data}] each replacing it whole from

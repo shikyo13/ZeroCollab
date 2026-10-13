@@ -86,10 +86,10 @@ Visual layers (all types except `audio` and `room`) also take transform numbers.
 
 | type | Fields (required in bold) |
 |-|-|
-| `text` | **text**, font, font_asset, size, weight, color, align (left, center, right), line_height, letter_spacing, max_width, fit (none, shrink), reveal (0 to 1), style (display, title, headline, subtitle, kicker, lt-name, lt-role, caption: a brand style that explicit fields override; display is a 140 px headline), stagger (`{from?, every?, frames?, rise?}`: words enter one after another with expo-out; from is the clip frame to start, 0 to the clip's last frame, default 0; every is frames between words, 0 to 120, default 4; frames is each word's entrance, 1 to 240, default 14; rise is px, 0 to 400, default 26; not keyframable) |
+| `text` | **text**, font, font_asset, size, weight, color, align (left, center, right), line_height, letter_spacing, max_width, fit (none, shrink), reveal (0 to 1), style (display, title, headline, subtitle, kicker, lt-name, lt-role, caption, badge: a brand style that explicit fields override; display is a 140 px headline, badge a small accent pill such as "Time-lapse x8" or "Example project"), stagger (`{from?, every?, frames?, rise?}`: words enter one after another with expo-out; from is the clip frame to start, 0 to the clip's last frame, default 0; every is frames between words, 0 to 120, default 4; frames is each word's entrance, 1 to 240, default 14; rise is px, 0 to 400, default 26; not keyframable) |
 | `image` | **asset** (image or capture), fit (contain, cover, fill, none), frame (`window`) |
 | `capture` | **asset** (capture or image), fit, label (real, synthetic), caption, frame (`window`) |
-| `video` | **asset** (video), fit, trim (frames), rate (0.1 to 8), volume (0 to 1), muted, frame (`window`) |
+| `video` | **asset** (video), fit, trim (frames), rate (0.1 to 8), volume (0 to 1), muted, frame (`window`), speed (0 to 64, default rate: keyframe it for a speed ramp; source time is the frame-by-frame integral of speed from trim, and the cursor layer and camera follow use the same clock; it retimes only the picture, so a video with speed must be `"muted": true`) |
 | `audio` | **asset** (audio), trim, rate, volume, role (`voice`, `music` or `sfx`), loop, duck (music only: `{against, gain?, attack_ms?, release_ms?}`, see "Sound" below) |
 | `voiceover` | **text** (at most 4000), **voice** (a registry id such as `piper:en-us-ljspeech-high`, never a path or URL), rate (0.5 to 2), volume (0 to 1), captions (`{enabled}`). Narration synthesized once by a local voice; see "Sound" below. |
 | `shape` | **shape** (rect, ellipse, polygon, star, line), fill, stroke, stroke_width, radius, sides, points ([x, y] pairs), inner_radius |
@@ -99,6 +99,7 @@ Visual layers (all types except `audio` and `room`) also take transform numbers.
 | `room` | **scene**: a v1 room scene's `layout` and `beats` (agents, board, browser and cards), drawn by motion.js. The scene takes its id and duration from the scene and the clip. |
 | `ui` | **component** (`board` or `task-card`), **label** (`scripted`), **data**, states, task (the task id a `task-card` shows; required for it). Real ZeroCollab components (frontend `motion/ui.js`, task d7fe16c8) drawn from scripted data, frame (`window`). See "ui layers" below. |
 | `cursor` | **source** (a `video` layer in the same clip, groups included), **events**, **viewport** (`[width, height]` CSS px), **fps** (the recording's `{num, den}`), size (4 to 400), color. The pointer recorded with that clip, drawn in its box: see "cursor layers" below. |
+| `redact` | **width** and **height** (set or keyframed), color (opaque and written out: `#rgb`, `#rrggbb` or `#rrggbbff`, never a prop). No `opacity` or `blur` of its own. A solid box over keys, emails or account names inside footage (never a blur, which can leave them partly readable): put it in the footage's group so it moves and zooms with it. |
 
 Colours are `#rgb`, `#rrggbb` or `#rrggbbaa`.
 

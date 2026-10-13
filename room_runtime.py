@@ -118,7 +118,8 @@ ROOM_ACTION_LABELS = {
     ('room_motion', 'validate'): 'checking a motion scene', ('room_motion', 'save'): 'saving a motion scene',
     ('room_motion', 'frame'): 'rendering preview frames', ('room_motion', 'export'): 'exporting a video',
     ('room_motion', 'publish'): 'sharing a video', ('room_motion', 'variant'): 'making a scene variant',
-    ('room_motion', 'patch'): 'editing a motion scene', ('room_motion', 'import_asset'): 'adding a scene asset'}
+    ('room_motion', 'patch'): 'editing a motion scene', ('room_motion', 'import_asset'): 'adding a scene asset',
+    ('room_motion', 'inspect'): 'inspecting a video'}
 ACP_KIND_LABELS = {
     'read': 'reading files', 'edit': 'editing files', 'delete': 'deleting files', 'move': 'moving files',
     'search': 'searching files', 'execute': 'running a command', 'think': 'thinking', 'fetch': 'reading a web page'}
@@ -1723,7 +1724,8 @@ class RoomRuntime:
                 await self.live.publish(self.live.artifact(run, result['url'], 'upload'))
                 return result
             authoring = {'variant': motion_agent.variant, 'patch': motion_agent.patch,
-                         'import_asset': motion_agent.import_asset}.get(arguments.get('action'))
+                         'import_asset': motion_agent.import_asset,
+                         'inspect': motion_agent.inspect}.get(arguments.get('action'))
             if authoring:
                 return await authoring(self, run, arguments)
             try:

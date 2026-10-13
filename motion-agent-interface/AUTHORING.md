@@ -53,6 +53,34 @@ Not available yet:
 
 One page can carry at most 64 MB of assets.
 
+## Inspect a video against the bar
+
+Judge an export by measuring it, not from a few stills. `inspect` reads a video the room already shares, never a raw path or web URL:
+- `job_id` for an export;
+- `url` for a `/uploads/...` video;
+- a pasted original as `fileref:<id>` or its `/api/files/ref/<id>/<name>` link.
+
+`room_motion(action="inspect", job_id="0123456789ab", vs="fileref:3f9c0a1b2c3d4e5f", sheets=["contact", "motion", "dense"], start=4, end=10, fps=6)`
+
+- **`analysis`**:
+  - `probe`: resolution, fps, codecs and duration;
+  - `cuts` and soft `transitions`, as times in seconds;
+  - `shots`, `mean_shot_s` and `cuts_per_minute`;
+  - `mean_motion` and `moving_share`;
+  - `holds` and `longest_hold_s`, which are still stretches of 1 s or more;
+  - `audio`: mean and max dB, silences, `integrated_lufs` and `loudness_range_lu`.
+
+  Lists over 100 entries are cut to the first 100, with a `<name>_total` count. The first 10 minutes are measured.
+- **`compare`** (with `vs`): the headline numbers of both videos side by side. `vs` takes the same forms, or `export:<job_id>`.
+- **`sheets`** (default `contact` and `motion`), each returned as a `/uploads` PNG and shown to you:
+  - `contact`: 8 frames across the video.
+  - `dense`: every `1/fps` seconds from `start` to `end`, which is the one for small icon and cursor motion. `fps` is up to 10 and defaults to 4. There are at most 48 tiles, so narrow the range or lower `fps`.
+  - `motion`: movement over time, with cuts as yellow lines. Holds read flat, and camera moves read as humps.
+  - `shots`: the middle frame of each of the first 30 shots, with their ranges. `truncated` is true when the video has more.
+  - `frames`: one PNG per `t_ms` (up to 6).
+
+Results are cached by file, so asking again for other sheets of the same video doesn't measure it again. A long video can take a minute or two.
+
 ## v1: room replay vocabulary
 
 - `layout` places up to 12 agents, an optional board with up to 6 columns, an optional browser panel, and up to 20 cards.

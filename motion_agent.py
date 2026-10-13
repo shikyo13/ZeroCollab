@@ -5,13 +5,19 @@ publish: a finished export becomes a room upload, posted to the agent's chat and
 where it plays inline (Zero #14291, PM decision deb4f237: videos arrive in chat and on tasks, not on a page).
 variant, patch, import_asset (Zero #14804, Remotion parity): re-render a template with another composition and
 props, edit a large saved scene in place, and turn a room upload into a hashed scene asset.
+inspect (Zero #14935/#14956, QA's video_analysis 53e691c7): measure a video and draw sheets of it, so an agent
+judges its export against a reference from numbers and dense frames instead of a few stills.
 """
 import asyncio
 import copy
 import hashlib
 import os
+import re
 import shutil
+import subprocess
+import tempfile
 import uuid
+from pathlib import Path
 
 from team_builder import text
 
@@ -25,14 +31,25 @@ MAX_VIDEO_BYTES = 1024 * 1024 * 1024  # an exported scene of up to 10 minutes st
 # the room without them still says so up front instead of only at frame/export (demo-marketing #14460).
 NOT_RENDERABLE = ('Valid, but this copy of the room is missing the v2 renderer files, so frame and export will refuse '
                   'this scene. It saves and keeps, and renders once they are installed.')
+VOICE_CAPTIONS = ('Voiceover captions are drawn from the word timings the voice gives when the narration is '
+                  'synthesized. A voice that gives none (timing_quality "none") draws no captions, so check a frame '
+                  'with captions after synthesis, or add a captions layer with your own cues.')
+
+
+def layers(node):
+    """Every layer under node (compositions, tracks, clips, groups), depth first."""
+    if isinstance(node, dict):
+        if 'type' in node:
+            yield node
+        for key in ('tracks', 'clips', 'layers'):
+            yield from layers(node.get(key))
+    elif isinstance(node, list):
+        for item in node:
+            yield from layers(item)
 
 
 def has_layer(node, kind):
-    """Whether any layer under node (compositions, tracks, clips, groups) has type kind."""
-    if isinstance(node, dict):
-        return node.get('type') == kind or any(has_layer(v, kind) for k, v in node.items()
-                                               if k in ('tracks', 'clips', 'layers'))
-    return isinstance(node, list) and any(has_layer(v, kind) for v in node)
+    return any(layer.get('type') == kind for layer in layers(node))
 
 
 def render_note(result, scene=None):
@@ -50,6 +67,10 @@ def render_note(result, scene=None):
             warnings.append('This scene has ui layers (real product components on scripted data). They validate '
                             'and save, but this copy of the room has no UI bundle (motion/ui.js) yet, so they '
                             'won\'t render until it is installed.')
+        if any(layer.get('type') == 'voiceover' and isinstance(layer.get('captions'), dict)
+               and layer['captions'].get('enabled') is True for layer in layers(scene.get('compositions'))):
+            # systems c1f63907: render2 draws voiceover captions only from the synthesized voice's word timings.
+            warnings.append(VOICE_CAPTIONS)
         for comp in scene.get('compositions', []):
             try:
                 # The exporter's own rule (systems 57cf037 covers voiceover), so the warning matches the refusal
@@ -280,6 +301,15 @@ async def patch(runtime, run, arguments):
                         'summary': motion_studio.summary(saved, 'project', edited)}, edited)
 
 
+def upload_path(runtime, url):
+    """The file behind a /uploads/<name> url, contained in the upload folder."""
+    root = runtime.host.store.upload_dir.resolve()
+    path = (root / url.removeprefix('/uploads/')).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ValueError(f'Upload not found: {url}')
+    return path
+
+
 def upload_facts(path):
     """sha256 and, for raster images, pixel size; the caller runs this off the event loop."""
     digest = hashlib.sha256()
@@ -305,11 +335,8 @@ async def import_asset(runtime, run, arguments):
     url = arguments.get('url')
     if not isinstance(url, str) or not motion_scene.UPLOAD.fullmatch(url):
         raise ValueError('url must be a room upload such as /uploads/1a2b3c4d.png (a screenshot url works)')
-    root = runtime.host.store.upload_dir.resolve()
-    path = (root / url.removeprefix('/uploads/')).resolve()
-    if not path.is_relative_to(root) or not path.is_file():
-        raise ValueError(f'Upload not found: {url}')
-    kind = arguments.get('kind') or EXTENSION_KINDS.get(path.suffix.lower().lstrip('.'))
+    path = upload_path(runtime, url)
+    kind =arguments.get('kind') or EXTENSION_KINDS.get(path.suffix.lower().lstrip('.'))
     if kind not in motion_scene.ASSET_KINDS:
         raise ValueError('kind must be one of ' + ', '.join(motion_scene.ASSET_KINDS))
     asset_id = arguments.get('asset_id')
@@ -348,3 +375,164 @@ async def import_asset(runtime, run, arguments):
         return {'ok': False, 'issues': found, **result}
     await runtime.activity_note(run, 'motion', f'Added asset {asset_id} ({url}) to {saved}')
     return {'ok': True, 'ref': saved, **result}
+
+
+# ---- inspect (Zero #14935/#14956, QA 53e691c7) -----------------------------------------------------------------
+
+INSPECT_SHEETS = ('contact', 'dense', 'motion', 'shots', 'frames')
+DEFAULT_SHEETS = ('contact', 'motion')
+DENSE_FPS = 4             # default dense rate: 12 s in 48 tiles, enough to follow small icon motion (Zero #14956)
+MAX_LISTED = 100          # times listed per series (cuts, transitions, silences); the motion chart draws them all
+SERIES = ('frame_motion', 'scene_per_second')  # per-sample series: drawn by the motion chart, not returned
+DERIVED_HEX = 16          # sheet names: the first 64 bits of the PNG's sha256, as app.UPLOAD_HASH_HEX names uploads
+INSPECT_SLOTS = asyncio.Semaphore(2)  # at most two inspections run FFmpeg at once; the rest wait their turn
+EXPORT_REF = 'export:'
+# A pasted original (app /api/files/reference): fileref:<id> or its served link /api/files/ref/<id>/<name>.
+FILE_REF = re.compile(r'(?:fileref:|/api/files/ref/)([0-9a-f]{16})(?:/[^/]+)?')
+VIDEO_REFS = ('a room upload (/uploads/<name>), export:<job_id>, or a pasted file (fileref:<id> or its '
+              '/api/files/ref/<id>/<name> link)')
+
+
+def video_source(runtime, ref):
+    """The local file behind a room ref; never a raw path or URL, so inspect reads only what the room shares."""
+    import motion_scene
+    if not isinstance(ref, str) or not ref:
+        raise ValueError('Name the video: ' + VIDEO_REFS)
+    if ref.startswith(EXPORT_REF):
+        path = runtime.motion.video(ref.removeprefix(EXPORT_REF))
+        if not path:
+            raise ValueError('No finished export with that job_id in this project; check export_status')
+        return path
+    if motion_scene.UPLOAD.fullmatch(ref):
+        return upload_path(runtime, ref)
+    match = FILE_REF.fullmatch(ref)
+    if match:
+        references = runtime.project_room.references()
+        if references is None:
+            raise ValueError('No file has been pasted in this room yet; paste its path in chat first')
+        return references.lookup(match.group(1))[0]
+    raise ValueError(f'{ref[:120]} is not a video the room can read; use ' + VIDEO_REFS)
+
+
+def number(arguments, key, default, what):
+    value = arguments.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise ValueError(f'{key} must be {what}')
+    return float(value)
+
+
+def inspect_options(arguments):
+    """Which sheets to draw and their range, checked before any FFmpeg runs."""
+    sheets = arguments.get('sheets', DEFAULT_SHEETS)
+    sheets = [sheets] if isinstance(sheets, str) else sheets
+    if not isinstance(sheets, (list, tuple)) or any(s not in INSPECT_SHEETS for s in sheets):
+        raise ValueError('sheets lists any of ' + ', '.join(INSPECT_SHEETS))
+    in_seconds = 'a time in seconds, 0 or more'
+    options = {'sheets': list(dict.fromkeys(sheets)), 'start': number(arguments, 'start', 0.0, in_seconds),
+               'end': number(arguments, 'end', None, in_seconds),
+               'fps': number(arguments, 'fps', DENSE_FPS, 'frames per second for the dense sheet')}
+    if options['fps'] <= 0:  # the default end divides by it (QA 0168df23 N1)
+        raise ValueError('fps must be above 0')
+    if 'frames' in options['sheets']:
+        t_ms = arguments.get('t_ms', 0)
+        t_ms = t_ms if isinstance(t_ms, list) else [t_ms]
+        if any(isinstance(t, bool) or not isinstance(t, (int, float)) or t < 0 for t in t_ms):
+            raise ValueError('t_ms lists the frame times in milliseconds, 0 or more')
+        options['times'] = [t / 1000 for t in t_ms]
+    return options
+
+
+def analysis_summary(analysis):
+    """What the agent reads: every measure, with long time lists capped and the per-sample series left out."""
+    summary = {k: v for k, v in analysis.items() if k not in SERIES}
+    if summary.get('audio'):
+        summary['audio'] = dict(summary['audio'])  # analyze() caches its result: never trim that in place
+    for holder, key in ((summary, 'cuts'), (summary, 'transitions'), (summary.get('audio'), 'silences')):
+        if holder and len(holder[key]) > MAX_LISTED:
+            holder[key + '_total'] = len(holder[key])
+            holder[key] = holder[key][:MAX_LISTED]
+    return summary
+
+
+def store_derived(made, upload_dir):
+    """A generated PNG into uploads under its content hash, so inspecting the same video again reuses the file."""
+    target = upload_dir / (hashlib.sha256(made.read_bytes()).hexdigest()[:DERIVED_HEX] + made.suffix)
+    if target.exists():
+        made.unlink()
+    else:
+        os.replace(made, target)
+    return '/uploads/' + target.name
+
+
+def inspect_files(ffmpeg, path, vs_path, options, upload_dir):
+    """analyze, compare and draw the requested sheets; runs off the event loop. Sheets are drawn in a scratch
+    folder inside uploads (same volume, so the move is a rename) that is removed whatever happens."""
+    import video_analysis
+    analysis = video_analysis.analyze(ffmpeg, path)
+    result = {'analysis': analysis_summary(analysis)}
+    if vs_path:
+        result['compare'] = video_analysis.compare(analysis, video_analysis.analyze(ffmpeg, vs_path))
+    length, cuts = analysis['measured_s'], analysis['cuts']
+    sheets = []
+    with tempfile.TemporaryDirectory(dir=upload_dir, prefix='.inspect-') as work:
+        work = Path(work)
+        for kind in options['sheets']:
+            out = work / f'{kind}.png'
+            entry = {'kind': kind}
+            if kind == 'contact':
+                video_analysis.contact_sheet(ffmpeg, path, length, out)
+                entry['frames'] = video_analysis.SHEET_FRAMES
+            elif kind == 'dense':
+                start, fps = options['start'], options['fps']
+                if start >= length:
+                    raise ValueError(f'start is past the end of the video ({length} s measured)')
+                end =options['end'] or min(length, start + video_analysis.DENSE_MAX_TILES / fps)
+                video_analysis.dense_sheet(ffmpeg, path, start, end, fps, out)
+                entry.update(start=start, end=round(end, 3), fps=fps)
+            elif kind == 'motion':
+                video_analysis.motion_chart(ffmpeg, analysis['frame_motion'], cuts, length, out)
+            elif kind == 'shots':
+                fps = analysis['probe']['fps']
+                if not fps:
+                    raise ValueError('The shot sheet needs the frame rate, and this video does not report one')
+                entry['shots'] = video_analysis.shot_sheet(ffmpeg, path, cuts, length, fps, out)
+                if len(entry['shots']) < analysis['shots']:  # the sheet shows only the first ones (QA r3b)
+                    entry['truncated'] = True
+            else:  # frames: one PNG per time
+                made = video_analysis.frames(ffmpeg, path, options['times'], work, 'frame')
+                sheets += [{'kind': kind, 't_ms': round(t * 1000), 'url': store_derived(m, upload_dir)}
+                           for t, m in zip(options['times'], made)]
+                continue
+            entry['url'] = store_derived(out, upload_dir)
+            sheets.append(entry)
+    result['sheets'] = sheets
+    return result
+
+
+async def inspect(runtime, run, arguments):
+    """Measure a video (an export, an upload or a pasted original) and draw sheets of it; with vs, compare the
+    headline numbers against a reference such as one of Zero's quality-bar videos."""
+    import motion_studio
+    job_id = arguments.get('job_id')
+    ref = f'{EXPORT_REF}{job_id}' if job_id else arguments.get('url')
+    path = video_source(runtime, ref)
+    vs = arguments.get('vs')
+    vs_path = video_source(runtime, vs) if vs else None
+    options = inspect_options(arguments)
+    try:
+        ffmpeg = motion_studio.ffmpeg_path(runtime)
+    except motion_studio.Unavailable as exc:
+        raise ValueError(str(exc)) from None
+    async with INSPECT_SLOTS:
+        try:
+            result = await asyncio.to_thread(inspect_files, ffmpeg, path, vs_path, options,
+                                             runtime.host.store.upload_dir)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+            # An unreadable or truncated video is an answer for the agent, not a server fault.
+            raise ValueError(f'Could not analyse {ref}: {exc}') from None
+    if result['sheets']:
+        await runtime.live.publish(runtime.live.artifact(run, result['sheets'][0]['url'], 'upload'))
+    await runtime.activity_note(run, 'motion', f'Inspected {ref}' + (f' against {vs}' if vs else ''))
+    return {'video': ref, **({'vs': vs} if vs else {}), **result}

@@ -13,6 +13,7 @@ functions off the event loop. Results are cached by file identity in a bounded L
 """
 import re
 import subprocess
+import threading
 from itertools import pairwise
 from collections import OrderedDict
 from pathlib import Path
@@ -25,6 +26,7 @@ SAMPLE_FPS, SAMPLE_W, SAMPLE_H = 10, 160, 90
 MOVING = 2.0                  # a sample above this counts as movement
 HOLD_S = 1.0                  # a still stretch at least this long counts as a hold
 CHART_W, CHART_H, CHART_PAD = 1200, 220, 30
+CHART_TICK_S, CHART_TICK_LEN = 5, 8   # a time tick every 5 s along the axis, so humps match sheet times
 CHART_BG, CHART_GRID, CHART_CUT, CHART_LINE = (16, 20, 23), (58, 74, 82), (240, 198, 116), (84, 217, 237)
 SHOT_SHEET_MAX = 30           # the per-shot sheet shows at most this many shots (the first ones)
 SHEET_FRAMES, SHEET_COLUMNS, SHEET_WIDTH = 8, 4, 480
@@ -36,6 +38,7 @@ TIMEOUT = 180
 MAX_TIMES = 6
 CACHE_LIMIT = 32              # analyses kept in memory; least recently used is dropped first
 _cache = OrderedDict()
+_cache_lock = threading.Lock()
 
 PTS_TIME = re.compile(r'pts_time:([0-9.]+)')
 SCENE_SCORE = re.compile(r'lavfi\.scene_score=([0-9.]+)')
@@ -184,7 +187,7 @@ def dense_sheet(ffmpeg, path, start, end, fps, out):
 def frames(ffmpeg, path, times, out_dir, stem):
     """One PNG per requested time (seconds), named <stem>-<n>.png in out_dir."""
     if not 1 <= len(times) <= MAX_TIMES:
-        raise ValueError(f'times must list 1 to {MAX_TIMES} seconds')
+        raise ValueError(f'ask for 1 to {MAX_TIMES} frame times (t_ms)')
     outs = []
     for n, t in enumerate(times):
         out = Path(out_dir) / f'{stem}-{n}.png'
@@ -221,6 +224,9 @@ def motion_chart(ffmpeg, energy, cuts, duration, out):
 
     for x in range(CHART_PAD, CHART_W - CHART_PAD):
         put(x, y_of(MOVING), CHART_GRID)
+    for tick in range(0, int(duration) + 1, CHART_TICK_S):
+        for y in range(CHART_H - CHART_PAD, CHART_H - CHART_PAD + CHART_TICK_LEN):
+            put(x_of(tick), y, CHART_GRID)
     for t in cuts:
         for y in range(CHART_PAD, CHART_H - CHART_PAD):
             put(x_of(t), y, CHART_CUT)
@@ -233,7 +239,8 @@ def motion_chart(ffmpeg, energy, cuts, duration, out):
 
 
 def shot_sheet(ffmpeg, path, cuts, duration, fps, out):
-    """The middle frame of each shot (first SHOT_SHEET_MAX), tiled in order; returns the shot ranges shown."""
+    """The middle frame of each shot (first SHOT_SHEET_MAX), tiled in order; returns the shot ranges shown.
+    When the returned list is shorter than analyze()['shots'], the sheet was truncated; say so to the reader."""
     shots = [(a, b) for a, b in pairwise([0.0, *cuts, duration]) if b > a][:SHOT_SHEET_MAX]
     picks = '+'.join(f'eq(n,{round((a + b) / 2 * fps)})' for a, b in shots)
     rows = -(-len(shots) // SHEET_COLUMNS)
@@ -248,18 +255,21 @@ def analyze(ffmpeg, path):
     path = Path(path)
     stat = path.stat()
     key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
-    if key in _cache:
-        _cache.move_to_end(key)
-        return _cache[key]
+    with _cache_lock:  # inspect runs analyses on two worker threads; the LRU's lookup and reorder must be atomic
+        cached = _cache.get(key)
+        if cached is not None:
+            _cache.move_to_end(key)
+            return cached
     info = probe(ffmpeg, path)
     seconds = min(info['duration'], MAX_SECONDS) or MAX_SECONDS
     energy = frame_motion(ffmpeg, path, seconds)
     result = {'probe': info, 'measured_s': seconds, **pacing(scene_scores(ffmpeg, path, seconds), seconds),
               **motion_profile(energy), 'frame_motion': [round(e, 2) for e in energy]}
     result['audio'] = loudness(ffmpeg, path, seconds) if info['audio_codec'] else None
-    _cache[key] = result
-    while len(_cache) > CACHE_LIMIT:
-        _cache.popitem(last=False)
+    with _cache_lock:
+        _cache[key] = result
+        while len(_cache) > CACHE_LIMIT:
+            _cache.popitem(last=False)
     return result
 
 

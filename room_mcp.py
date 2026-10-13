@@ -10,6 +10,11 @@ from mcp.server.fastmcp import FastMCP, Image
 
 # room_image returns pixels on demand; large files would crowd the model's context.
 IMAGE_LIMIT = 5 * 1024 * 1024
+# room_motion waits: starting a headless browser for up to 6 frames takes longer than a board call, and inspect
+# decodes the whole video three times (video_analysis: up to 180 s per FFmpeg pass). An inspect that outlives
+# its wait still finishes and is cached, so asking again returns at once.
+MOTION_TIMEOUTS = {'frame': 60, 'inspect': 600}
+MAX_SHOWN_SHEETS = 6  # images attached to one inspect answer; the rest stay as urls in the JSON
 IMAGE_FORMATS = {'png': 'png', 'jpg': 'jpeg', 'jpeg': 'jpeg', 'gif': 'gif', 'webp': 'webp'}
 
 class RoomMCP(FastMCP):
@@ -240,7 +245,9 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
                 note: str = '', name: str = '', post: bool = True,
                 profile: Literal['webm', 'vp9-alpha', 'av1', 'prores4444', 'gif', 'png', 'png-sequence'] = 'webm',
                 new_id: str = '', composition: str = '', props: dict | None = None, ops: list[dict] | None = None,
-                url: str = '', asset_id: str = '', kind: str = '') -> list:
+                url: str = '', asset_id: str = '', kind: str = '', vs: str = '',
+                sheets: list[Literal['contact', 'dense', 'motion', 'shots', 'frames']] | None = None,
+                start: float | None = None, end: float | None = None, fps: float | None = None) -> list:
     """Author motion scenes and product videos with the room's motion engine (data, never code).
     list: bundled and project scenes. get: one scene by ref (bundled:<id> or project:<id>).
     validate: check scene_json; returns {ok, issues: [{path, message}]}. Fix every issue, then save.
@@ -261,7 +268,14 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     result validates. import_asset url asset_id: turn a room upload (a room_browser screenshot url, a
     recording, an image) into an asset with its real sha256 and, for images, width, height and how it fits
     the frame; with scene it's added to that project scene (kind is inferred, or image, capture, video,
-    font, audio). Loop: validate until clean, save, frame 2-3 key moments and show them, export, then publish."""
+    font, audio). inspect job_id (an export) or url (a /uploads video, or a pasted file as fileref:<id> or
+    its /api/files/ref link): measures resolution, fps, cuts and transitions, shot lengths, motion and holds,
+    and loudness (LUFS); vs (the same forms, or export:<job_id>) adds a side-by-side against a reference.
+    sheets (default contact and motion) draws contact (8 frames), dense (every 1/fps s from start to end,
+    fps up to 10, at most 48 tiles: small icon motion), motion (movement over time, cuts marked), shots
+    (the middle of each shot) and frames (at t_ms); they come back as /uploads PNGs and are shown here.
+    Loop: validate until clean, save, frame 2-3 key moments and show them, export, inspect it against the
+    reference, then publish."""
     args = dict(action=action)
     if scene:
         args['scene'] = scene
@@ -275,7 +289,10 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
         args['ops'] = ops
     if action == 'import_asset':
         args.update(url=url, asset_id=asset_id, kind=kind)
-    if action == 'frame':
+    if action == 'inspect':
+        args.update({k: v for k, v in dict(url=url, vs=vs, sheets=sheets, start=start, end=end, fps=fps).items()
+                     if v not in (None, '')})
+    if action in ('frame', 'inspect'):
         args['t_ms'] = t_ms
     if action in ('frame', 'export'):
         args['reduced'] = reduced
@@ -285,18 +302,21 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
         args['job_id'] = job_id
     if action == 'publish':
         args.update(task_id=task_id, note=note, name=name, post=post)
-    # Starting a headless browser and rendering up to 6 frames can take longer than a board call.
-    result = call('room_motion', args, timeout=60 if action == 'frame' else 15)
+    result = call('room_motion', args, timeout=MOTION_TIMEOUTS.get(action, 15))
     content = [json.dumps(result)]
-    shown = None
-    # Only frame returns rendered images; an export job's 'frames' is its frame count.
+    shown = []
+    # Only frame and inspect return images; an export job's 'frames' is its frame count.
     if action == 'frame' and isinstance(result, dict) and isinstance(result.get('frames'), list) and result['frames']:
-        shown = result.get('sheet_url') or result['frames'][0].get('url')
-    if shown:
-        with httpx.Client(timeout=15, trust_env=False) as client:
-            image = client.get(os.environ['AGENT_ROOM_URL'] + shown)
-        if image.status_code == 200 and len(image.content) <= IMAGE_LIMIT:
-            content.append(Image(data=image.content, format='png'))
+        shown = [result.get('sheet_url') or result['frames'][0].get('url')]
+    if action == 'inspect' and isinstance(result, dict):
+        shown = [sheet.get('url') for sheet in result.get('sheets', [])][:MAX_SHOWN_SHEETS]
+    if not any(shown):
+        return content
+    with httpx.Client(timeout=15, trust_env=False) as client:
+        for url in filter(None, shown):
+            image = client.get(os.environ['AGENT_ROOM_URL'] + url)
+            if image.status_code == 200 and len(image.content) <= IMAGE_LIMIT:
+                content.append(Image(data=image.content, format='png'))
     return content
 
 
