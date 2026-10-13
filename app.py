@@ -889,6 +889,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     ws_clients.add(websocket)
     composing.connected(websocket)  # counts as busy until the tab reports
+    await composing.greet(websocket)  # the attempt still outstanding, so a stale lock from before can lift
 
     # Send settings
     await websocket.send_text(json.dumps({"type": "settings", "data": settings_payload()}))

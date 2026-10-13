@@ -9,7 +9,10 @@ Wire, client to server, handled before the deployment gate like ping, answered o
   {"type": "deployment_prepare_ack", "id": <id>, "busy": <bool>}   to the attempt this socket was sent
 Server to client:
   {"type": "deployment_prepare", "id": <id>}     lock human editors and actions, keep drafts, recompute, ack
-  {"type": "deployment_release", "id": <id>}     unlock and report again
+  {"type": "deployment_release", "id": <id>}     unlock and report again (sent to every connected tab)
+  {"type": "deployment_state", "id": <id>|null}  on connect: the attempt still outstanding, if any. A tab that
+                                                 reconnects holding a lock for any other id (or null) unlocks and
+                                                 reports; one holding this id stays locked until its release.
 """
 import asyncio
 import json
@@ -23,6 +26,7 @@ ACK_POLL_SECONDS = 0.1
 MAX_ATTEMPTS = 8  # attempts kept for late acknowledgements; older ones are dropped
 ATTEMPT_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')
 REPORT, PREPARE, ACK, RELEASE = 'ui_composing', 'deployment_prepare', 'deployment_prepare_ack', 'deployment_release'
+STATE = 'deployment_state'
 
 
 class Composing:
@@ -34,6 +38,12 @@ class Composing:
 
     def connected(self, socket):
         self.reports.pop(socket, None)  # unknown until it reports
+
+    async def greet(self, socket):
+        """Tell a (re)connected tab which attempt is still outstanding, so a lock it kept across a disconnect for
+        an attempt that has since ended can be released (frontend 1d505512)."""
+        active = next(reversed(self.attempts), None)
+        await self.send(socket, json.dumps({'type': STATE, 'id': active}))
 
     def gone(self, socket):
         self.reports.pop(socket, None)
@@ -104,9 +114,9 @@ class Composing:
             await asyncio.sleep(ACK_POLL_SECONDS)
 
     async def release(self, attempt_id):
-        """After an abort or after the gate reopens: the asked tabs that are still connected unlock."""
-        attempt = self.attempts.pop(attempt_id, None)
-        if attempt is None:
+        """After an abort or after the gate reopens: every connected tab is told, including one that reconnected
+        while still holding this attempt's lock; a tab without that lock ignores it."""
+        if self.attempts.pop(attempt_id, None) is None:
             return
         text = json.dumps({'type': RELEASE, 'id': attempt_id})
-        await asyncio.gather(*(self.send(socket, text) for socket in attempt['sockets'] if socket in self.clients))
+        await asyncio.gather(*(self.send(socket, text) for socket in list(self.clients)))
