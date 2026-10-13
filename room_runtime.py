@@ -823,6 +823,8 @@ class RoomRuntime:
         self.manual_stop_applied = None
         self.manual_stop_pending = False
         self.manual_stop_deferred = None  # 'stop' or 'resume', for a latch that could not record the click
+        # Clicks are latched at once; their room effects run one at a time under this lock, in click order.
+        self.manual_stop_effects = asyncio.Lock()
         self.release_wakes_lock = threading.Lock()
 
     def handles(self, name):
@@ -2536,29 +2538,88 @@ class RoomRuntime:
         else:
             self.unpause()
 
-    def mark_manual_stop_applied(self):
-        """After a click was applied with writes open: the stamp follows the latch and the hold ends."""
-        if self.manual_stop is not None:
-            with contextlib.suppress(OSError, ValueError):
-                latch = self.manual_stop.snapshot()
-                self.manual_stop_applied = {'generation': latch['generation'], 'stopped': latch['stopped']}
+    @staticmethod
+    def manual_stop_stamp(latch):
+        return {'generation': latch['generation'], 'stopped': latch['stopped']} if latch else None
+
+    def latch_now(self):
+        if self.manual_stop is None:
+            return None
+        try:
+            return self.manual_stop.snapshot()
+        except (OSError, ValueError) as exc:
+            self.poison_manual_stop(str(exc) or type(exc).__name__)
+            return None
+
+    def commit_manual_stop(self, stamp):
+        """Save what was just applied (stamp: the exact latch result it acted on, or None to keep the stamp). The
+        hold and the deferred click end only once that is durable; a failed save restores the previous stamp and
+        keeps the room held (Astra f8a2601c). A click latched meanwhile holds the room again for its own pass."""
+        previous = self.manual_stop_applied
+        if stamp is not None:
+            self.manual_stop_applied = stamp
+        try:
+            self.save_project()
+        except Exception:
+            self.manual_stop_applied, self.manual_stop_pending = previous, True
+            LOGGER.exception('An applied Stop/Resume was not saved; turns stay held')
+            return False
         self.manual_stop_pending, self.manual_stop_deferred = False, None
-        self.save_project()
+        latch = self.latch_now()
+        if latch is not None and self.manual_stop_stamp(latch) != self.manual_stop_applied:
+            self.manual_stop_pending = True
+        return True
+
+    async def user_stop(self, latch_only):
+        """The user's Stop (POST /api/runtime/stop): latched host-wide first, so no automatic reopen undoes it."""
+        latched, note = self.manual_stop_call('set_user_stop', state='stopped')
+        if latch_only:
+            # Writes are blocked for an update's final snapshot (security 2d4f2cd6 F1): the latch and memory only.
+            self.defer_manual_stop('stop')
+            return {"ok": True, "deferred": True, "note": DEFERRED_CLICK_NOTE, **note}
+        # Held and paused at once, before waiting for an earlier click's effects; then applied in click order and
+        # stamped with exactly this click's latch result (Astra f8a2601c).
+        self.manual_stop_pending, self.paused = True, True
+        async with self.manual_stop_effects:
+            await self.stop()
+            self.commit_manual_stop(self.manual_stop_stamp(latched))
+        return {"ok": True, **note}
+
+    async def user_resume(self, latch_only):
+        """The user's Resume (POST /api/runtime/resume): the only thing that clears the latch."""
+        if latch_only:
+            _, note = self.manual_stop_call('clear_user_stop', self.unpause, state='running')
+            self.defer_manual_stop('resume')
+            return {"ok": True, "deferred": True, "note": DEFERRED_CLICK_NOTE, **note}
+        # Latched now; unpaused only under the effects lock, after any earlier click is applied and only while no
+        # later Stop has been latched since this Resume (Astra f8a2601c).
+        latched, note = self.manual_stop_call('clear_user_stop', lambda: None, state='running')
+        self.manual_stop_pending = True
+        async with self.manual_stop_effects:
+            await self.reconcile_manual_stop_locked()  # a Stop clicked during the update still clears its queues
+            self.manual_stop_pending = True
+            latch = self.latch_now()
+            current = latched is None or latch is None or (
+                latch['generation'] == latched['generation'] and not latch['stopped'])
+            if current:
+                self.unpause()  # the user's own Resume unpauses even when the latch can't be written
+                await self.after_resume()
+            self.commit_manual_stop(self.manual_stop_stamp(latched) if current else None)
+        return {"ok": True, **note}
 
     async def reconcile_manual_stop(self):
-        """Apply Stop/Resume clicks made while writes were blocked, with writes open (the caller holds a
-        mutation): an unapplied Stop gets the full Stop (turns cancelled, queues cleared, notice, save), even if
-        Resume followed; then a Resume unpauses. The hold ends only after the applied stamp is saved. If the latch
-        keeps changing, the hold stays for the next pass."""
+        async with self.manual_stop_effects:
+            await self.reconcile_manual_stop_locked()
+
+    async def reconcile_manual_stop_locked(self):
+        """Apply Stop/Resume clicks not yet applied (made while writes were blocked), with writes open (the caller
+        holds a mutation) and the effects lock: an unapplied Stop gets the full Stop (turns cancelled, queues
+        cleared, notice, save), even if Resume followed; then a Resume unpauses. Each pass acts on one latch reading
+        and stamps exactly that. If the latch keeps changing, the hold stays for the next pass."""
         for _ in range(3):
             if not self.manual_stop_pending:
                 return
-            latch = None
-            if self.manual_stop is not None:
-                try:
-                    latch = self.manual_stop.snapshot()
-                except (OSError, ValueError) as exc:
-                    self.poison_manual_stop(str(exc) or type(exc).__name__)
+            latch = self.latch_now()
             if latch is None:  # the click could not be latched: apply the one this process remembers
                 action = self.manual_stop_deferred
                 if action == 'stop':
@@ -2566,11 +2627,10 @@ class RoomRuntime:
                 elif action == 'resume':
                     self.unpause()
                     await self.after_resume()
-                self.manual_stop_pending, self.manual_stop_deferred = False, None
-                self.save_project()
+                self.commit_manual_stop(None)
                 return
             applied = self.manual_stop_applied or {}
-            if (latch['generation'], latch['stopped']) == (applied.get('generation'), applied.get('stopped')):
+            if self.manual_stop_stamp(latch) == applied:
                 self.manual_stop_pending, self.manual_stop_deferred = False, None
                 return
             stopped_since = latch['generation'] != applied.get('generation')
@@ -2579,8 +2639,8 @@ class RoomRuntime:
             if not latch['stopped'] and (stopped_since or applied.get('stopped')):
                 self.unpause()
                 await self.after_resume()
-            self.manual_stop_applied = {'generation': latch['generation'], 'stopped': latch['stopped']}
-            self.save_project()
+            if not self.commit_manual_stop(self.manual_stop_stamp(latch)):
+                return
 
     def poison_manual_stop(self, error):
         """Any latch failure turns automatic reopen off for good (Astra 648775e5 B1): a Stop that could not be
@@ -2819,29 +2879,11 @@ def install(host):
 
     @host.app.post("/api/runtime/stop")
     async def stop(request: Request):
-        # The user's Stop: latched host-wide first, so no automatic reopen undoes it; then the room stops.
-        _, note = runtime.manual_stop_call('set_user_stop', state='stopped')
-        if request.scope.get('release_latch_only'):
-            # Writes are blocked for an update's final snapshot (security 2d4f2cd6 F1): the latch and memory only.
-            runtime.defer_manual_stop('stop')
-            return {"ok": True, "deferred": True, "note": DEFERRED_CLICK_NOTE, **note}
-        await runtime.stop()
-        runtime.mark_manual_stop_applied()
-        return {"ok": True, **note}
+        return await runtime.user_stop(bool(request.scope.get('release_latch_only')))
 
     @host.app.post("/api/runtime/resume")
     async def resume(request: Request):
-        # Only the user's Resume clears the latch, unpausing in the same critical section.
-        _, note = runtime.manual_stop_call('clear_user_stop', runtime.unpause, state='running')
-        if request.scope.get('release_latch_only'):
-            runtime.defer_manual_stop('resume')
-            return {"ok": True, "deferred": True, "note": DEFERRED_CLICK_NOTE, **note}
-        if runtime.manual_stop_pending:
-            await runtime.reconcile_manual_stop()  # a Stop clicked during the update still clears its queues
-        runtime.unpause()  # the user's own Resume unpauses even when the latch can't be written
-        await runtime.after_resume()
-        runtime.mark_manual_stop_applied()
-        return {"ok": True, **note}
+        return await runtime.user_resume(bool(request.scope.get('release_latch_only')))
 
     @host.app.post("/api/runtime/reopen")
     async def reopen(request: Request):
