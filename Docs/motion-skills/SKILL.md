@@ -48,10 +48,16 @@ Then map rows to beats (v1) or clips (v2). Keep the table in the check-in; revie
 - Body text 48 px or larger, titles 96 px or larger. Captions sit in the lower third, inside a 96 px safe margin.
 - No more than about 12 words on screen at once outside a caption.
 - Use the same short names chat uses (Frontend, Design, QA), never job titles or internal ids.
+- Room screenshots are usually much wider than 16:9 (2.4-2.9:1). With `fit: contain` they letterbox and
+  their text is small. Show the part that matters: keyframe `scale` together with `x`/`y` so the zoom ends
+  on the region you're talking about (for example the preview lane), and check it with `frame`.
 - Label synthetic content as synthetic in the scene `source` and, if it could be mistaken for real, on screen.
 - On a `capture` layer, set `"label": "synthetic"` for anything that isn't a real room capture (mockups,
   edited or staged screenshots). The renderer then draws a fixed "Simulated" badge, which zooming can't
   scale away. The templates default to `"real"`: change it whenever you drop in a mockup.
+- **Browser chrome and the OS are personal.** Bookmarks, tabs, the address bar, other windows and the
+  taskbar stay out of every frame. Frame inside the app viewport: put the capture in a sized `group` that
+  shows only the app area, then check the top and bottom edges with `frame`.
 
 ## 5. Motion grammar: one movement means one thing
 
@@ -93,6 +99,7 @@ Render frames at the first second, the busiest moment and the last second. On th
 - [ ] No text overlaps another element or runs off screen.
 - [ ] Every person's state matches the story at that moment.
 - [ ] Names are short chat names; nothing internal (ids, tool names, file paths a viewer won't know).
+- [ ] No personal data: no bookmarks, tabs, address bar, taskbar, private chats or real names outside the team.
 - [ ] The final frame shows the result, held still.
 Fix, save with `overwrite: true`, and render frames again. Only then export.
 
@@ -107,7 +114,10 @@ Fix, save with `overwrite: true`, and render frames again. Only then export.
   an upload exists: the templates use `/uploads/replace-*.png` placeholders, so replace every one first.
 - **Formats:** `export` takes a `profile` (see AUTHORING.md, Export formats). Only WebM profiles `publish`
   into chat; for the others, share the job's download link.
-- **Render time** is about 2-3 s per second of video. Plan 45-60 s for a 20 s export.
+- **Render time** is about 2-3 s per second of video. Plan 45-60 s for a 20 s export; scenes with large
+  screenshots take longer.
+- **Text limits:** scene `source` is at most 200 characters and `name` at most 80. Put long provenance
+  (which captures are real) in the publish note instead.
 - One export or frame render runs at a time. If busy, wait; don't loop. Always call `export_status` before
   retrying an export, so you never start a second one.
 
