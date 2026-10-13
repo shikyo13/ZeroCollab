@@ -1628,7 +1628,8 @@ async def serve_upload(filename: str):
         return JSONResponse({"error": "not found"}, status_code=404)
     media_type = UPLOAD_MEDIA_TYPES.get(filepath.suffix.lower())
     if media_type is None:
-        # Not an image this room accepts as an upload: never rendered, only saved.
-        return FileResponse(filepath, media_type="application/octet-stream", headers=UPLOAD_HEADERS,
-                            content_disposition_type="attachment", filename=filepath.name)
+        # Not an image or video: never rendered, only saved. No filename in the header, so a chat link's
+        # download="<original name>" names the saved file (QA #14693); a bare link saves as the upload name.
+        return FileResponse(filepath, media_type="application/octet-stream",
+                            headers={**UPLOAD_HEADERS, "Content-Disposition": "attachment"})
     return FileResponse(filepath, media_type=media_type, headers=UPLOAD_HEADERS)

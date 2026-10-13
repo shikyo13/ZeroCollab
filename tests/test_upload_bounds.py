@@ -103,7 +103,8 @@ class UploadBoundsTests(unittest.TestCase):
             Path(root, 'page.html').write_text('<script>fetch("/")</script>')
             response = self.serve(root, 'page.html')
             self.assertEqual(response.media_type, 'application/octet-stream')
-            self.assertTrue(response.headers['content-disposition'].startswith('attachment'))
+            # A bare "attachment": no filename, so the chat link's download="<original name>" names the file.
+            self.assertEqual(response.headers['content-disposition'], 'attachment')
 
     def test_missing_or_directory_upload_is_not_found(self):
         with tempfile.TemporaryDirectory() as root:
