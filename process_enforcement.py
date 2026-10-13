@@ -11,9 +11,19 @@ Inputs, all read on the room's own state:
   split of release-48 0015): `visible` (user-visible approved tasks waiting), `installed_at` and `due`.
 - `release_manager.successful_stage_since(project, since)`: a validated successful stage receipt for this project
   and the current predecessor, published after `since` (Astra 180bbb4b). No core, or None, counts as not staged.
+
+L1, live checks open themselves after every install (Docs/lead-independence.md r6, task 6a9941e7, Zero #16445):
+once per installed release, with a deployed receipt for its id and manifest, the room binds the release checklist
+from the stage receipt's declared `shipped_tasks`, through the server-only `project_room.bind_installed`, or
+adopts an active binding for that manifest. It then gives each pinned owner one item, which resolves itself when
+the owner records an acceptance for the manifest. Anything the room can't bind from a declaration goes to the lead
+as one item: it never binds a partial set from reviews (astra 486dfc17).
 """
+import json
 import logging
+import re
 import time
+from pathlib import Path
 
 from project_room import RELEASE_GRANTEE
 
@@ -24,6 +34,16 @@ TRAIN_ESCALATE_SECONDS = 3600        # release manager's item open this long wit
 TRAIN_COOLDOWN_SECONDS = 2 * 3600    # after the release manager closes an item without staging (S3)
 TRAIN_PREFIX = 'E3 release train:'   # how the room recognises its own item after a crash (backend 0345591e)
 ESCALATION_PREFIX = 'E3: approved work'  # the same for its escalation bell item (backend 0466ff7e)
+L1_PREFIX = 'L1 live check:'         # an owner's check item for one installed release
+L1_LEAD_PREFIX = 'L1 release'        # the lead's item for what the room could not bind itself
+L1_RETRY_SECONDS = 600               # an install whose deployed receipt isn't readable yet is looked at again
+MAX_PINS = 32                        # release_checks' bound (project_room.MAX_RELEASE_CHECK_TASKS)
+MAX_RECEIPTS = 4096                  # the same scan bound as release_request's admission
+MAX_RECORD = 4 * 1024 * 1024
+MAX_CANDIDATES = 12
+RELEASE_ID = re.compile(r'[0-9a-f]{12}')
+DEPLOYMENT_ID = re.compile(r'[0-9a-f]{32}')
+MANIFEST_SHA = re.compile(r'[0-9a-f]{64}')
 
 
 def tick(runtime, now=None):
@@ -34,18 +54,23 @@ def tick(runtime, now=None):
     runtime.enforcement_ticked = now
     room = runtime.project_room
     if room.path is None or runtime.ready_wakes.room_gate():
-        return None
-    if RELEASE_GRANTEE not in runtime.states:
-        # Archived or renamed release manager: nobody to wake, so stay quiet instead of failing every minute.
-        if not getattr(runtime, 'enforcement_warned', False):
-            LOGGER.warning('Release train paused: %s is not a participant in this room', RELEASE_GRANTEE)
-            runtime.enforcement_warned = True
-        return None
+        return None  # Stop, pause or held writes: L1 waits too, so an install during Stop is handled on Resume
     deployment = getattr(runtime, 'deployment', None)
     if deployment is not None and not deployment.enter_mutation():
         return None
     try:
-        actions = release_train(runtime, now)
+        actions = []
+        if RELEASE_GRANTEE in runtime.states:
+            actions += release_train(runtime, now)
+        elif not getattr(runtime, 'enforcement_warned', False):
+            # Archived or renamed release manager: nobody to wake, so stay quiet instead of failing every minute.
+            LOGGER.warning('Release train paused: %s is not a participant in this room', RELEASE_GRANTEE)
+            runtime.enforcement_warned = True
+        try:
+            actions += install_checks(runtime, now)
+        except Exception:
+            # L1 reads host records; a bad one must not stop E3 or the beat. It is retried on the next tick.
+            LOGGER.exception('L1 install checks failed; retrying on the next tick')
         if actions:
             room.save()
         for action in actions:
@@ -116,8 +141,8 @@ def train_text(signals, hours, escalation=False):
             f'({ids}). Cut a release from what is approved now. This closes itself on the next install.')
 
 
-def create(room, recipient, text):
-    return room.records.followup(SYSTEM, 'create', assigned_to=recipient, text=text)['item']
+def create(room, recipient, text, task_id=''):
+    return room.records.followup(SYSTEM, 'create', assigned_to=recipient, task_id=task_id, text=text)['item']
 
 
 def close(room, items, result, cancel=False):
@@ -168,3 +193,214 @@ def train_channel(runtime):
 
 def stamp(seconds):
     return time.strftime('%Y-%m-%d %H:%M', time.localtime(seconds))
+
+
+# L1. Live checks open themselves after every install.
+
+def install_checks(runtime, now):
+    """Bind the installed release's checks once, then keep each owner's item in step with their acceptance.
+    Returns (kind, follow-up, recipient) actions to announce after save."""
+    room = runtime.project_room
+    deployment = getattr(runtime, 'deployment', None)
+    current = getattr(deployment, 'version', None) or {}
+    release, manifest = current.get('id'), current.get('manifest_sha')
+    if not (isinstance(release, str) and RELEASE_ID.fullmatch(release)
+            and isinstance(manifest, str) and MANIFEST_SHA.fullmatch(manifest)):
+        return []  # outside a managed room, or no installed release
+    enforcement = room.state.setdefault('enforcement', {})
+    installed = enforcement.setdefault('installed', {})
+    actions = []
+    if (installed.get('release_id'), installed.get('manifest_sha')) != (release, manifest):
+        if installed.get('waiting') == release and now - installed.get('looked', 0) < L1_RETRY_SECONDS:
+            return follow_through(runtime, room, installed)
+        root = Path(deployment.root)
+        if not deployed(root, release, manifest):
+            # current.json moved but no terminal deployed receipt names it (yet): bind nothing on an unproven install.
+            installed.update(waiting=release, looked=now)
+            return follow_through(runtime, room, installed)
+        installed = enforcement['installed'] = {'release_id': release, 'manifest_sha': manifest,
+                                             'version': str(current.get('version', '')), 'handled': now, 'items': {}}
+        actions += assign(runtime, room, root, installed)
+    return actions + follow_through(runtime, room, installed)
+
+
+def assign(runtime, room, root, installed):
+    """Once per install: bind from the declared list (or adopt an active binding), retire the previous system
+    binding, open one item per pinned owner, and one lead item for anything left to a person."""
+    release, manifest, version = installed['release_id'], installed['manifest_sha'], installed['version'] or installed['release_id']
+    stage = read_record(root / 'releases' / release / 'stage.json')
+    if stage and (stage.get('release_id'), stage.get('manifest_sha'), stage.get('project')) != (release, manifest, runtime.identity):
+        stage = None  # another package's or project's receipt is never this install's declaration
+    declared = declared_tasks(stage)
+    board = {t['id']: t for t in room.state['tasks']}
+    pinnable, problems = [], []
+    for entry in declared or []:
+        task = board.get(entry['task_id'])
+        why = ('is not on the board' if task is None else 'is closed' if task.get('closure')
+               else 'has no owner' if not task.get('owner')
+               else f"is owned by {task['owner']}, not {entry['owner']}" if entry['owner'] and task['owner'] != entry['owner']
+               else '')
+        if why:
+            problems.append(f"{entry['task_id']} {why}")
+        else:
+            pinnable.append(entry)
+    reasons = []
+    binding = active_binding(room, manifest)
+    if binding:
+        installed['adopted'] = binding['id']
+    elif declared is None:
+        reasons.append('its stage receipt declares no shipped_tasks, so the room binds nothing on its own')
+    elif not pinnable or len(pinnable) > MAX_PINS:
+        reasons.append(f'{len(pinnable)} declared tasks can be pinned (1-{MAX_PINS} are bound automatically)')
+    elif not callable(getattr(room, 'bind_installed', None)):
+        reasons.append('this room has no system binder yet (project_room.bind_installed)')
+    else:
+        binding = room.bind_installed(manifest, [e['task_id'] for e in pinnable],
+                                      f'Release {version} installed: live checks (L1, from its stage receipt).')
+    if problems:
+        reasons.append('declared checks need a disposition (reassign, reopen, or record why no check applies): '
+                       + '; '.join(problems))
+    actions = []
+    if binding:
+        installed['binding'] = binding['id']
+        for old in room.state.get('notes', []):
+            checks = old.get('release_checks') or {}
+            if (old.get('by') == SYSTEM and old.get('status', 'active') == 'active' and old['id'] != binding['id']
+                    and checks.get('manifest_sha') != manifest):
+                old.update(status='resolved', replaced_by=binding['id'])  # one live checklist: the installed one
+        scopes = {e['task_id']: e['scope'] for e in declared or []}
+        for pin in binding['release_checks']['tasks']:
+            task = board.get(pin['id'])
+            if task is None or accepted(task, manifest, pin['owner']):
+                continue
+            item = create(room, pin['owner'], owner_text(installed, task, scopes.get(pin['id'], '')), pin['id'])
+            installed['items'][pin['id']] = item['id']
+            actions.append(('opened', item, pin['owner']))
+    if reasons:
+        lead = lead_of(runtime)
+        if lead:
+            pinned = {pin['id'] for pin in (binding or {}).get('release_checks', {}).get('tasks', [])}
+            text = (f'{L1_LEAD_PREFIX} {version} ({release}) is installed, and its live checks need you: '
+                    + ' Also, '.join(r[0].upper() + r[1:] + '.' for r in reasons))
+            others = [t for t in candidates(room, stage) if t not in pinned]
+            if others:
+                text += f' Candidates from its reviews: {", ".join(others)}.'
+            item = create(room, lead, text + ' Bind them with a release_checks decision for manifest '
+                                              f'{manifest}, or record why none apply.')
+            installed['lead_item'] = item['id']
+            actions.append(('opened', item, lead))
+        else:
+            LOGGER.warning('L1: release %s needs a lead for its live checks, and this room has none', release)
+    return actions
+
+
+def follow_through(runtime, room, installed):
+    """Each owner's item resolves with the acceptance they record for this manifest; a failure goes to the lead."""
+    actions, board = [], {t['id']: t for t in room.state['tasks']}
+    for task_id, item_id in list((installed.get('items') or {}).items()):
+        item, task = record(room, item_id), board.get(task_id)
+        if not item or item['status'] != 'open' or not task:
+            continue
+        entry = accepted(task, installed['manifest_sha'], item['assigned_to'])
+        if not entry:
+            continue
+        room.records.followup(SYSTEM, 'resolve', followup_id=item_id,
+                              result=f"{entry['result']} by {entry['by']}: {entry.get('text', '')}"[:4000])
+        actions.append(('closed', item, item['assigned_to']))
+        lead = lead_of(runtime)
+        if entry['result'] == 'failed' and lead:
+            blocker = create(room, lead, f"{L1_LEAD_PREFIX} {installed['version'] or installed['release_id']}: task {task_id} "
+                                         f"failed its live check ({entry['by']}): {entry.get('text', '')}"[:4000], task_id)
+            actions.append(('opened', blocker, lead))
+    return actions
+
+
+def owner_text(installed, task, scope):
+    """The release and manifest to check, with the declared scope and the task's own recorded check as data."""
+    check = ((task.get('evidence') or {}).get('acceptance') or task.get('next_action') or '').strip()
+    text = (f"{L1_PREFIX} release {installed['version'] or installed['release_id']} ({installed['release_id']}) is installed. "
+            f"Check task {task['id']} ({task['title']}) on the running app and record room_task update acceptance "
+            f"{{manifest_sha: {installed['manifest_sha']}, result: passed or failed, text}}.")
+    if scope:
+        text += f' Declared scope: "{scope[:300]}".'
+    if check:
+        text += f' The task\'s recorded check: "{check[:600]}".'
+    return text
+
+
+def declared_tasks(stage):
+    """The stage receipt's shipped_tasks as [{task_id, owner, scope}], or None when it declares none."""
+    entries = (stage or {}).get('shipped_tasks')
+    if not isinstance(entries, list) or not entries:
+        return None
+    declared, seen = [], set()
+    for entry in entries[:4 * MAX_PINS]:
+        task_id = entry.get('task_id') if isinstance(entry, dict) else None
+        if not isinstance(task_id, str) or not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        owner, scope = entry.get('owner'), entry.get('scope')
+        declared.append({'task_id': task_id, 'owner': owner if isinstance(owner, str) else '',
+                         'scope': scope if isinstance(scope, str) else ''})
+    return declared or None
+
+
+def candidates(room, stage):
+    """Tasks the lead may want to bind: the stage's own reviews, and approved reviews of files this release changed
+    (security N1). Suggestions only; the room never binds from them."""
+    if not stage:
+        return []
+    reviews = {r['id']: r for r in room.state.get('reviews', [])}
+    changed = set(stage.get('coverage') or {}) if isinstance(stage.get('coverage'), dict) else set()
+    found = [reviews[i]['task_id'] for i in stage.get('reviews') or [] if isinstance(i, str) and i in reviews]
+    found += [r['task_id'] for r in reviews.values() if r['status'] == 'approved'
+              and changed & {f.get('relative') for f in (r.get('snapshot') or {}).get('files', [])}]
+    open_ids = {t['id'] for t in room.state['tasks'] if not t.get('closure')}
+    return [t for t in dict.fromkeys(found) if t in open_ids][:MAX_CANDIDATES]
+
+
+def active_binding(room, manifest):
+    return next((n for n in room.state.get('notes', []) if n.get('kind') == 'decision'
+                 and n.get('status', 'active') == 'active' and (n.get('release_checks') or {}).get('manifest_sha') == manifest),
+                None)
+
+
+def accepted(task, manifest, owner):
+    """The latest acceptance for this manifest from the pinned owner or the user, as release_request counts it."""
+    return next((a for a in reversed(task.get('acceptance_log') or []) if a.get('manifest_sha') == manifest
+                 and a.get('by') in (owner, 'user')), None)
+
+
+def deployed(root, release, manifest):
+    """A terminal deployed receipt for exactly this release and manifest, as release_request.predecessor reads it."""
+    folder = root / 'receipts'
+    try:
+        paths = [p for p in folder.glob('*.json') if DEPLOYMENT_ID.fullmatch(p.stem)]
+    except OSError:
+        return False
+    if len(paths) > MAX_RECEIPTS:
+        LOGGER.warning('L1: deployment history exceeds %s receipts; not scanning', MAX_RECEIPTS)
+        return False
+    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
+        receipt = read_record(path)
+        if (receipt and receipt.get('status') == 'deployed' and receipt.get('release_id') == release
+                and (receipt.get('request') or {}).get('manifest_sha') == manifest):
+            return True
+    return False
+
+
+def read_record(path):
+    """A bounded JSON object from the deploy directory, or None when it is missing, too large or not an object."""
+    try:
+        with open(path, 'rb') as stream:
+            raw = stream.read(MAX_RECORD + 1)
+        value = json.loads(raw.decode('utf-8-sig')) if len(raw) <= MAX_RECORD else None
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+
+def lead_of(runtime):
+    lead = (runtime.project_room.state.get('responders') or {}).get('lead')
+    return lead if lead in runtime.states and not runtime.states[lead].get('archived') else None

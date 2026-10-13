@@ -1,4 +1,5 @@
 """Process rules the room enforces itself (Docs/process-enforcement.md, task a7da2f10, Zero #16116)."""
+import json
 import os
 import tempfile
 import time
@@ -154,6 +155,148 @@ class ScopeCap(Rules):
         self.request('next')  # round eight; it supersedes the answered review, which keeps its window
         with self.assertRaises(RuleRefused):
             self.request('same')  # the same string after a verdict is round nine
+
+
+class InstallChecks(unittest.TestCase):
+    """L1: after every install the room binds the live checks from the stage's declared list and asks each owner,
+    without the lead (Docs/lead-independence.md r6). bind_installed is backend's seam, stood in for here."""
+    RELEASE = 'a1b2c3d4e5f6'
+    MANIFEST = RELEASE + '0' * 52
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.deploy = root / 'deploy'
+        (self.deploy / 'receipts').mkdir(parents=True)
+        (self.deploy / 'releases' / self.RELEASE).mkdir(parents=True)
+        self.woken, self.bound = [], []
+        self.runtime = SimpleNamespace(
+            data=root / 'data', identity='test', host=SimpleNamespace(router=None, store=SimpleNamespace(
+                add=lambda sender, text, **kw: None)),
+            states={name: {'worktree': str(root)} for name in ('lead', 'worker', 'peer')},
+            activity=lambda name: {'running': False, 'queued': 0},
+            ready_wakes=SimpleNamespace(room_gate=lambda: ''),
+            deployment=SimpleNamespace(root=self.deploy, enter_mutation=lambda: True, leave_mutation=lambda: None,
+                                       version={'id': self.RELEASE, 'manifest_sha': self.MANIFEST, 'version': '0.12.53'}),
+            deliver_record=lambda recipient, items, channel, chain, text, ref: self.woken.append(recipient),
+            owns_channel=lambda channel: True, default_channel=lambda: 'main',
+            decisions=SimpleNamespace(routes=lambda channel: True), manager_wakes=SimpleNamespace(record={}),
+            enforcement_warned=True)  # no release manager here: E3 stays quiet
+        room = self.room = self.runtime.project_room = ProjectRoom(self.runtime)
+        room.use_project('test')
+        room.state['responders'] = {'lead': 'lead'}
+        self.a = room.task('worker', 'create', title='Feature A')['id']
+        self.b = room.task('peer', 'create', title='Feature B')['id']
+
+        def bind_installed(manifest, task_ids, text):
+            owners = {t['id']: t['owner'] for t in room.state['tasks']}
+            note = {'id': f'bind{len(self.bound)}', 'by': 'system', 'kind': 'decision', 'text': text,
+                    'time': time.time(), 'status': 'active',
+                    'release_checks': {'manifest_sha': manifest, 'tasks': [{'id': i, 'owner': owners[i]} for i in task_ids]}}
+            room.state['notes'].append(note)
+            self.bound.append(task_ids)
+            return note
+        room.bind_installed = bind_installed
+
+    def receipt(self):
+        (self.deploy / 'receipts' / ('f' * 32 + '.json')).write_text(json.dumps(
+            {'status': 'deployed', 'release_id': self.RELEASE, 'request': {'manifest_sha': self.MANIFEST}}), 'utf-8')
+
+    def stage(self, shipped=None, reviews=()):
+        value = {'release_id': self.RELEASE, 'manifest_sha': self.MANIFEST, 'project': 'test', 'reviews': list(reviews)}
+        if shipped:
+            value['shipped_tasks'] = shipped
+        (self.deploy / 'releases' / self.RELEASE / 'stage.json').write_text(json.dumps(value), 'utf-8')
+
+    def tick(self, later=0):
+        self.runtime.enforcement_ticked = 0
+        return process_enforcement.tick(self.runtime, now=time.time() + later)
+
+    def items(self, recipient):
+        return [f for f in self.room.state.get('followups', []) if f['created_by'] == 'system' and f['assigned_to'] == recipient]
+
+    def accept(self, actor, task_id, result):
+        self.room.task(actor, 'update', task_id, acceptance={'manifest_sha': self.MANIFEST, 'result': result, 'text': 'seen'})
+
+    def test_a_declared_list_binds_once_and_asks_each_owner_once(self):
+        self.receipt()
+        self.stage([{'task_id': self.a, 'owner': 'worker', 'scope': 'E1 only'},
+                    {'task_id': self.b, 'owner': 'peer', 'scope': ''}])
+        self.assertEqual(self.tick(), ['opened', 'opened'])
+        self.assertEqual(self.bound, [[self.a, self.b]])
+        item = self.items('worker')[0]
+        self.assertEqual(item['task_id'], self.a)
+        self.assertIn(self.MANIFEST, item['text'])
+        self.assertIn('"E1 only"', item['text'])
+        self.assertEqual(sorted(self.woken), ['peer', 'worker'])
+        self.assertEqual(self.items('lead'), [])
+        self.assertEqual(self.tick(60), [])  # one install binds once
+        self.assertEqual(len(self.bound), 1)
+
+    def test_an_acceptance_resolves_the_item_and_a_failure_tells_the_lead(self):
+        self.receipt()
+        self.stage([{'task_id': self.a, 'owner': 'worker', 'scope': ''}, {'task_id': self.b, 'owner': 'peer', 'scope': ''}])
+        self.tick()
+        self.accept('worker', self.a, 'passed')
+        self.accept('peer', self.b, 'failed')
+        self.assertEqual(sorted(self.tick(60)), ['closed', 'closed', 'opened'])
+        self.assertEqual([i['status'] for i in self.items('worker')], ['resolved'])
+        blocker = self.items('lead')[0]
+        self.assertEqual(blocker['task_id'], self.b)
+        self.assertIn('failed its live check', blocker['text'])
+
+    def test_without_a_declaration_nothing_is_bound_and_the_lead_is_asked_once(self):
+        self.room.records.review('worker', 'request', task_id=self.a, reviewer='peer', revision='v1', text='check')
+        review = self.room.state['reviews'][-1]
+        self.receipt()
+        self.stage(reviews=[review['id']])
+        self.assertEqual(self.tick(), ['opened'])
+        self.assertEqual(self.bound, [])
+        self.assertEqual((self.items('worker'), self.items('peer')), ([], []))
+        text = self.items('lead')[0]['text']
+        self.assertIn('declares no shipped_tasks', text)
+        self.assertIn(f'Candidates from its reviews: {self.a}', text)
+        self.assertEqual(self.tick(60), [])
+
+    def test_a_declared_task_that_cannot_be_pinned_goes_to_the_lead_and_the_rest_is_bound(self):
+        self.room.task('peer', 'update', self.b, close_reason='superseded', close_pointer=self.a)
+        self.receipt()
+        self.stage([{'task_id': self.a, 'owner': 'worker', 'scope': ''}, {'task_id': self.b, 'owner': 'peer', 'scope': ''},
+                    {'task_id': 'gone0000', 'owner': 'peer', 'scope': ''}])
+        self.tick()
+        self.assertEqual(self.bound, [[self.a]])
+        text = self.items('lead')[0]['text']
+        self.assertIn(f'{self.b} is closed', text)
+        self.assertIn('gone0000 is not on the board', text)
+
+    def test_an_active_binding_is_adopted_and_an_older_system_binding_retired(self):
+        old = {'id': 'oldbind1', 'by': 'system', 'kind': 'decision', 'text': 'older', 'time': 0, 'status': 'active',
+               'release_checks': {'manifest_sha': 'b' * 64, 'tasks': [{'id': self.b, 'owner': 'peer'}]}}
+        self.room.state['notes'].append(old)
+        mine = self.room.note('user', 'decision', 'checks for this release',
+                              release_checks={'manifest_sha': self.MANIFEST, 'tasks': [self.a]})
+        self.receipt()
+        self.stage([{'task_id': self.a, 'owner': 'worker', 'scope': ''}, {'task_id': self.b, 'owner': 'peer', 'scope': ''}])
+        self.assertEqual(self.tick(), ['opened'])
+        self.assertEqual(self.bound, [])  # exactly one binding per manifest: the user's
+        self.assertEqual(len(self.items('worker')), 1)
+        self.assertEqual((old['status'], old['replaced_by']), ('resolved', mine['id']))
+
+    def test_nothing_is_bound_until_a_deployed_receipt_names_the_install(self):
+        self.stage([{'task_id': self.a, 'owner': 'worker', 'scope': ''}])
+        self.assertEqual(self.tick(), [])
+        self.receipt()
+        self.assertEqual(self.tick(60), [])  # looked again only after L1_RETRY_SECONDS
+        self.assertEqual(self.tick(process_enforcement.L1_RETRY_SECONDS + 1), ['opened'])
+
+    def test_a_held_room_waits(self):
+        self.receipt()
+        self.stage([{'task_id': self.a, 'owner': 'worker', 'scope': ''}])
+        self.runtime.ready_wakes = SimpleNamespace(room_gate=lambda: 'stopped')
+        self.assertIsNone(self.tick())
+        self.runtime.ready_wakes = SimpleNamespace(room_gate=lambda: '')
+        self.assertEqual(self.tick(), ['opened'])
 
 
 class ReleaseTrainSeams(unittest.TestCase):

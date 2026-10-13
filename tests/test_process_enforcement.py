@@ -95,7 +95,7 @@ class ReleaseTrain(unittest.TestCase):
 
     def test_quiet_without_a_registered_release_manager(self):
         del self.runtime.states[RELEASE_GRANTEE]
-        self.assertIsNone(self.tick())
+        self.assertEqual(self.tick(), [])  # E3 is quiet; the tick still runs for L1, which needs no release manager
         self.assertEqual(self.items(RELEASE_GRANTEE), [])
 
     def test_nothing_while_held_or_when_nothing_waits(self):
