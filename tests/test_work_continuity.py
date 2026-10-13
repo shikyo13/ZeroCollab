@@ -397,6 +397,13 @@ class Waits(Continuity):
         self.assertEqual(self.room.state['continuity']['spin'][self.task_id], wc.SPIN_TURNS)
         self.assertEqual(self.tick((wc.SPIN_TURNS + 1) * (wc.RECHECK_SECONDS + 60)), ['opened'])  # one stall
         self.assertEqual(self.tick((wc.SPIN_TURNS + 2) * (wc.RECHECK_SECONDS + 60)), [])  # and no more wakes
+        # harness 241f7f0d: naming the wait, as the stall asks, closes it and lets C6a watch it again.
+        self.room.task('worker', 'update', task_id=self.task_id, wait_on=[{'task': self.other}])
+        self.assertEqual(self.tick((wc.SPIN_TURNS + 3) * (wc.RECHECK_SECONDS + 60)), ['closed'])
+        self.assertNotIn(self.task_id, self.room.state['continuity']['spin'])
+        self.finish_other()
+        self.assertEqual(self.tick((wc.SPIN_TURNS + 4) * (wc.RECHECK_SECONDS + 60)), ['woke'])
+        self.assertTrue(self.calls[-1]['key'].startswith(f'wait:{self.task_id}:'))
 
 
 class InstallResume(Continuity):

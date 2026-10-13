@@ -294,7 +294,9 @@ def waits(runtime, state, name, last, now):
     board = {t['id']: t for t in room_state['tasks']}
     mine = [t for t in room_state['tasks'] if t.get('owner') == name and t['status'] != 'done'
             and not t.get('closure') and not t.get('wait')  # a user wait's delivery is the user's bell
-            and state['spin'].get(t['id'], 0) < SPIN_TURNS]  # a spinning wait is a stall for the lead (W3)
+            # A spinning unnamed wait is a stall for the lead (W3). Naming it is the answer C6b asks for, so a named
+            # wait is watched again, still once per wait revision (harness 241f7f0d).
+            and (t.get('wait_on') or state['spin'].get(t['id'], 0) < SPIN_TURNS)]
     claims = state['claims']
 
     def fresh(key):
@@ -466,6 +468,7 @@ def spun_wait(state, task):
     """A waiting or deferred task its owner keeps re-deferring after C6 wakes, with no status, evidence or file
     change (security 9701e700 W3): a stall for the lead, kept until a substantive turn resets it."""
     return (task['status'] != 'done' and not task.get('closure') and task.get('next_action_state') in WAITING_STATES
+            and not task.get('wait_on')  # named now: the stall closes and spin resets (harness 241f7f0d)
             and state['spin'].get(task['id'], 0) >= SPIN_TURNS)
 
 
