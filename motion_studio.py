@@ -257,7 +257,7 @@ MAX_INLINE_ASSET_BYTES = 64 * 1024 * 1024  # total raw bytes in one generated pa
 
 
 def resolved_frame_input(scene, composition, runtime):
-    """Resolve only referenced uploads/kit assets, with byte hashes and a bounded data-only page."""
+    """Resolve uploads, kit assets and registered originals into a bounded, hash-checked data-only page."""
     import mimetypes
     import motion_scene
     frame = motion_scene.frame_input(scene, composition, 0)
@@ -277,8 +277,11 @@ def resolved_frame_input(scene, composition, runtime):
             elif motion_scene.KIT_ASSET.fullmatch(ref):
                 root = KIT.resolve()
                 path = (root / ref.removeprefix('motion:')).resolve()
+            elif motion_scene.FILEREF.fullmatch(ref):
+                path = Path(runtime.project_room.references().lookup(ref.removeprefix('fileref:'))[0]).resolve()
+                root = path.parent  # The registry authorizes this exact original; no scene-supplied path.
             else:
-                raise ValueError('Asset ref must be an upload or motion kit asset')
+                raise ValueError('Asset ref must be an upload, motion kit asset or registered original')
             if not path.is_relative_to(root) or not path.is_file():
                 raise ValueError(f'Asset {asset["id"]} is missing or outside its allowed directory')
             if total + path.stat().st_size > MAX_INLINE_ASSET_BYTES:

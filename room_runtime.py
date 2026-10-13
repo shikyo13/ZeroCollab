@@ -11,6 +11,7 @@ import platform
 import re
 import subprocess
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -119,7 +120,11 @@ ROOM_ACTION_LABELS = {
     ('room_motion', 'frame'): 'rendering preview frames', ('room_motion', 'export'): 'exporting a video',
     ('room_motion', 'publish'): 'sharing a video', ('room_motion', 'variant'): 'making a scene variant',
     ('room_motion', 'patch'): 'editing a motion scene', ('room_motion', 'import_asset'): 'adding a scene asset',
-    ('room_motion', 'inspect'): 'inspecting a video'}
+    ('room_motion', 'inspect'): 'inspecting a video', ('room_browser', 'record_start'): 'recording the browser',
+    ('room_browser', 'record_stop'): 'finishing a browser recording',
+    ('room_browser', 'record_status'): 'checking a browser recording'}
+# room_browser actions whose finished take is registered as a fileref (shared_browser record_status/record_stop).
+RECORDING_RESULTS = ('record_status', 'record_stop')
 ACP_KIND_LABELS = {
     'read': 'reading files', 'edit': 'editing files', 'delete': 'deleting files', 'move': 'moving files',
     'search': 'searching files', 'execute': 'running a command', 'think': 'thinking', 'fetch': 'reading a web page'}
@@ -1708,6 +1713,12 @@ class RoomRuntime:
                 await self.browser.publish_activity(run.id, run.name, action, 'failed')
                 raise
             await self.browser.publish_activity(run.id, run.name, action, 'done')
+            if action in RECORDING_RESULTS and result.get('phase') == 'done' and result.get('path'):
+                # A finished take is used where it lies, never copied (Zero #14949): registered like a pasted
+                # path, so room_motion inspect and import_asset take its fileref and chat links serve it in place.
+                key, path, _ = await asyncio.to_thread(self.project_room.references().register, result['path'])
+                result.update(fileref=f'fileref:{key}',
+                              clip_url=f'/api/files/ref/{key}/{urllib.parse.quote(path.name)}')
             if action == 'screenshot' and result.get('image'):
                 # Saved as an upload so the agent can mark it up or attach it, like the user's own captures.
                 name = uuid.uuid4().hex[:8] + '.jpg'

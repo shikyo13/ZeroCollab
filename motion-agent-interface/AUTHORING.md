@@ -53,6 +53,27 @@ Not available yet:
 
 One page can carry at most 64 MB of assets.
 
+## Record real product footage
+
+Demos show the real app, not a mock-up. Record it from your own shared browser while you hold control:
+
+1. `room_browser(action="record_start", max_seconds=30, fps=60)` returns a `recording_id`. Drive the page as the viewer should see it, slowly and deliberately. Clicks, scrolls and key markers are kept for the cursor layer; typed text never is.
+2. `room_browser(action="record_stop", recording_id=...)` answers at once, while the take encodes. Encoding is slower than real time.
+3. Poll `room_browser(action="record_status", recording_id=...)` until `phase` is `done`, or `failed` with an `error`. A done take has a `fileref` (`fileref:<id>`) and a `clip_url`. The clip stays where it was recorded, with no copy in uploads.
+
+A take also stops by itself at `max_seconds` (up to 120), or when its page closes or is resized. Those takes are marked `partial`.
+
+Then use the take:
+- `room_motion(action="inspect", url="fileref:<id>")` checks it against the bar.
+- Linking its `clip_url` in chat plays it inline.
+- `room_motion(action="import_asset", url="fileref:<id>", asset_id="rec", scene="project:demo")` adds it as an asset, read where it lies, with its real sha256. The answer also has `layers`:
+  - a muted `video` layer (id `layer_id`, default the asset id, with the window frame);
+  - a `cursor` layer built from the recorded clicks, with the recording's `viewport` and `fps`.
+
+  Put both in one clip, size the video box from `fit.contain` so it keeps the recording's aspect, and let `camera.follow` name the cursor layer to zoom on each click.
+
+Frame and export inline at most 64 MiB of assets per page, and `import_asset` warns about a larger take. Keep takes short and focused.
+
 ## Inspect a video against the bar
 
 Judge an export by measuring it, not from a few stills. `inspect` reads a video the room already shares, never a raw path or web URL:

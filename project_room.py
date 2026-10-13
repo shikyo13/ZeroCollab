@@ -109,7 +109,6 @@ VIDEOS = {'webm', 'mp4'}
 IMAGES = RASTER_IMAGES | {'svg', 'bmp'}  # what the upload API calls kind 'image'
 # A pasted original served in place (backend local_files, Zero #14949): /api/files/ref/<16 hex id>/<name>.
 REFERENCE_LINK = r'/api/files/ref/([0-9a-f]{16})/([^\s)\]]+)'
-REFERENCE_REGISTRY = 'file_references.json'  # in the server's data_dir, written by app.file_references()
 MAX_FILE_LABEL = 120  # same bound as the composer's [label](link) match
 # What agents can resolve for a message: the upload folder and the pasted-reference registry (either may be None).
 Files = namedtuple('Files', 'uploads references')
@@ -1205,7 +1204,9 @@ class ProjectRoom:
                 # MCP tools load deferred; a tool the prompt never names is effectively invisible.
                 lines.append("- room_browser is the user's Browser panel: claim it, open a local preview, inspect or "
                              'screenshot what the user sees, then release. A screenshot returns an /uploads URL for '
-                             'room_markup and task attachments. Prefer it to a private headless browser for UI work.')
+                             'room_markup and task attachments. Prefer it to a private headless browser for UI work. '
+                             'record_start, record_stop and record_status record real product footage from your own '
+                             'browser as a fileref for room_motion, kept where it was recorded.')
             if state.get('room_tools') == 'unconfirmed':
                 lines.append('- The room did not observe your room tools loading or being used last turn. Check your tool list '
                              'first; if any are missing, say so in the chat.')
@@ -1263,20 +1264,11 @@ class ProjectRoom:
         return Files(getattr(self.runtime.host.store, 'upload_dir', None), self.references())
 
     def references(self):
-        """The pasted-reference registry the server writes (app.file_references, Zero #14949). Reloaded only when
-        its file changes, so a reference pasted after the room started resolves without rereading every time."""
+        """The pasted-reference registry (app.file_references, Zero #14949): the process's one shared instance, so
+        a path pasted or a recording finished a moment ago resolves at once, with nothing reread from disk."""
+        import local_files
         cfg = getattr(self.runtime, 'cfg', None)
-        server = cfg.get('server') if isinstance(cfg, dict) else None
-        path = Path((server or {}).get('data_dir', './data')) / REFERENCE_REGISTRY
-        try:
-            stamp = path.stat().st_mtime_ns
-        except OSError:
-            return None
-        cached = getattr(self, '_references', None)
-        if cached is None or cached[0] != stamp:
-            import local_files
-            cached = self._references = (stamp, local_files.Registry(path))
-        return cached[1]
+        return local_files.shared_registry(cfg if isinstance(cfg, dict) else None)
 
 
 def file_size(size):
@@ -1402,7 +1394,7 @@ def coordination_tools():
                         'x1': {'type': 'number'}, 'y1': {'type': 'number'}, 'x2': {'type': 'number'}, 'y2': {'type': 'number'}, 'note': string, 'color': string},
                         'required': ['kind', 'x1', 'y1']}},
                     'summary': string, 'task_id': string, 'post': {'type': 'boolean'}}, ['image']),
-        definition('room_motion', 'Author motion scenes and product videos (JSON data, never code). list/get scenes; validate scene_json (returns issues [{path, message}]); save it as project:<id> (overwrite to replace); frame renders t_ms (one time or up to 6) exactly as the video looks, returning /uploads PNGs and a contact sheet; export starts the video in profile webm (default), vp9-alpha or av1 (WebM), prores4444 (.mov with alpha), gif, png (first frame only; use frame for a chosen time) or png-sequence (.zip of numbered frames); a profile this room\'s FFmpeg cannot encode is refused, never swapped; export_status; export_cancel job_id; publish job_id posts a finished WebM export to this chat (post false to skip) and task_id attaches it to a task you own; other profiles are not published, share their video_url from export_status. Author new work as v2 (field reference: Docs/motion-scene-v2.md); v1 room replays still render. frame and export use the first composition. Sound is not exported yet: export refuses audio layers and unmuted video, and validate and save warn first. variant scene new_id saves a template re-render as project:<new_id> with composition (default first) and props overriding its props, checked against props_schema. patch scene ops applies RFC 6902 JSON Patch to a saved project scene; nothing is written unless the result validates. import_asset url asset_id turns a room upload (a room_browser screenshot, a recording, an image) into an asset with its real sha256 and, for images, size and how it fits the frame; with scene it is added to that project scene. inspect job_id (an export) or url (a /uploads video, or a pasted file as fileref:<id> or its /api/files/ref link) measures resolution, fps, cuts and transitions, shot lengths, motion and holds, and loudness (LUFS); vs (the same forms, or export:<job_id>) adds a side-by-side against a reference; sheets (default contact and motion) draws contact (8 frames), dense (every 1/fps s from start to end, fps up to 10, at most 48 tiles, for small icon motion), motion (movement over time with cuts), shots (the middle of each shot) and frames (at t_ms) as /uploads PNGs. Loop: validate until clean, save, frame key moments and show them with room_markup, export, inspect it against the reference, then publish.',
+        definition('room_motion', 'Author motion scenes and product videos (JSON data, never code). list/get scenes; validate scene_json (returns issues [{path, message}]); save it as project:<id> (overwrite to replace); frame renders t_ms (one time or up to 6) exactly as the video looks, returning /uploads PNGs and a contact sheet; export starts the video in profile webm (default), vp9-alpha or av1 (WebM), prores4444 (.mov with alpha), gif, png (first frame only; use frame for a chosen time) or png-sequence (.zip of numbered frames); a profile this room\'s FFmpeg cannot encode is refused, never swapped; export_status; export_cancel job_id; publish job_id posts a finished WebM export to this chat (post false to skip) and task_id attaches it to a task you own; other profiles are not published, share their video_url from export_status. Author new work as v2 (field reference: Docs/motion-scene-v2.md); v1 room replays still render. frame and export use the first composition. Sound is not exported yet: export refuses audio layers and unmuted video, and validate and save warn first. variant scene new_id saves a template re-render as project:<new_id> with composition (default first) and props overriding its props, checked against props_schema. patch scene ops applies RFC 6902 JSON Patch to a saved project scene; nothing is written unless the result validates. import_asset url asset_id turns a room upload (a room_browser screenshot, a recording, an image) or a registered original (fileref:<id> from a recording or a pasted path, used where it lies) into an asset with its real sha256 and, for images and recordings, size and how it fits the frame; with scene it is added to that project scene; a recording also returns a muted video layer (id layer_id, default asset_id) and its cursor layer from the recorded clicks. inspect job_id (an export) or url (a /uploads video, or a pasted file as fileref:<id> or its /api/files/ref link) measures resolution, fps, cuts and transitions, shot lengths, motion and holds, and loudness (LUFS); vs (the same forms, or export:<job_id>) adds a side-by-side against a reference; sheets (default contact and motion) draws contact (8 frames), dense (every 1/fps s from start to end, fps up to 10, at most 48 tiles, for small icon motion), motion (movement over time with cuts), shots (the middle of each shot) and frames (at t_ms) as /uploads PNGs. Loop: validate until clean, save, frame key moments and show them with room_markup, export, inspect it against the reference, then publish.',
                    {'action': {'type': 'string', 'enum': ['list', 'get', 'validate', 'save', 'frame', 'export', 'export_status', 'export_cancel', 'publish', 'variant', 'patch', 'import_asset', 'inspect']},
                     'scene': string, 'scene_json': {'type': 'object'}, 'overwrite': {'type': 'boolean'},
                     't_ms': {'anyOf': [{'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}, 'maxItems': 6}]},
@@ -1411,7 +1403,7 @@ def coordination_tools():
                     'profile': {'type': 'string', 'enum': ['webm', 'vp9-alpha', 'av1', 'prores4444', 'gif', 'png', 'png-sequence']},
                     'new_id': string, 'composition': string, 'props': {'type': 'object'},
                     'ops': {'type': 'array', 'items': {'type': 'object'}, 'maxItems': 200},
-                    'url': string, 'asset_id': string,
+                    'url': string, 'asset_id': string, 'layer_id': string,
                     'kind': {'type': 'string', 'enum': ['image', 'capture', 'video', 'font', 'audio']},
                     'vs': string, 'start': {'type': 'number', 'minimum': 0}, 'end': {'type': 'number', 'minimum': 0},
                     'fps': {'type': 'number', 'exclusiveMinimum': 0, 'maximum': 10},

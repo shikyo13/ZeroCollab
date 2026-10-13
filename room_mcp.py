@@ -14,6 +14,8 @@ IMAGE_LIMIT = 5 * 1024 * 1024
 # decodes the whole video three times (video_analysis: up to 180 s per FFmpeg pass). An inspect that outlives
 # its wait still finishes and is cached, so asking again returns at once.
 MOTION_TIMEOUTS = {'frame': 60, 'inspect': 600}
+# record_start checks the encoder and takes a first frame before it answers; stop and status answer at once.
+BROWSER_TIMEOUTS = {'record_start': 60}
 MAX_SHOWN_SHEETS = 6  # images attached to one inspect answer; the rest stay as urls in the JSON
 IMAGE_FORMATS = {'png': 'png', 'jpg': 'jpeg', 'jpeg': 'jpeg', 'gif': 'gif', 'webp': 'webp'}
 
@@ -207,7 +209,8 @@ def room_decision(action: str = 'get', decision_id: str = '', stage: str = '', r
 def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
                  text: str = '', key: str = '', modifiers: int = 0,
                  x: float | None = None, y: float | None = None, delta: float = 500,
-                 accept: bool = False, page: str = '') -> list:
+                 accept: bool = False, page: str = '', recording_id: str = '',
+                 max_seconds: float | None = None, fps: Literal[30, 60] | None = None) -> list:
     """See and drive the user's Browser panel: check a UI change the way the user sees it, and capture
     before and after screenshots for mockups and reviews. screenshot also returns an /uploads URL to pass
     to room_markup or task attachments. status/inspect/screenshot observe the page.
@@ -222,16 +225,27 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
     Pages: actions apply to the active page unless page names one from status pages[]; a closed page
     is refused, never redirected. new_page (optional url) opens another page and makes it active;
     select_page and close_page take page. Keep to one page unless you need to compare two.
+    Recording real product footage (your own browser only, while you hold control): record_start
+    (max_seconds up to 120, default 60; fps 30 or 60, default 60) records the page as you drive it, with
+    clicks, scrolls and key markers (never typed text) kept for the cursor layer; it stops by itself at
+    max_seconds or when the page closes or is resized. record_stop recording_id returns at once while it
+    encodes; poll record_status recording_id until phase is done (or failed, with error). A done take has
+    fileref (fileref:<id>) and clip_url: the clip stays where it was recorded, never copied. Pass the fileref to
+    room_motion inspect url, or link clip_url in chat, where it plays inline.
     """
     args = dict(action=action, url=url, ref=ref, text=text, key=key, modifiers=modifiers,
                 delta=delta, accept=accept)
     if page:
         args['page'] = page
+    if recording_id:
+        args['recording_id'] = recording_id
+    if action == 'record_start':
+        args.update({k: v for k, v in dict(max_seconds=max_seconds, fps=fps).items() if v is not None})
     if x is not None:
         args['x'] = x
     if y is not None:
         args['y'] = y
-    result = call('room_browser', args)
+    result = call('room_browser', args, timeout=BROWSER_TIMEOUTS.get(action, 15))
     pixels = result.pop('image', None)
     content = [json.dumps(result)]
     if pixels:
@@ -245,7 +259,7 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
                 note: str = '', name: str = '', post: bool = True,
                 profile: Literal['webm', 'vp9-alpha', 'av1', 'prores4444', 'gif', 'png', 'png-sequence'] = 'webm',
                 new_id: str = '', composition: str = '', props: dict | None = None, ops: list[dict] | None = None,
-                url: str = '', asset_id: str = '', kind: str = '', vs: str = '',
+                url: str = '', asset_id: str = '', kind: str = '', layer_id: str = '', vs: str = '',
                 sheets: list[Literal['contact', 'dense', 'motion', 'shots', 'frames']] | None = None,
                 start: float | None = None, end: float | None = None, fps: float | None = None) -> list:
     """Author motion scenes and product videos with the room's motion engine (data, never code).
@@ -268,7 +282,9 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     result validates. import_asset url asset_id: turn a room upload (a room_browser screenshot url, a
     recording, an image) into an asset with its real sha256 and, for images, width, height and how it fits
     the frame; with scene it's added to that project scene (kind is inferred, or image, capture, video,
-    font, audio). inspect job_id (an export) or url (a /uploads video, or a pasted file as fileref:<id> or
+    font, audio). url can also be a registered original used where it lies: fileref:<id> from a recording
+    or a pasted path. A recording also returns layers: a muted video layer (id layer_id, default asset_id)
+    and its cursor layer from the recorded clicks, ready to place together in one clip. inspect job_id (an export) or url (a /uploads video, or a pasted file as fileref:<id> or
     its /api/files/ref link): measures resolution, fps, cuts and transitions, shot lengths, motion and holds,
     and loudness (LUFS); vs (the same forms, or export:<job_id>) adds a side-by-side against a reference.
     sheets (default contact and motion) draws contact (8 frames), dense (every 1/fps s from start to end,
@@ -288,7 +304,7 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     if action == 'patch':
         args['ops'] = ops
     if action == 'import_asset':
-        args.update(url=url, asset_id=asset_id, kind=kind)
+        args.update(url=url, asset_id=asset_id, kind=kind, **({'layer_id': layer_id} if layer_id else {}))
     if action == 'inspect':
         args.update({k: v for k, v in dict(url=url, vs=vs, sheets=sheets, start=start, end=end, fps=fps).items()
                      if v not in (None, '')})

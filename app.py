@@ -1668,16 +1668,9 @@ async def serve_upload(filename: str):
 
 # --- Files referenced in place (Zero #14949: paste a path, no copy) ---
 
-_file_references = None
-
-
 def file_references():
-    """The room's reference registry, in its data folder; created on first use."""
-    global _file_references
-    if _file_references is None:
-        data_dir = Path(config.get("server", {}).get("data_dir", "./data"))
-        _file_references = local_files.Registry(data_dir / "file_references.json")
-    return _file_references
+    """The room's reference registry, in its data folder; shared with the runtime's recording registrations."""
+    return local_files.shared_registry(config)
 
 
 @app.post("/api/files/reference")

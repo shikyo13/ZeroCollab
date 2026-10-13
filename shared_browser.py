@@ -19,17 +19,23 @@ import httpx
 import websockets
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from browser_recording import (DEFAULT_RECORD_FPS, DEFAULT_RECORD_SECONDS,
+                               MAX_RECORD_SECONDS, MAX_RETAINED_RECORDINGS, SUPPORTED_RECORD_FPS)
 
 WIDTH, HEIGHT = 1280, 800
 LEASE_SECONDS = 60
 # Explicitly opened pages per browser; each headless page costs a renderer process.
 MAX_PAGES = 4
 IDLE_SECONDS = 300
+RECORDING_CLOSE_GRACE_SECONDS = 10
+WINDOWS_CREATE_SUSPENDED = 4
 
 
 class WindowsBrowserProcess:
     """A suspended launch assigned to a kill-on-close job before it can create children."""
-    def __init__(self, args):
+    def __init__(self, args, *, priority_class=0):
+        if priority_class not in (0, subprocess.BELOW_NORMAL_PRIORITY_CLASS):
+            raise ValueError('Windows worker priority must be default or below normal')
         import ctypes
         from ctypes import wintypes as w
         import _winapi
@@ -63,7 +69,8 @@ class WindowsBrowserProcess:
                 raise ctypes.WinError(ctypes.get_last_error())
             self.handle, thread, self.pid, _ = _winapi.CreateProcess(
                 None, subprocess.list2cmdline(args), None, None, False,
-                subprocess.CREATE_NO_WINDOW | 4, None, None, subprocess.STARTUPINFO())  # CREATE_SUSPENDED
+                subprocess.CREATE_NO_WINDOW | WINDOWS_CREATE_SUSPENDED | priority_class,
+                None, None, subprocess.STARTUPINFO())
             if not self.kernel.AssignProcessToJobObject(self.job, self.handle):
                 raise ctypes.WinError(ctypes.get_last_error())
             if self.kernel.ResumeThread(thread) == 0xFFFFFFFF:
@@ -161,6 +168,7 @@ class Page:
         self.frame_event = asyncio.Event()
         self.stream_lock = asyncio.Lock()
         self.streaming = False
+        self.recording = None
         self.width, self.height = WIDTH, HEIGHT
 
     def summary(self, active):
@@ -198,6 +206,7 @@ class Browser:
         self.debug_port = None
         self.activity = None
         self.id = uuid.uuid4().hex[:12]
+        self.recordings = {}
         self.agent = self.label = ''
         self.last_action = time.monotonic()
         self.capacity_guard = None
@@ -267,6 +276,9 @@ class Browser:
         self.generation += 1
         page.frame_event.set()
 
+        if page.recording:
+            self.schedule(page.recording.stop('page_closed'))
+
     async def receive(self):
         try:
             async for raw in self.ws:
@@ -316,6 +328,8 @@ class Browser:
                     page.frame_generation = page.generation
                     page.frame_seq += 1
                     page.frame_event.set()
+                    if page.recording:
+                        page.recording.push(page.frame, p.get('metadata'))
                     # Never await a command from the reader that receives its reply.
                     self.schedule(self.command('Page.screencastFrameAck', {'sessionId': p['sessionId']}, page=page))
                 elif method == 'Page.frameNavigated' and not p.get('frame', {}).get('parentId'):
@@ -414,6 +428,8 @@ class Browser:
             if not method.startswith(('Target.', 'Browser.')):
                 message['sessionId'] = session
             await self.ws.send(json.dumps(message))
+            if page and page.recording and method.startswith('Input.'):
+                page.recording.input(method, params or {})
             # Chromium leaves a click pending while its JS alert is open. Return control
             # to the user/agent so it can answer the dialog instead of holding our lock.
             target = page or self.session_page(session)
@@ -559,6 +575,13 @@ class Browser:
         self.drop(page)
 
     async def close(self):
+        for recording in list(self.recordings.values()):
+            if recording.phase in ('recording', 'encoding'):
+                with contextlib.suppress(ValueError):
+                    try:
+                        await asyncio.wait_for(recording.stop('instance_closed'), RECORDING_CLOSE_GRACE_SECONDS)
+                    except asyncio.TimeoutError:
+                        await recording.cancel('instance_closed')
         for page in self.pages.values():
             page.frame_event.set()
         if self.ws:
@@ -649,6 +672,74 @@ class Browser:
                         await asyncio.sleep(.05)
                 page.streaming = True
 
+    async def record_start(self, page, *, max_seconds=DEFAULT_RECORD_SECONDS, fps=DEFAULT_RECORD_FPS):
+        if (not isinstance(max_seconds, (int, float)) or isinstance(max_seconds, bool)
+                or not 0 < max_seconds <= MAX_RECORD_SECONDS or not isinstance(fps, int)
+                or isinstance(fps, bool) or fps not in SUPPORTED_RECORD_FPS):
+            raise ValueError('Recording needs 0 < max_seconds <= 120 and fps 30 or 60')
+        if self.pages.get(page.id) is not page or not self.status()['running']:
+            raise ValueError('Recording needs an open page of this browser instance')
+        if any(r.phase in ('recording', 'encoding') for r in self.recordings.values()):
+            raise ValueError('This browser instance is already recording or encoding')
+        from motion_studio import require_tools, project_dir
+        from browser_recording import Recording, probe_transport
+        project = self.project
+        encoder = await asyncio.to_thread(require_tools, self.runtime, 'webm')
+        await asyncio.to_thread(probe_transport, encoder['path'])
+        if (project != self.runtime.identity or self.pages.get(page.id) is not page
+                or not self.status()['running']):
+            raise ValueError('Browser or project changed while preparing recording')
+        if any(r.phase in ('recording', 'encoding') for r in self.recordings.values()):
+            raise ValueError('This browser instance is already recording or encoding')
+        folder = project_dir(self.runtime)
+        if not folder:
+            raise ValueError('Recording needs a project')
+        first = await self.screenshot(page)
+        if project != self.runtime.identity or self.pages.get(page.id) is not page:
+            raise ValueError('Browser or project changed while preparing recording')
+        recording = Recording(self, page, encoder['path'], max_seconds, fps, folder / 'recordings')
+        self.recordings[recording.id] = page.recording = recording
+        while len(self.recordings) > MAX_RETAINED_RECORDINGS:
+            retired = next((key for key, take in self.recordings.items()
+                            if take.phase in ('done', 'failed')), None)
+            if retired is None:
+                break
+            self.recordings.pop(retired)
+        recording.push(first)
+        try:
+            await self.start_stream(page)
+        except Exception:
+            with contextlib.suppress(ValueError):
+                await recording.stop('capture_start_failed')
+            raise
+        return recording.status()
+
+    def record_status(self, recording_id):
+        if not isinstance(recording_id, str):
+            raise ValueError('Name a recording_id from record_start')
+        recording = self.recordings.get(recording_id)
+        if not recording:
+            raise ValueError('Unknown recording for this browser instance')
+        return recording.status(paths=True)
+
+    async def record_stop(self, recording_id):
+        if not isinstance(recording_id, str):
+            raise ValueError('Name a recording_id from record_start')
+        recording = self.recordings.get(recording_id)
+        if not recording:
+            raise ValueError('Unknown recording for this browser instance')
+        return recording.begin_stop()
+
+    async def recording_detached(self, recording):
+        page = recording.page
+        if page.recording is recording:
+            page.recording = None
+        async with page.stream_lock:
+            if page.streaming and not page.viewers and not page.recording:
+                with contextlib.suppress(Exception):
+                    await self.command('Page.stopScreencast', page=page)
+                page.streaming = False
+
     async def latest_frame(self, page):
         # Legacy one-shot observers must not leave a 60fps capture running.
         async with page.stream_lock:
@@ -685,7 +776,7 @@ class Browser:
         finally:
             page.viewers -= 1
             async with page.stream_lock:
-                if not page.viewers and page.streaming:
+                if not page.viewers and not page.recording and page.streaming:
                     with contextlib.suppress(Exception):
                         await self.command('Page.stopScreencast', page=page)
                     page.streaming = False
@@ -702,6 +793,15 @@ class Browser:
                 await self.close()
                 self.events.clear()
             action = arguments.get('action', 'status')
+            if action.startswith('record_'):
+                if actor == 'user' or self.agent != label:
+                    raise ValueError('Recording is available only on the calling agent\'s own browser')
+                if action == 'record_status':
+                    return {**self.status(), **self.record_status(arguments.get('recording_id'))}
+                if action == 'record_stop':
+                    return {**self.status(), **await self.record_stop(arguments.get('recording_id'))}
+                if action != 'record_start':
+                    raise ValueError('Use record_start, record_status or record_stop')
             if action == 'status':
                 await self.refresh_titles()
                 return self.status(self.page(arguments) if arguments.get('page') else None)
@@ -750,6 +850,10 @@ class Browser:
             if not self.status()['running']:
                 raise ValueError('Open a local preview first')
             page = self.page(arguments)
+            if action == 'record_start':
+                return {**self.status(page), **await self.record_start(
+                    page, max_seconds=arguments.get('max_seconds', DEFAULT_RECORD_SECONDS),
+                    fps=arguments.get('fps', DEFAULT_RECORD_FPS))}
             if action == 'select_page':
                 if not arguments.get('page'):
                     raise ValueError('Name the page to select')
@@ -766,6 +870,9 @@ class Browser:
             if action == 'screenshot':
                 return {**self.status(page), 'image': base64.b64encode(await self.screenshot(page)).decode()}
             if action == 'resize':
+                if page.recording:
+                    with contextlib.suppress(ValueError):
+                        await page.recording.stop('viewport_changed')
                 page.width = max(360, min(1600, int(arguments.get('width', WIDTH))))
                 page.height = max(300, min(1000, int(arguments.get('height', HEIGHT))))
                 await self.command('Emulation.setDeviceMetricsOverride', {'width': page.width, 'height': page.height, 'deviceScaleFactor': 1, 'mobile': False}, page=page)
@@ -986,15 +1093,15 @@ class BrowserManager:
             await asyncio.sleep(1)
             for browser in list(self.instances.values()):
                 for page in list(browser.pages.values()):
-                    if page.streaming and not page.viewers:
+                    if page.streaming and not page.viewers and not page.recording:
                         async with page.stream_lock:
-                            if not page.viewers:
+                            if not page.viewers and not page.recording:
                                 with contextlib.suppress(Exception):
                                     await browser.command('Page.stopScreencast', page=page)
                                 page.streaming = False
                 browser.expire()
                 if (browser.status()['running'] and not browser.owner and not browser.lock.locked()
-                        and not any(p.viewers for p in browser.pages.values())
+                        and not any(p.viewers or p.recording for p in browser.pages.values())
                         and time.monotonic() - browser.last_action >= IDLE_SECONDS):
                     async with browser.lock:
                         await browser.close()

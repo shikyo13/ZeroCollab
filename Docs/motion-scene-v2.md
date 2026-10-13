@@ -32,7 +32,9 @@ A scene is JSON data, never code. Validation returns every problem as `[{path, m
 
 `{id, kind, ref, sha256?, name?}`
 - `kind`: `image`, `video`, `audio`, `font` or `capture` (a room screenshot, markup or browser frame).
-- `ref`: a room upload `/uploads/<file>` or a kit file `motion:<path>`. URLs and file paths are refused, so a scene can never reach the network or the disk.
+- `ref`: a room upload `/uploads/<file>`, a kit file `motion:<path>`, or, for `image`, `video`, `audio` and `capture`, a registered original `fileref:<16 hex>`.
+  - A fileref is a browser recording or a pasted path, used where it lies with no copy. Render reads it through the room's file registry (`local_files`).
+  - URLs and file paths are refused, so a scene can never reach the network or a file the room wasn't given.
 - `sha256` is optional while authoring. The export pipeline (S3) fills it and the frame contract's asset manifest uses it.
 
 ## Composition

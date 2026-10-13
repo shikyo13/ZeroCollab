@@ -11,6 +11,7 @@ judges its export against a reference from numbers and dense frames instead of a
 import asyncio
 import copy
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -22,6 +23,13 @@ from pathlib import Path
 from team_builder import text
 
 MAX_PATCH_OPS = 200
+# A browser recording's take (desktop d590dce6): clip.webm with this sidecar beside it.
+TAKE_SIDECAR = 'sidecar.json'
+TAKE_SIDECAR_VERSION = 1
+MAX_SIDECAR_BYTES = 16 * 1024 * 1024  # 20000 input events stay well under this
+CURSOR_BUTTON_EVENTS = ('down', 'up', 'click')  # the events that carry a button
+CURSOR_SUFFIX = '-cursor'  # the cursor layer id: the video layer's id plus this
+TAKE_PROBE_REF = '/uploads/take.webm'  # a well-formed stand-in ref for take_issues; never resolved
 EXTENSION_KINDS = {'png': 'image', 'jpg': 'image', 'jpeg': 'image', 'webp': 'image', 'gif': 'image',
                    'webm': 'video', 'mp4': 'video', 'woff2': 'font', 'woff': 'font', 'ttf': 'font', 'otf': 'font',
                    'ogg': 'audio', 'mp3': 'audio', 'wav': 'audio', 'm4a': 'audio'}
@@ -327,29 +335,113 @@ def upload_facts(path):
     return facts
 
 
-async def import_asset(runtime, run, arguments):
-    """A room upload (a screenshot, a recording, any /uploads file) as a scene asset with its real sha256.
-    With scene, it's added to that saved project scene; without, the entry is returned to paste in.
-    For images it also returns the size and, against the scene's first composition, how it fits."""
+def take_cursor(path, motion_scene):
+    """The pointer track of a browser recording (desktop d590dce6), read from the sidecar the recorder writes
+    beside its clip, as cursor-layer fields: viewport, fps and events normalised to the scene's cursor events
+    (motion-design dbfe259e). None when the file isn't a take or its sidecar is unreadable."""
+    try:
+        with path.with_name(TAKE_SIDECAR).open('rb') as stream:
+            raw = stream.read(MAX_SIDECAR_BYTES + 1)  # bounded even if the file grows after any size check
+        if len(raw) > MAX_SIDECAR_BYTES:
+            return None
+        data = json.loads(raw.decode('utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get('version') != TAKE_SIDECAR_VERSION:
+        return None
+    width, height, fps, events = data.get('width'), data.get('height'), data.get('fps'), data.get('events')
+    # The viewport also sizes the video box and its fit, so bad sides (0, False) end here (systems 9d30fe52).
+    if not (motion_scene.viewport_side(width) and motion_scene.viewport_side(height)
+            and isinstance(fps, dict) and isinstance(events, list)):
+        return None
+    track = []
+    for event in events[:motion_scene.MAX_CURSOR_EVENTS]:
+        if not isinstance(event, dict) or event.get('type') not in motion_scene.CURSOR_EVENTS:
+            continue
+        # t_ms, scroll deltas and named keys stay in the sidecar: the layer takes frame, type, position, button.
+        item = {key: event[key] for key in ('frame', 'type', 'x', 'y') if key in event}
+        if event.get('button') in motion_scene.CURSOR_BUTTONS and event['type'] in CURSOR_BUTTON_EVENTS:
+            item['button'] = event['button']
+        track.append(item)
+    return {'viewport': [width, height], 'fps': {'num': fps.get('num'), 'den': fps.get('den')}, 'events': track}
+
+
+def take_issues(layers, motion_scene):
+    """The take's video and cursor layers checked by the scene schema in a one-clip scene, so import only
+    returns layers that validate (systems 602d4e93): [] or the issues."""
+    video, cursor = layers['video'], layers['cursor']
+    width, height = cursor['viewport']
+    probe = {'version': motion_scene.VERSION, 'id': 'take', 'name': 'take',
+             'assets': [{'id': video['asset'], 'kind': 'video', 'ref': TAKE_PROBE_REF}],
+             'compositions': [{'id': 'take', 'width': width, 'height': height, 'fps': {'num': 1, 'den': 1},
+                               'duration': 1, 'tracks': [{'id': 'take', 'kind': 'visual', 'clips': [
+                                   {'id': 'take-clip', 'from': 0, 'duration': 1, 'layers': [video, cursor]}]}]}]}
+    return motion_scene.issues(probe)
+
+
+def asset_source(runtime, url):
+    """(path, scene ref) for import_asset: a room upload, or an original registered with the room (a pasted
+    path or a finished recording, as fileref:<id> or its /api/files/ref link), read where it lies."""
     import motion_scene
+    if isinstance(url, str) and motion_scene.UPLOAD.fullmatch(url):
+        return upload_path(runtime, url), url
+    match = FILEREF_INPUT.fullmatch(url) if isinstance(url, str) else None
+    if match:
+        return runtime.project_room.references().lookup(match.group(1))[0], f'fileref:{match.group(1)}'
+    raise ValueError('url must be a room upload such as /uploads/1a2b3c4d.png (a screenshot url works), or a '
+                     'registered original: fileref:<id> from a recording or a pasted path')
+
+
+async def import_asset(runtime, run, arguments):
+    """A room upload or a registered original (a recording, a pasted path) as a scene asset with its real sha256.
+    With scene, it's added to that saved project scene; without, the entry is returned to paste in.
+    For images and recordings it also returns the size and, against the scene's first composition, how it
+    fits; a recording also brings its video and cursor layers, ready to place."""
+    import motion_scene
+    import motion_studio
     url = arguments.get('url')
-    if not isinstance(url, str) or not motion_scene.UPLOAD.fullmatch(url):
-        raise ValueError('url must be a room upload such as /uploads/1a2b3c4d.png (a screenshot url works)')
-    path = upload_path(runtime, url)
-    kind =arguments.get('kind') or EXTENSION_KINDS.get(path.suffix.lower().lstrip('.'))
+    path, asset_ref = asset_source(runtime, url)
+    kind = arguments.get('kind') or EXTENSION_KINDS.get(path.suffix.lower().lstrip('.'))
     if kind not in motion_scene.ASSET_KINDS:
         raise ValueError('kind must be one of ' + ', '.join(motion_scene.ASSET_KINDS))
+    if motion_scene.FILEREF.fullmatch(asset_ref) and kind not in motion_scene.FILEREF_KINDS:
+        raise ValueError(f"a registered original can be a {', '.join(motion_scene.FILEREF_KINDS)} asset")
     asset_id = arguments.get('asset_id')
     if not isinstance(asset_id, str) or not motion_scene.ID.fullmatch(asset_id):
         raise ValueError('asset_id must be lowercase letters, digits and hyphens, at most 48 characters')
     project = runtime.identity
     facts = await asyncio.to_thread(upload_facts, path)
+    take = await asyncio.to_thread(take_cursor, path, motion_scene) if kind == 'video' else None
     if runtime.identity != project:
         # The room switched project while the file was hashed (systems 9a0066e8 F1): never save into the other
         # project's scene of the same name. Nothing awaits between here and the read and save below.
         raise ValueError('The project changed while the upload was being read; nothing was saved. Try again.')
-    asset = {'id': asset_id, 'kind': kind, 'ref': url, 'sha256': facts['sha256']}
+    asset = {'id': asset_id, 'kind': kind, 'ref': asset_ref, 'sha256': facts['sha256']}
     result = {'asset': asset, 'bytes': facts['bytes']}
+    warnings = []
+    if facts['bytes'] > motion_studio.MAX_INLINE_ASSET_BYTES:
+        # No downscale, transcode or copy is made: the agent trims the source or records a shorter take.
+        warnings.append(f'This file is {facts["bytes"] / 2 ** 20:.0f} MiB, over the '
+                        f'{motion_studio.MAX_INLINE_ASSET_BYTES // 2 ** 20} MiB that frame and export can inline '
+                        'per page, so they will refuse it. A scene\'s distinct assets together share that limit too.')
+    if take:
+        # The box keeps the recording's aspect so viewport px map straight onto it (desktop d590dce6). The
+        # cursor's source is the video layer returned with it; place both in the same clip.
+        layer_id = arguments.get('layer_id') or asset_id
+        if not isinstance(layer_id, str) or not motion_scene.ID.fullmatch(layer_id):
+            raise ValueError('layer_id must be lowercase letters, digits and hyphens, at most 48 characters')
+        facts['width'], facts['height'] = take['viewport']
+        cursor_id = layer_id[:motion_scene.MAX_ID - len(CURSOR_SUFFIX)] + CURSOR_SUFFIX
+        layers = {'video': {'id': layer_id, 'type': 'video', 'asset': asset_id, 'muted': True, 'frame': 'window'},
+                  'cursor': {'id': cursor_id, 'type': 'cursor', 'source': layer_id, **take}}
+        found = take_issues(layers, motion_scene)
+        if found:
+            warnings.append(f"The recording's input track didn't validate as a cursor layer, so only the video "
+                            f"layer is returned: {found[0]['path']} {found[0]['message']}")
+            del layers['cursor']
+        result['layers'] = layers
+    if warnings:
+        result['warnings'] = warnings
     if 'width' in facts:
         result.update(width=facts['width'], height=facts['height'],
                       aspect=round(facts['width'] / facts['height'], 4))
@@ -388,7 +480,7 @@ DERIVED_HEX = 16          # sheet names: the first 64 bits of the PNG's sha256, 
 INSPECT_SLOTS = asyncio.Semaphore(2)  # at most two inspections run FFmpeg at once; the rest wait their turn
 EXPORT_REF = 'export:'
 # A pasted original (app /api/files/reference): fileref:<id> or its served link /api/files/ref/<id>/<name>.
-FILE_REF = re.compile(r'(?:fileref:|/api/files/ref/)([0-9a-f]{16})(?:/[^/]+)?')
+FILEREF_INPUT = re.compile(r'(?:fileref:|/api/files/ref/)([0-9a-f]{16})(?:/[^/]+)?')
 VIDEO_REFS = ('a room upload (/uploads/<name>), export:<job_id>, or a pasted file (fileref:<id> or its '
               '/api/files/ref/<id>/<name> link)')
 
@@ -405,12 +497,9 @@ def video_source(runtime, ref):
         return path
     if motion_scene.UPLOAD.fullmatch(ref):
         return upload_path(runtime, ref)
-    match = FILE_REF.fullmatch(ref)
+    match = FILEREF_INPUT.fullmatch(ref)
     if match:
-        references = runtime.project_room.references()
-        if references is None:
-            raise ValueError('No file has been pasted in this room yet; paste its path in chat first')
-        return references.lookup(match.group(1))[0]
+        return runtime.project_room.references().lookup(match.group(1))[0]
     raise ValueError(f'{ref[:120]} is not a video the room can read; use ' + VIDEO_REFS)
 
 
@@ -488,7 +577,7 @@ def inspect_files(ffmpeg, path, vs_path, options, upload_dir):
                 start, fps = options['start'], options['fps']
                 if start >= length:
                     raise ValueError(f'start is past the end of the video ({length} s measured)')
-                end =options['end'] or min(length, start + video_analysis.DENSE_MAX_TILES / fps)
+                end = options['end'] or min(length, start + video_analysis.DENSE_MAX_TILES / fps)
                 video_analysis.dense_sheet(ffmpeg, path, start, end, fps, out)
                 entry.update(start=start, end=round(end, 3), fps=fps)
             elif kind == 'motion':

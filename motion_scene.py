@@ -18,15 +18,21 @@ import math
 import re
 
 VERSION = 2
-ID = re.compile(r'^[a-z0-9][a-z0-9-]{0,47}$')
+MAX_ID = 48
+ID = re.compile(rf'^[a-z0-9][a-z0-9-]{{0,{MAX_ID - 1}}}$')
 UPLOAD = re.compile(r'^/uploads/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$')
 # Files shipped in the motion kit: every path segment starts with a letter or digit, so '.', '..' and empty
 # segments are impossible and a ref can never leave the kit folder (systems 9001172a F2).
 KIT_ASSET = re.compile(r'^motion:(?=.{1,120}$)[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*$')
+# An original used where it lies (Zero #14949): the id the room's file registry (local_files) gives a pasted
+# path or a finished browser recording. Media only; render resolves it through that registry.
+FILEREF = re.compile(r'fileref:[0-9a-f]{16}')  # use with fullmatch; render resolves the same format
+FILEREF_KINDS = ('image', 'video', 'audio', 'capture')
 COLOR = re.compile(r'^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$')
 PATH_DATA = re.compile(r'^[MmLlHhVvCcSsQqTtAaZz0-9eE.,+\-\s]*$')
 MAX_ISSUES = 100
 MAX_SIDE = 7680
+MIN_VIEWPORT = 16  # a cursor viewport side, in CSS px
 MAX_SECONDS = 3600
 MAX_DEPTH = 8
 MAX_LAYERS = 1000
@@ -54,6 +60,7 @@ STAGGER_EVERY_MAX = 120
 STAGGER_FRAMES_MAX = 240
 STAGGER_RISE_MAX = 400
 CURSOR_EVENTS = ('move', 'down', 'up', 'click', 'scroll', 'key')
+CURSOR_BUTTONS = ('left', 'middle', 'right')
 MAX_CURSOR_EVENTS = 20000
 MAX_CAMERA_KEYS = 2000
 # 'ui' layers mount real ZeroCollab components (frontend d7fe16c8, motion/ui.js) on scripted data: a complete
@@ -118,6 +125,11 @@ REQUIRED = {'text': ('text',), 'image': ('asset',), 'capture': ('asset',), 'vide
             'ui': ('component', 'label', 'data'), 'cursor': ('source', 'events', 'viewport', 'fps'),
             'voiceover': ('text', 'voice'), 'redact': ()}
 COMMON = ('id', 'type', 'name', 'keyframes', 'hidden')
+
+
+def viewport_side(value):
+    """A cursor viewport side: a whole number of CSS px from MIN_VIEWPORT to MAX_SIDE (never a bool)."""
+    return isinstance(value, int) and not isinstance(value, bool) and MIN_VIEWPORT <= value <= MAX_SIDE
 
 
 def known(value, names):
@@ -349,9 +361,13 @@ class V2:
         if a.get('kind') not in ASSET_KINDS:
             r.add(f'{path}.kind', f'must be one of {", ".join(ASSET_KINDS)}')
         ref = a.get('ref')
-        if not isinstance(ref, str) or not (UPLOAD.match(ref) or KIT_ASSET.match(ref)):
-            # Never a URL or a file path: assets are this room's uploads or files shipped with the motion kit.
-            r.add(f'{path}.ref', "must be a room upload '/uploads/<file>' or a kit file 'motion:<file>'")
+        if isinstance(ref, str) and FILEREF.fullmatch(ref):
+            if a.get('kind') in ASSET_KINDS and a['kind'] not in FILEREF_KINDS:
+                r.add(f'{path}.ref', f"a fileref is for {', '.join(FILEREF_KINDS)} assets")
+        elif not isinstance(ref, str) or not (UPLOAD.match(ref) or KIT_ASSET.match(ref)):
+            # Never a URL or a file path: uploads, kit files, or an original registered with the room (fileref).
+            r.add(f'{path}.ref', "must be a room upload '/uploads/<file>', a kit file 'motion:<file>' or a "
+                                 "registered original 'fileref:<id>'")
         if 'sha256' in a and not (isinstance(a['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', a['sha256'])):
             r.add(f'{path}.sha256', 'must be 64 lowercase hexadecimal characters')
         r.text(a.get('name'), f'{path}.name', 120, required=False)
@@ -597,7 +613,7 @@ class V2:
                     r.number(event[axis], f'{where}.{axis}', -100000, 100000)
                 elif event.get('type') != 'key':
                     r.add(f'{where}.{axis}', 'is required except on key markers')
-            if 'button' in event and event['button'] not in ('left', 'middle', 'right'):
+            if 'button' in event and event['button'] not in CURSOR_BUTTONS:
                 r.add(f'{where}.button', 'must be left, middle or right')
             if 'rect' in event:
                 rect = event['rect']
@@ -674,8 +690,9 @@ class V2:
             elif spec[0] == 'viewport':
                 size = layer['viewport']
                 if not (isinstance(size, list) and len(size) == 2 and all(
-                        isinstance(v, int) and not isinstance(v, bool) and 16 <= v <= MAX_SIDE for v in size)):
-                    r.add(f'{path}.viewport', f'must be [width, height] in CSS px, whole numbers from 16 to {MAX_SIDE}')
+                        viewport_side(v) for v in size)):
+                    r.add(f'{path}.viewport',
+                          f'must be [width, height] in CSS px, whole numbers from {MIN_VIEWPORT} to {MAX_SIDE}')
             elif spec[0] == 'rate':
                 self.rational_fps(layer['fps'], f'{path}.fps')
             elif spec[0] == 'duck':

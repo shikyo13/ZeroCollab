@@ -53,10 +53,10 @@ class RegistryAndRoutes(unittest.TestCase):
         self.uploads = self.root / 'uploads'
         self.uploads.mkdir()
         self.config = {'server': {'data_dir': str(self.root / 'data')}, 'images': {'upload_dir': str(self.uploads)}}
-        app._file_references = None
+        local_files._shared.clear()
 
     def tearDown(self):
-        app._file_references = None
+        local_files._shared.clear()
 
     def run_route(self, coroutine):
         with patch.object(app, 'config', self.config):
@@ -77,7 +77,7 @@ class RegistryAndRoutes(unittest.TestCase):
 
     def test_same_file_same_id_and_the_registry_persists(self):
         first = json.loads(self.run_route(app.reference_file(Request({'ref': str(self.file)}))).body)
-        app._file_references = None  # a restarted room reads the registry back from disk
+        local_files._shared.clear()  # a restarted room reads the registry back from disk
         again = json.loads(self.run_route(app.reference_file(Request({'ref': self.file.as_uri()}))).body)
         self.assertEqual(first['id'], again['id'])
         self.assertEqual(self.run_route(app.serve_referenced_file(first['id'], 'x')).status_code, 200)

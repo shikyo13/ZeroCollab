@@ -65,6 +65,22 @@ def resolve(reference):
     return resolved
 
 
+REGISTRY_NAME = 'file_references.json'  # in the server's data_dir
+_shared = {}
+_shared_lock = threading.Lock()
+
+
+def shared_registry(cfg):
+    """The one Registry per registry file in this process, from a room config ({server: {data_dir}}). Every
+    writer (pasted references, finished browser recordings) goes through it, so no save overwrites another's."""
+    path = Path(((cfg or {}).get('server') or {}).get('data_dir', './data')) / REGISTRY_NAME
+    key = os.path.normcase(str(path.resolve()))
+    with _shared_lock:
+        if key not in _shared:
+            _shared[key] = Registry(path)
+        return _shared[key]
+
+
 class Registry:
     """Pasted references by a stable id, so links carry an id, not a path, and the server keeps the original
     path. Persisted as JSON in the room's data folder. Methods block on disk; call them off the event loop."""
@@ -96,6 +112,10 @@ class Registry:
         key = hashlib.sha256(os.path.normcase(str(path)).encode('utf-8')).hexdigest()[:ID_HEX]
         info = path.stat()
         with self.lock:
+            known = self.entries.get(key)
+            if known and (known.get('path'), known.get('size'), known.get('mtime_ns')) == (
+                    str(path), info.st_size, info.st_mtime_ns):
+                return key, path, info  # unchanged: a repeat paste or status poll writes nothing
             self.entries[key] = {'path': str(path), 'size': info.st_size, 'mtime_ns': info.st_mtime_ns,
                                  'registered': time.time()}
             for stale in sorted(self.entries, key=lambda k: self.entries[k].get('registered', 0))[
