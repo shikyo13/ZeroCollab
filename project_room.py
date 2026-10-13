@@ -31,6 +31,10 @@ LIMIT_RANGES = {'input_chars': (4000, 48000), 'agent_turns': (0, 32),
 LIMIT_RANGES['native_tool_calls'] = (0, 64)
 LIMIT_RANGES['ready_task_wakes'] = (0, 1)
 TASK_STATES = {'open', 'working', 'blocked', 'review', 'done'}
+# A closure ends a task without claiming delivery (opus 56d0015c): it skips the review and installation gates.
+# duplicate and superseded point at the task that carries the work on; parked and wont_do point at the decision.
+CLOSE_REASONS = ('duplicate', 'superseded', 'parked', 'wont_do')
+CARRIED_ON = ('duplicate', 'superseded')
 # Owner-set readiness for ready-task wakes; never inferred from text, status or labels ('' clears it).
 NEXT_ACTION_STATES = {'ready', 'deferred', 'waiting', ''}
 # Changes to these fields by anyone other than the owner are new work for the owner (work_rev).
@@ -353,8 +357,8 @@ class ProjectRoom:
         view = self.task_view(task)
         # repository_key qualifies the bare reserved paths, which are pinned to the repository primary when claimed.
         summary = {key: view[key] for key in ('id', 'title', 'owner', 'status', 'execution_state', 'stale', 'updated', 'repository_key')}
-        summary.update({key: view[key] for key in ('priority', 'next_action', 'wait', 'transfer', 'depends_on', 'paths', 'labels')
-                        if view.get(key)})
+        summary.update({key: view[key] for key in ('priority', 'next_action', 'wait', 'transfer', 'depends_on', 'paths', 'labels',
+                                                   'closure') if view.get(key)})
         summary['history_entries'] = len(task['updates'])
         if task.get('attachments'):
             summary['images'] = len(task['attachments'])
@@ -498,8 +502,10 @@ class ProjectRoom:
         self.save()
 
     def task(self, actor, action, task_id='', title='', details='', paths=None, owner='', status='', update='', depends_on=None, labels=None, attachments=None,
-             next_action=None, priority=None, wait=None, evidence=None, next_action_state=None):
+             next_action=None, priority=None, wait=None, evidence=None, next_action_state=None,
+             close_reason='', close_pointer=''):
         tasks = self.state['tasks']
+        closing = None
         task = next((t for t in tasks if t['id'] == task_id), None)
         previous = task
         human = actor == 'user'
@@ -578,6 +584,13 @@ class ProjectRoom:
                     if status not in TASK_STATES:
                         raise ValueError('Choose open, working, blocked, review, or done')
                     task['status'] = status
+                    if status != 'done':
+                        task.pop('closure', None)  # reopening a closed task clears its closure
+                if close_reason or close_pointer:
+                    if status:
+                        raise ValueError('Close with close_reason and close_pointer, without a status')
+                    closing = self.closure(task, tasks, actor, close_reason, close_pointer)
+                    task.update(status='done', closure=closing)
             else:
                 raise ValueError('Choose get, create, claim, delegate, accept, release, or update')
             if previous['status'] == 'done' and task['status'] != 'done' and task.get('depends_on'):
@@ -637,7 +650,7 @@ class ProjectRoom:
                     seen.add(dependency)
                     pending.extend(known.get(dependency, {}).get('depends_on', []))
             task['depends_on'] = dependencies
-        if not human and task['status'] == 'done':
+        if not human and task['status'] == 'done' and not closing:
             if task.get('transfer') or task.get('wait'):
                 raise ValueError('Resolve pending ownership transfer or human wait before marking done')
             unfinished = [t['id'] for t in tasks if t['id'] in task.get('depends_on', []) and t['status'] != 'done']
@@ -673,7 +686,9 @@ class ProjectRoom:
             events.append(f"transfer proposed to {task['transfer']['to']}; current owner retained until accepted")
         elif task['owner'] != previous['owner']:
             events.append('claimed' if task['owner'] == actor else f"assigned to {task['owner']}" if task['owner'] else 'released')
-        if previous and task['status'] != previous['status']:
+        if closing:
+            events.append(f"closed as {closing['reason']}: {closing['pointer']}")
+        elif previous and task['status'] != previous['status']:
             events.append(f"moved to {task['status']}")
         before = {a['url'] for a in (previous or {}).get('attachments', [])}
         after = {a['url'] for a in task.get('attachments', [])}
@@ -701,7 +716,9 @@ class ProjectRoom:
             tasks.append(task)
         else:
             tasks[tasks.index(next(t for t in tasks if t['id'] == task['id']))] = task
-        if previous and task['status'] == 'done' and previous['status'] != 'done':
+        if closing:
+            self.apply_closure(task, tasks, closing)
+        elif previous and task['status'] == 'done' and previous['status'] != 'done':
             # A finished dependency is new work for each waiting dependent's owner.
             for other in tasks:
                 if task['id'] in other.get('depends_on', []) and other['status'] != 'done':
@@ -729,6 +746,51 @@ class ProjectRoom:
             self.bump_work(task, actor, f"external change by {actor}: {', '.join(changed)}")
         elif task.get('next_action_state') == 'ready' and previous.get('next_action_state') != 'ready':
             task['work_cause'] = 'initial readiness'
+
+    def closure(self, task, tasks, actor, reason, pointer):
+        """Check a closure without changing anything; apply_closure makes the changes once the update is accepted.
+        A closure claims no delivery, so it needs a reason and a pointer instead of reviews or installation."""
+        pointer = str(pointer or '').strip()
+        if reason not in CLOSE_REASONS:
+            raise ValueError('close_reason must be one of ' + ', '.join(CLOSE_REASONS))
+        board = {t['id']: t for t in tasks}
+        is_task = pointer in board or bool(self.archived_task(pointer))
+        is_decision = any(n.get('id') == pointer and n.get('kind') == 'decision' for n in self.state.get('notes', []))
+        if not pointer or pointer == task['id'] or not (is_task or is_decision):
+            raise ValueError('close_pointer must name another task or a decision note')
+        if reason in CARRIED_ON and not is_task:
+            raise ValueError(f'A {reason} task points at the task that carries the work on')
+        dependents = {t['id'] for t in tasks if task['id'] in t.get('depends_on', []) and t['status'] != 'done'}
+        if dependents:
+            if reason not in CARRIED_ON or pointer not in board:
+                raise ValueError(f'Tasks {sorted(dependents)} depend on this one; close it as duplicate or superseded '
+                                 'pointing at the task they should wait on, or update them first')
+            # Re-pointing them must not make the carrying task wait on its own dependents.
+            pending, seen = [pointer], set()
+            while pending:
+                current = pending.pop()
+                if current in dependents:
+                    raise ValueError(f'{pointer} already depends on {current}, which waits on this task')
+                if current not in seen:
+                    seen.add(current)
+                    pending.extend(board.get(current, {}).get('depends_on', []))
+        return {'reason': reason, 'pointer': pointer, 'by': actor, 'time': time.time()}
+
+    def apply_closure(self, task, tasks, closing):
+        """Dependents wait on the task that carries the work on; open requests on the closed task are cancelled."""
+        note = f"Task {task['id']} closed as {closing['reason']}: {closing['pointer']}"
+        for other in tasks:
+            if task['id'] in other.get('depends_on', []) and other['status'] != 'done':
+                other['depends_on'] = list(dict.fromkeys(
+                    closing['pointer'] if d == task['id'] else d for d in other['depends_on']))
+                self.bump_work(other, closing['by'], note)
+        now = time.time()
+        for review in self.state.get('reviews', []):
+            if review['task_id'] == task['id'] and review['status'] in ('pending', 'changes_requested'):
+                review.update(status='cancelled', cancellation=note, updated=now)
+        for item in self.state.get('followups', []):
+            if item['task_id'] == task['id'] and item['status'] == 'open':
+                item.update(status='cancelled', result=note, updated=now)
 
     def bump_work(self, task, actor, cause):
         """New work for the task's owner from someone else. Accepts a task record or a task id; callers save."""
@@ -1381,13 +1443,14 @@ def coordination_tools():
     return [
         definition('room_read', 'Read shared project state or your pending review/follow-up inbox. Filter tasks/reviews/followups by task_id, owner or status. limit/offset are characters; paginate with next_offset. Messages include attachments.',
                    {'section': {'type': 'string', 'enum': ['overview', 'spec', 'tasks', 'memory', 'messages', 'patches', 'participants', 'inbox', 'reviews', 'followups', 'review_artifact']}, 'offset': {'type': 'integer'}, 'limit': {'type': 'integer'}, 'query': string, 'after_id': {'type': 'integer'}, 'task_id': string, 'owner': string, 'status': string}),
-        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override.',
+        definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override. To end a task that delivered nothing itself, update with close_reason and close_pointer instead of status done: duplicate/superseded point at the task carrying the work on (dependents move there), parked/wont_do at that task or a decision note; a closure skips the review and installation gates, cancels the task\'s open reviews and follow-ups, and is reopened by setting a status.',
                    {'action': {'type': 'string', 'enum': ['get', 'create', 'claim', 'update', 'delegate', 'accept', 'release']}, 'task_id': string, 'title': string, 'details': string, 'owner': string, 'status': string,
                     'paths': {'type': 'array', 'items': string}, 'depends_on': {'type': 'array', 'items': string}, 'labels': {'type': 'array', 'items': string},
                     'attachments': {'type': 'array', 'items': {'type': 'object', 'properties': {'url': string, 'name': string, 'note': string, 'source': string}, 'required': ['url']}},
                     'next_action': string, 'next_action_state': {'type': 'string', 'enum': sorted(NEXT_ACTION_STATES)},
                     'priority': {'type': 'integer', 'minimum': 1, 'maximum': 5},
-                    'wait': {'type': 'object'}, 'evidence': {'type': 'object'}, 'update': string}, ['action']),
+                    'wait': {'type': 'object'}, 'evidence': {'type': 'object'}, 'update': string,
+                    'close_reason': {'type': 'string', 'enum': list(CLOSE_REASONS)}, 'close_pointer': string}, ['action']),
         definition('room_markup', 'Show instead of describe: share an uploaded image with the team, optionally marked up with numbered boxes, arrows and pins (x/y are fractions 0..1 of width/height; a pin uses x1,y1). Draws a new PNG whose note lists each mark. Posts it to this channel unless post is false; task_id adds it to a task you own.',
                    {'image': {'type': 'string', 'description': '/uploads/<file> url from chat or a task'},
                     'marks': {'type': 'array', 'items': {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['box', 'arrow', 'pin']},
