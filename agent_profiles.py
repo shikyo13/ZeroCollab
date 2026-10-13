@@ -215,15 +215,21 @@ class AgentProfiles:
             raise ValueError('The drafted core or one of its skills changed since you reviewed it; review it again')
         self.items[name].update({field: draft[field] for field in ('core', 'core_version', 'skills')},
                                 approved_by=APPROVER, approved_at=approved_at)
+        self.items[name].pop('core_dismissed', None)
         self.save()
         return self.core_state(name)
 
-    def revoke_core(self, name):
-        """Back to the free-text background from the agent's next run."""
+    def revoke_core(self, name, **libraries):
+        """Back to the free-text background from the agent's next run. The current draft is recorded as answered
+        (core_dismissed), so its bell item stays closed until a different draft is published (b0eaf89e)."""
         if name not in self.items:
             raise ValueError('Agent profile was not found')
         for field in CORE_FIELDS:
             self.items[name].pop(field, None)
+        try:
+            self.items[name]['core_dismissed'] = self.core_draft(name, **libraries)['digest']
+        except (OSError, ValueError):
+            self.items[name].pop('core_dismissed', None)  # no approvable draft, so no item to keep closed
         self.save()
         return self.core_state(name)
 

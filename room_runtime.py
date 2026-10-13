@@ -34,6 +34,7 @@ from provider_controls import ProviderControls
 from coordination_state import pending_human_wait
 import coordination_records
 import process_enforcement
+import profile_bell
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
 from room_goals import RoomGoals
 from ready_wakes import ReadyWakes
@@ -1401,6 +1402,11 @@ class RoomRuntime:
                 process_enforcement.tick(self)
             except Exception:
                 LOGGER.exception('Release train check failed; it runs again next minute')
+            try:
+                if profile_bell.due(self):  # role profile drafts awaiting the user's approval (b0eaf89e)
+                    profile_bell.sync(self, await asyncio.to_thread(profile_bell.drafts, self))
+            except Exception:
+                LOGGER.exception('Role profile bell check failed; it runs again next minute')
             for name, state in self.states.items():
                 if state.get('archived'):
                     continue
@@ -3058,9 +3064,14 @@ def install(host):
                     result = await asyncio.to_thread(runtime.profiles.approve_core, name, body.get('digest'),
                                                      approved_at)
                 elif action == 'revoke':
-                    result = runtime.profiles.revoke_core(name)
+                    result = await asyncio.to_thread(runtime.profiles.revoke_core, name)
                 else:
                     raise ValueError('Choose approve (with the reviewed digest) or revoke')
+            try:
+                # Close the bell item now rather than at the next beat (b0eaf89e); the beat retries a failure.
+                profile_bell.sync(runtime, await asyncio.to_thread(profile_bell.drafts, runtime))
+            except Exception:
+                LOGGER.exception('Role profile bell update failed after %s; the next beat retries it', action)
             await runtime.publish_status()
             return {**result, 'note': 'Applies from the agent\'s next turn, which starts a fresh session once.'}
         except (ValueError, KeyError, TypeError, OSError) as exc:

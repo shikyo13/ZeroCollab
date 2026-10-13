@@ -84,9 +84,11 @@ class ProfileCore(unittest.TestCase):
 
     def test_revoke_returns_to_the_background(self):
         self.profiles.approve_core('backend', self.draft()['digest'], 'now', **self.libraries)
-        state = self.profiles.revoke_core('backend')
+        state = self.profiles.revoke_core('backend', **self.libraries)
         self.assertFalse(state['active'])
-        self.assertEqual(self.profiles.items['backend'], {'id': 'backend', 'background': 'old paragraph'})
+        # The revoked draft is recorded as answered, so its bell item stays closed (b0eaf89e).
+        self.assertEqual(self.profiles.items['backend'], {'id': 'backend', 'background': 'old paragraph',
+                                                          'core_dismissed': self.draft()['digest']})
 
     def test_refused_drafts(self):
         for bad, why in ((CORE.replace('agent: backend', 'agent: opus'), 'names agent'),
