@@ -35,6 +35,7 @@ from coordination_state import pending_human_wait
 import coordination_records
 import process_enforcement
 import profile_bell
+import work_continuity
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
 from room_goals import RoomGoals
 from ready_wakes import ReadyWakes
@@ -521,6 +522,8 @@ class Run:
         self.native_tool_calls = 0
         # Calls that could change files, run commands or change room records (changing_tool, changes_room).
         self.changing_calls = 0
+        # Work continuity (work_continuity.py): progress kinds per owned task, and native file or command changes.
+        self.progress, self.file_changes = {}, 0
         self.native_tool_ids = set()
         self.stop_reason = ''
         self.deadline = None
@@ -733,6 +736,7 @@ class Run:
         # Native tools report when they start; the local loop reports a file tool once it has run.
         if (status == 'completed' if local else status in ('started', 'ACTIVE')) and changing_tool(name, params):
             self.changing_calls += 1
+            self.file_changes += 1
         if not local and status in ('started', 'ACTIVE'):
             identifier = params.get('id', params.get('_room_step')) if isinstance(params, dict) else None
             if identifier is None or str(identifier) not in self.native_tool_ids:
@@ -1407,6 +1411,10 @@ class RoomRuntime:
                     profile_bell.sync(self, await asyncio.to_thread(profile_bell.drafts, self))
             except Exception:
                 LOGGER.exception('Role profile bell check failed; it runs again next minute')
+            try:
+                work_continuity.tick(self)  # Zero #16289: ready work and unanswered asks never wait on a nudge
+            except Exception:
+                LOGGER.exception('Work continuity check failed; it runs again on the next beat')
             for name, state in self.states.items():
                 if state.get('archived'):
                     continue
@@ -1778,6 +1786,10 @@ class RoomRuntime:
                 self.manager_wakes.finished(run, outcome)
             except Exception:
                 LOGGER.exception('Audit result persistence failed; admission disabled, cleanup continues')
+            try:
+                work_continuity.finished(self, run, outcome)
+            except Exception:
+                LOGGER.exception('Work continuity turn record failed; the watchdog still covers this agent')
             self.running.pop(name, None)
             self.team_builder.turn_finished(entry)
             self.decisions.turn_finished(name, entry)
@@ -1959,8 +1971,13 @@ class RoomRuntime:
             self.project_state_soon()
             return {**result, 'status': 'Waiting for the user to approve the repository change; keep working meanwhile.'}
         if tool == 'room_task':
-            before = next((t['status'] for t in self.project_room.state['tasks'] if t['id'] == arguments.get('task_id')), None)
+            previous = next((t for t in self.project_room.state['tasks'] if t['id'] == arguments.get('task_id')), None)
+            before = previous['status'] if previous else None
+            previous = copy.deepcopy(previous)
             result = self.project_room.task(run.name, **arguments)
+            if arguments.get('action') != 'get':
+                work_continuity.mark_task(run, previous, next((t for t in self.project_room.state['tasks']
+                                                               if t['id'] == result.get('id')), None))
             if run.manager_audit and arguments.get('action') == 'create':
                 self.manager_wakes.task_created(run, result)
             if arguments.get('action') == 'get':
@@ -1992,6 +2009,8 @@ class RoomRuntime:
             text = f"{result['kind']}: {result['text']}"
         elif tool in ('room_review', 'room_followup'):
             result = await self.coordination_record(run.name, tool, arguments, run.channel, run.entry['chain'])
+            if result.get('changed'):
+                work_continuity.mark_record(run, self.project_room, (result.get('record') or {}).get('task_id'))
             if audit_receipt:
                 audit_receipt.update(status='completed', result=result)
                 self.manager_wakes.save()

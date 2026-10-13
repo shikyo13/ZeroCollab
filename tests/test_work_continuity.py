@@ -105,6 +105,21 @@ class Continue(Continuity):
         self.assertEqual(self.calls, [])  # K1: never a new budget
 
 
+class Progress(Continuity):
+    def test_only_changes_to_the_owners_task_count(self):
+        import copy
+        run = SimpleNamespace(name='worker', progress={})
+        before = copy.deepcopy(self.task())
+        self.room.task('worker', 'update', task_id=self.task_id, update='parser half done')
+        wc.mark_task(run, before, self.task())
+        self.assertEqual(run.progress, {self.task_id: {'checkin'}})
+        other = self.room.task('lead', 'create', title='Not mine', owner='peer')['id']
+        before = copy.deepcopy(next(t for t in self.room.state['tasks'] if t['id'] == other))
+        wc.mark_task(run, before, next(t for t in self.room.state['tasks'] if t['id'] == other))
+        wc.mark_record(run, self.room, other)
+        self.assertEqual(set(run.progress), {self.task_id})  # K2: another agent's task never counts
+
+
 class Lifecycle(Continuity):
     """security bd0329f9: a sent wake with no turn is retried, then surfaces; Stop holds it."""
 
