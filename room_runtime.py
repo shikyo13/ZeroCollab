@@ -127,6 +127,13 @@ ROOM_ACTION_LABELS = {
     ('room_browser', 'record_status'): 'checking a browser recording'}
 # room_browser actions whose finished take is registered as a fileref (shared_browser record_status/record_stop).
 RECORDING_RESULTS = ('record_status', 'record_stop')
+# record_start answers while the take waits its turn in the media queue and prepares (desktop d0ed5f6); the
+# wrapper then waits up to RECORD_READY_SECONDS, outside the browser lock, for capture to begin (backend 9988424e).
+RECORD_PENDING = ('queued', 'starting', 'preparing')
+RECORD_READY_SECONDS = 10
+RECORD_READY_POLL_SECONDS = 0.1
+RECORD_NOT_READY = ('Not recording yet: the take is {phase}. Poll record_status recording_id and drive the page only '
+                    'once phase is recording; anything done before then is not in the clip.')
 ACP_KIND_LABELS = {
     'read': 'reading files', 'edit': 'editing files', 'delete': 'deleting files', 'move': 'moving files',
     'search': 'searching files', 'execute': 'running a command', 'think': 'thinking', 'fetch': 'reading a web page'}
@@ -1688,6 +1695,18 @@ class RoomRuntime:
             await self.emit("runtime_end", {"run": run.id, "agent": name, "outcome": outcome}, persist=True)
             await self.publish_status()
 
+    async def record_ready(self, run, result):
+        """Wait briefly for a queued take to start capturing, re-reading record_status (each read takes the browser
+        lock only for itself), so an agent's next clicks land in the clip. Still pending: say so plainly."""
+        deadline = time.monotonic() + RECORD_READY_SECONDS
+        while result.get('phase') in RECORD_PENDING and time.monotonic() < deadline:
+            await asyncio.sleep(RECORD_READY_POLL_SECONDS)
+            result = await self.browser.act(run.id, run.name, {'action': 'record_status',
+                                                                 'recording_id': result['recording_id']})
+        if result.get('phase') in RECORD_PENDING:
+            result = {**result, 'note': RECORD_NOT_READY.format(phase=result['phase'])}
+        return result
+
     async def coordination(self, run, tool, arguments):
         if tool == 'tools_listed':
             # The room MCP server reports that the provider loaded the tools; not an agent action.
@@ -1721,6 +1740,8 @@ class RoomRuntime:
             await self.browser.publish_activity(run.id, run.name, action, 'working')
             try:
                 result = await self.browser.act(run.id, run.name, arguments)
+                if action == 'record_start' and result.get('phase') in RECORD_PENDING:
+                    result = await self.record_ready(run, result)
             except Exception:
                 await self.browser.publish_activity(run.id, run.name, action, 'failed')
                 raise
@@ -1760,9 +1781,7 @@ class RoomRuntime:
                 # The traceback still reaches the log, so a renderer bug shows up in monitoring.
                 LOGGER.warning('room_motion %s refused', arguments.get('action', 'list'), exc_info=True)
                 raise ValueError(str(exc)) from None
-            # Only frame returns a list of frames; an export job's 'frames' is its frame count.
-            if isinstance(result, dict) and isinstance(result.get('frames'), list) and result['frames']:
-                await self.live.publish(self.live.artifact(run, result.get('sheet_url') or result['frames'][0]['url'], 'upload'))
+            # A frame job posts its own Live artifact while it holds its media slot (systems 9c2d32fe).
             if arguments.get('action') == 'export_status' and isinstance(result, dict):
                 result['media_jobs'] = motion_agent.media_jobs_list(self)
             return motion_agent.render_note(result, arguments.get('scene_json'), self)

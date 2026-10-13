@@ -14,7 +14,8 @@ IMAGE_LIMIT = 5 * 1024 * 1024
 # decodes the whole video three times (video_analysis: up to 180 s per FFmpeg pass). An inspect that outlives
 # its wait still finishes and is cached, so asking again returns at once.
 MOTION_TIMEOUTS = {'frame': 60, 'inspect': 600}
-# record_start checks the encoder and takes a first frame before it answers; stop and status answer at once.
+# record_start waits up to 10 s for its turn in the media queue and for capture to begin (room_runtime
+# RECORD_READY_SECONDS); stop and status answer at once.
 BROWSER_TIMEOUTS = {'record_start': 60}
 MAX_SHOWN_SHEETS = 6  # images attached to one inspect answer; the rest stay as urls in the JSON
 IMAGE_FORMATS = {'png': 'png', 'jpg': 'jpeg', 'jpeg': 'jpeg', 'gif': 'gif', 'webp': 'webp'}
@@ -245,8 +246,12 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
     Recording real product footage (your own browser only, while you hold control): record_start
     (max_seconds up to 120, default 60; fps 30 or 60, default 60) records the page as you drive it, with
     clicks, scrolls and key markers (never typed text) kept for the cursor layer; it stops by itself at
-    max_seconds or when the page closes or is resized. record_stop recording_id returns at once while it
-    encodes; poll record_status recording_id until phase is done (or failed, with error). A done take has
+    max_seconds or when the page closes or is resized. A take shares the room's one-at-a-time media queue
+    with exports, frames and inspect: record_start waits a few seconds for it to begin, and if phase is
+    still queued or preparing, poll record_status recording_id and drive the page only once phase is
+    recording; anything before that is not in the clip. record_stop recording_id returns at once; the
+    encode may wait its turn (stage encode, phase queued). Poll record_status until phase is done (or
+    failed, with error). room_motion job_cancel (job_id = the recording_id, with its generation) cancels a take you started. A done take has
     fileref (fileref:<id>) and clip_url: the clip stays where it was recorded, never copied. Pass the fileref to
     room_motion inspect url, or link clip_url in chat, where it plays inline.
     """
