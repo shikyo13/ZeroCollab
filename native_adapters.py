@@ -693,6 +693,11 @@ async def claude(run, prompt):
     steers = {}
     open_for_input = False
     usage_total = {}
+    # The room prompt is replayed (isReplay) with this uuid once the CLI adds it. A resumed session can first
+    # run an injected turn, such as a background-task notice left from the previous session, whose empty result
+    # must not end this one (harness 03660213: demo-marketing skipped Zero's #14804 this way).
+    prompt_uuid = str(uuid.uuid4())
+    prompt_added = False
 
     async def steer(text, request):
         """Runtime sender: True means written to the CLI, not accepted. Never waits for replay."""
@@ -730,7 +735,7 @@ async def claude(run, prompt):
             return b''
 
     async def claude_event(msg):
-        nonlocal sent, message_id, grace_deadline, open_for_input, audit_permissions
+        nonlocal sent, message_id, grace_deadline, open_for_input, audit_permissions, prompt_added
         kind = msg.get("type")
         if kind == 'system' and msg.get('subtype') == 'init':
             run.provider_session = msg.get('session_id')
@@ -762,13 +767,16 @@ async def claude(run, prompt):
             # pre-input thread response. Launch flags retain read-only tools; room
             # operations are checked again by the server's manager claim middleware.
             sent = True
-            await send({"type": "user", "session_id": "", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": None})
+            await send({"type": "user", "uuid": prompt_uuid, "session_id": "",
+                        "message": {"role": "user", "content": prompt}, "parent_tool_use_id": None})
             open_for_input = True
             run.interrupt = interrupt
             install = getattr(run, 'install_steer', None)
             if install:
                 install(steer)
         elif kind == "user" and msg.get('isReplay'):
+            if msg.get('uuid') == prompt_uuid:
+                prompt_added = True
             request = steers.pop(msg.get('uuid'), None)
             if request is not None:
                 grace_deadline = None
@@ -819,6 +827,12 @@ async def claude(run, prompt):
                     await run.finish_message(phase='final_answer' if content.get('stop_reason') == 'end_turn' else 'commentary')
         elif kind == "result":
             run.provider_session = msg.get('session_id', run.provider_session)
+            spent = sum(v for v in (msg.get('usage') or {}).values() if isinstance(v, (int, float)) and not isinstance(v, bool))
+            if not prompt_added and not spent and not msg.get('is_error') and not run.text:
+                # An injected turn ran before the room prompt was added: keep reading for the prompt's own result.
+                # Anything with usage, output or an error keeps the old handling, so a CLI that never echoes
+                # the prompt cannot hang here.
+                return False
             if msg.get('usage'):
                 # Each result covers its own turn; record_usage expects a run-cumulative total
                 # (a follow-on steering turn adds a second result).
