@@ -135,6 +135,9 @@ class DeploymentState:
         self.root = Path(data).resolve() / 'deploy'
         self.lock = threading.RLock()
         self.release_grant = ReleaseGrant(self.root, self.lock)
+        # The runtime opts in only when its blocked-phase user routes implement
+        # latch-only updates; old adapters must remain behind the write gate.
+        self.manual_control_latch_only = False
         self.mutations = 0
         self.gate = {}
         self.stamp = None
@@ -254,21 +257,28 @@ class MutationGate:
     async def __call__(self, scope, receive, send):
         mutation = scope['type'] == 'http' and scope['method'] not in ('GET', 'HEAD', 'OPTIONS')
         path = scope.get('path', '')
-        # Explicit user controls stay reachable during maintenance. Authentication
-        # middleware still runs; no run token admits these routes. Grant enabling
-        # is separately refused behind the gate, while revocation remains possible.
-        user_control = path in {'/api/runtime/stop', '/api/runtime/resume',
-                                '/api/runtime/deployments/grant'}
+        # Only grant storage is always outside the rollback snapshot. Stop and
+        # Resume count as mutations while writes are open. A compatible runtime
+        # may handle them while blocked using ONLY the host latch, deferring all
+        # room-data effects. Auth middleware still protects every route.
+        grant_control = path == '/api/runtime/deployments/grant'
+        manual_control = path in {'/api/runtime/stop', '/api/runtime/resume'}
         if self.state.rehearsal and mutation and ('/repository' in path or path.startswith(('/api/open-path', '/api/runtime/providers', '/api/runtime/login', '/api/runtime/settings'))):
             await JSONResponse({'error': 'External operations are disabled during rehearsal'}, 503)(scope, receive, send)
             return
-        if mutation and not user_control and not self.state.enter_mutation():
-            await JSONResponse({'error': 'Deploying: the room is temporarily read-only'}, 503)(scope, receive, send)
-            return
+        entered = False
+        if mutation and not grant_control:
+            entered = self.state.enter_mutation()
+            if not entered:
+                if manual_control and self.state.manual_control_latch_only:
+                    scope['release_latch_only'] = True
+                else:
+                    await JSONResponse({'error': 'Deploying: the room is temporarily read-only'}, 503)(scope, receive, send)
+                    return
         try:
             await self.app(scope, receive, send)
         finally:
-            if mutation and not user_control:
+            if entered:
                 self.state.leave_mutation()
 
 
