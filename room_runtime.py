@@ -2831,6 +2831,14 @@ class RoomRuntime:
                 self.write_release_wakes(data)
 
     async def close(self):
+        manager = getattr(self, 'release_manager', None)
+        if manager is not None:
+            # First (Astra 4bd7c547): no new release job starts, and a running verification is stopped and joined
+            # before its counted mutation is released, so shutdown never abandons it.
+            try:
+                await manager.close()
+            except Exception:
+                LOGGER.exception('The release manager did not close cleanly')
         if self.deployment and self.deployment.reload()['writes'] == 'blocked':
             if not self.running:
                 self.save_deploy_queue()
