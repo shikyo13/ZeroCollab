@@ -33,6 +33,16 @@ export function frameAtMilliseconds(milliseconds: number, fps: RationalFps): num
   return integer(frame, 'frame', 0);
 }
 
+const ASSET_KINDS = ['image', 'video', 'audio', 'font', 'capture'];
+// Safe asset refs: a room upload, a kit file, or a registered original used where it lies (backend FILEREF, systems
+// 602d4e93: fileref:<16 lowercase hex>, never a font). The server resolves every ref and inlines the bytes as src.
+const UPLOAD_REF = /^\/uploads\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
+const KIT_REF = /^motion:(?=.{1,120}$)[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/;
+const FILE_REF = /^fileref:[0-9a-f]{16}$/;
+const FILEREF_KINDS = ['image', 'video', 'audio', 'capture'];
+const safeRef = (asset: FrameAsset) => UPLOAD_REF.test(asset.ref) || KIT_REF.test(asset.ref)
+  || (FILE_REF.test(asset.ref) && FILEREF_KINDS.includes(asset.kind));
+
 /** Copies and freezes the exact identity inputs. Asset existence is checked by the scene service. */
 export function frameContext(input: FrameInput): Readonly<FrameContext> {
   if (!input.composition?.id || !/^[\da-f]{64}$/i.test(input.composition.revision)) throw new RangeError('Composition id and SHA256 revision are required');
@@ -40,10 +50,8 @@ export function frameContext(input: FrameInput): Readonly<FrameContext> {
   if (input.seed > 0x7fffffff) throw new RangeError('seed must be in [0, 2^31-1]');
   const ids = new Set<string>();
   const assets = input.assets.map(asset => {
-    const ref = /^\/uploads\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(asset.ref)
-      || /^motion:(?=.{1,120}$)[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/.test(asset.ref);
-    if (!asset.id || ids.has(asset.id) || !/^[\da-f]{64}$/i.test(asset.sha256) || !ref
-      || !['image', 'video', 'audio', 'font', 'capture'].includes(asset.kind)
+    if (!asset.id || ids.has(asset.id) || !/^[\da-f]{64}$/i.test(asset.sha256) || !safeRef(asset)
+      || !ASSET_KINDS.includes(asset.kind)
       || typeof asset.src !== 'string' || !asset.src.startsWith('data:')) throw new RangeError('Assets need unique ids, SHA256 hashes, safe refs and server-inlined data sources');
     ids.add(asset.id);
     return Object.freeze({ ...asset });

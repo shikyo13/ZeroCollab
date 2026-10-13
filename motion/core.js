@@ -181,6 +181,12 @@ var ZCMotionCore = (() => {
     const frame = Math.abs(value - nearest) <= Number.EPSILON * 4 * Math.max(1, value) ? nearest : Math.floor(value);
     return integer(frame, "frame", 0);
   }
+  var ASSET_KINDS = ["image", "video", "audio", "font", "capture"];
+  var UPLOAD_REF = /^\/uploads\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
+  var KIT_REF = /^motion:(?=.{1,120}$)[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/;
+  var FILE_REF = /^fileref:[0-9a-f]{16}$/;
+  var FILEREF_KINDS = ["image", "video", "audio", "capture"];
+  var safeRef = (asset) => UPLOAD_REF.test(asset.ref) || KIT_REF.test(asset.ref) || FILE_REF.test(asset.ref) && FILEREF_KINDS.includes(asset.kind);
   function frameContext(input) {
     if (!input.composition?.id || !/^[\da-f]{64}$/i.test(input.composition.revision)) throw new RangeError("Composition id and SHA256 revision are required");
     integer(input.frame, "frame", 0);
@@ -188,8 +194,7 @@ var ZCMotionCore = (() => {
     if (input.seed > 2147483647) throw new RangeError("seed must be in [0, 2^31-1]");
     const ids = /* @__PURE__ */ new Set();
     const assets = input.assets.map((asset) => {
-      const ref = /^\/uploads\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(asset.ref) || /^motion:(?=.{1,120}$)[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/.test(asset.ref);
-      if (!asset.id || ids.has(asset.id) || !/^[\da-f]{64}$/i.test(asset.sha256) || !ref || !["image", "video", "audio", "font", "capture"].includes(asset.kind) || typeof asset.src !== "string" || !asset.src.startsWith("data:")) throw new RangeError("Assets need unique ids, SHA256 hashes, safe refs and server-inlined data sources");
+      if (!asset.id || ids.has(asset.id) || !/^[\da-f]{64}$/i.test(asset.sha256) || !safeRef(asset) || !ASSET_KINDS.includes(asset.kind) || typeof asset.src !== "string" || !asset.src.startsWith("data:")) throw new RangeError("Assets need unique ids, SHA256 hashes, safe refs and server-inlined data sources");
       ids.add(asset.id);
       return Object.freeze({ ...asset });
     });
