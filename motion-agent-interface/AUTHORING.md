@@ -5,8 +5,8 @@ For agents making product demos and motion graphics in ZeroCollab. A scene is JS
 ## The loop
 
 1. **Brief.** Write down what the video must show, who it is for, its length, and which real captures (screenshots, markups, browser frames) it uses.
-2. **Draft.** Write the scene JSON. Only v1 scenes render on today's install, so for a video you need now, start from `room_motion(action="get", scene="bundled:m01")` (v1, a room replay). The v2 example below validates and saves but does not render yet.
-3. **Validate until clean.** Call `room_motion(action="validate", scene_json=...)` and fix every issue. Each issue names an exact `path`; fix that field and don't guess at others. Repeat until `ok` is true. If the result has `warnings`, read them: a valid v2 scene gets one saying it can't be rendered on this install yet.
+2. **Draft.** Write the scene JSON in v2, starting from the example below or a template in `Docs/motion-skills/templates/`. Use v1 (`room_motion(action="get", scene="bundled:m01")`) only for a plain room replay.
+3. **Validate until clean.** Call `room_motion(action="validate", scene_json=...)` and fix every issue. Each issue names an exact `path`; fix that field and don't guess at others. Repeat until `ok` is true. Then read any `warnings`: they name what export will refuse, such as sound in a composition, while the scene is still valid to save.
 4. **Save.** Call `room_motion(action="save", scene_json=...)`, which returns `project:<id>`. Saving again needs `overwrite: true`.
 5. **Look at it.** Call `room_motion(action="frame", scene="project:<id>", t_ms=[0, 3000, 8000])`. It returns one PNG per time plus a contact sheet. These are exactly the frames the video will contain.
 6. **Show the team.** Post the contact sheet with `room_markup` (mark anything you are unsure about) and ask for a review on your task.
@@ -34,15 +34,16 @@ For a profile that doesn't publish, `export_status` gives the job's `video_url`;
 | Scene | Validates | Frames and video |
 |-|-|-|
 | v1 (layout plus beats) | yes | yes |
-| v2 that is a migrated v1 scene (a single `room` layer) | yes | yes |
-| any other v2 scene | yes, with a warning | not yet. `frame` and `export` say "needs the v2 renderer" until motion-core (S1) and the layer renderers (S5) ship. |
+| v2: text, image, capture, video, shape, path, captions, group and room layers, with keyframes and transitions | yes | yes |
+| v2 with sound (an `audio` layer, or a `video` layer that isn't `"muted": true`) | yes, with a warning | frames yes; `export` refuses it until audio mixing ships |
+
+`frame` and `export` draw the same frame through the same seek, so a preview frame is exactly that frame of the video.
 
 Not available yet:
-- `composition` on `frame` and `export`. Today the first composition is used, and v1 scenes have only one.
-- `import_asset`. For now, reference room uploads (`/uploads/<file>`) directly in `assets`.
+- Sound in exports. Mute video layers and leave out audio layers.
+- `composition` on `frame` and `export`. The first composition is used, so put the video you want first.
+- `import_asset`. Reference room uploads (`/uploads/<file>`) directly in `assets`. One page can carry at most 64 MB of assets.
 - `patch` (JSON Patch edits to large v2 scenes). Use whole-scene `save` with `overwrite`.
-
-If the video is needed now, author it as v1. Author v2 only for a video that can wait for the v2 renderer and needs layers, keyframes or audio: it validates, saves and keeps, and it renders as soon as the v2 renderer lands.
 
 ## v1: room replay vocabulary
 

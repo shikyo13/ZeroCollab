@@ -12,18 +12,32 @@ import uuid
 from team_builder import text
 
 MAX_VIDEO_BYTES = 1024 * 1024 * 1024  # an exported scene of up to 10 minutes stays far below this
-# Remove with the v2 renderer (motion-design S5, task 45047b9a): until then only v1 scenes, and v2 scenes that
-# are a migrated v1 scene, render (demo-marketing #14460).
-NOT_RENDERABLE = ('Valid, but this install renders v1 scenes only (layout plus beats) until the v2 renderer ships; '
-                  'frame and export will refuse this scene. It saves and keeps, and renders once the v2 renderer is '
-                  'installed. For a video you need now, author it as v1.')
+# A v2 scene renders when the room has the S5 renderer files (motion_studio.summary, V2_SCRIPTS); a copy of
+# the room without them still says so up front instead of only at frame/export (demo-marketing #14460).
+NOT_RENDERABLE = ('Valid, but this copy of the room is missing the v2 renderer files, so frame and export will refuse '
+                  'this scene. It saves and keeps, and renders once they are installed.')
 
 
-def render_note(result):
-    """validate and save: say up front when a valid scene can't be rendered on this install."""
+def render_note(result, scene=None):
+    """validate and save: say up front what export will refuse for a valid scene, so the agent fixes it before
+    spending a render (harness 0216d3b8): a missing v2 renderer, and sound, which export can't mix yet."""
+    import motion_studio
     summary = result.get('summary') if isinstance(result, dict) else None
-    if isinstance(summary, dict) and summary.get('renderable') is False:
-        result['warnings'] = [*result.get('warnings', []), NOT_RENDERABLE]
+    if not isinstance(summary, dict):
+        return result
+    warnings = list(result.get('warnings', []))
+    if summary.get('renderable') is False:
+        warnings.append(NOT_RENDERABLE)
+    if isinstance(scene, dict) and scene.get('version') == 2:
+        for comp in scene.get('compositions', []):
+            try:
+                motion_studio.require_silent_composition(scene, comp['id'])  # the rule export applies
+            except ValueError:
+                warnings.append(f"Composition {comp['id']} has sound (an audio layer, or a video layer that isn't "
+                                'muted). Export refuses it until audio mixing ships: set "muted": true on video '
+                                'layers and remove audio layers before export. frame previews work as they are.')
+    if warnings:
+        result['warnings'] = warnings
     return result
 
 

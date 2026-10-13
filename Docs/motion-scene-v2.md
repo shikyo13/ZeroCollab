@@ -2,7 +2,7 @@
 
 Task 6ff4919d (slice S2 of Docs/motion-core.md). Code: `motion_scene.py`. This file pins the names that S1 (motion-core), S3 (render farm), S4 (Studio), S5 (layers) and S6 (`room_motion`) share. Rename nothing here without updating all of them.
 
-**Rendering today: v1 only.** Until the v2 renderer ships (motion-design S5, task 45047b9a), only v1 scenes and v2 scenes that are a migrated v1 scene render. Any other v2 scene validates and saves, `room_motion` validate and save return a warning saying so, and `frame` and `export` refuse it. For a video you need now, author v1 (see `motion-agent-interface/AUTHORING.md`). Remove this note when S5 lands.
+**Rendering:** v2 scenes render through the S5 renderer (`Docs/motion-render2.md`); v1 and migrated v1 scenes keep their original renderer. Sound is not exported yet: `export` refuses a composition with an `audio` layer or an unmuted `video` layer, and `room_motion` validate and save warn first. `frame` and `export` use the first composition.
 
 A scene is JSON data, never code. Validation returns every problem as `[{path, message}]`, for example `{"path": "scene.compositions[0].tracks[0].clips[1].from", "message": "overlaps clip 1 by more than its transition"}`. An empty list means valid. At most 100 issues are reported.
 

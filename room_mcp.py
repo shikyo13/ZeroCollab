@@ -249,9 +249,10 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     or png-sequence (.zip of numbered frames); a profile this room's FFmpeg can't encode is refused, never
     swapped. export_status / export_cancel job_id. publish job_id: deliver a finished WebM export into this
     chat (post false to skip), and task_id attaches it to a task you own; it plays inline there. Other
-    profiles are not published; share their video_url from export_status. Rendering today: v1 scenes only (layout plus beats; start
-    from get bundled:m01). v2 scenes (Docs/motion-scene-v2.md) validate and save, but frame and export
-    refuse them until the v2 renderer ships; validate and save then return a warning. Loop: validate until
+    profiles are not published; share their video_url from export_status. Author new work as v2
+    (Docs/motion-scene-v2.md: compositions, layers, keyframes, transitions); v1 room replays (get
+    bundled:m01) still render. frame and export use the first composition. Sound is not exported yet:
+    export refuses audio layers and unmuted video, and validate and save warn first. Loop: validate until
     clean, save, frame 2-3 key moments and show them, export, then publish."""
     args = dict(action=action)
     if scene:
