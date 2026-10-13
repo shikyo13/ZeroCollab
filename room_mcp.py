@@ -169,6 +169,12 @@ def room_goal(action: str = 'status', goal_id: str = '', evidence: str = '') -> 
     return call('room_goal', dict(action=action, goal_id=goal_id, evidence=evidence))
 
 
+@mcp.tool(annotations={'readOnlyHint': True, 'destructiveHint': False, 'openWorldHint': False})
+def room_skill(action: Literal['list', 'load'] = 'list', name: str = '', file: str = '') -> dict:
+    """Your approved skills. list gives each name and when to use it; load name returns its full procedure, which you then follow; load name with file returns one of that skill's listed extra files. Only your own skills load."""
+    return call('room_skill', dict(action=action, name=name, file=file))
+
+
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
 def room_team_builder(action: str = 'get', proposal_id: str = '', revision: int = 0,
                       payload: dict | None = None, member: dict | None = None, reason: str = '') -> dict:

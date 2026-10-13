@@ -1262,7 +1262,8 @@ class ProjectRoom:
         if state.get('provider') in ROOM_TOOL_PROVIDERS or state.get('provider') == 'api':
             native = state.get('provider') in ROOM_TOOL_PROVIDERS
             lines.append('- Room tools (room_read, room_task, room_update, room_review, room_followup, room_goal, room_repository, '
-                         f"room_image, room_markup, room_motion{', room_browser' if native else ''}) are provided for this turn. If any is "
+                         f"room_image, room_markup, room_motion{', room_browser' if native else ''}"
+                         f"{', room_skill' if getattr(run, 'skills', None) else ''}) are provided for this turn. If any is "
                          'missing from your tool list, say so in the chat as a harness fault and name the action it blocks; '
                          'do not report the action as done.')
             if native:
@@ -1488,4 +1489,6 @@ def coordination_tools():
                    {'path': string, 'create': {'type': 'boolean'}, 'reason': string, 'action': {'type': 'string', 'enum': ['add', 'replace']}}, ['path', 'reason']),
         definition('room_goal', 'Read the shared room goal, or as its named lead finish it: complete or block with goal_id and evidence. The user starts, pauses and cancels goals.',
                    {'action': {'type': 'string', 'enum': ['status', 'complete', 'block']}, 'goal_id': string, 'evidence': string}),
+        definition('room_skill', 'Your approved skills. list gives each name and when to use it; load name returns its full procedure, which you then follow; load name with file returns one of that skill\'s listed extra files. Only your own skills load.',
+                   {'action': {'type': 'string', 'enum': ['list', 'load']}, 'name': string, 'file': string}),
     ]

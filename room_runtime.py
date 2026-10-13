@@ -38,6 +38,7 @@ from manager_wakes import ManagerWakes, install as install_manager_wakes
 import project_registry
 import live_feed
 from agent_profiles import AgentProfiles
+import agent_skills
 from team_builder import TeamBuilder
 from decision_flow import DecisionFlow
 from local_protocol import visible_text, validate_calls
@@ -76,7 +77,8 @@ SIGNED_OUT = re.compile(r'refresh[_ ]token[_ ](?:invalidated|was revoked|expired
 # A bare 401 counts only in the turn's own error: in the CLI's log it can be an MCP server's auth failure.
 SIGNED_OUT_DETAIL = re.compile(SIGNED_OUT.pattern + r'|401 unauthorized', re.I)
 ROOM_TOOLS = {"room_read", "room_image", "room_task", "room_markup", "room_update", "room_review", "room_followup",
-              "room_repository", "room_goal", "room_team_builder", "room_decision", "room_browser", "room_motion"}
+              "room_repository", "room_goal", "room_team_builder", "room_decision", "room_browser", "room_motion",
+              "room_skill"}
 
 
 def changing_tool(name, params):
@@ -85,7 +87,7 @@ def changing_tool(name, params):
         return False
     return not (name == 'mcpToolCall' and isinstance(params, dict) and params.get('server') == ROOM_SERVER)
 # Room tool actions that only read, with each tool's default action; every other room call can change records.
-ROOM_READS = {"room_read": None, "room_image": None, "room_task": ({"get"}, ''), "room_goal": ({"status"}, 'status'),
+ROOM_READS = {"room_read": None, "room_image": None, "room_skill": None, "room_task":({"get"}, ''), "room_goal": ({"status"}, 'status'),
               "room_team_builder": ({"get"}, 'get'), "room_decision": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status'),
               # save, frame (new uploads) and export change the room, so sealed turns and check-ins never reach them.
               "room_motion": ({"list", "get", "validate", "export_status"}, 'list')}
@@ -108,7 +110,7 @@ ROOM_LABELS = {
     'room_markup': 'marking up a screenshot', 'room_update': 'posting a note', 'room_review': 'working on a review',
     'room_followup': 'working on a follow-up', 'room_repository': 'asking about a repository', 'room_goal': 'checking the goal',
     'room_team_builder': 'working on the team', 'room_decision': 'taking part in a decision', 'room_browser': 'using the shared browser',
-    'room_motion': 'working on a motion scene'}
+    'room_motion': 'working on a motion scene', 'room_skill': 'reading a skill'}
 ROOM_ACTION_LABELS = {
     ('room_task', 'get'): 'reading a task', ('room_task', 'create'): 'creating a task', ('room_task', 'claim'): 'claiming a task',
     ('room_task', 'delegate'): 'handing over a task', ('room_review', 'request'): 'asking for a review',
@@ -520,11 +522,16 @@ class Run:
             "Tool actions remain subject to provider permissions.\n\n"
             + (ROOT / 'COLLABORATION.md').read_text('utf-8').strip()
         )
-        profile = manager.profiles.items.get(name, {})
+        profile = self.profile = manager.profiles.items.get(name, {})
         self.instructions += (f"\n\nYour project identity is {profile.get('name', name)} "
                               f"(@{profile.get('handle', name)}). Your permanent internal ID is {name}; "
                               "public handle changes do not change your history, tasks or working tree.")
-        if profile.get('background'):
+        # An approved role core replaces the free-text background (Docs/agent-profiles.md); without one, as before.
+        self.skills, withheld = agent_skills.approved(profile) if agent_skills.active(profile) else ([], [])
+        self.profile_versions = agent_skills.versions(profile, self.skills, withheld) if agent_skills.active(profile) else {}
+        if self.profile_versions:
+            self.instructions += agent_skills.instructions(profile, self.skills)
+        elif profile.get('background'):
             self.instructions += '\nPersonal background and expert perspective supplied by the user:\n' + profile['background']
         self.instructions += '\nApply this perspective while collaborating with the team and following the current user request and room rules.'
         extra = manager.states[name].get('repositories', {})
@@ -731,7 +738,8 @@ class Run:
         if effort:
             self.reported_settings['effort'] = effort
         await self.manager.emit('runtime_config', {'run': self.id, 'agent': self.name,
-            'requested': self.settings, 'reported': dict(self.reported_settings)}, persist=True)
+            'requested': self.settings, 'reported': dict(self.reported_settings),
+            **({'profile': self.profile_versions} if self.profile_versions else {})}, persist=True)
 
     async def report_usage(self, usage):
         self.touch()
@@ -1790,6 +1798,10 @@ class RoomRuntime:
                 self.decisions.save()
             await self.decisions.publish(self.decisions.find(result['id']))
             return result
+        if tool == 'room_skill':
+            if arguments.get('action', 'list') == 'list':
+                return {'skills': agent_skills.listing(run.skills)}
+            return agent_skills.load(run.skills, arguments.get('name', ''), arguments.get('file', ''))
         if tool == 'room_goal':
             result = self.goals.change(run.name, **arguments)
             await self.publish_status()
