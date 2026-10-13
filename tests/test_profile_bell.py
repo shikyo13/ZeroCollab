@@ -131,7 +131,7 @@ class ProfileBell(unittest.TestCase):
         self.skill(2)
         self.assertEqual(self.sync(), ['opened'])
         item, = self.items()
-        self.assertIn('version 1, 19 words, 1 skills. Since your approval: room-review changed (now v2).', item['text'])
+        self.assertIn('version 1, 19 words, 1 skill. Since your approval: room-review changed (now v2).', item['text'])
 
     def test_held_room_does_nothing(self):
         self.draft('scratch', 1)

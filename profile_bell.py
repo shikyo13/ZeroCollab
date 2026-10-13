@@ -90,7 +90,8 @@ def changes(profile, draft):
 def item_text(profile, draft):
     handle = profile.get('handle', profile['id'])
     return (f"{PREFIX} {profile['id']} (@{handle}) has a drafted role core awaiting your approval: version "
-            f"{draft['core_version']}, {draft['words']} words, {len(draft['skills'])} skills.{changes(profile, draft)} "
+            f"{draft['core_version']}, {draft['words']} words, {len(draft['skills'])} "
+            f"skill{'' if len(draft['skills']) == 1 else 's'}.{changes(profile, draft)} "
             f"Open Team, then {profile['name']}'s edit card, then Role profile, to approve or revoke it. This closes "
             'itself when you do.')
 

@@ -75,7 +75,7 @@ def severity(critical, notes, pipeline, verdict, human=False):
 def notes_followup(review_id, reviewer, notes):
     """One follow-up listing a verdict's notes, always within the follow-up limit: past it, the listing stops and
     points at the review, which keeps every note (harness cd540632 C2)."""
-    head, limit = f'Review {review_id} notes from {reviewer} (not blocking):', LIMITS['request']
+    head, limit = f'Review {review_id} notes from {reviewer} (not blocking):', LIMITS['followup']
     tail = f'\n- ... the rest are on review {review_id}'
     lines = []
     for note in notes:
