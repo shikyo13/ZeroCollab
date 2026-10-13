@@ -243,6 +243,15 @@ class ReleaseManager:
         from release_request import validate
         return validate(self, request)
 
+    def completion_allowed(self, key, recipient):
+        from release_completion import allowed
+        return allowed(self, key, recipient)
+
+    def consume_completions(self):
+        from release_completion import consume
+        self.completion_status = consume(self)
+        return self.completion_status
+
     def start_request(self, caller, context):
         from release_request import SECONDS
         job = {'id': uuid.uuid4().hex, 'action': context['action'], 'state': 'running',

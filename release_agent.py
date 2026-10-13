@@ -53,11 +53,16 @@ def _read_inside(root, relative, limit=None):
     return data
 
 
-def _same_source_path(snapshot_path, payload_path):
-    # A snapshot can be rooted at an owner's isolated source checkout. Permit
-    # that prefix, but not moving reviewed bytes to a different product path.
-    return isinstance(snapshot_path, str) and (snapshot_path == payload_path
-            or snapshot_path.endswith('/' + payload_path))
+def _same_source_path(entry, payload_path):
+    # Modern captures pin their repository-relative path. An unrelated scratch
+    # copy must not cover shipped bytes merely because its suffix matches.
+    # A nested-checkout capture with an outer-root git_path needs a fresh
+    # canonical-path review; never infer a path remapping from equal contents.
+    for field in ('git_path', 'relative'):
+        if field in entry:
+            return entry[field] == payload_path
+    path = entry.get('path')
+    return isinstance(path, str) and (path == payload_path or path.endswith('/' + payload_path))
 
 
 def review_coverage(package, predecessor, review_ids, records, artifact_root):
@@ -112,6 +117,8 @@ def review_coverage(package, predecessor, review_ids, records, artifact_root):
                 'review_id': identifier, 'snapshot_path': entry.get('path'),
                 'snapshot_sha256': digest,
             }
+            source = {key: entry[key] for key in ('path', 'git_path', 'relative') if key in entry}
+            evidence['_source'] = source
             approved.setdefault(('binary', digest), []).append(evidence)
             approved.setdefault(('text', normalized_hash(data)), []).append(evidence)
 
@@ -124,8 +131,9 @@ def review_coverage(package, predecessor, review_ids, records, artifact_root):
             raise ValueError('Candidate payload changed during review: ' + path)
         mode = 'text' if path == 'VERSION' or Path(path).suffix.lower() in TEXT_SUFFIXES else 'binary'
         normalized = normalized_hash(data) if mode == 'text' else digest
-        matches = [entry for entry in approved.get((mode, normalized), [])
-                   if _same_source_path(entry['snapshot_path'], path)]
+        matches = [{key: value for key, value in entry.items() if key != '_source'}
+                   for entry in approved.get((mode, normalized), [])
+                   if _same_source_path(entry['_source'], path)]
         if not matches:
             missing.append(path)
         else:

@@ -133,10 +133,17 @@ def prepare(manager, caller, action, values):
     status = manager._record('status.json', {})
     if status.get('agent_release_protocol') != 1 or not 0 <= time.time() - float(status.get('updated', 0)) <= 15:
         raise ValueError('The separately installed supervisor protocol is unavailable')
+    try:
+        accepted = acceptance(manager, current['manifest_sha'])
+    except ValueError as exc:
+        if rollback:
+            raise ValueError('Agent rollback requires passed current-release checks. '
+                             'Use the user Updates rollback control when those checks fail.') from exc
+        raise
     context = {'caller': copy.deepcopy(caller), 'values': copy.deepcopy(values), 'action': action,
                'release_id': identifier, 'manifest_sha': manifest, 'current': current,
                'grant_revision': grant['revision'], 'stop_generation': latch['generation'],
-               'acceptance': acceptance(manager, current['manifest_sha']), 'evidence': proof,
+               'acceptance': accepted, 'evidence': proof,
                'previous': previous}
     return context
 
