@@ -600,6 +600,10 @@ class ProjectRoom:
                 task.update(owner='', status='open')
                 task.pop('transfer', None)
             elif action == 'update':
+                if human and (task.get('scope_cap') or {}).get('stopped'):
+                    # The user lifts an E5 stop by touching the task (harness e917f6d0 note 1). No rounds are
+                    # granted: the next agent request past the cap opens a new continue-or-stop item.
+                    task['scope_cap'] = {k: v for k, v in task['scope_cap'].items() if k != 'stopped'}
                 if title:
                     task['title'] = title
                 if details:
@@ -629,6 +633,9 @@ class ProjectRoom:
             if not human and task['status'] == 'working' and previous['status'] != 'working':
                 # E1, one working task per agent (Docs/process-enforcement.md, Zero #16116). Only claim and update
                 # move an agent's task into working; re-claiming a working task passes. The user is never refused.
+                if not task['owner']:
+                    # An unowned working task would sit outside every agent's count (security a5ef28ee).
+                    raise ValueError('E1: this task has no owner. Claim it instead of setting it to working.')
                 other = next((t for t in tasks if t['id'] != task['id'] and t['owner'] == task['owner']
                               and t['status'] == 'working'), None)
                 if other:

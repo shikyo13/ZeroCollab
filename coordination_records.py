@@ -1,4 +1,5 @@
 """Durable peer reviews and follow-ups shared by the board and agent tools."""
+import bisect
 import os
 import subprocess
 import time
@@ -311,19 +312,27 @@ class CoordinationRecords:
 
     def scope_cap(self, task, revision):
         """E5, the scope cap (Docs/process-enforcement.md, Zero #16116 and 67ad9590): a task gets SCOPE_REVIEW_ROUNDS
-        distinct reviewed revisions plus what the user grants. An agent's request for a new revision past that is
-        refused, and the first refusal opens one continue-or-stop item for the user. Parallel reviews of a counted
-        revision are the same round, and verdicts are never refused, so work already in review can finish."""
+        review rounds plus what the user grants. An agent's request for a new round past that is refused, and the
+        first refusal opens one continue-or-stop item for the user. Parallel reviews of a counted revision are the
+        same round, and verdicts are never refused, so work already in review can finish.
+        A round is a revision within a verdict window (security H3, 1b39e62b): revision strings are the caller's, so
+        a request that reuses one after any verdict on the task is a new round. A refusal is not read-only: the first
+        one saves the bell item and a system note on the task before raising."""
         from project_room import SCOPE_REVIEW_ROUNDS
-        revisions = {r['revision'] for r in self.room.state.get('reviews', []) if r['task_id'] == task['id']}
-        if revision in revisions:
+        reviews = [r for r in self.room.state.get('reviews', []) if r['task_id'] == task['id']]
+        # Older records have no answered time; an answer still showing as a verdict uses its updated time.
+        verdicts = sorted(r.get('answered') or r['updated'] for r in reviews
+                          if r.get('answered') or r['status'] in ('approved', 'changes_requested'))
+        rounds = {(bisect.bisect_left(verdicts, r['created']), r['revision']) for r in reviews}
+        if (len(verdicts), revision) in rounds:
             return
         cap = task.get('scope_cap') or {}
         if cap.get('stopped'):
-            raise ValueError(f"E5: stopped by the user. Task {task['id']} takes no new review revisions from agents; "
-                             'the user can request one directly, or the coordinator can split the rest into a new task.')
+            raise ValueError(f"E5: stopped by the user. Task {task['id']} takes no new review rounds from agents. "
+                             'The user can request one directly, or lift the stop with any update to the task; the '
+                             'coordinator can also split the rest into a new task.')
         limit = SCOPE_REVIEW_ROUNDS + cap.get('allowance', 0)
-        if len(revisions) < limit:
+        if len(rounds) < limit:
             return
         items = self.room.state.setdefault('followups', [])
         item = next((f for f in items if f['id'] == cap.get('item') and f['status'] == 'open'), None)
@@ -332,14 +341,14 @@ class CoordinationRecords:
             now = time.time()
             item = opened = {'id': uuid.uuid4().hex[:8], 'task_id': task['id'], 'created_by': SYSTEM,
                              'assigned_to': 'user', 'kind': 'scope_cap', 'status': 'open', 'result': '',
-                             'text': f"E5: task {task['id']} ({task['title']}) has had {len(revisions)} review rounds. "
+                             'text': f"E5: task {task['id']} ({task['title']}) has had {len(rounds)} review rounds. "
                                      f'Resolve to allow {SCOPE_REVIEW_ROUNDS} more; cancel to stop new review '
                                      'requests on it; or ask the coordinator to split it.',
                              'created': now, 'updated': now}
             items.append(item)
             task['scope_cap'] = {**cap, 'item': item['id']}
             self.save(SYSTEM, task, f"Follow-up {item['id']} for user: {item['text']}")
-        raise RuleRefused(f"E5: task {task['id']} has had {len(revisions)} review rounds (limit {limit}). The user "
+        raise RuleRefused(f"E5: task {task['id']} has had {len(rounds)} review rounds (limit {limit}). The user "
                           f"decides in bell item {item['id']}: resolve for {SCOPE_REVIEW_ROUNDS} more rounds, or cancel "
                           'to stop. Or ask the coordinator to split the work.', opened)
 
@@ -408,7 +417,9 @@ class CoordinationRecords:
                 raise ValueError(f'Reviewed files changed: {changed}; request a new review revision')
             if item['status'] == verdict and item['findings'] == findings:
                 return {'item': item, 'changed': False, 'notify': []}
-            item.update(status=verdict, findings=findings, updated=time.time())
+            now = time.time()
+            # answered survives a later supersede, so E5 can still see the verdict window it closed (H3).
+            item.update(status=verdict, findings=findings, updated=now, answered=item.get('answered') or now)
             summary = f"Review {item['id']} {verdict} by {actor} for {revision}: {text}"
             recipients = [task['owner'] or item['requested_by']]
         elif action == 'cancel':

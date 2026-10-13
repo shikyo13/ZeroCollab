@@ -54,6 +54,13 @@ class OneWorkingTask(Rules):
         self.room.task('user', 'update', self.second, status='working')
         self.assertEqual(self.status(self.second), 'working')
 
+    def test_an_unowned_task_is_claimed_not_set_working(self):
+        unowned = self.room.task('user', 'create', title='Unowned')['id']
+        with self.assertRaisesRegex(ValueError, 'Claim it instead'):
+            self.room.task('worker', 'update', unowned, status='working')
+        self.room.task('worker', 'claim', unowned)
+        self.assertEqual(self.status(unowned), 'working')
+
 
 class ScopeCap(Rules):
     """E5: past SCOPE_REVIEW_ROUNDS distinct revisions, an agent's new review request waits for the user."""
@@ -113,6 +120,22 @@ class ScopeCap(Rules):
             self.request('r9')
         self.assertEqual(len(self.bell()), 1)
         self.request('r9', actor='user')
+        self.room.task('user', 'update', self.first, update='go on')  # any user update lifts the stop
+        with self.assertRaises(RuleRefused) as asked_again:
+            self.request('r10')  # no rounds granted: the next request asks the user again
+        self.assertIsNotNone(asked_again.exception.record)
+
+    def test_reusing_a_revision_after_a_verdict_is_a_new_round(self):
+        for n in range(SCOPE_REVIEW_ROUNDS - 2):
+            self.request(f'r{n}')
+        self.request('same')
+        self.request('same', reviewer='other')  # parallel, before any verdict: the same round
+        pending = next(r for r in self.room.state['reviews'] if r['reviewer'] == 'peer' and r['status'] == 'pending')
+        self.room.records.review('peer', 'respond', review_id=pending['id'], revision='same', verdict='approved',
+                                 text='ok')
+        self.request('next')  # round eight; it supersedes the answered review, which keeps its window
+        with self.assertRaises(RuleRefused):
+            self.request('same')  # the same string after a verdict is round nine
 
 
 class ReleaseTrainSeams(unittest.TestCase):
