@@ -28,6 +28,47 @@ SYSTEM = 'system'
 SCOPE_ANSWER = 'E5: only the user answers a scope-cap item (resolve to allow more review rounds, cancel to stop)'
 
 
+SEVERITY_ITEMS = 12          # L2: at most this many critical entries, and as many notes
+SEVERITY_CHARS = 1000        # each entry's text
+PIPELINE_CLASSES = ('room_down', 'data_loss', 'stop_overridden', 'unrecoverable', 'security_exposure')
+
+
+def severity(critical, notes, pipeline, verdict):
+    """L2 (Docs/lead-independence.md r6): a verdict's recorded severity. changes_requested names at least one
+    critical failure; on a release-pipeline task each critical names one of PIPELINE_CLASSES; approved carries
+    notes only. Returns the cleaned (critical, notes) lists."""
+    def entries(value, name):
+        if value is None:
+            return []
+        if not isinstance(value, list) or len(value) > SEVERITY_ITEMS:
+            raise ValueError(f'L2: {name} is a list of at most {SEVERITY_ITEMS} entries')
+        return value
+    cleaned = []
+    for entry in entries(critical, 'critical'):
+        entry = {'text': entry} if isinstance(entry, str) else entry
+        if not isinstance(entry, dict) or set(entry) - {'text', 'class'} or not isinstance(entry.get('text'), str) \
+                or not entry['text'].strip() or len(entry['text']) > SEVERITY_CHARS:
+            raise ValueError(f'L2: each critical entry is {{text, class}}, text 1-{SEVERITY_CHARS} characters: the '
+                             'inputs or state, then the wrong result')
+        kind = entry.get('class')
+        if kind is not None and kind not in PIPELINE_CLASSES:
+            raise ValueError(f"L2: class is one of {', '.join(PIPELINE_CLASSES)}")
+        if pipeline and kind is None:
+            raise ValueError(f"L2: on a release-pipeline task a critical names its class: {', '.join(PIPELINE_CLASSES)}")
+        cleaned.append({'text': entry['text'].strip(), **({'class': kind} if kind else {})})
+    kept = []
+    for note in entries(notes, 'notes'):
+        if not isinstance(note, str) or not note.strip() or len(note) > SEVERITY_CHARS:
+            raise ValueError(f'L2: each note is text of 1-{SEVERITY_CHARS} characters')
+        kept.append(note.strip())
+    if verdict == 'changes_requested' and not cleaned:
+        raise ValueError("L2: a finding that doesn't break anything is a note; approve with notes, or name the "
+                         'critical failure (inputs or state, then the wrong result)')
+    if verdict == 'approved' and cleaned:
+        raise ValueError('L2: a critical finding requests changes; approve with notes only')
+    return cleaned, kept
+
+
 def bounded(text, kind):
     """Return stripped text, or refuse it with the length and limit when it is too long."""
     text, limit = str(text).strip(), LIMITS[kind]
@@ -372,7 +413,8 @@ class CoordinationRecords:
             cap['stopped'] = True
         task['scope_cap'] = cap
 
-    def review(self, actor, action, task_id='', review_id='', reviewer='', revision='', text='', verdict='', files=None):
+    def review(self, actor, action, task_id='', review_id='', reviewer='', revision='', text='', verdict='', files=None,
+               critical=None, notes=None):
         reviews = self.room.state.get('reviews', [])
         if action == 'request':
             task = self.task(task_id)
@@ -419,6 +461,7 @@ class CoordinationRecords:
             if verdict not in ('approved', 'changes_requested') or not str(text).strip():
                 raise ValueError('Provide approved or changes_requested with concrete findings and evidence')
             findings = bounded(text, 'findings')
+            critical, notes = severity(critical, notes, 'release-pipeline' in (task.get('labels') or []), verdict)
             changed = self.changed_files(item)
             if verdict == 'approved' and changed:
                 raise ValueError(f'Reviewed files changed: {changed}; request a new review revision')
@@ -427,8 +470,15 @@ class CoordinationRecords:
             now = time.time()
             # answered survives a later supersede, so E5 can still see the verdict window it closed (H3).
             item.update(status=verdict, findings=findings, updated=now, answered=item.get('answered') or now)
+            if critical or notes:
+                item.update(critical=critical, notes=notes)
             summary = f"Review {item['id']} {verdict} by {actor} for {revision}: {text}"
             recipients = [task['owner'] or item['requested_by']]
+            if notes and task['owner']:
+                # L2: notes ship and are followed up on the owner's task, not argued in chat.
+                listed = '\n'.join(f'- {note}' for note in notes)
+                self.followup(SYSTEM, 'create', assigned_to=task['owner'], task_id=task['id'],
+                              text=bounded(f"Review {item['id']} notes from {actor} (not blocking):\n{listed}", 'request'))
         elif action == 'cancel':
             item = self.record('reviews', review_id)
             task = self.task(item['task_id'])

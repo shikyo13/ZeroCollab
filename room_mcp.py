@@ -147,10 +147,16 @@ def room_update(kind: str, text: str, supersedes: str = '', resolves: str = '',
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})
 def room_review(action: str, task_id: str = '', review_id: str = '', reviewer: str = '',
                 revision: str = '', text: str = '', verdict: str = '', notify: bool = True,
-                files: list[str] | None = None) -> dict:
-    """Request peer review, respond with findings, or cancel with a reason. request needs task_id, reviewer, revision (an explicit artifact reference such as a commit/diff digest or proposal message ID), and text describing scope/questions. respond needs review_id, exact revision inspected, text with concrete evidence, and verdict approved or changes_requested. cancel needs review_id and text explaining why. New references supersede that peer's older review. Revision references are caller-supplied; use a new reference after material edits. On request the room also hashes the task owner's files (files: relative paths, default the task's file paths) and keeps a copy; approval is refused if they changed since, and room_read(section="review_artifact", query="<review-id>:<path>") returns the captured copy. notify attempts one bounded wake-up; requests persist in the inbox even if a peer cannot start. With notify=false nobody is woken now; if the recipient is idle and it is still unanswered after 2 minutes, the room wakes them once. A respond always notifies the owner, since they are waiting on the verdict."""
-    return call('room_review', dict(action=action, task_id=task_id, review_id=review_id, reviewer=reviewer,
-                                   revision=revision, text=text, verdict=verdict, notify=notify, files=files))
+                files: list[str] | None = None, critical: list[dict] | None = None,
+                notes: list[str] | None = None) -> dict:
+    """Request peer review, respond with findings, or cancel with a reason. request needs task_id, reviewer, revision (an explicit artifact reference such as a commit/diff digest or proposal message ID), and text describing scope/questions. respond needs review_id, exact revision inspected, text with concrete evidence, and verdict approved or changes_requested. Severity is recorded, not argued: critical (up to 12 of {text, class}, text up to 1000 characters) lists concrete failures, each the inputs or state and then the wrong result; notes (up to 12 texts) is everything else. changes_requested needs at least one critical entry, and approved carries notes only; notes become one follow-up on the owner's task. On a release-pipeline task each critical names its class: room_down, data_loss, stop_overridden, unrecoverable or security_exposure. cancel needs review_id and text explaining why. New references supersede that peer's older review. Revision references are caller-supplied; use a new reference after material edits. On request the room also hashes the task owner's files (files: relative paths, default the task's file paths) and keeps a copy; approval is refused if they changed since, and room_read(section="review_artifact", query="<review-id>:<path>") returns the captured copy. notify attempts one bounded wake-up; requests persist in the inbox even if a peer cannot start. With notify=false nobody is woken now; if the recipient is idle and it is still unanswered after 2 minutes, the room wakes them once. A respond always notifies the owner, since they are waiting on the verdict."""
+    args = dict(action=action, task_id=task_id, review_id=review_id, reviewer=reviewer,
+                revision=revision, text=text, verdict=verdict, notify=notify, files=files)
+    if critical is not None:
+        args['critical'] = critical
+    if notes is not None:
+        args['notes'] = notes
+    return call('room_review', args)
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'openWorldHint': False})

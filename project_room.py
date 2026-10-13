@@ -10,7 +10,7 @@ import time
 import urllib.parse
 import uuid
 from collections import namedtuple
-from coordination_records import MAX_BATCH_RESOLVE, TASK_HISTORY
+from coordination_records import MAX_BATCH_RESOLVE, PIPELINE_CLASSES, SEVERITY_ITEMS, TASK_HISTORY
 from pathlib import Path, PurePosixPath
 from coordination_records import CoordinationRecords, bounded, review_rounds
 from coordination_queue import receipt_key
@@ -665,6 +665,14 @@ class ProjectRoom:
         if acceptance is not None:
             accepted = self.acceptance_entry(task, actor, action, acceptance)
             task['acceptance_log'] = (task.get('acceptance_log', []) + [accepted])[-MAX_ACCEPTANCE_LOG:]
+        if not human and previous and (action in ('delegate', 'accept', 'release')
+                                       or (task['status'] == 'done' and previous['status'] != 'done')):
+            # L1: a pinned task isn't finished, closed or handed on before its live check (backend 7a62b62a C2);
+            # release_request.acceptance would otherwise refuse every later agent release. A pass recorded in this
+            # same call counts.
+            due = self.live_check_due(task)
+            if due:
+                raise ValueError(due)
         if labels is not None:
             task['labels'] = task_labels(labels)
         moved_images = []
@@ -964,13 +972,23 @@ class ProjectRoom:
             result['message_id'] = message['id']
         return result
 
-    def release_binding(self, actor, value):
+    def release_binding(self, actor, value, supersedes=''):
         """A decision's release_checks (Astra 93fed9db/78336e2a): one installed manifest and the tasks whose owners
         must check it live. Only the room's selected manager or the user binds; each task's owner is pinned now,
         so a later transfer cannot substitute who accepts."""
         manager = getattr(getattr(self.runtime, 'manager_wakes', None), 'selected_manager', lambda: None)()
         if actor != 'user' and actor != manager:
             raise ValueError("Only the room's manager or the user can bind release checks")
+        return self.release_checks(value, supersedes)
+
+    def active_release_checks(self, manifest_sha):
+        """The one active decision binding this manifest's live checks, or None."""
+        return next((n for n in self.state['notes'] if n.get('kind') == 'decision'
+                     and n.get('status', 'active') == 'active'
+                     and (n.get('release_checks') or {}).get('manifest_sha') == manifest_sha), None)
+
+    def release_checks(self, value, supersedes=''):
+        """release_checks' shared validation, for a person's binding and the room's own (bind_installed)."""
         if not isinstance(value, dict) or set(value) != {'manifest_sha', 'tasks'}:
             raise ValueError('release_checks needs exactly manifest_sha and tasks')
         sha, ids = value['manifest_sha'], value['tasks']
@@ -979,6 +997,11 @@ class ProjectRoom:
         if (not isinstance(ids, list) or not 1 <= len(ids) <= MAX_RELEASE_CHECK_TASKS
                 or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids)):
             raise ValueError(f'release_checks.tasks lists 1-{MAX_RELEASE_CHECK_TASKS} distinct task ids')
+        active = self.active_release_checks(sha)
+        if active and active['id'] != supersedes:
+            # release_request.acceptance needs exactly one active checklist per manifest (backend 7a62b62a C1).
+            raise ValueError(f"Decision {active['id']} already binds this manifest's live checks; "
+                             'supersede it to replace them')
         board = {t['id']: t for t in self.state['tasks']}
         pinned = []
         for task_id in ids:
@@ -996,7 +1019,7 @@ class ProjectRoom:
         if release_checks is not None:
             if kind != 'decision':
                 raise ValueError('release_checks belong on a decision')
-            release_checks = self.release_binding(actor, release_checks)
+            release_checks = self.release_binding(actor, release_checks, supersedes)
         text = bounded(text, 'note')
         if supersedes and resolves:
             raise ValueError('Choose supersedes or resolves, not both')
@@ -1023,6 +1046,37 @@ class ProjectRoom:
         self.state['notes'] = sorted(decisions + recent, key=lambda n: n['time'])
         self.save()
         return note
+
+    def bind_installed(self, manifest_sha, task_ids, text):
+        """L1's binder (Docs/lead-independence.md r6, harness f9bb5b48): the installed release's live checks as a
+        `system` decision. Server-only: called from the enforcement tick, never from a tool or HTTP route, so note()'s
+        actor gate is unchanged. The same validation and one-checklist rule as a person's binding apply, and a refusal
+        is a ValueError the tick turns into a lead item."""
+        if not str(text).strip():
+            raise ValueError('Provide the binding decision text')
+        checks = self.release_checks({'manifest_sha': manifest_sha, 'tasks': list(task_ids)})
+        note = {'id': uuid.uuid4().hex[:8], 'by': 'system', 'kind': 'decision', 'text': bounded(text, 'note'),
+                'time': time.time(), 'status': 'active', 'release_checks': checks}
+        self.state['notes'].append(note)
+        self.save()
+        return note
+
+    def live_check_due(self, task):
+        """L1 gate (backend 7a62b62a C2): why an agent may not yet end or hand on this task, or ''. It applies while the
+        installed manifest's active checklist pins the task and its latest entry for that manifest isn't a pass by
+        the pinned owner or the user, as release_request.acceptance counts it."""
+        deployment = getattr(self.runtime, 'deployment', None)
+        current = getattr(deployment, 'version', None) or {}
+        manifest = current.get('manifest_sha')
+        binding = self.active_release_checks(manifest) if manifest else None
+        pin = next((p for p in (binding or {}).get('release_checks', {}).get('tasks', []) if p['id'] == task['id']), None)
+        if not pin:
+            return ''
+        latest = next((a for a in reversed(task.get('acceptance_log') or []) if a.get('manifest_sha') == manifest), None)
+        if latest and latest.get('result') == 'passed' and latest.get('by') in (pin['owner'], 'user'):
+            return ''
+        return (f"L1: record your live check of {current.get('version') or current.get('id') or 'the installed release'} "
+                f"first (room_task update acceptance with manifest_sha {manifest}); the user can override.")
 
     def primary_repository_key(self):
         from project_registry import repository_key
@@ -1733,9 +1787,9 @@ def coordination_tools():
         definition('room_update', 'Post a concise progress, decision, reference, blocker, or handoff update to project memory and the chatroom without waking peers. The room manager (or the user) can add release_checks {manifest_sha, tasks} to a decision: the tasks whose owners must check that installed release live; each owner then records room_task update acceptance {manifest_sha, result passed|failed, text}.',
                    {'kind': string, 'text': string, 'supersedes': string, 'resolves': string,
                     'release_checks': {'type': 'object', 'properties': {'manifest_sha': string, 'tasks': {'type': 'array', 'items': string, 'maxItems': 32}}}}, ['kind', 'text']),
-        definition('room_review', 'Request peer review of an approach or patch using an explicit artifact/revision reference, or respond with findings for that exact reference. Optional files selects relative files for backend hash snapshots (otherwise declared file paths). Changed snapshots block approval; room_read review_artifact retrieves captured content. Requests remain in the inbox; notify attempts one bounded wake-up. With notify=false nobody is woken now; if the recipient is idle and it is still unanswered after 2 minutes, the room wakes them once.',
+        definition('room_review', 'Request peer review of an approach or patch using an explicit artifact/revision reference, or respond with findings for that exact reference. Optional files selects relative files for backend hash snapshots (otherwise declared file paths). Changed snapshots block approval; room_read review_artifact retrieves captured content. Requests remain in the inbox; notify attempts one bounded wake-up. With notify=false nobody is woken now; if the recipient is idle and it is still unanswered after 2 minutes, the room wakes them once. Severity is recorded, not argued: critical (up to 12 of {text, class}, text up to 1000 characters) lists concrete failures, each the inputs or state and then the wrong result; notes (up to 12 texts) is everything else. changes_requested needs at least one critical entry, and approved carries notes only; notes become one follow-up on the task for its owner. On a release-pipeline task each critical names its class: room_down, data_loss, stop_overridden, unrecoverable or security_exposure.',
                    {'action': {'type': 'string', 'enum': ['request', 'respond', 'cancel']}, 'task_id': string, 'review_id': string, 'reviewer': string,
-                    'files': {'type': 'array', 'items': string}, 'revision': string, 'text': string, 'verdict': {'type': 'string', 'enum': ['approved', 'changes_requested']}, 'notify': {'type': 'boolean'}}, ['action']),
+                    'files': {'type': 'array', 'items': string}, 'revision': string, 'text': string, 'verdict': {'type': 'string', 'enum': ['approved', 'changes_requested']}, 'notify': {'type': 'boolean'}, 'critical': {'type': 'array', 'maxItems': SEVERITY_ITEMS, 'items': {'type': 'object', 'properties': {'text': string, 'class': {'type': 'string', 'enum': list(PIPELINE_CLASSES)}}, 'required': ['text']}}, 'notes': {'type': 'array', 'maxItems': SEVERITY_ITEMS, 'items': string}}, ['action']),
         definition('room_followup', 'Create a durable action/question for a teammate, optionally linked to a task; resolve with its result or cancel with a reason. Open items stay in the assignee inbox. notify attempts one bounded wake-up. With notify=false nobody is woken now; if the recipient is idle and it is still unanswered after 2 minutes, the room wakes them once. There is no other reminder. To answer several follow-ups with the same result (for example one release receipt), resolve once with followup_ids instead of followup_id: each record resolves and each requester is told, with one chat line.',
                    {'action': {'type': 'string', 'enum': ['create', 'resolve', 'cancel']}, 'followup_id': string,
                     'followup_ids': {'type': 'array', 'items': string, 'maxItems': MAX_BATCH_RESOLVE}, 'task_id': string,
