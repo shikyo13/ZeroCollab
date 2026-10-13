@@ -307,22 +307,31 @@ def encoder_check(path):
         return subprocess.run([path, '-hide_banner', *args], capture_output=True, text=True, timeout=15).stdout
 
     version = run('-version')
-    lists = {'encoder libvpx-vp9': run('-encoders'), 'decoder png': run('-decoders'),
-             'demuxer image2pipe': run('-demuxers'), 'muxer webm': run('-muxers')}
+    inventories = {category: run('-' + category) for category in
+                   ('encoders', 'decoders', 'demuxers', 'muxers', 'filters')}
+    lists = {'encoder libvpx-vp9': inventories['encoders'], 'decoder png': inventories['decoders'],
+             'demuxer image2pipe': inventories['demuxers'], 'muxer webm': inventories['muxers']}
     missing = [need for need, listing in lists.items()
                if not any(line.split()[1:2] == [need.split()[1]] for line in listing.splitlines() if line.split())]
     config = next((line for line in version.splitlines() if line.startswith('configuration:')), '')
     license_ = 'nonfree' if '--enable-nonfree' in config else 'GPL' if '--enable-gpl' in config else 'LGPL'
     result = {'path': path, 'version': (version.splitlines() or [''])[0][:120], 'license': license_, 'missing': missing}
+    from motion_encode import inventory, probe_profiles
+    result['formats'] = probe_profiles(path, {name: inventory(text) for name, text in inventories.items()})
     _encoder_cache[stamp] = result
     return result
 
 
-def require_tools(runtime):
+def require_tools(runtime, format='webm'):
     """The encoder's capability record, or Unavailable naming what is missing."""
     check = encoder_check(ffmpeg_path(runtime))
-    if check['missing']:
+    from motion_encode import profile
+    profile(format)
+    if format == 'webm' and check['missing']:
         raise Unavailable('The installed FFmpeg cannot export WebM video; it lacks ' + ', '.join(check['missing']))
+    capability = check['formats'][format]
+    if not capability['available']:
+        raise Unavailable(capability.get('reason') or f'{format} is not available in this encoder')
     if not shared_browser.executable():
         raise Unavailable('Video export needs Microsoft Edge, Google Chrome or Chromium')
     return check
@@ -349,9 +358,11 @@ class Exporter:
         for meta in (folder / 'exports').glob('*.json'):
             try:
                 job = json.loads(meta.read_text('utf-8'))
-                if meta.with_suffix('.webm').is_file():
+                from motion_encode import profile
+                extension = profile(job.get('profile', 'webm')).extension
+                if meta.with_suffix('.' + extension).is_file():
                     jobs.append(job)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError):
                 continue
         return sorted(jobs, key=lambda j: j.get('finished', 0), reverse=True)
 
@@ -359,10 +370,34 @@ class Exporter:
         if not re.fullmatch(r'[0-9a-f]{12}', job_id or ''):
             return None
         folder = project_dir(self.runtime)
-        path = folder / 'exports' / f'{job_id}.webm' if folder else None
-        return path if path and path.is_file() else None
+        if folder is None:
+            return None
+        from motion_encode import profile
+        try:
+            meta = json.loads((folder / 'exports' / f'{job_id}.json').read_text('utf-8'))
+            extension = profile(meta.get('profile', 'webm')).extension
+        except (OSError, ValueError):
+            return None
+        path = folder / 'exports' / f'{job_id}.{extension}'
+        return path if path.is_file() else None
 
-    def start(self, ref, reduced):
+    async def prepare_start(self, ref, reduced, format='webm'):
+        """Probe off-loop, then admit atomically on the room loop.
+
+        A busy export/preview may appear, or the project may change, while the
+        worker thread checks codecs. start() repeats admission after the await.
+        """
+        project = self.runtime.identity
+        if self.busy():
+            raise RuntimeError('An export is already running; cancel it or wait for it to finish')
+        if self.framing:
+            raise RuntimeError(f'{self.framing} is rendering a preview frame; try again in a few seconds')
+        encoder = await asyncio.to_thread(require_tools, self.runtime, format)
+        if self.runtime.identity != project:
+            raise ValueError('Project changed while preparing the export; try again')
+        return self.start(ref, reduced, format, encoder=encoder)
+
+    def start(self, ref, reduced, format='webm', *, encoder=None):
         if self.busy():
             raise RuntimeError('An export is already running; cancel it or wait for it to finish')
         if self.framing:
@@ -374,13 +409,22 @@ class Exporter:
         if ref not in scenes:
             raise ValueError('Unknown or invalid scene')
         scene = drawable(scenes[ref][1])
-        encoder = require_tools(self.runtime)
+        if encoder is None:
+            encoder = require_tools(self.runtime, format)
+        from motion_encode import profile
+        selected = profile(format)
+        capability = encoder['formats'][format]
+        if not capability['available']:
+            raise Unavailable(capability.get('reason') or f'{format} is not available in this encoder')
         self.generation += 1
         self.current = {'id': uuid.uuid4().hex[:12], 'scene': ref, 'scene_id': scene['id'],
                         'generation': self.generation,
                         'name': scene.get('name') or scene['id'], 'reduced': bool(reduced), 'phase': 'starting',
-                        'frame': 0, 'frames': scene['duration_ms'] * FPS // 1000, 'width': WIDTH, 'height': HEIGHT,
-                        'fps': FPS, 'format': 'webm', 'codec': 'vp9', 'created': time.time(),
+                        'frame': 0, 'frames': 1 if format == 'png' else scene['duration_ms'] * FPS // 1000,
+                        'width': WIDTH, 'height': HEIGHT,
+                        'fps': FPS, 'profile': format, 'format': selected.extension,
+                        'mime': selected.mime, 'codec': 'vp9' if format == 'webm' else selected.encoder,
+                        'created': time.time(),
                         'project': self.runtime.identity,
                         'encoder': {k: encoder[k] for k in ('version', 'license')}}
         job = self.current
@@ -402,7 +446,8 @@ class Exporter:
             await asyncio.gather(self.task, return_exceptions=True)
 
     async def run(self, job, scene, folder, ffmpeg):
-        partial = folder / f'{job["id"]}.part.webm'
+        extension = job.get('format', 'webm')
+        partial = folder / f'{job["id"]}.part.{extension}'
         work = Path(tempfile.mkdtemp(prefix='zerocollab-motion-'))
         try:
             folder.mkdir(parents=True, exist_ok=True)
@@ -415,10 +460,13 @@ class Exporter:
             hashes = await export_video(scene, job['reduced'], partial, work, job, ffmpeg, check_cancel=check)
             check()
             job['render_s'] = round(time.perf_counter() - started, 2)
-            final = folder / f'{job["id"]}.webm'
+            final = folder / f'{job["id"]}.{extension}'
             os.replace(partial, final)
+            from motion_render import FrameClock
+            fps = job.get('fps', FPS)
+            clock = FrameClock(fps['num'], fps['den']) if isinstance(fps, dict) else FrameClock(fps)
             job.update(phase='done', finished=time.time(), bytes=final.stat().st_size,
-                       seconds=scene['duration_ms'] / 1000,
+                       seconds=float(clock.ms(job['frames']) / 1000),
                        frames_digest=hashlib.sha256(''.join(hashes).encode()).hexdigest(),
                        video_url=f'/api/runtime/motion/exports/{job["id"]}/video')
             (folder / f'{job["id"]}.json').write_text(json.dumps(public(job), indent=1), 'utf-8')
@@ -457,9 +505,21 @@ async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=N
     stopped before this returns, including on cancellation or room shutdown."""
     page = work / 'scene.html'
     page.write_text(view_html(scene, {'render': True, 'reduced': bool(reduced)}), 'utf-8')
+    from motion_encode import output_args, profile
+    from motion_render import FrameClock, file_io
+    selected_name = job.get('profile', 'webm')
+    selected = profile(selected_name)
+    fps = job.get('fps', FPS)
+    clock = FrameClock(fps['num'], fps['den']) if isinstance(fps, dict) else FrameClock(fps)
+    destination = out
+    if selected.sequence:
+        (work / 'frames').mkdir()
+        destination = work / 'frames' / '%06d.png'
+    flags = VP9 if selected_name == 'webm' else output_args(selected_name)
     encoder = await asyncio.create_subprocess_exec(
-        ffmpeg, '-y', '-loglevel', 'error', '-f', 'image2pipe', '-framerate', str(FPS), '-c:v', 'png',
-        '-i', '-', *VP9, str(out),
+        ffmpeg, '-y', '-loglevel', 'error', '-f', 'image2pipe',
+        '-framerate', f'{clock.num}/{clock.den}', '-c:v', 'png',
+        '-i', '-', *flags, str(destination),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
     errors = asyncio.create_task(encoder.stderr.read())
 
@@ -493,6 +553,24 @@ async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=N
                 pass
         if encoder.returncode != 0:
             raise await failure()
+        if selected.sequence:
+            def archive():
+                import zipfile
+                with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_STORED) as packed:
+                    file_hashes = []
+                    for frame in range(job['frames']):
+                        if job.get('cancel'):
+                            raise Cancelled()
+                        if check_cancel:
+                            check_cancel()
+                        image = work / 'frames' / f'{frame:06d}.png'
+                        with image.open('rb') as stream:
+                            file_hashes.append(hashlib.file_digest(stream, 'sha256').hexdigest())
+                        packed.write(image, image.name)
+                    packed.writestr('frames.json', json.dumps({'fps': {'num': clock.num, 'den': clock.den},
+                        'frames': job['frames'], 'sha256': file_hashes,
+                        'render_sha256': hashes}, separators=(',', ':')))
+            await file_io(archive)
         return hashes
     finally:
         if encoder.returncode is None:
@@ -655,7 +733,7 @@ async def agent_action(runtime, run, arguments):
     if action == 'get':
         return scene
     if action == 'export':
-        job = exporter.start(ref, bool(arguments.get('reduced')))
+        job = await exporter.prepare_start(ref, bool(arguments.get('reduced')), arguments.get('profile', 'webm'))
         await runtime.activity_note(run, 'motion', f'Started a video export of {ref}')
         return job
     if action != 'frame':
@@ -756,7 +834,8 @@ def install(host, runtime):
                 raise ValueError('Choose a scene to export')
             if body.get('project') != runtime.identity:
                 return JSONResponse({'error': changed}, 409)
-            return JSONResponse(exporter.start(body['scene'], bool(body.get('reduced'))), 202)
+            job = await exporter.prepare_start(body['scene'], bool(body.get('reduced')))
+            return JSONResponse(job, 202)
         except RuntimeError as exc:
             return JSONResponse({'error': str(exc)}, 409)
         except Unavailable as exc:
@@ -780,9 +859,11 @@ def install(host, runtime):
         path = exporter.video(job_id)
         if not path:
             return Response(status_code=404)
+        from motion_encode import PROFILES
+        mime = next(p.mime for p in PROFILES.values() if '.' + p.extension == path.suffix)
         disposition = 'attachment' if request.query_params.get('download') else 'inline'
-        return FileResponse(path, media_type='video/webm', headers=nosniff,
-                            content_disposition_type=disposition, filename=f'{job_id}.webm')
+        return FileResponse(path, media_type=mime, headers=nosniff,
+                            content_disposition_type=disposition, filename=path.name)
 
 
 if __name__ == '__main__':
