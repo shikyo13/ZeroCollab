@@ -29,6 +29,8 @@ MAX_PAGES = 4
 IDLE_SECONDS = 300
 RECORDING_CLOSE_GRACE_SECONDS = 10
 WINDOWS_CREATE_SUSPENDED = 4
+WINDOWS_JOB_LIMIT_PRIORITY_CLASS = 0x20
+WINDOWS_JOB_LIMIT_KILL_ON_CLOSE = 0x2000
 
 
 class WindowsBrowserProcess:
@@ -62,7 +64,10 @@ class WindowsBrowserProcess:
         if not self.job:
             raise ctypes.WinError(ctypes.get_last_error())
         limits = Limits()
-        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        limits.basic.flags = WINDOWS_JOB_LIMIT_KILL_ON_CLOSE
+        if priority_class:
+            limits.basic.flags |= WINDOWS_JOB_LIMIT_PRIORITY_CLASS
+            limits.basic.priority = priority_class
         thread = None
         try:
             if not self.kernel.SetInformationJobObject(self.job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
