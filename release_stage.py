@@ -88,21 +88,23 @@ async def join(task):
     return task.result()
 
 
-async def run_worker(directory, check):
-    argv = [sys.executable, '-I', str(Path(__file__).resolve()), str(directory)]
+async def run_worker(directory, check, *, helper=None, env=None, seconds=STAGE_SECONDS):
+    # helper/env are fixed by the host action, never supplied by a room caller.
+    argv = [sys.executable, '-I', '-B', str(helper or Path(__file__).resolve()), str(directory)]
     proc = None
-    deadline = time.monotonic() + STAGE_SECONDS
+    deadline = time.monotonic() + seconds
     try:
         check()
         if os.name == 'nt':
             from shared_browser import WindowsBrowserProcess
             # Staging preserves the existing Git filter/EOL environment. The
             # rehearsal launcher will use an explicit isolated environment.
-            proc = WindowsBrowserProcess(argv, priority_class=subprocess.BELOW_NORMAL_PRIORITY_CLASS, cwd=str(directory))
+            proc = WindowsBrowserProcess(argv, priority_class=subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+                                         cwd=str(directory), env=env)
         else:
             spawning = asyncio.create_task(asyncio.create_subprocess_exec(
                 *argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True, cwd=directory))
+                stderr=subprocess.DEVNULL, start_new_session=True, cwd=directory, env=env))
             try:
                 proc = await asyncio.shield(spawning)
             except BaseException:

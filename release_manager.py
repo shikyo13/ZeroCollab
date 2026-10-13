@@ -91,6 +91,9 @@ class ReleaseManager:
                 context = prepare(self, caller, values)
                 revalidate(self, context)
                 return self.start_stage(caller, context)
+            if action == 'rehearse':
+                from release_rehearse import prepare
+                return self.start_rehearse(caller, prepare(self, caller, values))
             raise ValueError('Release mutation core is not available in this build')
         if action == 'list':
             return self.list_releases()
@@ -216,6 +219,25 @@ class ReleaseManager:
             job.update(state='cancelled', error='Staging cancelled')
         except Exception:
             job.update(state='failed', error='Staging refused or failed; no deployment was requested')
+        finally:
+            self._release_job(job)
+
+    def start_rehearse(self, caller, context):
+        from release_rehearse import REHEARSE_SECONDS
+        job = {'id': uuid.uuid4().hex, 'action': 'rehearse', 'state': 'running',
+               'deadline': time.time() + REHEARSE_SECONDS, 'project': caller['project'], 'stop': threading.Event()}
+        self._launch(job, lambda: self._rehearse_job(job, context))
+        return self._job_answer(job)
+
+    async def _rehearse_job(self, job, context):
+        from release_rehearse import rehearse
+        try:
+            job.update(state='complete', result=await rehearse(self, job, context))
+        except asyncio.CancelledError:
+            job['stop'].set()
+            job.update(state='cancelled', error='Rehearsal cancelled')
+        except Exception:
+            job.update(state='failed', error='Rehearsal refused or failed; no deployment was requested')
         finally:
             self._release_job(job)
 
