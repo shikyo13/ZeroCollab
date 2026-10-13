@@ -114,7 +114,7 @@ def _approve_release_locked(state, body, *, allow_offline=False, supervisor_onli
     identifier = uuid.uuid4().hex
     record = {'id': identifier, 'release_id': item['id'], 'manifest_sha': item['manifest_sha'],
               'approved_by': 'user', 'approved_at': time.time(), 'drain_seconds': seconds,
-              'interrupt': False, 'rollback': item['relation'] == 'older'}
+              'interrupt': False, 'rollback': body.get('rollback') is True or item['relation'] == 'older'}
     if approval is not None:
         if allow_offline or not isinstance(approval, dict) or approval.get('approved_by') != 'release-manager:astra':
             raise ValueError('Invalid agent approval context')

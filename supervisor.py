@@ -660,7 +660,13 @@ class Deployment:
                 if self.previous and current != expected.get(item['path']):
                     drift.append(item['path'])
                 items.append({'path': item['path'], 'before': current, 'after': item['sha256']})
-        for path in self.manifest['deletions']:
+        deletions = set(self.manifest['deletions'])
+        if self.agent_request() and self.request.get('rollback'):
+            # A retained package's original deletion list describes its old
+            # predecessor. Returning to it must also remove files added since.
+            retained = {item['path'] for item in self.manifest['files']}
+            deletions = set(expected) - retained
+        for path in sorted(deletions):
             current = digest(LIVE / path)
             if current is not None:
                 if self.previous and current != expected.get(path):

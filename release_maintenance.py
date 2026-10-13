@@ -31,6 +31,8 @@ class ReleaseMaintenance:
         if (request.get('id'), request.get('protocol'), request.get('approved_by')) != (
                 identifier, PROTOCOL, 'release-manager:astra'):
             raise ValueError('Journal is not an agent deployment under this protocol')
+        if type(request.get('stop_generation')) is not int or request['stop_generation'] < 0:
+            raise ValueError('Journal has no valid Stop generation')
         return request
 
     def validate(self, identifier):

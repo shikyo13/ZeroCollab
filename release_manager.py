@@ -1,7 +1,7 @@
 """Room release core: bounded reads and receipt-bound installation verification.
 
-Staging uses the existing packer in a private owned worker. This slice cannot
-queue a deployment. Verification jobs never confer feature acceptance.
+Staging and admission use private owned workers and the existing queue core.
+Verification jobs never confer feature acceptance.
 """
 import asyncio
 import copy
@@ -82,6 +82,13 @@ class ReleaseManager:
         self._caller(caller)
         if action == 'status':
             return self.status(values.get('id'))
+        if action in ('request', 'rollback'):
+            # Durable idempotency also works after the gate closes or install
+            # changes current.json. This only reports a previously queued id.
+            from release_request import existing
+            prior = existing(self, caller, action, values)
+            if prior:
+                return self.status(prior['id'])
         if self.closing or not self.state.admission_open():
             raise ValueError('Release operations wait until the room reopens')
         if action in MUTATIONS:
@@ -94,6 +101,9 @@ class ReleaseManager:
             if action == 'rehearse':
                 from release_rehearse import prepare
                 return self.start_rehearse(caller, prepare(self, caller, values))
+            if action in ('request', 'rollback'):
+                from release_request import prepare
+                return self.start_request(caller, prepare(self, caller, action, values))
             raise ValueError('Release mutation core is not available in this build')
         if action == 'list':
             return self.list_releases()
@@ -228,6 +238,29 @@ class ReleaseManager:
                'deadline': time.time() + REHEARSE_SECONDS, 'project': caller['project'], 'stop': threading.Event()}
         self._launch(job, lambda: self._rehearse_job(job, context))
         return self._job_answer(job)
+
+    def validate_queued(self, request):
+        from release_request import validate
+        return validate(self, request)
+
+    def start_request(self, caller, context):
+        from release_request import SECONDS
+        job = {'id': uuid.uuid4().hex, 'action': context['action'], 'state': 'running',
+               'deadline': time.time() + SECONDS, 'project': caller['project'], 'stop': threading.Event()}
+        self._launch(job, lambda: self._request_job(job, context))
+        return self._job_answer(job)
+
+    async def _request_job(self, job, context):
+        from release_request import submit
+        try:
+            job.update(state='complete', result=await submit(self, job, context))
+        except asyncio.CancelledError:
+            job['stop'].set()
+            job.update(state='cancelled', error='Request preflight cancelled; inspect status before retrying')
+        except Exception:
+            job.update(state='failed', error='Request preflight failed; inspect status before retrying')
+        finally:
+            self._release_job(job)
 
     async def _rehearse_job(self, job, context):
         from release_rehearse import rehearse
