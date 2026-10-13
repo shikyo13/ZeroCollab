@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from durable import atomic_write
+from release_control import ReleaseGrant
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -69,49 +70,71 @@ def approve_release(state, body, *, allow_offline=False, supervisor_online=None)
     validate this same fingerprint again before queuing an online request.
     """
     with state.lock, approval_lock(state.root):
-        state.version = read_json(state.root / 'current.json', {}) or {}
-        item = state.release(body.get('release_id'))
-        if body.get('manifest_sha') != item['manifest_sha']:
-            raise ValueError('Candidate changed; review the release shown now')
-        if not item['rehearsal_passed']:
-            raise ValueError('This exact package must pass rehearsal before approval')
-        if item['relation'] == 'current':
-            raise ValueError('This release is already running')
-        if item['relation'] == 'older' and body.get('rollback') is not True:
-            raise ValueError(f"{item.get('version') or item['id']} is older than the running release; "
-                             'choose it under Earlier releases to roll back deliberately')
-        status = read_json(state.root / 'status.json', {}) or {}
-        age = time.time() - float(status.get('updated', 0))
-        online = age <= 15 and supervisor_online is not False
-        if not online and not allow_offline:
-            raise ValueError('Supervisor is offline; external bootstrap is required')
-        if online and status.get('state') not in ('running', 'ready', 'idle'):
-            raise ValueError('The supervisor is busy or needs recovery')
-        if (state.root / 'journal.json').exists():
-            raise ValueError('A deployment is in progress or needs recovery')
-        if any((state.root / 'requests').glob('*.json')):
-            raise ValueError('A deployment is already queued')
-        if state.reload()['writes'] != 'open' or state.gate['admission'] != 'open':
-            raise ValueError('The room is closed for deployment or recovery')
-        if body.get('interrupt', False) is not False:
-            raise ValueError('This control waits for current turns; interrupt deployment is not enabled')
-        seconds = body.get('drain_seconds', 600)
-        if not isinstance(seconds, int) or isinstance(seconds, bool) or not 10 <= seconds <= 3600:
-            raise ValueError('Drain time must be between 10 and 3600 seconds')
-        identifier = uuid.uuid4().hex
-        record = {'id': identifier, 'release_id': item['id'], 'manifest_sha': item['manifest_sha'],
-                  'approved_by': 'user', 'approved_at': time.time(), 'drain_seconds': seconds,
-                  'interrupt': False, 'rollback': item['relation'] == 'older'}
-        if not online:
-            return {**record, 'transport': 'start' if state.version else 'bootstrap'}
-        atomic_json(state.root / 'requests' / (identifier + '.json'), record)
-        return record
+        return _approve_release_locked(state, body, allow_offline=allow_offline,
+                                       supervisor_online=supervisor_online)
+
+
+def _approve_release_locked(state, body, *, allow_offline=False, supervisor_online=None,
+                            approval=None):
+    """Shared queue core; caller holds both approval locks.
+
+    approval is server-produced agent audit metadata, never an HTTP/tool body.
+    Agent policy must validate the grant, Stop, acceptance and expected current
+    fingerprint under the same locks before entering this core.
+    """
+    state.version = read_json(state.root / 'current.json', {}) or {}
+    item = state.release(body.get('release_id'))
+    if body.get('manifest_sha') != item['manifest_sha']:
+        raise ValueError('Candidate changed; review the release shown now')
+    if not item['rehearsal_passed']:
+        raise ValueError('This exact package must pass rehearsal before approval')
+    if item['relation'] == 'current':
+        raise ValueError('This release is already running')
+    if item['relation'] == 'older' and body.get('rollback') is not True:
+        raise ValueError(f"{item.get('version') or item['id']} is older than the running release; "
+                         'choose it under Earlier releases to roll back deliberately')
+    status = read_json(state.root / 'status.json', {}) or {}
+    age = time.time() - float(status.get('updated', 0))
+    online = age <= 15 and supervisor_online is not False
+    if not online and not allow_offline:
+        raise ValueError('Supervisor is offline; external bootstrap is required')
+    if online and status.get('state') not in ('running', 'ready', 'idle'):
+        raise ValueError('The supervisor is busy or needs recovery')
+    if (state.root / 'journal.json').exists():
+        raise ValueError('A deployment is in progress or needs recovery')
+    if any((state.root / 'requests').glob('*.json')):
+        raise ValueError('A deployment is already queued')
+    if state.reload()['writes'] != 'open' or state.gate['admission'] != 'open':
+        raise ValueError('The room is closed for deployment or recovery')
+    if body.get('interrupt', False) is not False:
+        raise ValueError('This control waits for current turns; interrupt deployment is not enabled')
+    seconds = body.get('drain_seconds', 600)
+    if not isinstance(seconds, int) or isinstance(seconds, bool) or not 10 <= seconds <= 3600:
+        raise ValueError('Drain time must be between 10 and 3600 seconds')
+    identifier = uuid.uuid4().hex
+    record = {'id': identifier, 'release_id': item['id'], 'manifest_sha': item['manifest_sha'],
+              'approved_by': 'user', 'approved_at': time.time(), 'drain_seconds': seconds,
+              'interrupt': False, 'rollback': item['relation'] == 'older'}
+    if approval is not None:
+        if allow_offline or not isinstance(approval, dict) or approval.get('approved_by') != 'release-manager:astra':
+            raise ValueError('Invalid agent approval context')
+        allowed = {'approved_by', 'project_id', 'profile_id', 'run_id', 'grant_revision',
+                   'grant_decision', 'expected_manifest_sha', 'stop_generation',
+                   'idempotency_key', 'protocol', 'acceptance_receipt'}
+        if set(approval) - allowed:
+            raise ValueError('Unknown agent approval metadata')
+        record.update(approval)
+    if not online:
+        return {**record, 'transport': 'start' if state.version else 'bootstrap'}
+    atomic_json(state.root / 'requests' / (identifier + '.json'), record)
+    return record
 
 
 class DeploymentState:
     def __init__(self, data):
         self.root = Path(data).resolve() / 'deploy'
         self.lock = threading.RLock()
+        self.release_grant = ReleaseGrant(self.root, self.lock)
         self.mutations = 0
         self.gate = {}
         self.stamp = None
@@ -231,16 +254,21 @@ class MutationGate:
     async def __call__(self, scope, receive, send):
         mutation = scope['type'] == 'http' and scope['method'] not in ('GET', 'HEAD', 'OPTIONS')
         path = scope.get('path', '')
+        # Explicit user controls stay reachable during maintenance. Authentication
+        # middleware still runs; no run token admits these routes. Grant enabling
+        # is separately refused behind the gate, while revocation remains possible.
+        user_control = path in {'/api/runtime/stop', '/api/runtime/resume',
+                                '/api/runtime/deployments/grant'}
         if self.state.rehearsal and mutation and ('/repository' in path or path.startswith(('/api/open-path', '/api/runtime/providers', '/api/runtime/login', '/api/runtime/settings'))):
             await JSONResponse({'error': 'External operations are disabled during rehearsal'}, 503)(scope, receive, send)
             return
-        if mutation and not self.state.enter_mutation():
+        if mutation and not user_control and not self.state.enter_mutation():
             await JSONResponse({'error': 'Deploying: the room is temporarily read-only'}, 503)(scope, receive, send)
             return
         try:
             await self.app(scope, receive, send)
         finally:
-            if mutation:
+            if mutation and not user_control:
                 self.state.leave_mutation()
 
 
@@ -298,5 +326,29 @@ def install(host, runtime):
         try:
             body = await request.json()
             return approve_release(state, body)
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            return JSONResponse({'error': str(exc)}, 409)
+
+    @host.app.get('/api/runtime/deployments/grant')
+    async def release_grant():
+        try:
+            return state.release_grant.snapshot()
+        except (OSError, ValueError, TypeError) as exc:
+            return JSONResponse({'error': str(exc), 'enabled': False}, 503)
+
+    @host.app.post('/api/runtime/deployments/grant')
+    async def change_release_grant(request: Request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or set(body) != {'enabled', 'expected_revision'}:
+                raise ValueError('Choose enabled state and expected revision only')
+            with state.lock:
+                if state.rehearsal:
+                    raise ValueError('Release grants cannot change during rehearsal')
+                if body['enabled'] is True and not state.admission_open():
+                    raise ValueError('Wait for deployment to finish before enabling a grant')
+                return state.release_grant.set_user_grant(
+                    enabled=body['enabled'], expected_revision=body['expected_revision'],
+                    project=runtime.identity, profile=runtime.profiles.items.get('astra'))
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             return JSONResponse({'error': str(exc)}, 409)

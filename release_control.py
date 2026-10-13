@@ -7,6 +7,8 @@ an unconditional Resume. Construct once after initial user stop state is known.
 """
 import inspect
 import json
+import hashlib
+import time
 from pathlib import Path
 
 from durable import atomic_write
@@ -80,3 +82,83 @@ class ManualStopState:
                 return False
             resume()
             return True
+
+
+class ReleaseGrant:
+    """User-controlled grant; identity mutations can only lapse it, never enable it.
+
+    Share DeploymentState.lock with request admission. Call set_user_grant only
+    from the authenticated user Updates route, not an agent tool or a migration.
+    The fixed grantee is Astra; the room run supplies its permanent profile id.
+    """
+    def __init__(self, deployment_root, lock):
+        self.path = Path(deployment_root) / 'release-manager-grant.json'
+        self.lock = lock
+
+    @staticmethod
+    def profile_stamp(profile):
+        if not isinstance(profile, dict) or profile.get('id') != 'astra' or profile.get('archived'):
+            raise ValueError('The active Astra profile is required')
+        identity = {key: profile.get(key, '') for key in ('id', 'name', 'template')}
+        identity['handle'] = profile.get('handle', profile['id'])
+        return hashlib.sha256(json.dumps(identity, sort_keys=True).encode('utf-8')).hexdigest()
+
+    def _read(self):
+        try:
+            value = json.loads(self.path.read_text('utf-8'))
+        except FileNotFoundError:
+            return {'version': 1, 'revision': 0, 'enabled': False}
+        if (not isinstance(value, dict) or value.get('version') != 1
+                or type(value.get('revision')) is not int or value['revision'] < 0
+                or type(value.get('enabled')) is not bool):
+            raise ValueError('Release-manager grant is invalid; deployment is disabled')
+        return value
+
+    def _write(self, value):
+        atomic_write(self.path, lambda stream: json.dump(value, stream, sort_keys=True))
+
+    def snapshot(self):
+        with self.lock:
+            return self._read()
+
+    def set_user_grant(self, *, enabled, expected_revision, project, profile):
+        if type(enabled) is not bool or type(expected_revision) is not int:
+            raise ValueError('Grant state and expected revision are required')
+        with self.lock:
+            current = self._read()
+            if current['revision'] != expected_revision:
+                raise ValueError('Grant changed; reload Updates before choosing again')
+            if enabled:
+                if not isinstance(project, str) or not project:
+                    raise ValueError('Choose the active project')
+                stamp = self.profile_stamp(profile)
+                current.update(project=project, profile='astra', profile_stamp=stamp)
+            current.update(enabled=enabled, revision=current['revision'] + 1,
+                           changed_by='user', changed_at=time.time(), lapse_reason='')
+            self._write(current)
+            return current
+
+    def invalidate_profile(self, project, profile):
+        """Server identity-edit hook: rename/archive/replacement permanently lapses authority."""
+        with self.lock:
+            current = self._read()
+            if current.get('project') != project or current.get('profile') != profile or not current['enabled']:
+                return current
+            current.update(enabled=False, revision=current['revision'] + 1,
+                           lapse_reason='Profile identity changed; user re-enablement required',
+                           changed_at=time.time(), changed_by='profile-identity-change')
+            self._write(current)
+            return current
+
+    def require(self, caller, profile):
+        """Caller is host-derived {profile, project, run}, never copied from tool arguments."""
+        with self.lock:
+            current = self._read()
+            if (not current['enabled'] or caller.get('profile') != 'astra'
+                    or current.get('profile') != caller.get('profile')
+                    or current.get('project') != caller.get('project')
+                    or not caller.get('run')):
+                raise ValueError('No enabled release-manager grant for this run')
+            if current.get('profile_stamp') != self.profile_stamp(profile):
+                raise ValueError('Release-manager profile changed; user re-enablement required')
+            return current
