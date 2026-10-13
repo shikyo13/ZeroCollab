@@ -37,6 +37,17 @@ def bounded(text, kind):
     return text
 
 
+def review_rounds(reviews):
+    """E5's round count for one task's review records: a round is a revision within a verdict window (security H3,
+    1b39e62b), so reusing a revision string after any verdict is a new round, and parallel reviews of one revision
+    before a verdict are one. Returns the counted (window, revision) pairs and the window a new request falls in.
+    Shared by scope_cap and the lead's scope line (project_room.delivery_signals), so the prompt and the rule agree."""
+    # Older records have no answered time; an answer still showing as a verdict uses its updated time.
+    verdicts = sorted(r.get('answered') or r['updated'] for r in reviews
+                      if r.get('answered') or r['status'] in ('approved', 'changes_requested'))
+    return {(bisect.bisect_left(verdicts, r['created']), r['revision']) for r in reviews}, len(verdicts)
+
+
 class RuleRefused(ValueError):
     """A process rule's refusal that also opened a record for the user (E5's bell item), which the runtime announces."""
 
@@ -319,12 +330,8 @@ class CoordinationRecords:
         a request that reuses one after any verdict on the task is a new round. A refusal is not read-only: the first
         one saves the bell item and a system note on the task before raising."""
         from project_room import SCOPE_REVIEW_ROUNDS
-        reviews = [r for r in self.room.state.get('reviews', []) if r['task_id'] == task['id']]
-        # Older records have no answered time; an answer still showing as a verdict uses its updated time.
-        verdicts = sorted(r.get('answered') or r['updated'] for r in reviews
-                          if r.get('answered') or r['status'] in ('approved', 'changes_requested'))
-        rounds = {(bisect.bisect_left(verdicts, r['created']), r['revision']) for r in reviews}
-        if (len(verdicts), revision) in rounds:
+        rounds, window = review_rounds([r for r in self.room.state.get('reviews', []) if r['task_id'] == task['id']])
+        if (window, revision) in rounds:
             return
         cap = task.get('scope_cap') or {}
         if cap.get('stopped'):

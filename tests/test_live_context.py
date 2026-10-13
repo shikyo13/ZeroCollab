@@ -57,12 +57,12 @@ class LiveContext(unittest.TestCase):
         self.room.task('worker', 'update', self.main, labels=['frontend'])
         review = next(r for r in self.room.state['reviews'] if r['task_id'] == self.main)
         self.room.records.review('peer', 'respond', review_id=review['id'], revision='v1', verdict='approved', text='ok')
-        for n in range(project_room.SCOPE_REVIEW_ROUNDS + 1):
-            # As the user: E5 refuses an agent's request past the cap, and the scope line still has to show it.
+        for n in range(project_room.SCOPE_REVIEW_ROUNDS):
+            # At E5's cap, counted as E5 counts (harness b56d3d87): the line warns before the next round is refused.
             self.room.records.review('user', 'request', task_id=self.side, reviewer='peer', revision=f'r{n}', text='again')
         lead = self.room.live_context(self.run_for('lead'))
         self.assertIn('Release train: 1 open tasks approved and waiting (1 user-visible); last install 3.0 h ago. CUT A RELEASE', lead)
-        self.assertIn(f'{self.side} {project_room.SCOPE_REVIEW_ROUNDS + 1} rounds', lead)
+        self.assertIn(f'{self.side} {project_room.SCOPE_REVIEW_ROUNDS} rounds', lead)
         self.assertNotIn('Release train', self.room.live_context(self.run_for('worker')))
 
     def test_busy_lead_keeps_release_train_and_points_to_the_inbox(self):

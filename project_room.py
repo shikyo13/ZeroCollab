@@ -12,7 +12,7 @@ import uuid
 from collections import namedtuple
 from coordination_records import MAX_BATCH_RESOLVE, TASK_HISTORY
 from pathlib import Path, PurePosixPath
-from coordination_records import CoordinationRecords, bounded
+from coordination_records import CoordinationRecords, bounded, review_rounds
 from coordination_queue import receipt_key
 from durable import atomic_write
 from coordination_state import update_execution, execution_state, pending_human_wait
@@ -1431,12 +1431,13 @@ class ProjectRoom:
                 waiting.append(t)
         visible = [t for t in waiting if set(t.get('labels') or ()) & USER_VISIBLE_LABELS]
         hours = (now - installed) / 3600 if installed else None
-        # Scope: many review rounds, or open for hours while nothing has been installed since it began.
+        # Scope: at E5's review-round cap (counted as E5 counts, harness b56d3d87), or open for hours while nothing
+        # has been installed since it began.
         heavy = []
         for t in tasks:
-            rounds = len(reviews.get(t['id'], []))
+            rounds = len(review_rounds(reviews.get(t['id'], []))[0])
             stalled = now - created(t) > SCOPE_OPEN_HOURS * 3600 and (installed is None or installed < created(t))
-            if rounds > SCOPE_REVIEW_ROUNDS or stalled:
+            if rounds >= SCOPE_REVIEW_ROUNDS or stalled:
                 heavy.append({'id': t['id'], 'rounds': rounds, 'hours': (now - created(t)) / 3600})
         # Cycle time: delivered work (done, not a closure) finished in the last day.
         # Done time: the last "moved to done" event; later notes on a done task only move `updated` (backend cf8b999d).
