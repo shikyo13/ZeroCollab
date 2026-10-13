@@ -290,6 +290,8 @@ def install(host, runtime):
                                          ('user_stop', 'user_resume', 'reconcile_manual_stop'))
     host.deployment = state
     runtime.deployment = state
+    from release_manager import ReleaseManager
+    runtime.release_manager = ReleaseManager(runtime, Path(__file__).resolve().parent)
     host.app.add_middleware(MutationGate, state=state)
     import mcp_bridge
     mcp_bridge.deployment = state
