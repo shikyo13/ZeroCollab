@@ -153,7 +153,8 @@ def _take_room_writer(data_dir, handoff):
 def _publish_cli_homes(data_dir):
     """Under the writer lease: name the Codex and Claude homes this room's agents sign in with, so the desktop
     app can confirm it shares them (cli_homes.py, desktop b23dbef7). Paths only; no home is opened. When they
-    can't be named, the old marker goes too, so the desktop app reads missing rather than a stale match."""
+    can't be named, the old marker goes too, so the desktop app reads missing rather than a stale match; if it
+    can't be removed either, the room doesn't start (desktop 8e8f91ea B1)."""
     import cli_homes
     try:
         cli_homes.write_marker(data_dir, cli_homes.effective_homes())
@@ -161,8 +162,8 @@ def _publish_cli_homes(data_dir):
         logging.getLogger(__name__).warning("CLI home marker not written: %s", exc)
         try:
             (Path(data_dir) / cli_homes.MARKER_FILENAME).unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as stale:
+            sys.exit(f"Error: could not record or clear the CLI home marker in {data_dir} ({stale}). Nothing was started.")
 
 
 def main():
