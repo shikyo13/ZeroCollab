@@ -614,6 +614,7 @@ async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=N
     require_silent_composition(scene, job.get('composition') or render_plan(scene).get('composition'))
     from motion_encode import output_args, profile
     from motion_render import FrameClock, file_io
+    import subprocess
     await file_io(lambda: page.write_text(view_html(scene, {'render': True, 'reduced': bool(reduced),
         'transparent': job.get('transparent', False),
         **({'composition': job['composition']} if job.get('composition') else {})}, runtime), 'utf-8'))
@@ -632,7 +633,8 @@ async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=N
         ffmpeg, '-y', '-loglevel', 'error', '-f', 'image2pipe',
         '-framerate', f'{clock.num}/{clock.den}', '-c:v', 'png',
         '-i', '-', *flags, str(destination),
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == 'nt' else 0)
     errors = asyncio.create_task(encoder.stderr.read())
 
     async def failure():

@@ -195,7 +195,8 @@ class ChromiumWorker:
         flags.append(f'--window-size={self.identity.width},{self.identity.height}')
         args = [executable, *flags, f'--user-data-dir={self.profile}', 'about:blank']
         if os.name == 'nt':
-            self.proc = shared_browser.WindowsBrowserProcess(args)
+            import subprocess
+            self.proc = shared_browser.WindowsBrowserProcess(args, priority_class=subprocess.BELOW_NORMAL_PRIORITY_CLASS)
         else:
             spawning = asyncio.create_task(asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL))
