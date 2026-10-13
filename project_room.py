@@ -1076,7 +1076,8 @@ class ProjectRoom:
         if latest and latest.get('result') == 'passed' and latest.get('by') in (pin['owner'], 'user'):
             return ''
         return (f"L1: record your live check of {current.get('version') or current.get('id') or 'the installed release'} "
-                f"first (room_task update acceptance with manifest_sha {manifest}); the user can override.")
+                f"first (room_task update acceptance with manifest_sha {manifest}), or the lead supersedes the checklist "
+                "without it; the user can override.")
 
     def primary_repository_key(self):
         from project_registry import repository_key

@@ -33,10 +33,11 @@ SEVERITY_CHARS = 1000        # each entry's text
 PIPELINE_CLASSES = ('room_down', 'data_loss', 'stop_overridden', 'unrecoverable', 'security_exposure')
 
 
-def severity(critical, notes, pipeline, verdict):
+def severity(critical, notes, pipeline, verdict, human=False):
     """L2 (Docs/lead-independence.md r6): a verdict's recorded severity. changes_requested names at least one
     critical failure; on a release-pipeline task each critical names one of PIPELINE_CLASSES; approved carries
-    notes only. Returns the cleaned (critical, notes) lists."""
+    notes only. The user is never refused by L2 (security bb6da45f, harness cd540632 C1): entries they give are
+    cleaned and kept, and those three verdict rules are skipped. Returns the cleaned (critical, notes) lists."""
     def entries(value, name):
         if value is None:
             return []
@@ -53,7 +54,7 @@ def severity(critical, notes, pipeline, verdict):
         kind = entry.get('class')
         if kind is not None and kind not in PIPELINE_CLASSES:
             raise ValueError(f"L2: class is one of {', '.join(PIPELINE_CLASSES)}")
-        if pipeline and kind is None:
+        if pipeline and kind is None and not human:
             raise ValueError(f"L2: on a release-pipeline task a critical names its class: {', '.join(PIPELINE_CLASSES)}")
         cleaned.append({'text': entry['text'].strip(), **({'class': kind} if kind else {})})
     kept = []
@@ -61,12 +62,28 @@ def severity(critical, notes, pipeline, verdict):
         if not isinstance(note, str) or not note.strip() or len(note) > SEVERITY_CHARS:
             raise ValueError(f'L2: each note is text of 1-{SEVERITY_CHARS} characters')
         kept.append(note.strip())
+    if human:
+        return cleaned, kept
     if verdict == 'changes_requested' and not cleaned:
         raise ValueError("L2: a finding that doesn't break anything is a note; approve with notes, or name the "
                          'critical failure (inputs or state, then the wrong result)')
     if verdict == 'approved' and cleaned:
         raise ValueError('L2: a critical finding requests changes; approve with notes only')
     return cleaned, kept
+
+
+def notes_followup(review_id, reviewer, notes):
+    """One follow-up listing a verdict's notes, always within the follow-up limit: past it, the listing stops and
+    points at the review, which keeps every note (harness cd540632 C2)."""
+    head, limit = f'Review {review_id} notes from {reviewer} (not blocking):', LIMITS['request']
+    tail = f'\n- ... the rest are on review {review_id}'
+    lines = []
+    for note in notes:
+        line = f'\n- {note}'
+        if len(head) + sum(map(len, lines)) + len(line) + len(tail) > limit:
+            return head + ''.join(lines) + tail
+        lines.append(line)
+    return head + ''.join(lines)
 
 
 def bounded(text, kind):
@@ -461,7 +478,10 @@ class CoordinationRecords:
             if verdict not in ('approved', 'changes_requested') or not str(text).strip():
                 raise ValueError('Provide approved or changes_requested with concrete findings and evidence')
             findings = bounded(text, 'findings')
-            critical, notes = severity(critical, notes, 'release-pipeline' in (task.get('labels') or []), verdict)
+            critical, notes = severity(critical, notes, 'release-pipeline' in (task.get('labels') or []), verdict,
+                                       human=actor == 'user')
+            # The notes follow-up is built and bounded before the verdict changes anything (harness cd540632 C2).
+            note_text = notes_followup(item['id'], actor, notes) if notes and task['owner'] else ''
             changed = self.changed_files(item)
             if verdict == 'approved' and changed:
                 raise ValueError(f'Reviewed files changed: {changed}; request a new review revision')
@@ -474,11 +494,9 @@ class CoordinationRecords:
                 item.update(critical=critical, notes=notes)
             summary = f"Review {item['id']} {verdict} by {actor} for {revision}: {text}"
             recipients = [task['owner'] or item['requested_by']]
-            if notes and task['owner']:
+            if note_text:
                 # L2: notes ship and are followed up on the owner's task, not argued in chat.
-                listed = '\n'.join(f'- {note}' for note in notes)
-                self.followup(SYSTEM, 'create', assigned_to=task['owner'], task_id=task['id'],
-                              text=bounded(f"Review {item['id']} notes from {actor} (not blocking):\n{listed}", 'request'))
+                self.followup(SYSTEM, 'create', assigned_to=task['owner'], task_id=task['id'], text=note_text)
         elif action == 'cancel':
             item = self.record('reviews', review_id)
             task = self.task(item['task_id'])

@@ -100,6 +100,24 @@ class Severity(ReleaseChecks):
         item = self.respond('changes_requested', critical=['empty input returns 500'])['item']
         self.assertEqual(item['critical'], [{'text': 'empty input returns 500'}])
 
+    def test_the_user_is_never_refused_by_l2(self):
+        # harness cd540632 C1: Zero answers from the UI (/api/runtime/reviews) with plain text and no severity.
+        review = self.room.records.review('worker', 'request', task_id=self.shipped, reviewer='user',
+                                          revision='u1', text='your call')['item']
+        self.room.task('worker', 'update', self.shipped, labels=['release-pipeline'])
+        item = self.room.records.review('user', 'respond', review_id=review['id'], revision='u1',
+                                        text='not like this', verdict='changes_requested')['item']
+        self.assertEqual(item['status'], 'changes_requested')
+
+    def test_full_notes_fit_one_follow_up_and_nothing_changes_first(self):
+        # harness cd540632 C2: twelve notes of the full length can't fail after the verdict is applied.
+        notes = [str(n) * 1000 for n in range(10)] + ['a' * 1000, 'b' * 1000]
+        item = self.respond('approved', notes=notes)['item']
+        self.assertEqual((item['status'], len(item['notes'])), ('approved', 12))
+        follow_up, = [f for f in self.room.state['followups'] if f['created_by'] == 'system']
+        self.assertTrue(follow_up['text'].endswith(f"the rest are on review {self.review['id']}"))
+        self.assertLessEqual(len(follow_up['text']), 8000)
+
     def test_notes_become_one_system_follow_up_for_the_owner(self):
         self.respond('approved', notes=['rename x', 'add a docstring'])
         item, = [f for f in self.room.state['followups'] if f['created_by'] == 'system']
