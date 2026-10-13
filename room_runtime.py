@@ -33,6 +33,7 @@ import provider_keys
 from provider_controls import ProviderControls
 from coordination_state import pending_human_wait
 import coordination_records
+import process_enforcement
 from project_room import ROOM_TOOL_PROVIDERS, ProjectRoom, coordination_tools
 from room_goals import RoomGoals
 from ready_wakes import ReadyWakes
@@ -1395,6 +1396,11 @@ class RoomRuntime:
                 self.manager_wakes.tick()
             except Exception:
                 LOGGER.exception('Manager audit refused after scheduler/persistence failure')
+            try:
+                # E3, the release train (Docs/process-enforcement.md): rate-limited and held by the room gate itself.
+                process_enforcement.tick(self)
+            except Exception:
+                LOGGER.exception('Release train check failed; it runs again next minute')
             for name, state in self.states.items():
                 if state.get('archived'):
                     continue

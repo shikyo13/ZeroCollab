@@ -1,11 +1,15 @@
 """Process rules the room enforces itself (Docs/process-enforcement.md, task a7da2f10, Zero #16116)."""
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import process_enforcement
+import room_runtime
 from coordination_records import RuleRefused
-from project_room import SCOPE_REVIEW_ROUNDS, ProjectRoom
+from project_room import RELEASE_GRANTEE, SCOPE_REVIEW_ROUNDS, ProjectRoom
 
 
 class Rules(unittest.TestCase):
@@ -109,6 +113,45 @@ class ScopeCap(Rules):
             self.request('r9')
         self.assertEqual(len(self.bell()), 1)
         self.request('r9', actor='user')
+
+
+class ReleaseTrainSeams(unittest.TestCase):
+    """E3's backend seams: the real delivery_signals drives process_enforcement.tick, and the room never wakes itself."""
+
+    def test_real_signals_open_one_item_for_the_release_manager(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        deploy = root / 'deploy'
+        deploy.mkdir()
+        (deploy / 'current.json').write_text('{}', 'utf-8')
+        os.utime(deploy / 'current.json', (time.time() - 3 * 3600,) * 2)
+        chat, woken = [], []
+        runtime = SimpleNamespace(
+            data=root / 'data', identity='test', host=SimpleNamespace(router=None, store=SimpleNamespace(
+                add=lambda sender, text, **kw: chat.append(sender))),
+            states={name: {'worktree': str(root)} for name in (RELEASE_GRANTEE, 'peer')},
+            activity=lambda name: {'running': False, 'queued': 0},
+            ready_wakes=SimpleNamespace(room_gate=lambda: ''),
+            deployment=SimpleNamespace(root=deploy, reload=lambda: {'admission': 'open'},
+                                       enter_mutation=lambda: True, leave_mutation=lambda: None),
+            deliver_record=lambda recipient, items, channel, chain, text, ref: woken.append(recipient),
+            owns_channel=lambda channel: True, default_channel=lambda: 'main',
+            decisions=SimpleNamespace(routes=lambda channel: True), manager_wakes=SimpleNamespace(record={}))
+        room = runtime.project_room = ProjectRoom(runtime)
+        room.use_project('test')
+        task = room.task('peer', 'create', title='Visible fix', labels=['frontend'])['id']
+        room.records.review('peer', 'request', task_id=task, reviewer=RELEASE_GRANTEE, revision='v1', text='check')
+        review = room.state['reviews'][-1]
+        room.records.review(RELEASE_GRANTEE, 'respond', review_id=review['id'], revision='v1', verdict='approved', text='ok')
+        self.assertEqual(process_enforcement.tick(runtime), ['opened'])
+        item = next(f for f in room.state['followups'] if f['created_by'] == 'system')
+        self.assertEqual((item['assigned_to'], woken, chat), (RELEASE_GRANTEE, [RELEASE_GRANTEE], ['system']))
+        self.assertIn(task, item['text'])
+
+    def test_the_room_never_wakes_itself(self):
+        result = room_runtime.RoomRuntime.deliver_record(None, 'system', [], 'main', None, 'text', {})
+        self.assertEqual(result['status'], 'skipped')
 
 
 if __name__ == '__main__':
