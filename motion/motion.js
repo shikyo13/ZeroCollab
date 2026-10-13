@@ -25,7 +25,11 @@
   const KINDS = ['agent', 'tool', 'board', 'handoff', 'browser', 'caption'];
   const EASE = 'cubic-bezier(.2,.7,.2,1)';
 
-  function create(stage, { duration, reduced }) {
+  // transient (v2 room layers only): handoff arrows and chips fade once the receiver has the work.
+  // v1 pages never set it, so their frames are unchanged.
+  const TRANSIENT_HOLD_MS = 1200, TRANSIENT_FADE_MS = 300;
+
+  function create(stage, { duration, reduced, transient = false }) {
     const all = [];
     const tweened = new Set();   // node|prop driven by anim()
     const stepped = new Map();   // node|prop -> { node, prop, points } driven by steps()
@@ -175,8 +179,9 @@
       const head = document.createElementNS(svg.namespaceURI, 'path');
       head.setAttribute('d', `M ${x2 - 28} ${y2 - 13} L ${x2 - 9} ${y2} L ${x2 - 28} ${y2 + 13}`);
       svg.append(path, head);
-      stage.append(svg);
-      const tag = el('div', 'zm-arrow-label', b.label);
+      const host = transient ? el('div', 'zm-transient') : stage;
+      host.append(svg);
+      const tag = el('div', 'zm-arrow-label', b.label, host);
       Object.assign(tag.style, { left: ((x1 + x2) / 2) + 'px', top: (Math.min(a.y, z.y) - 60) + 'px' });
       const len = path.getTotalLength(), dur = b.duration_ms || 900;
       path.style.strokeDasharray = String(len);
@@ -184,6 +189,10 @@
       else anim(path, [{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { at: b.at_ms, dur });
       steps(head, 'opacity', [[0, '0'], [reduced ? b.at_ms : b.at_ms + dur - 100, '1']]);
       steps(tag, 'opacity', [[0, '0'], [b.at_ms, '1']]);
+      if (!transient) return;
+      const gone = b.at_ms + dur + TRANSIENT_HOLD_MS;
+      if (reduced) steps(host, 'opacity', [[0, '1'], [gone, '0']]);
+      else anim(host, [{ opacity: 1 }, { opacity: 0 }], { at: gone, dur: TRANSIENT_FADE_MS, easing: 'ease-in' });
     }
 
     // Visual emphasis only: pointer-events none and aria-hidden. It never takes focus,

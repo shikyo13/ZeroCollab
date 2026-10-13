@@ -18,7 +18,7 @@ var ZCMotionCore = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // motion/core/index.ts
+  // core/index.ts
   var index_exports = {};
   __export(index_exports, {
     LABEL_H: () => LABEL_H,
@@ -26,6 +26,7 @@ var ZCMotionCore = (() => {
     clamp: () => clamp,
     cubicBezier: () => cubicBezier,
     easing: () => easing,
+    evaluate: () => evaluate,
     evaluateFrame: () => evaluateFrame,
     finite: () => finite,
     frameAtMilliseconds: () => frameAtMilliseconds,
@@ -38,10 +39,14 @@ var ZCMotionCore = (() => {
     layoutStage: () => layoutStage,
     loop: () => loop,
     measureSpring: () => measureSpring,
+    noise: () => noise,
     overlap: () => overlap,
     personRect: () => personRect,
     placeBubble: () => placeBubble,
+    random: () => random,
+    sampleField: () => sampleField,
     seats: () => seats,
+    segmentEasing: () => segmentEasing,
     sequence: () => sequence,
     series: () => series,
     slotTargets: () => slotTargets,
@@ -51,7 +56,7 @@ var ZCMotionCore = (() => {
     validateFps: () => validateFps
   });
 
-  // motion/core/math.ts
+  // core/math.ts
   function finite(value, name) {
     if (!Number.isFinite(value)) throw new RangeError(`${name} must be finite`);
     return value;
@@ -130,7 +135,7 @@ var ZCMotionCore = (() => {
     return `rgba(${channels.slice(0, 3).map((v) => Math.round(clamp(v, 0, 255))).join(", ")}, ${Number(clamp(channels[3]).toFixed(6))})`;
   }
 
-  // motion/core/frame.ts
+  // core/frame.ts
   function validateFps(fps) {
     integer(fps.num, "fps.num", 1);
     integer(fps.den, "fps.den", 1);
@@ -164,11 +169,11 @@ var ZCMotionCore = (() => {
     const milliseconds = frameToMilliseconds(input.frame, input.fps);
     return Object.freeze({ composition: Object.freeze({ ...input.composition }), fps: Object.freeze({ ...input.fps }), frame: input.frame, seed: input.seed, assets: Object.freeze(assets), seconds: milliseconds / 1e3, milliseconds });
   }
-  function evaluateFrame(input, evaluate) {
-    return evaluate(frameContext(input));
+  function evaluateFrame(input, evaluate2) {
+    return evaluate2(frameContext(input));
   }
 
-  // motion/core/spring.ts
+  // core/spring.ts
   function criticalState(displacement, velocity, seconds, omega) {
     const e = Math.exp(-omega * seconds), step = (velocity + omega * displacement) * seconds;
     return [(displacement + step) * e, (velocity - omega * step) * e];
@@ -254,7 +259,7 @@ var ZCMotionCore = (() => {
     return Math.ceil(high * fps.num / fps.den);
   }
 
-  // motion/core/timing.ts
+  // core/timing.ts
   function sequence(frame, options) {
     integer(frame, "frame");
     integer(options.from, "from");
@@ -298,7 +303,7 @@ var ZCMotionCore = (() => {
     return integer(frame - index * delay, "staggered frame");
   }
 
-  // motion/core/layout.ts
+  // core/layout.ts
   function seats(count, options) {
     integer(count, "seat count", 0);
     const columns = integer(options.columns ?? 3, "columns", 1), spacing = options.spacing ?? { x: 114, y: 138 };
@@ -335,7 +340,7 @@ var ZCMotionCore = (() => {
     return result;
   }
 
-  // motion/core/stage.ts
+  // core/stage.ts
   var PERSON = { w: 96, h: 74, thumbH: 46, quietScale: 0.72 };
   var SEAT_W = 120;
   var SEAT_H = 104;
@@ -449,6 +454,103 @@ var ZCMotionCore = (() => {
       if (blockers.every((b) => overlap(rect, b) === 0)) return { side, rect };
     }
     return null;
+  }
+
+  // core/random.ts
+  function random(seed, key) {
+    integer(seed, "seed", 0);
+    if (seed > 2147483647) throw new RangeError("seed must be in [0, 2^31-1]");
+    let h = 2166136261;
+    const text = String(key);
+    for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+    h ^= Math.imul(seed ^ 2654435769, 2246822507);
+    h = Math.imul(h ^ h >>> 16, 2246822507);
+    h = Math.imul(h ^ h >>> 13, 3266489909);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  }
+  function noise(seed, key, t) {
+    const i = Math.floor(t), f = t - i, s = f * f * (3 - 2 * f);
+    const a = random(seed, `${key}:${i}`) * 2 - 1, b = random(seed, `${key}:${i + 1}`) * 2 - 1;
+    return a + (b - a) * s;
+  }
+
+  // core/scene.ts
+  var META = /* @__PURE__ */ new Set(["id", "type", "name", "hidden", "keyframes", "layers"]);
+  var isProp = (v) => !!v && typeof v === "object" && typeof v.prop === "string";
+  function segmentEasing(spec, fps, length) {
+    if (spec === void 0) return easing.linear;
+    if (typeof spec === "string") {
+      const curve = easing[spec];
+      if (typeof curve !== "function" || spec === "cubicBezier") throw new RangeError(`Unknown easing "${spec}"`);
+      return curve;
+    }
+    if ("bezier" in spec) return cubicBezier(...spec.bezier);
+    const options = { ...spec.spring, from: 0, to: 1 };
+    const settle = measureSpring(fps, options);
+    if (!Number.isFinite(settle) || settle <= 0 || length <= 0) return easing.linear;
+    const stretched = { num: fps.num * length, den: fps.den * settle };
+    return (progress) => progress >= 1 ? 1 : progress <= 0 ? 0 : spring(Math.round(progress * length), stretched, options);
+  }
+  function sampleField(layer, name, frame, props, fps) {
+    const bound = (v) => isProp(v) ? props[v.prop] : v;
+    const points = layer.keyframes?.[name];
+    if (!points?.length) return bound(layer[name]);
+    if (frame <= points[0].frame) return bound(points[0].value);
+    const last = points[points.length - 1];
+    if (frame >= last.frame) return bound(last.value);
+    let i = 1;
+    while (points[i].frame <= frame) i++;
+    const a = bound(points[i - 1].value), b = bound(points[i].value);
+    const range = [points[i - 1].frame, points[i].frame];
+    const ease = segmentEasing(points[i].easing, fps, range[1] - range[0]);
+    if (typeof a === "number" && typeof b === "number") return interpolate(frame, range, [a, b], { easing: ease });
+    if (typeof a === "string" && typeof b === "string" && a.startsWith("#") && b.startsWith("#")) return interpolateColors(frame, range, [a, b], { easing: ease });
+    return a;
+  }
+  function drawLayers(layers, frame, props, fps) {
+    const out = [];
+    for (const layer of layers) {
+      if (layer.hidden) continue;
+      const values = {};
+      const names = /* @__PURE__ */ new Set([...Object.keys(layer).filter((k) => !META.has(k)), ...Object.keys(layer.keyframes ?? {})]);
+      for (const name of names) values[name] = sampleField(layer, name, frame, props, fps);
+      const item = { id: layer.id, type: layer.type, values };
+      if (layer.type === "group") item.children = drawLayers(layer.layers ?? [], frame, props, fps);
+      out.push(item);
+    }
+    return out;
+  }
+  function evaluate(composition, frame, overrides = {}) {
+    validateFps(composition.fps);
+    if (!Number.isSafeInteger(frame) || frame < 0 || frame >= composition.duration) throw new RangeError(`frame must be an integer in [0, ${composition.duration - 1}]`);
+    const props = { ...composition.props ?? {}, ...overrides };
+    const entering = (clip) => {
+      const t = clip.transition, local = frame - clip.from;
+      if (!t || t.kind === "cut" || t.duration <= 0 || local < 0 || local >= t.duration) return null;
+      return { kind: t.kind, direction: t.direction ?? "left", progress: segmentEasing(t.easing ?? "ease-in-out", composition.fps, t.duration)(local / t.duration) };
+    };
+    const clips = [];
+    for (const track of composition.tracks) {
+      if (track.hidden || track.kind !== "visual") continue;
+      const ordered = [...track.clips].sort((a, b) => a.from - b.from);
+      ordered.forEach((clip, i) => {
+        const local = frame - clip.from;
+        if (local < 0 || local >= clip.duration) return;
+        const next = ordered.slice(i + 1).find((c) => c.from < clip.from + clip.duration && frame >= c.from);
+        clips.push({
+          id: clip.id,
+          track: track.id,
+          frame: local,
+          contentFrame: local + (clip.offset ?? 0),
+          duration: clip.duration,
+          transition: entering(clip),
+          exit: next ? entering(next) : null,
+          layers: drawLayers(clip.layers, local, props, composition.fps)
+        });
+      });
+    }
+    return { frame, width: composition.width, height: composition.height, background: composition.background ?? "#0c0e10", clips };
   }
   return __toCommonJS(index_exports);
 })();

@@ -4,3 +4,5 @@ export * from './spring';
 export * from './timing';
 export * from './layout';
 export * from './stage';
+export * from './random';
+export * from './scene';
