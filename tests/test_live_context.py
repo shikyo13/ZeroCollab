@@ -1,5 +1,7 @@
 """Per-turn live context from the board (Docs/agent-profiles.md layer 3, opus 02fb548e)."""
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +44,34 @@ class LiveContext(unittest.TestCase):
         self.assertIn('worker 2w/2o/0r OVERLOADED', lead)
         self.assertIn('room_team_builder(action="suggest")', lead)
         self.assertIn('Main task: none owned.', lead)
+
+    def test_lead_sees_release_train_scope_and_cycle_time(self):
+        deploy = Path(self.temp.name) / 'deploy'
+        deploy.mkdir()
+        (deploy / 'current.json').write_text('{}', 'utf-8')
+        three_hours_ago = time.time() - 3 * 3600
+        os.utime(deploy / 'current.json', (three_hours_ago, three_hours_ago))
+        self.runtime.deployment = SimpleNamespace(root=deploy)
+        self.room.task('worker', 'update', self.main, labels=['frontend'])
+        review = next(r for r in self.room.state['reviews'] if r['task_id'] == self.main)
+        self.room.records.review('peer', 'respond', review_id=review['id'], revision='v1', verdict='approved', text='ok')
+        for n in range(project_room.SCOPE_REVIEW_ROUNDS + 1):
+            self.room.records.review('worker', 'request', task_id=self.side, reviewer='peer', revision=f'r{n}', text='again')
+        lead = self.room.live_context(self.run_for('lead'))
+        self.assertIn('Release train: 1 open tasks approved and waiting (1 user-visible); last install 3.0 h ago. CUT A RELEASE', lead)
+        self.assertIn(f'{self.side} {project_room.SCOPE_REVIEW_ROUNDS + 1} rounds', lead)
+        self.assertNotIn('Release train', self.room.live_context(self.run_for('worker')))
+
+    def test_busy_lead_keeps_release_train_and_points_to_the_inbox(self):
+        # backend cf8b999d: a full inbox must cost inbox items, never the lead's delivery lines.
+        self.test_lead_sees_release_train_scope_and_cycle_time()
+        for n in range(project_room.LIVE_CONTEXT_ITEMS + 4):
+            self.room.records.followup('peer', 'create', task_id=self.main, assigned_to='lead', text=f'ask {n} ' + 'y' * 190)
+        lead = self.room.live_context(self.run_for('lead'))
+        self.assertIn('CUT A RELEASE', lead)
+        self.assertIn('more: room_read(section="inbox")', lead)
+        self.assertNotIn('Excerpt limited', lead)
+        self.assertLessEqual(len(lead), project_room.LIVE_CONTEXT_CHARS)
 
     def test_budget_and_overflow_pointer(self):
         for n in range(project_room.LIVE_CONTEXT_ITEMS + 3):

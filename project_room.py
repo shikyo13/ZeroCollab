@@ -1,9 +1,11 @@
 """Durable project coordination and bounded room context, without model calls."""
+import collections
 import json
 import hashlib
 import math
 import os
 import re
+import statistics
 import time
 import urllib.parse
 import uuid
@@ -62,6 +64,14 @@ ACCEPTANCE_RESULTS = ('passed', 'failed')
 # The lead's load line flags anyone above these (opus 02fb548e).
 LOAD_WORKING_LIMIT = 1
 LOAD_REVIEW_LIMIT = 3
+# The lead's delivery lines (opus 70947bb7): cut a release when user-visible approved work waits this long after an
+# install; flag tasks past these review-round or open-time limits; cycle time over the last day.
+RELEASE_TRAIN_HOURS = 2
+USER_VISIBLE_LABELS = frozenset({'frontend', 'design', 'motion', 'desktop', 'product'})
+SCOPE_REVIEW_ROUNDS = 8
+SCOPE_OPEN_HOURS = 4
+SCOPE_LISTED = 4
+CYCLE_WINDOW_SECONDS = 24 * 3600
 
 
 def age(seconds):
@@ -1335,13 +1345,23 @@ class ProjectRoom:
                    + [f"- Changes requested by {r['reviewer']} on your task {r['task_id']} (review {r['id']})" for r in inbox['review_findings']]
                    + [f"- Follow-up {f['id']} from {f['created_by']}: {short(f['text'], 160)}" for f in inbox['followups']]
                    + [f"- Transfer of task {t['id']} to you waits for your accept" for t in inbox['transfers']])
-        if waiting:
-            lines.append('Waiting on you:')
-            lines += waiting[:LIVE_CONTEXT_ITEMS]
-            if len(waiting) > LIVE_CONTEXT_ITEMS:
-                lines.append(f'- and {len(waiting) - LIVE_CONTEXT_ITEMS} more: room_read(section="inbox")')
         if run.name == (self.state.get('responders') or {}).get('lead'):
+            # Before the inbox list: the lead's delivery and load lines can't be read anywhere else (backend cf8b999d).
             lines += self.coordinator_lines(tasks)
+        if waiting:
+            # Waiting items fill what the budget leaves; the rest is one room_read pointer, never a clipped tail.
+            more = lambda count: f'- and {count} more: room_read(section="inbox")'
+            room = LIVE_CONTEXT_CHARS - len('\n'.join(lines + ['Waiting on you:', more(len(waiting))])) - 1
+            shown = []
+            for item in waiting[:LIVE_CONTEXT_ITEMS]:
+                if len(item) + 1 > room:
+                    break
+                shown.append(item)
+                room -= len(item) + 1
+            lines.append('Waiting on you:')
+            lines += shown
+            if len(shown) < len(waiting):
+                lines.append(more(len(waiting) - len(shown)))
         return clipped('\n'.join(lines), LIVE_CONTEXT_CHARS)
 
     def coordinator_lines(self, tasks):
@@ -1365,6 +1385,59 @@ class ProjectRoom:
         members = sum(not state.get('archived') for state in self.runtime.states.values())
         lines.append(f'Team builder: {members} active members. room_team_builder(action="suggest") proposes one new member '
                      'for the user to review; use it only for a real capability gap, not for load a teammate can take.')
+        return self.delivery_lines(tasks) + lines
+
+    def last_install(self):
+        """When the installed release was deployed: the deploy record's write time, or None outside a managed room."""
+        deployment = getattr(self.runtime, 'deployment', None)
+        root = getattr(deployment, 'root', None) or Path(self.runtime.data) / 'deploy'
+        try:
+            return (Path(root) / 'current.json').stat().st_mtime
+        except OSError:
+            return None
+
+    def delivery_lines(self, tasks):
+        """Release train, scope and cycle time for the lead (opus 70947bb7, Zero #16078): approved work must not sit
+        unshipped while one feature grows. Computed from the board and the deploy record, every turn."""
+        now = time.time()
+        installed = self.last_install()
+        reviews = collections.defaultdict(list)
+        for review in self.state.get('reviews', []):
+            reviews[review.get('task_id')].append(review)
+        # Task history is trimmed (TASK_HISTORY), so its first entry can be recent; the earliest review is a floor.
+        created = lambda t: min([t['updates'][0]['time'] if t.get('updates') else t['updated']]
+                                + [r['created'] for r in reviews.get(t['id'], [])])
+        # Approved and waiting: an open task whose newest answered review is an approval.
+        waiting = []
+        for t in tasks:
+            answered = [r for r in reviews.get(t['id'], []) if r['status'] in ('approved', 'changes_requested')]
+            if answered and max(answered, key=lambda r: r['updated'])['status'] == 'approved':
+                waiting.append(t)
+        visible = [t for t in waiting if set(t.get('labels') or ()) & USER_VISIBLE_LABELS]
+        hours = (now - installed) / 3600 if installed else None
+        due = visible and hours is not None and hours > RELEASE_TRAIN_HOURS
+        lines = [f"Release train: {len(waiting)} open tasks approved and waiting ({len(visible)} user-visible); "
+                 + (f'last install {hours:.1f} h ago' if hours is not None else 'last install unknown')
+                 + ('. CUT A RELEASE from what is approved now.' if due else '.')]
+        # Scope: many review rounds, or open for hours while nothing has been installed since it began.
+        heavy = []
+        for t in tasks:
+            rounds = len(reviews.get(t['id'], []))
+            stalled = now - created(t) > SCOPE_OPEN_HOURS * 3600 and (installed is None or installed < created(t))
+            if rounds > SCOPE_REVIEW_ROUNDS or stalled:
+                heavy.append((rounds, f"{t['id']} {rounds} rounds, {(now - created(t)) / 3600:.0f} h"))
+        if heavy:
+            heavy.sort(reverse=True)
+            lines.append(f'Scope signal ({len(heavy)}): ' + ', '.join(text for _, text in heavy[:SCOPE_LISTED])
+                         + (f' and {len(heavy) - SCOPE_LISTED} more' if len(heavy) > SCOPE_LISTED else '') + '. Split or freeze before adding more.')
+        # Cycle time: delivered work (done, not a closure) finished in the last day.
+        # Done time: the last "moved to done" event; later notes on a done task only move `updated` (backend cf8b999d).
+        done_at = lambda t: next((u['time'] for u in reversed(t.get('updates') or []) if u.get('event') == 'moved to done'),
+                                 t['updated'])
+        spans = sorted((done_at(t) - created(t)) / 3600 for t in self.state['tasks']
+                       if t['status'] == 'done' and not t.get('closure') and now - done_at(t) < CYCLE_WINDOW_SECONDS)
+        if spans:
+            lines.append(f'Cycle time (created to done, last 24 h, {len(spans)} tasks): median {statistics.median(spans):.1f} h.')
         return lines
 
     def project_record(self):
