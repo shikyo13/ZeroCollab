@@ -429,7 +429,10 @@ class ManagerWakes:
     def finding(collection, item, kind, target):
         identity = [collection, item['id'], item.get('work_rev', item.get('updated')), kind, target]
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
-        return dict(issue=key, collection=collection, id=item['id'], kind=kind, target=target,
+        # A follow-up is filed on a task: a stuck review or follow-up is reminded through the task it belongs
+        # to (harness e8b68f2f). task_id stays outside the issue identity, so dedupe is unchanged.
+        task_id = item['id'] if collection == 'tasks' else item.get('task_id')
+        return dict(issue=key, collection=collection, id=item['id'], task_id=task_id, kind=kind, target=target,
                     title=str(item.get('title', ''))[:240], next_action=str(item.get('next_action', ''))[:400])
 
     def tick(self):
@@ -636,10 +639,15 @@ class ManagerWakes:
                 raise ValueError('Planning follow-up needs bounded plain text without URLs or code fences')
             matches = [dict(issue=claim['findings'][0]['issue'] + ':' + task_id)]
         else:
-            matches = [f for f in claim['findings'] if (f['target'] == who or not f['target'])
-                       and who in self.runtime.states and f['collection'] == 'tasks' and f['id'] == task_id]
+            # Tasks match by id; a pending review or open follow-up matches through its task_id and only
+            # reaches its own reviewer/assignee. Claims saved before task_id was carried keep the old rule.
+            matches = [f for f in claim['findings'] if who in self.runtime.states and task_id and (
+                f['collection'] == 'tasks' and f['id'] == task_id and (f['target'] == who or not f['target'])
+                or f['collection'] in ('reviews', 'followups') and f.get('task_id') == task_id
+                and f['target'] == who)]
         if not matches:
-            raise ValueError('Follow-up must target an existing task issue from this audit digest')
+            raise ValueError('Follow-up must target an issue from this audit digest: '
+                             'its task_id and the person it names')
         issue = matches[0]['issue']
         if issue in self.record.setdefault('issues', {}):
             return self.record['issues'][issue]

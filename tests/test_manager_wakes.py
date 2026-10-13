@@ -231,6 +231,27 @@ class SchedulerChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.m.authorize(run, 'room_followup', args | {'task_id': 'invented'})
 
+    def test_stuck_review_and_followup_are_reminded_through_their_task(self):
+        # harness e8b68f2f: these were listed in the digest but every reminder was refused.
+        state = self.r.project_room.state
+        state['tasks'].append(self.task('feature', 'lead', next_action_state='waiting'))
+        state['reviews'].append(dict(id='rev1', task_id='feature', reviewer='worker', status='pending', updated=100))
+        state['followups'].append(dict(id='fu1', task_id='feature', assigned_to='worker', status='open', updated=100))
+        self.enable()
+        self.assertTrue(self.due())
+        request = self.queued[-1]['routing'] | {'chain': self.queued[-1]['chain']}
+        self.assertTrue(self.m.accepts(request))
+        run = SimpleNamespace(manager_audit=request['manager_audit'])
+        self.assertIn('"task_id": "feature"', self.queued[-1]['prompt'])
+        args = {'action': 'create', 'task_id': 'feature', 'assigned_to': 'worker'}
+        receipt = self.m.authorize(run, 'room_followup', args)
+        self.assertEqual(receipt['status'], 'claimed')
+        self.assertIs(self.m.authorize(run, 'room_followup', args), receipt)  # same issue, no second handoff
+        with self.assertRaises(ValueError):  # only the reviewer/assignee it names
+            self.m.authorize(run, 'room_followup', args | {'assigned_to': 'lead'})
+        with self.assertRaises(ValueError):  # the review id is not a task
+            self.m.authorize(run, 'room_followup', args | {'task_id': 'rev1'})
+
     def test_ordinary_request_covers_saved_claim_without_refund_or_replay(self):
         self.actionable()
         self.enable()
