@@ -8,10 +8,16 @@ type Release = { id: string; commit: string; version?: string; title?: string; s
 type BoardReview = { id: string; status: string; reviewer?: string; revision?: string; task_id?: string; task_title?: string };
 // The supervisor writes the outcome sentence (including a refusal's reason) to detail.
 type Receipt = { id: string; release_id: string; previous_release_id?: string; status: string; detail?: string; error?: string; started?: string; steps?: { time?: string; step?: string }[]; backup?: string };
-type State = { current: Partial<Release>; releases: Release[]; receipts: Receipt[]; pending: { id: string; release_id: string }[]; supervisor: { state?: string; step?: string; updated?: number; deployment_id?: string }; maintenance: { admission: string; writes: string; reason?: string } };
+type PendingInstall = { id: string; release_id: string; interrupt?: boolean; drain_seconds?: number };
+type State = { current: Partial<Release>; releases: Release[]; receipts: Receipt[]; pending: PendingInstall[]; supervisor: { state?: string; step?: string; updated?: number; deployment_id?: string; agent_install_interrupt?: number }; maintenance: { admission: string; writes: string; reason?: string; interrupt?: boolean } };
 const labels: Record<string, string> = { deployed: 'Deployed', aborted: 'Cancelled before deployment', rolled_back: 'Previous release restored', rollback_failed: 'Recovery needed', recovery_required: 'Recovery needed', conflict: 'File conflict, recovery needed', rejected: 'Release refused', draining: 'Finishing current turns', deploying: 'Deploying', verifying: 'Checking the new release', running: 'Ready', ready: 'Ready', idle: 'Ready', restarting: 'Restarting' };
 const label = (value = '') => labels[value] || value.replaceAll('_', ' ') || 'Unknown';
 const reviewStates: Record<string, string> = { approved: 'Approved', changes_requested: 'Changes requested', pending: 'Waiting for review', superseded: 'Superseded', cancelled: 'Cancelled' };
+function deploymentPhase(state: State | null): string {
+  if (state?.maintenance.writes === 'blocked') return label(state.supervisor.step || state.supervisor.state);
+  if (state?.maintenance.admission === 'closed') return state.maintenance.interrupt === true ? 'Interrupting current turns' : 'Finishing current turns';
+  return label(state?.supervisor.step || state?.supervisor.state);
+}
 const releaseName = (r?: Partial<Release>) => r?.version || r?.id || 'this release';
 
 /** Board reviews linked to the package, shown with their live board state. */
@@ -114,7 +120,7 @@ export function SupervisorStatus({ feed }: { feed: DeploymentFeed }) {
   return <div>
     <p role="status">{!feed.data && !feed.error ? 'Checking deployment supervisor…'
       : feed.error || !feed.fresh ? 'Deployment supervisor unavailable'
-      : `Deployment supervisor: ${label(feed.data?.supervisor.state)}`}</p>
+      : `Deployment supervisor: ${deploymentPhase(feed.data)}`}</p>
     <p className="bd-muted">{validTime ? <>Last confirmation: <time dateTime={new Date(updated * 1000).toISOString()}>{new Date(updated * 1000).toLocaleString()}</time>.</>
       : 'No supervisor heartbeat received.'} Approval requires a heartbeat less than 15 seconds old.</p>
     {(feed.error || (feed.data && !feed.fresh)) && <p className="deploy-warning">Deployment status could not be confirmed. The backend can keep running while updates are unavailable. <button className="bd-btn" onClick={() => void feed.refresh()}>Refresh status</button></p>}
@@ -125,7 +131,7 @@ export function DeploymentNotice({ feed, onOpen }: { feed: DeploymentFeed; onOpe
   const gate = feed.data?.maintenance;
   if (!feed.reload && gate?.admission !== 'closed' && gate?.writes !== 'blocked') return null;
   return <div className="deploy-notice" role="status">
-    <span>{feed.reload ? 'The room restarted. Reload to reconnect; copy any unsent draft first.' : gate?.writes === 'blocked' ? 'Deployment in progress. The room is temporarily read-only.' : 'Deployment queued. Current turns can finish; new turns will wait.'}</span>
+    <span>{feed.reload ? 'The room restarted. Reload to reconnect; copy any unsent draft first.' : gate?.writes === 'blocked' ? 'Deployment in progress. The room is temporarily read-only.' : gate?.interrupt === true ? 'Interrupting current turns for the install. Queued work is kept.' : 'Deployment queued. Current turns can finish; new turns will wait.'}</span>
     {feed.reload ? <button className="bd-btn" onClick={() => window.location.reload()}>Reload room</button> : <button className="bd-btn" onClick={onOpen}>View deployment</button>}
   </div>;
 }
@@ -135,7 +141,7 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
   const [selected, setSelected] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
-  const [approved, setApproved] = useState<{ id: string; release_id: string } | null>(null);
+  const [approved, setApproved] = useState<PendingInstall | null>(null);
   // Only releases newer than the running one are offered; older ones are rollbacks and need their own action.
   const candidates = (data?.releases ?? []).filter(r => r.relation === 'newer');
   const candidate = candidates.find(r => r.id === selected) ?? candidates[0];
@@ -153,18 +159,19 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
   const blockingReason = !data ? 'Deployment status is loading.'
     : error ? 'Deployment status could not be refreshed. Refresh status before approving.'
     : !feed.fresh ? 'The deployment supervisor has no recent heartbeat. Refresh status; approval stays blocked until it checks in.'
-    : !feed.ready ? `The deployment supervisor is ${label(supervisor?.state).toLowerCase()}. Wait until it is ready.`
+    : !feed.ready ? `The deployment supervisor is ${deploymentPhase(data).toLowerCase()}. Wait until it is ready.`
     : busy ? 'Approval is being submitted.'
     : waiting ? 'A deployment approval is already queued. Wait for its result.'
     : data.maintenance.admission !== 'open' || data.maintenance.writes === 'blocked' ? data.maintenance.reason || 'The room is temporarily closed for deployment.'
     : '';
   const candidateReason = blockingReason || (candidate && !candidate.rehearsal_passed ? 'This exact release has not passed rehearsal.' : '');
   const rollbackReason = blockingReason || (!confirmed ? 'Confirm that you understand the rollback before approving.' : !rollbackTarget?.rehearsal_passed ? 'This exact release has not passed rehearsal.' : '');
-  async function approve(target: Release | undefined, rollback = false) {
+  async function approve(target: Release | undefined, rollback = false, mode: 'idle' | 'now' = 'idle') {
     if (!target || blockingReason || !heartbeatFresh(supervisor?.updated) || !target.rehearsal_passed || (rollback && !confirmed)) return;
     setBusy(true); setActionError('');
     try {
-      const result = await runtime<{ id: string; release_id: string }>('/deployments/approve', { release_id: target.id, manifest_sha: target.manifest_sha, interrupt: false, drain_seconds: 600, rollback });
+      const interrupt = !rollback && mode === 'now';
+      const result = await runtime<PendingInstall>('/deployments/approve', { release_id: target.id, manifest_sha: target.manifest_sha, interrupt, drain_seconds: interrupt ? 30 : 600, rollback });
       setApproved(result); setConfirmedKey(''); await refresh();
     } catch (e) { setActionError(errorMessage(e)); await refresh(); }
     finally { setBusy(false); }
@@ -173,7 +180,7 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
     <div className="deploy-heading"><div><h2 id="deploy-title">Updates</h2></div></div>
     <p className="bd-muted">Review a release and approve it here. The supervisor handles the restart and saves the result.</p>
     <SupervisorStatus feed={feed} />
-    <ReleaseGrantControl />
+    <ReleaseGrantControl interruptsTurns={data && feed.fresh && !error ? supervisor?.agent_install_interrupt === 1 : undefined} />
     {error && <p role="status" className="deploy-warning">{feed.reload ? 'The room restarted; reload to reconnect.' : 'Cannot refresh deployment status. Controls are disabled until the connection returns.'} <button className="bd-btn" onClick={() => feed.reload ? window.location.reload() : void refresh()}>{feed.reload ? 'Reload room' : 'Retry'}</button></p>}
     {!data && !error && <p role="status">Loading deployments…</p>}
     {data && <>
@@ -194,10 +201,14 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
           <dl><dt>Commit</dt><dd><code>{candidate.commit}</code></dd><dt>Package fingerprint</dt><dd><code>{candidate.manifest_sha}</code></dd></dl>
           <ul className="deploy-files">{candidate.files?.map(f => <li key={f.path}>{f.path}</li>)}{candidate.deletions?.map(p => <li key={p}>Remove: {p}</li>)}</ul>
         </details>
-        <p className="deploy-warning">Approval waits up to 10 minutes for current turns to finish, then briefly takes the room offline. If turns cannot finish in time, deployment is cancelled.</p>
         {candidateReason && <p id="deployment-blocked-reason" className="deploy-warning" role="status" tabIndex={0}><strong>Approval unavailable:</strong> {candidateReason}</p>}
-        <button className="bd-btn bd-btn-primary" aria-describedby={candidateReason ? 'deployment-blocked-reason' : undefined} disabled={!!candidateReason} onClick={() => void approve(candidate)}>{busy ? 'Submitting approval…' : 'Approve deployment when idle'}</button>
-        <p className="bd-muted">Applies only to this exact release. Current turns will not be forcibly interrupted.</p>
+        <div className="deploy-install-actions">
+          <button className="bd-btn bd-btn-primary" aria-describedby={`deployment-now-help${candidateReason ? ' deployment-blocked-reason' : ''}`} disabled={!!candidateReason} onClick={() => void approve(candidate, false, 'now')}>{busy ? 'Submitting approval…' : 'Install now'}</button>
+          <button className="bd-btn" aria-describedby={`deployment-idle-help${candidateReason ? ' deployment-blocked-reason' : ''}`} disabled={!!candidateReason} onClick={() => void approve(candidate)}>{busy ? 'Submitting approval…' : 'Approve when idle'}</button>
+        </div>
+        <p id="deployment-now-help"><strong>Install now:</strong> Running turns get 30 seconds to finish, then are interrupted. Queued work is kept; interrupted work is scheduled to continue after the install.</p>
+        <p id="deployment-idle-help" className="bd-muted"><strong>Approve when idle:</strong> Waits up to 10 minutes without interrupting current turns. If they cannot finish in time, the install is cancelled.</p>
+        <p className="bd-muted">Both choices apply only to this exact release. The room briefly goes offline during the install; unsent drafts stay in their tabs.</p>
       </article> : <p className="bd-muted">No newer release is staged. The team prepares and reviews a package before you can approve it.</p>}
       {rollbackTarget && <details className="deploy-rollback">
         <summary>Earlier releases (rollback) · {earlier.length}</summary>
@@ -209,7 +220,7 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
         <button className="bd-btn deploy-rollback-btn" aria-describedby={rollbackReason ? 'rollback-blocked-reason' : undefined} disabled={!!rollbackReason} onClick={() => void approve(rollbackTarget, true)}>{busy ? 'Submitting…' : `Roll back to ${releaseName(rollbackTarget)} when idle`}</button>
       </details>}
       {actionError && <p role="alert" className="bd-error">{actionError}</p>}
-      {waiting && <p role="status" className="deploy-warning">Approval recorded for <code>{waiting.release_id}</code>. {label(supervisor?.step || supervisor?.state)}. You can leave this page; the supervisor saves the result.</p>}
+      {(waiting || data.maintenance.admission === 'closed' || data.maintenance.writes === 'blocked') && <p role="status" className="deploy-warning">{waiting ? <>Approval recorded for <code>{waiting.release_id}</code>. </> : 'Install in progress. '}{waiting && data.maintenance.admission === 'open' && data.maintenance.writes !== 'blocked' && SETTLED_STATES.has(supervisor?.state ?? '') ? 'Waiting for the supervisor' : deploymentPhase(data)}. {waiting?.interrupt === true && data.maintenance.admission !== 'closed' && data.maintenance.writes !== 'blocked' && 'Running turns get up to 30 seconds before interruption. '}You can leave this page; the supervisor saves the result.</p>}
 
     </>}
   </section>;

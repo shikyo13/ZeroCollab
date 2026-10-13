@@ -2,7 +2,7 @@ import { useStoreValue } from '../lib/room';
 import { useReleaseGrant } from './useReleaseGrant';
 import './releaseGrant.css';
 
-export function ReleaseGrantControl() {
+export function ReleaseGrantControl({ interruptsTurns }: { interruptsTurns?: boolean }) {
   const project = useStoreValue('projectId', window.activeProjectId || '');
   const { view, busy, error, note, run } = useReleaseGrant(project);
   const available = !!view && !busy && !!project;
@@ -14,6 +14,9 @@ export function ReleaseGrantControl() {
     <p>Allow <strong>Astra</strong> to install reviewed room releases for this project after the previous release's checks pass.</p>
     <p className="bd-muted">Only you can enable or revoke this permission. Stop still prevents automatic deployment. Host supervisor updates require separate approval.</p>
     <p className="bd-muted">Deployments wait while any connected tab has a draft or an active editor. Drafts stay in the tab through maintenance and reconnect.</p>
+    <p className="bd-muted">{interruptsTurns === true ? 'Automatic installs give running turns 30 seconds to finish, then interrupt them. Queued work is kept; interrupted work is scheduled to continue after the install.'
+      : interruptsTurns === false ? 'Automatic installs currently wait for running turns to finish without interrupting them.'
+      : 'The supervisor has not confirmed whether automatic installs wait for or interrupt running turns.'}</p>
     {view?.lapse_reason && <p className="deploy-warning">Permission lapsed: {view.lapse_reason} Review it before enabling again.</p>}
     <div className="release-grant-actions">
       <button type="button" className={`bd-btn${view?.enabled ? '' : ' bd-btn-primary'}`} disabled={!available}
