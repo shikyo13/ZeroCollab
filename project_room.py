@@ -1396,9 +1396,10 @@ class ProjectRoom:
         except OSError:
             return None
 
-    def delivery_lines(self, tasks):
-        """Release train, scope and cycle time for the lead (opus 70947bb7, Zero #16078): approved work must not sit
-        unshipped while one feature grows. Computed from the board and the deploy record, every turn."""
+    def delivery_signals(self, tasks):
+        """Release train, scope and cycle time as data, from the board and the deploy record (opus 70947bb7, Zero
+        #16078). One computation for the lead's delivery lines and for E3, the room's release-train action
+        (process_enforcement, Docs/process-enforcement.md), so the prompt and the rule never disagree."""
         now = time.time()
         installed = self.last_install()
         reviews = collections.defaultdict(list)
@@ -1415,27 +1416,36 @@ class ProjectRoom:
                 waiting.append(t)
         visible = [t for t in waiting if set(t.get('labels') or ()) & USER_VISIBLE_LABELS]
         hours = (now - installed) / 3600 if installed else None
-        due = visible and hours is not None and hours > RELEASE_TRAIN_HOURS
-        lines = [f"Release train: {len(waiting)} open tasks approved and waiting ({len(visible)} user-visible); "
-                 + (f'last install {hours:.1f} h ago' if hours is not None else 'last install unknown')
-                 + ('. CUT A RELEASE from what is approved now.' if due else '.')]
         # Scope: many review rounds, or open for hours while nothing has been installed since it began.
         heavy = []
         for t in tasks:
             rounds = len(reviews.get(t['id'], []))
             stalled = now - created(t) > SCOPE_OPEN_HOURS * 3600 and (installed is None or installed < created(t))
             if rounds > SCOPE_REVIEW_ROUNDS or stalled:
-                heavy.append((rounds, f"{t['id']} {rounds} rounds, {(now - created(t)) / 3600:.0f} h"))
-        if heavy:
-            heavy.sort(reverse=True)
-            lines.append(f'Scope signal ({len(heavy)}): ' + ', '.join(text for _, text in heavy[:SCOPE_LISTED])
-                         + (f' and {len(heavy) - SCOPE_LISTED} more' if len(heavy) > SCOPE_LISTED else '') + '. Split or freeze before adding more.')
+                heavy.append({'id': t['id'], 'rounds': rounds, 'hours': (now - created(t)) / 3600})
         # Cycle time: delivered work (done, not a closure) finished in the last day.
         # Done time: the last "moved to done" event; later notes on a done task only move `updated` (backend cf8b999d).
         done_at = lambda t: next((u['time'] for u in reversed(t.get('updates') or []) if u.get('event') == 'moved to done'),
                                  t['updated'])
         spans = sorted((done_at(t) - created(t)) / 3600 for t in self.state['tasks']
                        if t['status'] == 'done' and not t.get('closure') and now - done_at(t) < CYCLE_WINDOW_SECONDS)
+        return {'now': now, 'installed_at': installed, 'hours': hours, 'waiting': waiting, 'visible': visible,
+                'due': bool(visible) and hours is not None and hours > RELEASE_TRAIN_HOURS,
+                'heavy': heavy, 'cycle_hours': spans}
+
+    def delivery_lines(self, tasks):
+        """The lead's release-train, scope and cycle-time lines, formatted from delivery_signals."""
+        signals = self.delivery_signals(tasks)
+        hours, visible = signals['hours'], signals['visible']
+        lines = [f"Release train: {len(signals['waiting'])} open tasks approved and waiting ({len(visible)} user-visible); "
+                 + (f'last install {hours:.1f} h ago' if hours is not None else 'last install unknown')
+                 + ('. CUT A RELEASE from what is approved now.' if signals['due'] else '.')]
+        heavy = sorted(((h['rounds'], f"{h['id']} {h['rounds']} rounds, {h['hours']:.0f} h") for h in signals['heavy']),
+                       reverse=True)
+        if heavy:
+            lines.append(f'Scope signal ({len(heavy)}): ' + ', '.join(text for _, text in heavy[:SCOPE_LISTED])
+                         + (f' and {len(heavy) - SCOPE_LISTED} more' if len(heavy) > SCOPE_LISTED else '') + '. Split or freeze before adding more.')
+        spans = signals['cycle_hours']
         if spans:
             lines.append(f'Cycle time (created to done, last 24 h, {len(spans)} tasks): median {statistics.median(spans):.1f} h.')
         return lines
