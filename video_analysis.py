@@ -14,6 +14,7 @@ functions off the event loop. Results are cached by file identity in a bounded L
 import re
 import subprocess
 import threading
+import time
 from itertools import pairwise
 from collections import OrderedDict
 from pathlib import Path
@@ -35,6 +36,7 @@ DENSE_MAX_FPS = 10
 SILENCE_DB, SILENCE_SECONDS = -45, 0.5
 MAX_SECONDS = 600             # longer videos are measured over their first ten minutes
 TIMEOUT = 180
+POLL_S = 0.2                  # a cancellable FFmpeg checks its stop event this often; bounds the time to stop
 MAX_TIMES = 6
 CACHE_LIMIT = 32              # analyses kept in memory; least recently used is dropped first
 # Analysis is background work: on Windows FFmpeg runs below normal priority so the desktop stays responsive
@@ -60,22 +62,68 @@ def ffprobe_path(ffmpeg):
     raise FileNotFoundError(f'ffprobe was not found next to {ffmpeg}')
 
 
-def _run(args):
-    done = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=TIMEOUT,
-                          creationflags=WORKER_PRIORITY)
+class Cancelled(Exception):
+    """The caller's stop event was set: the running FFmpeg was killed and reaped, and nothing was cached."""
+
+
+def _check(stop):
+    """Raise Cancelled once the caller's stop event is set; free when there is no event."""
+    if stop is not None and stop.is_set():
+        raise Cancelled()
+
+
+def _communicate(args, stop=None, data=None, text=True):
+    """Run one FFmpeg or ffprobe at WORKER_PRIORITY and return the finished CompletedProcess.
+
+    This thread owns the process: with a stop event (threading.Event) it checks the event before every wait
+    (at most POLL_S apart) and kills and reaps the process once it is set, so no other thread ever needs the
+    handle. A stop that lands as the process finishes still raises Cancelled. TIMEOUT applies either way.
+    Any other error also kills the process, as subprocess.run does."""
+    _check(stop)  # never start new work after a cancel
+    decoding = {'text': True, 'encoding': 'utf-8', 'errors': 'replace'} if text else {}
+    with subprocess.Popen(args, stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=WORKER_PRIORITY,
+                          **decoding) as proc:
+        deadline = time.monotonic() + TIMEOUT
+        pending = data
+        try:
+            while True:
+                cancelled = stop is not None and stop.is_set()
+                if cancelled or time.monotonic() >= deadline:
+                    proc.kill()
+                    proc.communicate()  # reap it and close the pipes before reporting
+                    if cancelled:
+                        raise Cancelled()
+                    raise subprocess.TimeoutExpired(args, TIMEOUT)
+                wait = max(0.0, deadline - time.monotonic())
+                try:
+                    out, err = proc.communicate(pending, timeout=wait if stop is None else min(POLL_S, wait))
+                except subprocess.TimeoutExpired:
+                    pending = None  # input is sent once; a retry that passes it again raises ValueError
+                    continue
+                _check(stop)  # finished, but the job was cancelled meanwhile: its output must not be used
+                return subprocess.CompletedProcess(args, proc.returncode, out, err)
+        except BaseException:
+            if proc.poll() is None:
+                proc.kill()
+            raise
+
+
+def _run(args, stop=None):
+    done = _communicate(args, stop)
     if done.returncode:
         raise RuntimeError((done.stderr.strip().splitlines() or ['FFmpeg failed'])[-1][:300])
     return done
 
 
-def _ffmpeg(ffmpeg, *args):
-    return _run([str(ffmpeg), '-hide_banner', '-nostats', *args])
+def _ffmpeg(ffmpeg, *args, stop=None):
+    return _run([str(ffmpeg), '-hide_banner', '-nostats', *args], stop)
 
 
-def probe(ffmpeg, path):
+def probe(ffmpeg, path, *, stop=None):
     out = _run([ffprobe_path(ffmpeg), '-v', 'error', '-show_entries',
                 'format=duration,bit_rate,format_name:stream=codec_type,codec_name,width,height,avg_frame_rate',
-                '-of', 'default=noprint_wrappers=0', str(path)]).stdout
+                '-of', 'default=noprint_wrappers=0', str(path)], stop).stdout
     sections, current = [], None
     for line in out.splitlines():
         if line in ('[STREAM]', '[FORMAT]'):
@@ -96,11 +144,11 @@ def probe(ffmpeg, path):
             'audio_codec': audio.get('codec_name') if audio else None}
 
 
-def scene_scores(ffmpeg, path, seconds):
+def scene_scores(ffmpeg, path, seconds, *, stop=None):
     """[(time, score)] for every frame, in one decode of a small copy."""
     log = _ffmpeg(ffmpeg, '-t', str(seconds), '-i', str(path), '-an', '-vf',
                   f"scale={MOTION_WIDTH}:-2,select='gte(scene,0)',metadata=print:key=lavfi.scene_score",
-                  '-f', 'null', '-').stderr
+                  '-f', 'null', '-', stop=stop).stderr
     return [(float(t), float(s)) for t, s in zip(PTS_TIME.findall(log), SCENE_SCORE.findall(log))]
 
 
@@ -133,11 +181,11 @@ def pacing(scores, duration):
             'scene_per_second': motion}
 
 
-def frame_motion(ffmpeg, path, seconds):
+def frame_motion(ffmpeg, path, seconds, *, stop=None):
     """Per-sample movement: mean absolute grey difference between consecutive SAMPLE_FPS samples."""
     log = _ffmpeg(ffmpeg, '-t', str(seconds), '-i', str(path), '-an', '-vf',
                   f'fps={SAMPLE_FPS},scale={SAMPLE_W}:{SAMPLE_H},format=gray,tblend=all_mode=difference,'
-                  'signalstats,metadata=print:key=lavfi.signalstats.YAVG', '-f', 'null', '-').stderr
+                  'signalstats,metadata=print:key=lavfi.signalstats.YAVG', '-f', 'null', '-', stop=stop).stderr
     return [float(v) for v in YAVG.findall(log)]
 
 
@@ -149,11 +197,11 @@ def motion_profile(energy):
             'holds': len(holds), 'longest_hold_s': round(max(holds, default=0.0), 1)}
 
 
-def loudness(ffmpeg, path, seconds):
+def loudness(ffmpeg, path, seconds, *, stop=None):
     """Mean/peak volume, silences and EBU R128 integrated loudness and range, in one audio pass."""
     log = _ffmpeg(ffmpeg, '-t', str(seconds), '-i', str(path), '-vn', '-af',
                   f'silencedetect=n={SILENCE_DB}dB:d={SILENCE_SECONDS},volumedetect,ebur128=framelog=quiet',
-                  '-f', 'null', '-').stderr
+                  '-f', 'null', '-', stop=stop).stderr
     mean, peak = (re.search(rf'{key}: (-?[0-9.]+) dB', log) for key in ('mean_volume', 'max_volume'))
     starts = [float(t) for t in re.findall(r'silence_start: (-?[0-9.]+)', log)]
     ends = [float(t) for t in re.findall(r'silence_end: ([0-9.]+)', log)]
@@ -164,20 +212,21 @@ def loudness(ffmpeg, path, seconds):
     return result
 
 
-def _tile(ffmpeg, path, out, rate, columns, width, tiles, start=0.0, length=None):
+def _tile(ffmpeg, path, out, rate, columns, width, tiles, start=0.0, length=None, stop=None):
     rows = -(-tiles // columns)
     window = ['-ss', str(start), *(['-t', str(length)] if length else [])]
     _ffmpeg(ffmpeg, '-loglevel', 'error', '-y', *window, '-i', str(path), '-an', '-vf',
-            f'fps={rate},scale={width}:-2,tile={columns}x{rows}', '-frames:v', '1', str(out))
+            f'fps={rate},scale={width}:-2,tile={columns}x{rows}', '-frames:v', '1', str(out), stop=stop)
     return out
 
 
-def contact_sheet(ffmpeg, path, duration, out):
+def contact_sheet(ffmpeg, path, duration, out, *, stop=None):
     """SHEET_FRAMES evenly spaced frames across the whole video."""
-    return _tile(ffmpeg, path, out, f'{SHEET_FRAMES}/{max(duration, 0.1)}', SHEET_COLUMNS, SHEET_WIDTH, SHEET_FRAMES)
+    return _tile(ffmpeg, path, out, f'{SHEET_FRAMES}/{max(duration, 0.1)}', SHEET_COLUMNS, SHEET_WIDTH, SHEET_FRAMES,
+                 stop=stop)
 
 
-def dense_sheet(ffmpeg, path, start, end, fps, out):
+def dense_sheet(ffmpeg, path, start, end, fps, out, *, stop=None):
     """Every 1/fps seconds over [start, end), for small motion (icon wiggles, typing). At most DENSE_MAX_TILES."""
     length = end - start
     tiles = round(length * fps)
@@ -185,31 +234,32 @@ def dense_sheet(ffmpeg, path, start, end, fps, out):
         raise ValueError(f'fps must be above 0 and at most {DENSE_MAX_FPS}')
     if length <= 0 or tiles > DENSE_MAX_TILES:
         raise ValueError(f'choose a range that gives 1 to {DENSE_MAX_TILES} frames (got {tiles}); narrow it or lower fps')
-    return _tile(ffmpeg, path, out, fps, DENSE_COLUMNS, DENSE_WIDTH, tiles, start, length)
+    return _tile(ffmpeg, path, out, fps, DENSE_COLUMNS, DENSE_WIDTH, tiles, start, length, stop)
 
 
-def frames(ffmpeg, path, times, out_dir, stem):
+def frames(ffmpeg, path, times, out_dir, stem, *, stop=None):
     """One PNG per requested time (seconds), named <stem>-<n>.png in out_dir."""
     if not 1 <= len(times) <= MAX_TIMES:
         raise ValueError(f'ask for 1 to {MAX_TIMES} frame times (t_ms)')
     outs = []
     for n, t in enumerate(times):
         out = Path(out_dir) / f'{stem}-{n}.png'
-        _ffmpeg(ffmpeg, '-loglevel', 'error', '-y', '-ss', str(float(t)), '-i', str(path), '-frames:v', '1', str(out))
+        _ffmpeg(ffmpeg, '-loglevel', 'error', '-y', '-ss', str(float(t)), '-i', str(path), '-frames:v', '1', str(out),
+                stop=stop)
         outs.append(out)
     return outs
 
 
-def _encode_rgb(ffmpeg, pixels, width, height, out):
-    done = subprocess.run([str(ffmpeg), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'rawvideo',
-                           '-pix_fmt', 'rgb24', '-s', f'{width}x{height}', '-i', '-', str(out)],
-                          input=bytes(pixels), capture_output=True, timeout=TIMEOUT, creationflags=WORKER_PRIORITY)
+def _encode_rgb(ffmpeg, pixels, width, height, out, stop=None):
+    done = _communicate([str(ffmpeg), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'rawvideo',
+                         '-pix_fmt', 'rgb24', '-s', f'{width}x{height}', '-i', '-', str(out)],
+                        stop, bytes(pixels), text=False)
     if done.returncode:
         raise RuntimeError(done.stderr.decode('utf-8', 'replace').strip()[-300:] or 'FFmpeg failed')
     return out
 
 
-def motion_chart(ffmpeg, energy, cuts, duration, out):
+def motion_chart(ffmpeg, energy, cuts, duration, out, *, stop=None):
     """Movement over time with cuts marked: holds read flat, camera moves as humps, cuts as yellow lines."""
     pixels = bytearray(bytes(CHART_BG) * CHART_W * CHART_H)
     top = max(max(energy, default=0.0), MOVING * 2)
@@ -239,10 +289,10 @@ def motion_chart(ffmpeg, energy, cuts, duration, out):
         for x in range(x0, x1 + 1):
             for y in range(min(y0, y1), max(y0, y1) + 1):
                 put(x, y, CHART_LINE)
-    return _encode_rgb(ffmpeg, pixels, CHART_W, CHART_H, out)
+    return _encode_rgb(ffmpeg, pixels, CHART_W, CHART_H, out, stop)
 
 
-def shot_sheet(ffmpeg, path, cuts, duration, fps, out):
+def shot_sheet(ffmpeg, path, cuts, duration, fps, out, *, stop=None):
     """The middle frame of each shot (first SHOT_SHEET_MAX), tiled in order; returns the shot ranges shown.
     When the returned list is shorter than analyze()['shots'], the sheet was truncated; say so to the reader."""
     shots = [(a, b) for a, b in pairwise([0.0, *cuts, duration]) if b > a][:SHOT_SHEET_MAX]
@@ -250,12 +300,14 @@ def shot_sheet(ffmpeg, path, cuts, duration, fps, out):
     rows = -(-len(shots) // SHEET_COLUMNS)
     _ffmpeg(ffmpeg, '-loglevel', 'error', '-y', '-i', str(path), '-an', '-vf',
             f"select='{picks}',scale={SHEET_WIDTH}:-2,tile={SHEET_COLUMNS}x{rows}", '-fps_mode', 'vfr',
-            '-frames:v', '1', str(out))
+            '-frames:v', '1', str(out), stop=stop)
     return [[round(a, 2), round(b, 2)] for a, b in shots]
 
 
-def analyze(ffmpeg, path):
-    """probe + pacing + loudness for one file, cached by (path, size, mtime) in a bounded LRU."""
+def analyze(ffmpeg, path, *, stop=None):
+    """probe + pacing + loudness for one file, cached by (path, size, mtime) in a bounded LRU. Setting stop
+    raises Cancelled from the running pass; only a complete analysis is ever cached."""
+    _check(stop)  # a cancelled job gets no result, not even a cached one
     path = Path(path)
     stat = path.stat()
     key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
@@ -264,13 +316,14 @@ def analyze(ffmpeg, path):
         if cached is not None:
             _cache.move_to_end(key)
             return cached
-    info = probe(ffmpeg, path)
+    info = probe(ffmpeg, path, stop=stop)
     seconds = min(info['duration'], MAX_SECONDS) or MAX_SECONDS
-    energy = frame_motion(ffmpeg, path, seconds)
-    result = {'probe': info, 'measured_s': seconds, **pacing(scene_scores(ffmpeg, path, seconds), seconds),
+    energy = frame_motion(ffmpeg, path, seconds, stop=stop)
+    result = {'probe': info, 'measured_s': seconds, **pacing(scene_scores(ffmpeg, path, seconds, stop=stop), seconds),
               **motion_profile(energy), 'frame_motion': [round(e, 2) for e in energy]}
-    result['audio'] = loudness(ffmpeg, path, seconds) if info['audio_codec'] else None
+    result['audio'] = loudness(ffmpeg, path, seconds, stop=stop) if info['audio_codec'] else None
     with _cache_lock:
+        _check(stop)  # under the lock: a job cancelled at any point before publication caches nothing
         _cache[key] = result
         while len(_cache) > CACHE_LIMIT:
             _cache.popitem(last=False)
