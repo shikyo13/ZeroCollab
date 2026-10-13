@@ -79,6 +79,21 @@ class DeployCandidateTests(unittest.IsolatedAsyncioTestCase):
         record = (await self.approve(self.old, rollback=True)).json()
         self.assertTrue(record['rollback'])
 
+    async def test_each_release_carries_its_latest_install_date(self):
+        # backend 67ce6389: the changelog lists what was installed, dated from every receipt, never the build time.
+        receipts = self.spool / 'receipts'
+        receipts.mkdir(exist_ok=True)
+        for n, (release, status, finished) in enumerate((
+                (self.old['id'], 'deployed', '2026-10-06 21:30:00'), (self.old['id'], 'deployed', '2026-10-07 09:00:00'),
+                (self.current['id'], 'aborted', '2026-10-07 10:00:00'), (self.current['id'], 'deployed', '2026-10-07 10:05:00'),
+                *[(self.current['id'], 'rejected', f'2026-10-08 0{i}:00:00') for i in range(room_deploy.RECENT_RECEIPTS)])):
+            (receipts / f'{n:032x}.json').write_text(json.dumps({'id': f'{n:032x}', 'release_id': release,
+                                                               'status': status, 'finished': finished}), 'utf-8')
+        snapshot = (await self.client.get('/api/runtime/deployments')).json()
+        dates = {r['version']: r.get('installed_at') for r in snapshot['releases']}
+        self.assertEqual(dates, {'0.7.1': None, '0.7.0': '2026-10-07 10:05:00', '0.6.0': '2026-10-07 09:00:00'})
+        self.assertEqual(len(snapshot['receipts']), room_deploy.RECENT_RECEIPTS)  # the full list stays bounded
+
     async def test_newer_release_approves_normally(self):
         record = (await self.approve(self.new)).json()
         self.assertEqual(record['release_id'], self.new['id'])

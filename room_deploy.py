@@ -20,6 +20,8 @@ from fastapi.responses import JSONResponse
 TERMINAL = {'deployed', 'aborted', 'rolled_back', 'rollback_failed', 'conflict', 'recovery_required', 'rejected'}
 AGENT_DRAIN_SECONDS = 30   # an agent-requested install: running turns get this long, then are interrupted (9f3eca50)
 AGENT_IDLE_DRAIN_SECONDS = 600  # the same request on a host without the interrupt capability: wait for idle
+RECENT_RECEIPTS = 10       # receipts the deployments feed lists in full
+MAX_RECEIPT_SCAN = 4096    # receipts read for install dates, newest first (release_request's history bound)
 
 
 def read_json(path, default=None):
@@ -94,9 +96,10 @@ def _approve_release_locked(state, body, *, allow_offline=False, supervisor_onli
 
     approval is server-produced agent audit metadata, never an HTTP/tool body.
     Agent policy must validate the grant, Stop, acceptance and expected current
-    fingerprint under the same locks before entering this core. An interrupting
-    request (Install now, 9f3eca50) is the user's room route only: never an agent
-    approval, the tray or an offline transport (security 8401e355 R1).
+    fingerprint under the same locks before entering this core. A caller asks to
+    interrupt only through the user's room route (Install now, 9f3eca50): never
+    the tray or an offline transport (security 8401e355 R1). An agent approval
+    never chooses: agent_drain_policy sets its interrupt and drain (opus 7cdd51bd).
     """
     state.version = read_json(state.root / 'current.json', {}) or {}
     item = state.release(body.get('release_id'))
@@ -257,17 +260,30 @@ class DeploymentState:
                 'rehearsal': 'Passed for this exact package.' if ready else 'Required rehearsal has not passed for this package.'}
 
     def snapshot(self):
-        receipts = []
-        for path in sorted((self.root / 'receipts').glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:10]:
+        receipts, installed = [], {}
+        paths = sorted((self.root / 'receipts').glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+        for index, path in enumerate(paths[:MAX_RECEIPT_SCAN]):
             try:
                 item = read_json(path)
-                if isinstance(item, dict):
-                    receipts.append(item)
             except (OSError, ValueError):
                 continue
+            if not isinstance(item, dict):
+                continue
+            if index < RECENT_RECEIPTS:
+                receipts.append(item)
+            finished = item.get('finished')
+            if item.get('status') == 'deployed' and isinstance(finished, str) and finished:
+                # The changelog's install date (frontend 377eb442, backend 67ce6389): the latest successful install
+                # of each release, from every receipt, never the package's build time.
+                release = item.get('release_id')
+                installed[release] = max(installed.get(release, ''), finished)
+        releases = self.releases()
+        for release in releases:
+            if release['id'] in installed:
+                release['installed_at'] = installed[release['id']]
         status = read_json(self.root / 'status.json', {}) or {}
         return {'current': self.version, 'supervisor': status, 'maintenance': self.reload(),
-                'releases': self.releases(), 'receipts': receipts,
+                'releases': releases, 'receipts': receipts,
                 'pending': [read_json(p, {}) for p in (self.root / 'requests').glob('*.json')]}
 
 
