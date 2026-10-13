@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.parse
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import queue_file as file_queue
@@ -2965,7 +2966,7 @@ def install(host):
             action = body.get('action') if isinstance(body, dict) else None
             async with runtime.profile_lock:
                 if action == 'approve':
-                    approved_at = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+                    approved_at = datetime.now().astimezone().isoformat(timespec='seconds')  # ISO 8601 with -05:00, for <time dateTime>
                     result = await asyncio.to_thread(runtime.profiles.approve_core, name, body.get('digest'),
                                                      approved_at)
                 elif action == 'revoke':
