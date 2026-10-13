@@ -284,6 +284,10 @@ class MutationGate:
 
 def install(host, runtime):
     state = DeploymentState(runtime.data)
+    # Paired with the runtime's latch-only handlers and deferred reconciler.
+    # Older adapters keep the fail-closed default behind the final write gate.
+    state.manual_control_latch_only = all(callable(getattr(runtime, name, None)) for name in
+                                         ('user_stop', 'user_resume', 'reconcile_manual_stop'))
     host.deployment = state
     runtime.deployment = state
     host.app.add_middleware(MutationGate, state=state)
