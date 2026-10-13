@@ -2703,6 +2703,8 @@ class RoomRuntime:
         `generation`; the latch compares and unpauses under one lock."""
         if self.manual_stop is None or not self.deployment.admission_open():
             return False  # the core opens maintenance admission first, then asks (Astra 648775e5)
+        if type(generation) is not int or generation < 0:
+            return False  # a malformed request refuses; only a failing latch poisons automatic reopen (0ff19ff6)
         try:
             reopened = self.manual_stop.reopen_if(generation, self.unpause)
         except (OSError, ValueError, TypeError) as exc:
