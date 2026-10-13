@@ -77,6 +77,20 @@ class ReleaseTrain(unittest.TestCase):
         self.assertEqual(self.tick(pe.TICK_SECONDS), ['opened'])
         self.assertEqual(len(self.items(RELEASE_GRANTEE)), 2)
 
+    def test_adopts_an_untracked_item_and_recovers_from_a_lost_pointer(self):
+        self.tick()
+        self.room.state['enforcement']['train'] = {}  # as if the board save was lost after the item was created
+        self.assertEqual(self.tick(pe.TICK_SECONDS), [])
+        self.assertEqual(len(self.items(RELEASE_GRANTEE)), 1)
+        self.room.state['enforcement']['train'] = {'item': 'gone0000', 'opened': self.now}
+        self.room.state['followups'].clear()
+        self.assertEqual(self.tick(pe.TICK_SECONDS), ['opened'])
+
+    def test_quiet_without_a_registered_release_manager(self):
+        del self.runtime.states[RELEASE_GRANTEE]
+        self.assertIsNone(self.tick())
+        self.assertEqual(self.items(RELEASE_GRANTEE), [])
+
     def test_nothing_while_held_or_when_nothing_waits(self):
         self.gate = 'room stopped'
         self.assertIsNone(self.tick())

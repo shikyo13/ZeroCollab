@@ -22,6 +22,7 @@ SYSTEM = 'system'
 TICK_SECONDS = 60                    # one evaluation a minute at most
 TRAIN_ESCALATE_SECONDS = 3600        # release manager's item open this long with nothing staged: ask the user
 TRAIN_COOLDOWN_SECONDS = 2 * 3600    # after the release manager closes an item without staging (S3)
+TRAIN_PREFIX = 'E3 release train:'   # how the room recognises its own item after a crash (backend 0345591e)
 
 
 def tick(runtime, now=None):
@@ -32,6 +33,12 @@ def tick(runtime, now=None):
     runtime.enforcement_ticked = now
     room = runtime.project_room
     if room.path is None or runtime.ready_wakes.room_gate():
+        return None
+    if RELEASE_GRANTEE not in runtime.states:
+        # Archived or renamed release manager: nobody to wake, so stay quiet instead of failing every minute.
+        if not getattr(runtime, 'enforcement_warned', False):
+            LOGGER.warning('Release train paused: %s is not a participant in this room', RELEASE_GRANTEE)
+            runtime.enforcement_warned = True
         return None
     deployment = getattr(runtime, 'deployment', None)
     if deployment is not None and not deployment.enter_mutation():
@@ -55,6 +62,14 @@ def release_train(runtime, now):
     signals = room.delivery_signals(tasks)
     train = room.state.setdefault('enforcement', {}).setdefault('train', {})
     item, bell = record(room, train.get('item')), record(room, train.get('escalation'))
+    if train and not item:
+        train.clear()  # its follow-up is gone: start again rather than never firing (backend 0345591e)
+    if not train:
+        # A crash between creating the item and saving the board leaves it untracked; adopt it, never open a second.
+        item = next((f for f in room.state.get('followups', []) if f['status'] == 'open' and f['created_by'] == SYSTEM
+                     and f['assigned_to'] == RELEASE_GRANTEE and f['text'].startswith(TRAIN_PREFIX)), None)
+        if item:
+            train.update(item=item['id'], opened=item['created'])
     installed = signals.get('installed_at')
     actions = []
     if item and installed and installed > train['opened']:
@@ -89,7 +104,7 @@ def train_text(signals, hours, escalation=False):
     if escalation:
         return (f'E3: approved work you would see has waited {waited} since the last install and nothing is staged '
                 f'({ids}). Ask the release manager to cut a release, or resolve this when you have.')
-    return (f'E3 release train: {len(visible)} approved user-visible tasks have waited {waited} since the last install '
+    return (f'{TRAIN_PREFIX} {len(visible)} approved user-visible tasks have waited {waited} since the last install '
             f'({ids}). Cut a release from what is approved now. This closes itself on the next install.')
 
 
