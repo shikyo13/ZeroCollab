@@ -24,7 +24,8 @@ class LiveContext(unittest.TestCase):
         self.main = self.room.task('worker', 'create', title='Build the loader', next_action='write the check')['id']
         self.room.task('worker', 'update', self.main, status='working')
         self.side = self.room.task('worker', 'create', title='Side task')['id']
-        self.room.task('worker', 'update', self.side, status='working')
+        # A board already over E1's limit (only the user can set it now), which the load line still flags.
+        self.room.task('user', 'update', self.side, status='working')
         self.room.records.review('worker', 'request', task_id=self.main, reviewer='peer', revision='v1', text='Check it')
         self.room.records.followup('lead', 'create', task_id=self.main, assigned_to='worker', text='Report the hash')
 

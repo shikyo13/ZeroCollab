@@ -626,6 +626,14 @@ class ProjectRoom:
                 # on an id every done-set check would treat as unfinished (backend 86d7fe0e F1).
                 board = {t['id'] for t in tasks}
                 task['depends_on'] = [d for d in task['depends_on'] if d in board]
+            if not human and task['status'] == 'working' and previous['status'] != 'working':
+                # E1, one working task per agent (Docs/process-enforcement.md, Zero #16116). Only claim and update
+                # move an agent's task into working; re-claiming a working task passes. The user is never refused.
+                other = next((t for t in tasks if t['id'] != task['id'] and t['owner'] == task['owner']
+                              and t['status'] == 'working'), None)
+                if other:
+                    raise ValueError(f"E1: you already have {other['id']} working. Move it to open, blocked or review "
+                                     '(with next_action_state deferred and a reason), then try again.')
         task = update_execution(task, self.state, next_action=next_action, priority=priority, wait=wait)
         if previous and task['owner'] != previous['owner']:
             # A new owner opts in to ready-task wakes for themselves; readiness never transfers.
