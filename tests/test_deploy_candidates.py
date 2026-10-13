@@ -107,6 +107,15 @@ class DeployCandidateTests(unittest.IsolatedAsyncioTestCase):
         body = {'release_id': self.new['id'], 'manifest_sha': self.new['manifest_sha'], 'rollback': False, 'interrupt': False}
         with self.assertRaisesRegex(ValueError, 'only Install now'):
             room_deploy._approve_release_locked(self.state, {**body, 'interrupt': True}, approval=approval)
+        # security 4b29e072 B1: an older host supervisor refuses an agent interrupt at take, so without its
+        # capability the request keeps today's wait-for-idle shape.
+        record = room_deploy._approve_release_locked(self.state, body, approval=approval)
+        self.assertIs(record['interrupt'], False)
+        self.assertEqual(record['drain_seconds'], 600)
+        for path in (self.spool / 'requests').glob('*.json'):
+            path.unlink()
+        status = self.spool / 'status.json'
+        status.write_text(json.dumps({**json.loads(status.read_text('utf-8')), 'agent_install_interrupt': 1}), 'utf-8')
         record = room_deploy._approve_release_locked(self.state, body, approval=approval)
         self.assertIs(record['interrupt'], True)
         self.assertEqual(record['drain_seconds'], room_deploy.AGENT_DRAIN_SECONDS)
