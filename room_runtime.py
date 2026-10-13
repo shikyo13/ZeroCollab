@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import subprocess
+import threading
 import time
 import urllib.parse
 import uuid
@@ -134,6 +135,20 @@ RECORD_READY_SECONDS = 10
 RECORD_READY_POLL_SECONDS = 0.1
 RECORD_NOT_READY = ('Not recording yet: the take is {phase}. Poll record_status recording_id and drive the page only '
                     'once phase is recording; anything done before then is not in the clip.')
+# Release completions (Astra c61b1280 r3, backend 9bc764ac): each <deployment>:<recipient> key and its pending wake
+# are written together in one atomic write, survive restarts (pending-wakes.json is a one-shot drain checkpoint),
+# and are replayed after the runtime loads and on Resume. A wake is delivered once: its request carries the key, so
+# queue merging, the checkpoint and repeated restores dedupe it, and its turn's receipt stops later replays.
+RELEASE_WAKES_FILE = 'release-wakes.json'
+RELEASE_WAKES_VERSION = 1
+# Delivered keys are pruned only past this many records, oldest first, so a still-pollable receipt is never
+# replayed; pending ones are never pruned.
+MAX_RELEASE_WAKES = 4096
+RELEASE_FIELDS = ('deployment_id', 'project', 'receipt_id', 'outcome')  # required, non-empty strings
+RELEASE_TEXT_FIELDS = ('version', 'manifest', 'reason')  # optional strings
+MAX_RELEASE_FIELD_CHARS = 2000
+MANUAL_STOP_BROKEN = ('Automatic deployment stays off: the room could not record your Stop/Resume ({error}). '
+                      'The room itself is {state}.')
 ACP_KIND_LABELS = {
     'read': 'reading files', 'edit': 'editing files', 'delete': 'deleting files', 'move': 'moving files',
     'search': 'searching files', 'execute': 'running a command', 'think': 'thinking', 'fetch': 'reading a web page'}
@@ -796,6 +811,10 @@ class RoomRuntime:
         self.project_state_due = False  # a coalesced board snapshot is scheduled (project_state_soon)
         self.repository_transition = None
         self.repository_job = None
+        # Host-wide user Stop latch (release_control.ManualStopState), built in start() when the room has a
+        # deployment root; None means no automatic reopen.
+        self.manual_stop = None
+        self.release_wakes_lock = threading.Lock()
 
     def handles(self, name):
         return name in self.states
@@ -1138,6 +1157,8 @@ class RoomRuntime:
                         self.host.registry.deactivate_managed(name)
                     raise
             else:
+                if self.profiles.grant_identity_changed(self.profiles.items[name], profile):
+                    self.profiles.lapse_release_grant(name)
                 self.profiles.items[name] = {**self.profiles.items[name], **profile}
                 cfg = self.profiles.config(profile); cfg['avatar_base'] = profile['template']
                 self.cfg['agents'][name] = cfg
@@ -1158,6 +1179,7 @@ class RoomRuntime:
                 owned = [t['id'] for t in self.project_room.state['tasks'] if t['owner'] == name and t['status'] != 'done']
                 if owned:
                     raise ValueError('Transfer or release owned tasks before archiving: ' + ', '.join(owned))
+                self.profiles.lapse_release_grant(name)  # for good: restoring the profile does not bring it back
                 await self.stop_agent(name)
                 self.host.registry.deactivate_managed(name)
             else:
@@ -1177,6 +1199,7 @@ class RoomRuntime:
         self.data.mkdir(parents=True, exist_ok=True)
         saved = load_workspace(self.data / "workspace.json")
         self.paused = saved.get("paused", False)
+        self.open_manual_stop(bool(saved.get('paused')))
         project = saved.get('project')
         identity = saved.get('project_id')
         if not (identity and project_registry.IDENTITY.match(identity) and (self.data / 'projects' / identity).is_dir()):
@@ -1201,6 +1224,7 @@ class RoomRuntime:
         if self.start_stopped:
             # Before the heartbeat exists, so no queued entry, ready wake, goal step or manager check-in runs first.
             await self.stop(notice=self.start_stopped)
+        self.restore_release_wakes()  # after the checkpoint, which may already hold some of them; none while stopped
         self.heartbeat = asyncio.create_task(self.beat())
         await self.refresh()
 
@@ -1620,6 +1644,7 @@ class RoomRuntime:
             await run.publish_last()
             silent = not run.published_messages
             self.project_room.complete(run)
+            self.release_wakes_delivered(run)
             stop_note = getattr(run, 'stop_note', '')
             self.states[name].update(state="ready", detail=stop_note or "Last turn completed")
             await self.clear_notice(name)  # working again: its old notice goes, and a later problem is worth telling
@@ -2448,6 +2473,181 @@ class RoomRuntime:
         # The checkpoint remains until startup verification opens admission.
         self.deploy_checkpoint_restored = bool(saved)
 
+    # ---- user Stop latch and release completions (Astra c61b1280, backend 9bc764ac / 8c9d0fef) ----
+
+    def open_manual_stop(self, stopped):
+        """The host-wide user Stop latch. The first run on a host records the room's saved paused state; an
+        existing latch is never overwritten. One that can't be read stays unset: Stop and Resume still work and
+        nothing reopens the room automatically."""
+        if not self.deployment or self.deployment.rehearsal:
+            return
+        from release_control import ManualStopState
+        try:
+            self.manual_stop = ManualStopState(self.deployment.root, self.deployment.lock, initially_stopped=stopped)
+        except (OSError, ValueError) as exc:
+            LOGGER.warning('Manual Stop state unavailable; automatic deployment is disabled: %s', exc)
+            self.manual_stop = None
+
+    def manual_stop_call(self, method, *args, state):
+        """A latch call from a user route, which never refuses: a broken latch only means a warning."""
+        if not self.deployment or self.deployment.rehearsal:
+            return None, {}
+        error = 'its state could not be read'
+        if self.manual_stop is not None:
+            try:
+                return getattr(self.manual_stop, method)(*args), {}
+            except (OSError, ValueError, TypeError) as exc:
+                error = str(exc) or type(exc).__name__
+        LOGGER.warning('Manual Stop %s failed: %s', method, error)
+        return None, {'warning': MANUAL_STOP_BROKEN.format(error=error, state=state)}
+
+    def unpause(self):
+        self.paused = False  # the latch's synchronous transition: an assignment only, so it cannot fail
+
+    async def after_resume(self):
+        """What follows the room leaving Stop, outside the latch's lock and under normal admission."""
+        for key in [k for k in {**self.wake_notices, **self.notice_lines} if k.startswith('room:')]:
+            await self.clear_notice(key)
+        self.save_project()
+        await self.publish_status()
+        self.restore_release_wakes()
+
+    async def reopen_if(self, generation):
+        """Automatic reopen after a deployment, never a Resume: only if the user has not pressed Stop since
+        `generation`; the latch compares and unpauses under one lock."""
+        if self.manual_stop is None:
+            return False
+        try:
+            reopened = self.manual_stop.reopen_if(generation, self.unpause)
+        except (OSError, ValueError, TypeError) as exc:
+            LOGGER.warning('Automatic reopen refused: %s', exc)
+            return False
+        if reopened:
+            await self.after_resume()
+        return reopened
+
+    def release_wakes_path(self):
+        return self.deployment.root / RELEASE_WAKES_FILE
+
+    def read_release_wakes(self):
+        from room_deploy import read_json
+        data = read_json(self.release_wakes_path(), None)
+        if data is None:
+            return {'version': RELEASE_WAKES_VERSION, 'wakes': {}}
+        if (not isinstance(data, dict) or data.get('version') != RELEASE_WAKES_VERSION
+                or not isinstance(data.get('wakes'), dict)):
+            raise ValueError(f'{RELEASE_WAKES_FILE} is unreadable; release completions are held')
+        return data
+
+    def write_release_wakes(self, data):
+        from room_deploy import atomic_json
+        wakes = data['wakes']
+        if len(wakes) > MAX_RELEASE_WAKES:
+            delivered = sorted((k for k, r in wakes.items() if r.get('state') == 'delivered'),
+                               key=lambda k: wakes[k].get('created', 0))
+            for key in delivered[:len(wakes) - MAX_RELEASE_WAKES]:
+                del wakes[key]
+        atomic_json(self.release_wakes_path(), data)
+
+    def enqueue_release_completion(self, receipt, recipients):
+        """For the release core, on a terminal receipt and again on any retry: one atomic write adds each new
+        <deployment>:<recipient> key with its pending wake, then this project's wakes are queued unless the room
+        is stopped. Returns the keys it added. Call on the room's event loop."""
+        if not self.deployment:
+            raise ValueError('Release completions need the room deployment root')
+        if not isinstance(receipt, dict):
+            raise ValueError('A release receipt is an object')
+        for field in RELEASE_FIELDS + RELEASE_TEXT_FIELDS:
+            value = receipt.get(field)
+            if field in RELEASE_FIELDS and not value or value is not None and (
+                    not isinstance(value, str) or len(value) > MAX_RELEASE_FIELD_CHARS):
+                raise ValueError(f'Release receipt {field} must be text up to {MAX_RELEASE_FIELD_CHARS} characters')
+        if (not isinstance(recipients, (list, tuple)) or not recipients
+                or any(not isinstance(r, str) or not r for r in recipients)):
+            raise ValueError('Release completions need their recipients')
+        prompt = (f"Release {receipt.get('version') or receipt['deployment_id']} finished: {receipt['outcome']}"
+                  + (f" ({receipt['reason']})" if receipt.get('reason') else '')
+                  + f". Deployment {receipt['deployment_id']}, receipt {receipt['receipt_id']}"
+                  + (f", manifest {receipt['manifest']}" if receipt.get('manifest') else '')
+                  + '. Read the receipt with room_release, check what you own on the installed release and post the result once.')
+        added = []
+        with self.release_wakes_lock:
+            data = self.read_release_wakes()
+            for recipient in dict.fromkeys(recipients):
+                key = f"{receipt['deployment_id']}:{recipient}"
+                if key not in data['wakes']:
+                    data['wakes'][key] = {'deployment_id': receipt['deployment_id'], 'project': receipt['project'],
+                                          'recipient': recipient, 'receipt_id': receipt['receipt_id'],
+                                          'prompt': prompt, 'state': 'pending', 'created': time.time()}
+                    added.append(key)
+            if added:
+                self.write_release_wakes(data)
+        if added:
+            self.restore_release_wakes()
+        return added
+
+    def release_receipted(self, key, recipient):
+        mark = f'release:{key}'
+        return any(session.startswith(recipient + ':') and mark in delivered
+                   for session, delivered in self.project_room.state.get('receipts', {}).items())
+
+    def release_wake_waiting(self, name, key):
+        """Already queued, held for a turn or running: a restore must not add it again."""
+        entries = list(self.queues[name]._queue) + [self.deploy_held.get(name)]
+        run = self.running.get(name)
+        if run is not None:
+            entries.append(run.entry)
+        return any(request.get('release_key') == key for entry in entries if entry
+                   for request in entry.get('requests', []))
+
+    def restore_release_wakes(self):
+        """Queue this project's pending release completions once each, after the runtime and any deploy
+        checkpoint have loaded, and again on Resume; none while the room is stopped."""
+        if self.paused or not self.deployment or self.deployment.rehearsal or not self.identity:
+            return 0
+        due = []
+        with self.release_wakes_lock:
+            try:
+                data = self.read_release_wakes()
+            except (OSError, ValueError) as exc:
+                LOGGER.warning('Release completions held: %s', exc)
+                return 0
+            settled = False
+            for key, record in data['wakes'].items():
+                if record.get('state') == 'delivered' or record.get('project') != self.identity:
+                    continue
+                if self.release_receipted(key, record['recipient']):
+                    record['state'], settled = 'delivered', True  # delivered before a restart marked it
+                    continue
+                due.append((key, record))
+            if settled:
+                self.write_release_wakes(data)
+        restored = 0
+        for key, record in due:
+            name = record['recipient']
+            if name in self.queues and not self.release_wake_waiting(name, key) and self.enqueue(
+                    name, self.default_channel(), prompt=record['prompt'], routing={'release_key': key, 'human': False}):
+                restored += 1
+        return restored
+
+    def release_wakes_delivered(self, run):
+        """After a completed turn has saved its receipts: its release completions are delivered for good, even
+        once those receipts roll out of the bounded receipt list."""
+        keys = {receipt.removeprefix('release:') for receipt in run.receipts if receipt.startswith('release:')}
+        if not keys or not self.deployment:
+            return
+        with self.release_wakes_lock:
+            try:
+                data = self.read_release_wakes()
+            except (OSError, ValueError) as exc:
+                LOGGER.warning('Release completions not marked delivered: %s', exc)
+                return
+            marked = [key for key in keys if key in data['wakes'] and data['wakes'][key].get('state') != 'delivered']
+            for key in marked:
+                data['wakes'][key]['state'] = 'delivered'
+            if marked:
+                self.write_release_wakes(data)
+
     async def close(self):
         if self.deployment and self.deployment.reload()['writes'] == 'blocked':
             if not self.running:
@@ -2510,17 +2710,30 @@ def install(host):
 
     @host.app.post("/api/runtime/stop")
     async def stop():
+        # The user's Stop: latched host-wide first, so no automatic reopen undoes it; then the room stops.
+        _, note = runtime.manual_stop_call('set_user_stop', state='stopped')
         await runtime.stop()
-        return {"ok": True}
+        return {"ok": True, **note}
 
     @host.app.post("/api/runtime/resume")
     async def resume():
-        runtime.paused = False
-        for key in [k for k in {**runtime.wake_notices, **runtime.notice_lines} if k.startswith('room:')]:
-            await runtime.clear_notice(key)
-        runtime.save_project()
-        await runtime.publish_status()
-        return {"ok": True}
+        # Only the user's Resume clears the latch, unpausing in the same critical section.
+        _, note = runtime.manual_stop_call('clear_user_stop', runtime.unpause, state='running')
+        runtime.unpause()  # the user's own Resume unpauses even when the latch can't be written
+        await runtime.after_resume()
+        return {"ok": True, **note}
+
+    @host.app.post("/api/runtime/reopen")
+    async def reopen(request: Request):
+        # The supervisor after a deployment: reopens only if no user Stop happened since `generation`.
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        generation = body.get('generation') if isinstance(body, dict) else None
+        if type(generation) is not int or generation < 0:
+            return JSONResponse({'error': 'generation must be the latch generation the deployment paused at'}, 400)
+        return {"ok": True, "reopened": await runtime.reopen_if(generation)}
 
     @host.app.post("/api/runtime/refresh")
     async def refresh():

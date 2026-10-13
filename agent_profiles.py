@@ -20,6 +20,9 @@ CORE_HEADING = re.compile(r'^##\s+(.+?)\s*$', re.M)
 # edit or an agent's tool call, and cleared together by revoke_core.
 CORE_FIELDS = ('core', 'core_version', 'skills', 'approved_by', 'approved_at')
 APPROVER = 'user'
+# A release grant is bound to one permanent profile (security B2, Astra cd672b82): changing what identifies it,
+# archiving or replacing it lapses the grant for good, even if changed back. Model and effort edits do not.
+GRANT_IDENTITY_FIELDS = ('name', 'handle', 'template')
 
 
 def draft_digest(draft):
@@ -223,6 +226,19 @@ class AgentProfiles:
             self.items[name].pop(field, None)
         self.save()
         return self.core_state(name)
+
+    @staticmethod
+    def grant_identity_changed(old, new):
+        """Whether an edit changes what the profile's release grant is bound to (its handle defaults to its id)."""
+        return any(old.get(field, old['id'] if field == 'handle' else None)
+                   != new.get(field, new['id'] if field == 'handle' else None) for field in GRANT_IDENTITY_FIELDS)
+
+    def lapse_release_grant(self, name):
+        """Before the edit is applied, so a failure refuses the edit rather than leaving a grant on a changed
+        profile. Grant storage and its user-only enable and revoke are the release manager's."""
+        grant = getattr(getattr(self.runtime, 'deployment', None), 'release_grant', None)
+        if grant is not None:
+            grant.invalidate_profile(self.runtime.identity, name)
 
     def preferences(self, name, values):
         if name in self.items:

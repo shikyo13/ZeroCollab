@@ -10,6 +10,10 @@ def receipt_key(request):
     ref = request.get('ref')
     if ref:
         return f"{ref['collection']}:{ref['id']}:{ref['updated']}"
+    if request.get('release_key'):
+        # A release completion (<deployment>:<recipient>): merged once per batch and, once its turn has
+        # completed, never delivered again, whichever restore path replays it (Astra c61b1280 r3).
+        return f"release:{request['release_key']}"
     if request.get('message_id') is not None:
         return f"message:{request['message_id']}"
     return ''
