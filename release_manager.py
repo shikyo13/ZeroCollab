@@ -1,7 +1,7 @@
 """Room release core: bounded reads and receipt-bound installation verification.
 
-This slice cannot stage or queue a deployment. The supervisor journal and receipts
-remain the deployment authority. Verification jobs never confer feature acceptance.
+Staging uses the existing packer in a private owned worker. This slice cannot
+queue a deployment. Verification jobs never confer feature acceptance.
 """
 import asyncio
 import copy
@@ -30,6 +30,7 @@ def package_identity(record):
 
 
 class ReleaseManager:
+    ID = ID
     def __init__(self, runtime, live_root):
         self.runtime = runtime
         self.state = runtime.deployment
@@ -85,6 +86,11 @@ class ReleaseManager:
             raise ValueError('Release operations wait until the room reopens')
         if action in MUTATIONS:
             self.state.release_grant.require(caller, self.runtime.profiles.items.get('astra'))
+            if action == 'stage':
+                from release_stage import prepare, revalidate
+                context = prepare(self, caller, values)
+                revalidate(self, context)
+                return self.start_stage(caller, context)
             raise ValueError('Release mutation core is not available in this build')
         if action == 'list':
             return self.list_releases()
@@ -160,21 +166,58 @@ class ReleaseManager:
             raise ValueError('A terminal deployment receipt is required')
         if receipt.get('status') != 'deployed':
             raise ValueError('This receipt does not identify a successfully deployed candidate')
-        if not self.state.enter_mutation():
-            raise ValueError('The deployment write gate is closed')
         identifier = uuid.uuid4().hex
         job = {'id': identifier, 'action': 'verify', 'deployment_id': deployment_id, 'state': 'running',
                'deadline': time.time() + VERIFY_SECONDS, 'project': caller['project'], 'stop': threading.Event()}
+        self._launch(job, lambda: self._verify_job(job, copy.deepcopy(receipt)))
+        return self._job_answer(job)
+
+    def _launch(self, job, factory):
+        if self.active is not None or self.closing:
+            raise ValueError('A release job is running or the manager is closing')
+        if not self.state.enter_mutation():
+            raise ValueError('The deployment write gate is closed')
+        job['counted'] = True
+        self.active = job
         try:
-            self.jobs[identifier] = job
+            self.jobs[job['id']] = job
             while len(self.jobs) > 32:
                 del self.jobs[next(iter(self.jobs))]
-            job['task'] = asyncio.create_task(self._verify_job(job, copy.deepcopy(receipt)))
-            self.active = job
+            job['task'] = asyncio.create_task(factory())
+            # Also covers cancellation before the coroutine's first instruction.
+            job['task'].add_done_callback(lambda task: self._release_job(job))
         except BaseException:
-            self.state.leave_mutation()
+            self._release_job(job)
             raise
+
+    def _release_job(self, job):
+        if job.get('counted'):
+            job['counted'] = False
+            self.state.leave_mutation()
+        if self.active is job:
+            self.active = None
+        if job['state'] == 'running' and job.get('task') and job['task'].cancelled():
+            job.update(state='cancelled', error='Release job cancelled before startup')
+
+    def start_stage(self, caller, context):
+        from release_stage import STAGE_SECONDS
+        job = {'id': uuid.uuid4().hex, 'action': 'stage', 'state': 'running',
+               'deadline': time.time() + STAGE_SECONDS, 'project': caller['project'], 'stop': threading.Event()}
+        self._launch(job, lambda: self._stage_job(job, context))
         return self._job_answer(job)
+
+    async def _stage_job(self, job, context):
+        from release_stage import stage
+        try:
+            result = await stage(self, job, context)
+            job.update(state='complete', result=result)
+        except asyncio.CancelledError:
+            job['stop'].set()
+            job.update(state='cancelled', error='Staging cancelled')
+        except Exception:
+            job.update(state='failed', error='Staging refused or failed; no deployment was requested')
+        finally:
+            self._release_job(job)
 
     async def _verify_job(self, job, receipt):
         worker = asyncio.create_task(asyncio.to_thread(self._verify, job, receipt))
@@ -200,8 +243,7 @@ class ReleaseManager:
             # Do not expose host paths or arbitrary exception text through MCP.
             job.update(state='failed', error='Release verification failed; no acceptance was granted')
         finally:
-            self.active = None
-            self.state.leave_mutation()
+            self._release_job(job)
 
     def _verify(self, job, receipt):
         deadline = time.monotonic() + VERIFY_SECONDS
@@ -279,3 +321,4 @@ class ReleaseManager:
                     await asyncio.shield(job['task'])
                 except asyncio.CancelledError:
                     continue
+            self._release_job(job)
