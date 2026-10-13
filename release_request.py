@@ -170,11 +170,23 @@ def validate(manager, request):
         if request.get(key) != context[key]:
             raise ValueError('Request metadata differs from host admission')
     if (request.get('approved_by') != 'release-manager:astra' or request.get('protocol') != 1
-            or request.get('interrupt') is not False or request.get('expected_manifest_sha') != values['expected_manifest_sha']
+            or not exact_drain(request, manager.state.root)
+            or request.get('expected_manifest_sha') != values['expected_manifest_sha']
             or request.get('rollback') is not (saved['action'] == 'rollback')
             or request.get('idempotency_key') != values['idempotency_key']):
         raise ValueError('Request is not an exact agent approval')
     return True
+
+
+def exact_drain(request, root):
+    """The request's interrupt and drain are exactly the server's agent policy for this host (opus c11b3a54): the
+    same room_deploy.agent_drain_policy that stamped them, read from the same status.json. Literal types only, so
+    no other value passes."""
+    from room_deploy import agent_drain_policy, read_json
+    interrupt, seconds = request.get('interrupt'), request.get('drain_seconds')
+    if not isinstance(interrupt, bool) or not isinstance(seconds, int) or isinstance(seconds, bool):
+        return False
+    return (interrupt, seconds) == agent_drain_policy(read_json(Path(root) / 'status.json', {}) or {})
 
 
 def existing(manager, caller, action, values):

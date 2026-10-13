@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 
 TERMINAL = {'deployed', 'aborted', 'rolled_back', 'rollback_failed', 'conflict', 'recovery_required', 'rejected'}
 AGENT_DRAIN_SECONDS = 30   # an agent-requested install: running turns get this long, then are interrupted (9f3eca50)
+AGENT_IDLE_DRAIN_SECONDS = 600  # the same request on a host without the interrupt capability: wait for idle
 
 
 def read_json(path, default=None):
@@ -61,6 +62,17 @@ def approval_lock(root):
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def agent_drain_policy(status):
+    """(interrupt, drain_seconds) for an agent-requested install: the server's policy, never the caller's body, and
+    the one rule both _approve_release_locked and release_request.validate apply (opus c11b3a54). No agent holds up
+    an install (opus 7cdd51bd): a short drain, then running turns are interrupted, queues kept and the turns resumed;
+    the user's Stop still wins. Only when the host supervisor advertises that it takes an agent interrupt: an older
+    one refuses it at take (security 4b29e072 B1), so it keeps the wait-for-idle request."""
+    if (status or {}).get('agent_install_interrupt') == 1:
+        return True, AGENT_DRAIN_SECONDS
+    return False, AGENT_IDLE_DRAIN_SECONDS
 
 
 def approve_release(state, body, *, allow_offline=False, supervisor_online=None, allow_interrupt=False):
@@ -118,12 +130,8 @@ def _approve_release_locked(state, body, *, allow_offline=False, supervisor_onli
     seconds = body.get('drain_seconds', 600)
     if not isinstance(seconds, int) or isinstance(seconds, bool) or not 10 <= seconds <= 3600:
         raise ValueError('Drain time must be between 10 and 3600 seconds')
-    if approval is not None and status.get('agent_install_interrupt') == 1:
-        # No agent holds up an install (opus 7cdd51bd): an agent-requested install always gets a short drain, then
-        # interrupts running turns; queues are kept and interrupted turns resume after it. Server policy, never
-        # the caller's body; the user's own Stop still wins over it. Only when the host supervisor advertises that
-        # it takes an agent interrupt: an older one refuses it at take (security 4b29e072 B1), so it keeps today's.
-        interrupt, seconds = True, AGENT_DRAIN_SECONDS
+    if approval is not None:
+        interrupt, seconds = agent_drain_policy(status)
     identifier = uuid.uuid4().hex
     record = {'id': identifier, 'release_id': item['id'], 'manifest_sha': item['manifest_sha'],
               'approved_by': 'user', 'approved_at': time.time(), 'drain_seconds': seconds,

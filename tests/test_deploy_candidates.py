@@ -120,6 +120,45 @@ class DeployCandidateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(record['interrupt'], True)
         self.assertEqual(record['drain_seconds'], room_deploy.AGENT_DRAIN_SECONDS)
 
+    def test_validate_accepts_exactly_the_policy_that_stamped_the_request(self):
+        # opus c11b3a54, abort 2e245f54: the drain-time revalidation refused the True/30 the room itself stamped.
+        # The real path writes the request; validate() then reads the stored record (prepare/token stubbed: they
+        # need a live release manager and board, and are unchanged).
+        import release_request
+        values = {'release_id': self.new['id'], 'manifest_sha': self.new['manifest_sha'],
+                  'expected_manifest_sha': self.current['manifest_sha'], 'idempotency_key': 'k1'}
+        saved = {'action': 'request', 'values': values}
+        approval = {'approved_by': 'release-manager:astra', 'project_id': 'p', 'profile_id': 'astra', 'run_id': 'r',
+                    'protocol': 1, 'grant_revision': 1, 'grant_decision': 'user-enabled',
+                    'expected_manifest_sha': values['expected_manifest_sha'], 'stop_generation': 0,
+                    'idempotency_key': 'k1', 'acceptance_receipt': saved}
+        context = {'release_id': self.new['id'], 'manifest_sha': self.new['manifest_sha'], 'grant_revision': 1,
+                   'stop_generation': 0}
+        manager = SimpleNamespace(state=self.state)
+        stubs = {'prepare': lambda *a: context, 'token': lambda c: saved,
+                 'arguments': None}  # arguments is imported inside validate from release_interface
+        originals = {name: getattr(release_request, name) for name in ('prepare', 'token')}
+        self.addCleanup(lambda: [setattr(release_request, n, f) for n, f in originals.items()])
+        for name in ('prepare', 'token'):
+            setattr(release_request, name, stubs[name])
+        status = self.spool / 'status.json'
+        base = json.loads(status.read_text('utf-8'))
+        body = {'release_id': self.new['id'], 'manifest_sha': self.new['manifest_sha'], 'rollback': False, 'interrupt': False}
+        for capability in (None, 1):
+            status.write_text(json.dumps({**base, **({'agent_install_interrupt': capability} if capability else {})}), 'utf-8')
+            for path in (self.spool / 'requests').glob('*.json'):
+                path.unlink()
+            stored, = [json.loads(p.read_text('utf-8')) for p in [self.spool / 'requests' / (
+                room_deploy._approve_release_locked(self.state, body, approval=approval)['id'] + '.json')]]
+            self.assertTrue(release_request.validate(manager, stored))
+            for tampered in ({'interrupt': not stored['interrupt']}, {'drain_seconds': stored['drain_seconds'] + 1},
+                             {'interrupt': 1 if stored['interrupt'] else 0}):
+                with self.assertRaisesRegex(ValueError, 'not an exact agent approval'):
+                    release_request.validate(manager, {**stored, **tampered})
+        status.write_text(json.dumps(base), 'utf-8')  # the host lost the capability after stamping True/30
+        with self.assertRaisesRegex(ValueError, 'not an exact agent approval'):
+            release_request.validate(manager, stored)
+
 
 if __name__ == '__main__':
     unittest.main()
