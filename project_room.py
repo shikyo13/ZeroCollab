@@ -48,6 +48,12 @@ ARCHIVE_BATCH = 20
 STALE_SECONDS = 600
 # Providers whose turns get the room MCP server (native_adapters: codex/claude flags, antigravity config).
 ROOM_TOOL_PROVIDERS = {'codex', 'claude', 'antigravity'}
+# The per-turn live context (Docs/agent-profiles.md layer 3): its size budget and how many waiting items it lists.
+LIVE_CONTEXT_CHARS = 2400
+LIVE_CONTEXT_ITEMS = 8
+# The lead's load line flags anyone above these (opus 02fb548e).
+LOAD_WORKING_LIMIT = 1
+LOAD_REVIEW_LIMIT = 3
 
 
 def age(seconds):
@@ -1199,11 +1205,8 @@ class ProjectRoom:
         prompt = f"Participants: {participants}\n"
         workspace = delivery('workspace', 2400)
         prompt += (workspace if workspace.startswith('Execution context') else 'Execution context: ' + workspace) + '\n'
-        inbox = self.records.inbox(run.name)
-        counts = {key: len(items) for key, items in inbox.items() if items}
-        if counts:
-            prompt += 'Outstanding coordination: ' + json.dumps(counts) + '. Read room_read(section="inbox") at your next checkpoint.\n'
-        title = getattr(self.runtime, 'channel_title', lambda channel: '#' + channel)(run.channel)
+        prompt += self.live_context(run) + '\n'
+        title =getattr(self.runtime, 'channel_title', lambda channel: '#' + channel)(run.channel)
         prompt += f"Current conversation in {title}:\n{history or '[No new room messages]'}\n"
         if self.state['spec']:
             prompt += f"Optional shared spec ({len(self.state['spec'])} characters):\n{delivery('spec', spec_limit)}\n"
@@ -1221,6 +1224,66 @@ class ProjectRoom:
         run.input_chars = len(prompt)
         run.estimated_input_tokens = math.ceil(len(prompt) / 4)
         return prompt
+
+    def live_context(self, run):
+        """Layer 3 of Docs/agent-profiles.md: what this agent should act on now, rebuilt from the board every
+        turn. It lives in the turn prompt, never the instructions, so native sessions keep resuming. Replaces
+        the old inbox counts line with the items themselves; the Board block keeps the full task details."""
+        tasks = [t for t in self.state['tasks'] if t.get('status') != 'done']
+        mine = sorted((t for t in tasks if t.get('owner') == run.name),
+                      key=lambda t: (t['status'] != 'working', t.get('priority', 3), -t['updated']))
+        started_for = getattr(run, 'task_ids', None) or ()
+        main = next((t for t in mine if t['id'] in started_for), mine[0] if mine else None)
+        def short(text, limit):
+            """One line per item: clipped()'s multi-line excerpt tail would split the list."""
+            flat = ' '.join(str(text).split())
+            return flat if len(flat) <= limit else flat[:limit - 4] + ' ...'
+        lines = ['Live context (this turn, from the board):']
+        if main:
+            lines.append(f"- Main task: {main['id']} [{main['status']}] {short(main['title'], 140)}"
+                         + (f"; next: {short(main['next_action'], 300)}" if main.get('next_action') else ''))
+            working = sum(t['status'] == 'working' for t in mine)
+            if len(mine) > 1:
+                lines.append(f"- You own {len(mine) - 1} other open task(s)"
+                             + (f'; {working} are working at once, keep one main task working' if working > 1 else '') + '.')
+        else:
+            lines.append('- Main task: none owned.')
+        inbox = self.records.inbox(run.name)
+        waiting = ([f"- Review {r['id']} requested by {r['requested_by']} on task {r['task_id']}" for r in inbox['review_requests']]
+                   + [f"- Changes requested by {r['reviewer']} on your task {r['task_id']} (review {r['id']})" for r in inbox['review_findings']]
+                   + [f"- Follow-up {f['id']} from {f['created_by']}: {short(f['text'], 160)}" for f in inbox['followups']]
+                   + [f"- Transfer of task {t['id']} to you waits for your accept" for t in inbox['transfers']])
+        if waiting:
+            lines.append('Waiting on you:')
+            lines += waiting[:LIVE_CONTEXT_ITEMS]
+            if len(waiting) > LIVE_CONTEXT_ITEMS:
+                lines.append(f'- and {len(waiting) - LIVE_CONTEXT_ITEMS} more: room_read(section="inbox")')
+        if run.name == (self.state.get('responders') or {}).get('lead'):
+            lines += self.coordinator_lines(tasks)
+        return clipped('\n'.join(lines), LIVE_CONTEXT_CHARS)
+
+    def coordinator_lines(self, tasks):
+        """For the project lead only (opus 02fb548e): who is overloaded, and that team builder exists, so the
+        lead sees both at every checkpoint without polling or searching for a deferred tool."""
+        reviews = [r for r in self.state.get('reviews', []) if r['status'] == 'pending']
+        load = []
+        for name, state in self.runtime.states.items():
+            if state.get('archived'):
+                continue
+            owned = [t for t in tasks if t.get('owner') == name]
+            working = sum(t['status'] == 'working' for t in owned)
+            pending = sum(r['reviewer'] == name for r in reviews)
+            if owned or pending:
+                flag = ' OVERLOADED' if working > LOAD_WORKING_LIMIT or pending > LOAD_REVIEW_LIMIT else ''
+                load.append((bool(flag), f"{name} {working}w/{len(owned)}o/{pending}r{flag}"))
+        load.sort(key=lambda item: not item[0])
+        lines = []
+        if load:
+            lines.append('Team load (working/open tasks, pending reviews): ' + ', '.join(text for _, text in load))
+        members = sum(not state.get('archived') for state in self.runtime.states.values())
+        lines.append(f'Team builder: {members} active members. room_team_builder(action="suggest") proposes one new member '
+                     'for the user to review; use it only for a real capability gap, not for load a teammate can take.')
+        return lines
 
     def project_record(self):
         import project_registry
