@@ -151,10 +151,14 @@ class ChromiumWorker:
     same seek seam or supply a separate frame adapter after S1/S5 are integrated.
     legacy_ms keeps v1's four-decimal seek rounding for pixel comparisons.
     """
-    def __init__(self, page, profile, identity, check_cancel, *, legacy_ms=False):
+    def __init__(self, page, profile, identity, check_cancel, *, legacy_ms=False, frame_seek=False,
+                 transparent=False):
         self.page, self.profile = Path(page).resolve(), Path(profile).resolve()
         self.identity, self.check_cancel = identity, check_cancel
         self.legacy_ms = legacy_ms
+        self.frame_seek = frame_seek
+        self.transparent = transparent
+        self.duration = None
         self.proc = self.ws = None
         self.pid = None
         self.browser_version = None
@@ -224,6 +228,8 @@ class ChromiumWorker:
         await self.call('Network.setBlockedURLs', urls=['http://*', 'https://*', 'ws://*', 'wss://*'])
         await self.call('Emulation.setDeviceMetricsOverride', width=self.identity.width,
                         height=self.identity.height, deviceScaleFactor=1, mobile=False)
+        if self.transparent:
+            await self.call('Emulation.setDefaultBackgroundColorOverride', color={'r': 0, 'g': 0, 'b': 0, 'a': 0})
         await self.call('Page.navigate', url=self.page.as_uri())
         for _ in range(400):
             self.check_cancel()
@@ -231,6 +237,11 @@ class ChromiumWorker:
             if state and state['error']:
                 raise RuntimeError(state['error'])
             if state and state['ready']:
+                if self.frame_seek:
+                    info = await self.evaluate('window.__scene')
+                    if not info or info.get('version') != 2 or type(info.get('duration')) is not int:
+                        raise RuntimeError('The v2 page did not report its frame duration')
+                    self.duration = info['duration']
                 return
             await asyncio.sleep(.025)
         raise RuntimeError('The scene did not become ready within 10 seconds')
@@ -264,6 +275,9 @@ class ChromiumWorker:
         return result.get('result', {}).get('value')
 
     async def capture(self, frame):
+        if self.frame_seek:
+            await self.evaluate(f'window.__seekFrame({frame!r})', wait=True)
+            return await self.screenshot()
         ms = float(self.identity.clock.ms(frame))
         if self.legacy_ms:
             ms = round(ms, 4)
@@ -272,7 +286,18 @@ class ChromiumWorker:
     async def capture_ms(self, ms):
         if isinstance(ms, bool) or not isinstance(ms, (int, float)) or not 0 <= ms < float('inf'):
             raise ValueError('seek time must be a finite nonnegative number')
-        await self.evaluate(f'window.__seek({ms!r})', wait=True)
+        if self.frame_seek:
+            from fractions import Fraction
+            value = Fraction(str(ms)) * self.identity.clock.num / (1000 * self.identity.clock.den)
+            # Undo only arithmetic roundoff at an exact rational frame boundary.
+            nearest = round(value)
+            frame = nearest if abs(float(value) - nearest) <= 1e-9 else int(value)
+            await self.evaluate(f'window.__seekFrame({min(frame, self.duration - 1)!r})', wait=True)
+        else:
+            await self.evaluate(f'window.__seek({ms!r})', wait=True)
+        return await self.screenshot()
+
+    async def screenshot(self):
         shot = await self.call('Page.captureScreenshot', format='png', fromSurface=True,
                                clip={'x': 0, 'y': 0, 'width': self.identity.width,
                                      'height': self.identity.height, 'scale': 1})

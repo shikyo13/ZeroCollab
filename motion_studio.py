@@ -52,6 +52,7 @@ KIT = ROOT / 'motion'
 BUNDLED = KIT / 'scenes'
 # core.js is the shared motion-core library (S1, frontend 1f9560e4); it is inlined first when it ships.
 SCRIPTS = ('core.js', 'motion.js', 'boot.js')
+V2_SCRIPTS = ('core.js', 'motion.js', 'render2.js')
 OPTIONAL_SCRIPTS = ('core.js',)
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 MAX_SCENE_BYTES = 256 * 1024
@@ -209,13 +210,92 @@ def load(path):
 
 
 def drawable(scene):
-    """The v1 scene the current renderer draws for this scene, or ValueError: a v2 scene beyond a single
-    migrated room layer waits for the v2 renderer (S1/S5) and never falls back to the v1 one silently."""
+    """Preserve exact migrated v1 rendering; other v2 scenes use the S5 page."""
     import motion_scene
     v1 = motion_scene.legacy(scene)
     if v1 is None:
-        raise ValueError('This scene needs the v2 renderer (motion core S1 and layers S5), which is not installed yet')
+        if not all((KIT / name).is_file() for name in V2_SCRIPTS):
+            raise ValueError('This scene needs the v2 renderer, which is not installed yet')
+        return scene
     return v1
+
+
+def render_plan(scene, composition=None):
+    """One selected composition and its exact capture clock; legacy keeps its old geometry."""
+    scene = drawable(scene)
+    if scene['version'] == 1:
+        return {'renderer': 'legacy', 'width': WIDTH, 'height': HEIGHT, 'fps': FPS,
+                'duration_ms': scene['duration_ms'], 'duration': scene['duration_ms'] * FPS // 1000}
+    import motion_scene
+    comp = next((c for c in scene['compositions'] if composition is None or c['id'] == composition), None)
+    if comp is None:
+        raise ValueError('Unknown composition')
+    return {'renderer': 'v2', 'composition': comp['id'], 'width': comp['width'], 'height': comp['height'],
+            'fps': dict(comp['fps']), 'duration': comp['duration'],
+            'duration_ms': motion_scene.frame_ms(comp['duration'], comp['fps'])}
+
+
+def require_silent_composition(scene, composition):
+    """Audio is still S3 work; do not silently export an authored soundtrack without its sound."""
+    def has_audio(node):
+        if isinstance(node, dict):
+            if node.get('hidden'):
+                return False
+            if (node.get('type') == 'audio' or
+                    node.get('type') == 'video' and not node.get('muted', False)
+                    and node.get('volume', 1) != 0):
+                return True
+            return any(has_audio(v) for v in node.values())
+        return isinstance(node, list) and any(has_audio(v) for v in node)
+    if scene['version'] == 2:
+        comp = next(c for c in scene['compositions'] if c['id'] == composition)
+        if has_audio(comp):
+            raise ValueError('Audio mixing is not available yet; mute video layers or remove audio layers before export')
+
+
+MAX_INLINE_ASSET_BYTES = 64 * 1024 * 1024  # total raw bytes in one generated page
+
+
+def resolved_frame_input(scene, composition, runtime):
+    """Resolve only referenced uploads/kit assets, with byte hashes and a bounded data-only page."""
+    import mimetypes
+    import motion_scene
+    frame = motion_scene.frame_input(scene, composition, 0)
+    total = 0
+    sources = {}
+    for asset in frame['assets']:
+        ref = asset['ref']
+        if ref in sources:
+            raw_hash, src = sources[ref]
+        else:
+            if ref.startswith('/uploads/') and motion_scene.UPLOAD.fullmatch(ref):
+                root = getattr(getattr(getattr(runtime, 'host', None), 'store', None), 'upload_dir', None)
+                if root is None:
+                    raise ValueError('Upload assets need the room upload directory')
+                root = Path(root).resolve()
+                path = (root / ref.removeprefix('/uploads/')).resolve()
+            elif motion_scene.KIT_ASSET.fullmatch(ref):
+                root = KIT.resolve()
+                path = (root / ref.removeprefix('motion:')).resolve()
+            else:
+                raise ValueError('Asset ref must be an upload or motion kit asset')
+            if not path.is_relative_to(root) or not path.is_file():
+                raise ValueError(f'Asset {asset["id"]} is missing or outside its allowed directory')
+            if total + path.stat().st_size > MAX_INLINE_ASSET_BYTES:
+                raise ValueError('A motion page can inline at most 64 MiB of asset data')
+            with path.open('rb') as stream:
+                raw = stream.read(MAX_INLINE_ASSET_BYTES - total + 1)
+            total += len(raw)
+            if total > MAX_INLINE_ASSET_BYTES:
+                raise ValueError('A motion page can inline at most 64 MiB of asset data')
+            raw_hash = hashlib.sha256(raw).hexdigest()
+            mime = mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
+            src = f'data:{mime};base64,' + base64.b64encode(raw).decode()
+            sources[ref] = (raw_hash, src)
+        if asset['sha256'] and asset['sha256'] != raw_hash:
+            raise ValueError(f'Asset {asset["id"]} SHA256 does not match its bytes')
+        asset.update(sha256=raw_hash, src=src)
+    return frame
 
 
 def catalogue(runtime):
@@ -245,7 +325,7 @@ def summary(ref, source, scene):
         comp = scene['compositions'][0]
         duration = round(motion_scene.frame_ms(comp['duration'], comp['fps']))
     return {'ref': ref, 'id': scene['id'], 'name': scene.get('name') or scene['id'], 'source': source,
-            'version': scene['version'], 'renderable': v1 is not None,
+            'version': scene['version'], 'renderable': v1 is not None or all((KIT / n).is_file() for n in V2_SCRIPTS),
             'duration_ms': duration, 'beats': len(v1['beats']) if v1 else 0}
 
 def _block(block_id, value):
@@ -254,20 +334,39 @@ def _block(block_id, value):
     return f'<script type="application/json" id="{block_id}">{data}</script>'
 
 
-def view_html(scene, options):
-    """One self-contained page: options and scene as JSON data blocks, motion.js and boot.js inline.
-    Its meta CSP allows exactly those two inline scripts (by sha256) and nothing from the network,
-    so it needs no second request and no token when loaded into a srcdoc frame.
-    options: {render: bool, reduced: bool, embed: bool, t: int ms}."""
-    scripts = [(KIT / name).read_text('utf-8') for name in SCRIPTS
+def view_html(scene, options, runtime=None):
+    """A hash-pinned, network-free page. Legacy keeps boot.js and exact seek-ms behavior;
+    v2 uses core/motion/render2 and a resolved FrameInput for the selected (default first) composition.
+    Options include render/reduced/embed/t, optional composition/props and transparent export background."""
+    scene = drawable(scene)
+    options = dict(options)
+    if scene['version'] == 1:
+        options.pop('transparent', None)
+    names = SCRIPTS
+    media_csp = ''
+    if scene['version'] == 2:
+        plan = render_plan(scene, options.get('composition'))
+        options['frame_input'] = resolved_frame_input(scene, plan['composition'], runtime)
+        names = V2_SCRIPTS
+        if any(a['kind'] == 'video' for a in options['frame_input']['assets']):
+            media_csp = 'media-src data:; '
+    scripts = [(KIT / name).read_text('utf-8') for name in names
                if name not in OPTIONAL_SCRIPTS or (KIT / name).is_file()]
     if any('</script' in code.lower() for code in scripts):
         raise RuntimeError('motion scripts cannot be inlined')
     hashes = ' '.join("'sha256-" + base64.b64encode(hashlib.sha256(code.encode()).digest()).decode() + "'"
                       for code in scripts)
     csp = (f"default-src 'none'; script-src {hashes}; style-src 'unsafe-inline'; img-src data:; "
-           "base-uri 'none'; form-action 'none'")
+           f"{media_csp}base-uri 'none'; form-action 'none'")
     page = (KIT / 'scene.html').read_text('utf-8')
+    if scene['version'] == 2 and options.get('transparent'):
+        # Preserve an explicitly authored background. Otherwise alpha profiles
+        # must not acquire the legacy page's opaque canvas/stage defaults.
+        comp = next(c for c in scene['compositions'] if c['id'] == options['frame_input']['composition']['id'])
+        style = 'html,body.render {background:transparent}'
+        if not comp.get('background'):
+            style += '#stage {background:transparent}'
+        page = page.replace('</head>', f'<style>{style}</style></head>', 1)
     page = page.replace('<!--ZM-CSP-->', f'<meta http-equiv="Content-Security-Policy" content="{csp}">', 1)
     body = (_block('zm-options', options) + '\n' + _block('zm-scene', scene) + '\n'
             + ''.join(f'<script>{code}</script>\n' for code in scripts))
@@ -409,6 +508,8 @@ class Exporter:
         if ref not in scenes:
             raise ValueError('Unknown or invalid scene')
         scene = drawable(scenes[ref][1])
+        plan = render_plan(scene)
+        require_silent_composition(scene, plan.get('composition'))
         if encoder is None:
             encoder = require_tools(self.runtime, format)
         from motion_encode import profile
@@ -420,9 +521,11 @@ class Exporter:
         self.current = {'id': uuid.uuid4().hex[:12], 'scene': ref, 'scene_id': scene['id'],
                         'generation': self.generation,
                         'name': scene.get('name') or scene['id'], 'reduced': bool(reduced), 'phase': 'starting',
-                        'frame': 0, 'frames': 1 if format == 'png' else scene['duration_ms'] * FPS // 1000,
-                        'width': WIDTH, 'height': HEIGHT,
-                        'fps': FPS, 'profile': format, 'format': selected.extension,
+                        'frame': 0, 'frames': 1 if format == 'png' else plan['duration'],
+                        'width': plan['width'], 'height': plan['height'], 'renderer': plan['renderer'],
+                        'composition': plan.get('composition'),
+                        'fps': plan['fps'], 'profile': format, 'format': selected.extension,
+                        'transparent': selected.alpha and plan['renderer'] == 'v2',
                         'mime': selected.mime, 'codec': 'vp9' if format == 'webm' else selected.encoder,
                         'created': time.time(),
                         'project': self.runtime.identity,
@@ -457,7 +560,8 @@ class Exporter:
                         job['generation'] != self.generation or job['project'] != self.runtime.identity):
                     raise Cancelled()
 
-            hashes = await export_video(scene, job['reduced'], partial, work, job, ffmpeg, check_cancel=check)
+            hashes = await export_video(scene, job['reduced'], partial, work, job, ffmpeg,
+                                        check_cancel=check, runtime=self.runtime)
             check()
             job['render_s'] = round(time.perf_counter() - started, 2)
             final = folder / f'{job["id"]}.{extension}'
@@ -499,14 +603,19 @@ def public(job):
     return {k: v for k, v in job.items() if k != 'cancel'} if job else None
 
 
-async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=None):
+async def export_video(scene, reduced, out, work, job, ffmpeg, *, check_cancel=None, runtime=None):
     """Render every frame of scene and pipe it into ffmpeg, writing a VP9 WebM to out.
     Returns the sha256 of each frame's PNG in order. No frame is stored on disk. ffmpeg is always
     stopped before this returns, including on cancellation or room shutdown."""
     page = work / 'scene.html'
-    page.write_text(view_html(scene, {'render': True, 'reduced': bool(reduced)}), 'utf-8')
+    require_silent_composition(scene, job.get('composition') or render_plan(scene).get('composition'))
     from motion_encode import output_args, profile
     from motion_render import FrameClock, file_io
+    await file_io(lambda: page.write_text(view_html(scene, {'render': True, 'reduced': bool(reduced),
+        'transparent': job.get('transparent', False),
+        **({'composition': job['composition']} if job.get('composition') else {})}, runtime), 'utf-8'))
+    if check_cancel:
+        check_cancel()
     selected_name = job.get('profile', 'webm')
     selected = profile(selected_name)
     fps = job.get('fps', FPS)
@@ -602,7 +711,10 @@ async def render(page, job, sink, profile, *, check_cancel=None):
     check()
     job['phase'] = 'rendering'
     if job.get('times'):
-        async with ChromiumWorker(page, profile, identity, check, legacy_ms=True) as worker:
+        async with ChromiumWorker(page, profile, identity, check,
+                                  legacy_ms=job.get('renderer') != 'v2',
+                                  frame_seek=job.get('renderer') == 'v2',
+                                  transparent=job.get('transparent', False)) as worker:
             for i, ms in enumerate(job['times']):
                 check()
                 await sink(await worker.capture_ms(ms))
@@ -615,7 +727,9 @@ async def render(page, job, sink, profile, *, check_cancel=None):
 
     def factory(slot):
         return ChromiumWorker(page, profile.parent / f'{profile.name}-{slot}',
-                              identity, check, legacy_ms=True)
+                              identity, check, legacy_ms=job.get('renderer') != 'v2',
+                              frame_seek=job.get('renderer') == 'v2',
+                              transparent=job.get('transparent', False))
 
     await capture_frames(identity, range(job['frames']), factory, ordered_sink, check,
                          # v1's animated SVG stroke rasterization depends on seek
@@ -680,19 +794,28 @@ async def render_frames(runtime, scene, times, reduced):
     """PNG bytes of the scene at each time (ms), through the same page and __seek(ms) as export, so a
     preview frame is pixel-identical to that frame of the video."""
     work = Path(tempfile.mkdtemp(prefix='zerocollab-motion-frame-'))
-    job = {'times': times, 'frames': len(times), 'frame': 0, 'phase': 'starting'}
+    plan = render_plan(scene)
+    project = runtime.identity
+    job = {**plan, 'times': times, 'frames': len(times), 'frame': 0, 'phase': 'starting'}
     pngs = []
 
     async def sink(png):
         pngs.append(png)
     try:
         page = work / 'scene.html'
-        page.write_text(view_html(scene, {'render': True, 'reduced': bool(reduced)}), 'utf-8')
-        await asyncio.wait_for(render(page, job, sink, work / 'profile'), FRAME_SECONDS)
+        from motion_render import file_io
+        await file_io(lambda: page.write_text(view_html(scene, {'render': True, 'reduced': bool(reduced)}, runtime), 'utf-8'))
+        def check():
+            if runtime.identity != project:
+                raise Cancelled()
+        check()
+        await asyncio.wait_for(render(page, job, sink, work / 'profile', check_cancel=check), FRAME_SECONDS)
     except asyncio.TimeoutError:
         raise RuntimeError(f'The preview frames did not render within {FRAME_SECONDS} seconds') from None
     finally:
         await remove_tree(work)
+    if runtime.identity != project:
+        raise Cancelled()
     return pngs
 
 
@@ -739,11 +862,12 @@ async def agent_action(runtime, run, arguments):
     if action != 'frame':
         raise ValueError('action must be list, get, validate, save, frame, export, export_status or export_cancel')
     drawn = drawable(scene)
+    plan = render_plan(drawn)
     times = arguments.get('t_ms', 0)
     times = times if isinstance(times, list) else [times]
     if not 1 <= len(times) <= MAX_FRAMES or any(isinstance(t, bool) or not isinstance(t, (int, float))
-                                                 or not 0 <= t <= drawn['duration_ms'] for t in times):
-        raise ValueError(f"t_ms must be one time or a list of 1 to {MAX_FRAMES} times from 0 to {drawn['duration_ms']} ms")
+                                                 or not 0 <= t <= plan['duration_ms'] for t in times):
+        raise ValueError(f"t_ms must be one time or a list of 1 to {MAX_FRAMES} times from 0 to {plan['duration_ms']} ms")
     if exporter.busy():
         job = public(exporter.current)
         raise RuntimeError(f"A video export is rendering ({job['frame']} of {job['frames']} frames); try again after it")
@@ -767,7 +891,8 @@ async def agent_action(runtime, run, arguments):
         name = uuid.uuid4().hex[:8] + '.png'
         (folder / name).write_bytes(contact_sheet(pngs, times))
         sheet = '/uploads/' + name
-    return {'scene': ref, 'frames': frames, 'sheet_url': sheet, 'width': WIDTH, 'height': HEIGHT, 'checks': []}
+    return {'scene': ref, 'frames': frames, 'sheet_url': sheet,
+            'width': plan['width'], 'height': plan['height'], 'checks': []}
 
 
 # ---- routes -----------------------------------------------------------------------------------
@@ -813,11 +938,18 @@ def install(host, runtime):
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, 409)
         try:
-            t = max(0, min(scene['duration_ms'], int(q.get('t', '0'))))
+            t = max(0, min(render_plan(scene)['duration_ms'], int(q.get('t', '0'))))
         except ValueError:
             t = 0
         options = {'render': False, 'reduced': q.get('reduced') == '1', 'embed': True, 't': t}
-        return HTMLResponse(view_html(scene, options), headers=nosniff)
+        project = runtime.identity
+        try:
+            page = await asyncio.to_thread(view_html, scene, options, runtime)
+        except ValueError as exc:
+            return JSONResponse({'error': str(exc)}, 400)
+        if runtime.identity != project:
+            return JSONResponse({'error': changed}, 409)
+        return HTMLResponse(page, headers=nosniff)
 
     @host.app.get('/api/runtime/motion/exports')
     async def exports(request: Request):
@@ -880,7 +1012,8 @@ if __name__ == '__main__':
     async def cli():
         scene = drawable(load(args.scene))
         ffmpeg = require_tools(None)['path']
-        job = {'frames': scene['duration_ms'] * FPS // 1000, 'phase': 'starting', 'frame': 0}
+        plan = render_plan(scene)
+        job = {**plan, 'frames': plan['duration'], 'phase': 'starting', 'frame': 0}
         work = Path(tempfile.mkdtemp(prefix='zerocollab-motion-'))
         try:
             started = time.perf_counter()
