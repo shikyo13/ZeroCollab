@@ -59,6 +59,9 @@ def execution_state(task, state, *, running=False, queued=False):
     if task.get('wait'):
         # A reply/cancellation/missing record requires an owner check, never implied approval.
         return 'needs_attention'
+    if task.get('stall'):
+        # Ready work that isn't moving (work_continuity C4): the lead has an item for it; it clears when it moves.
+        return 'needs_attention'
     if task.get('status') == 'blocked':
         return 'blocked'
     dependencies = set(task.get('depends_on', []))
