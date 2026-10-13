@@ -1239,7 +1239,13 @@ class RoomRuntime:
         if handover is not None:
             # Host handover bridge (desktop f0ef18fa): a durable ack holds the room before any project setup,
             # queue restoration or admission, so a restart mid-handover never replays or admits work.
-            handover.startup_hold()
+            try:
+                handover.startup_hold()
+            except Exception as exc:
+                # Security N2: an unreadable handover record holds the room instead of stopping it starting.
+                # Turns and media stay held until the user's Resume releases it (user_resume).
+                LOGGER.exception('Host handover record unreadable; the room starts held until the user resumes it')
+                self.handover_fault = f'{type(exc).__name__}: {exc}'[:200]
         saved = load_workspace(self.data / "workspace.json")
         self.paused = saved.get("paused", False)
         # Before any await: a Stop clicked during an update must hold the room, never an older saved paused flag.
@@ -1383,6 +1389,7 @@ class RoomRuntime:
 
     def turn_admission_open(self):
         return (not getattr(getattr(self, 'handover', None), 'held', False)
+                and not getattr(self, 'handover_fault', None)
                 and not getattr(self, 'repository_transition', None)
                 and not getattr(self, 'manual_stop_pending', False)
                 and (not self.deployment or self.deployment.admission_open())
@@ -1395,8 +1402,14 @@ class RoomRuntime:
             if handover is not None:
                 try:
                     await handover.tick()  # first: it owns the checkpoint resume_deploy_checks would unlink
-                except Exception:
-                    LOGGER.exception('Host handover check failed; its hold stays in force')
+                    self.handover_error = None
+                except Exception as exc:
+                    # Security N1: a bad record must not stop the beat; it is logged once per distinct error, not
+                    # every beat. The bridge's own hold stays in force.
+                    error = f'{type(exc).__name__}: {exc}'
+                    if error != getattr(self, 'handover_error', None):
+                        self.handover_error = error
+                        LOGGER.exception('Host handover check failed; its hold stays in force')
             try:
                 await self.resume_deploy_checks()
             except Exception:
@@ -2686,9 +2699,28 @@ class RoomRuntime:
             self.commit_manual_stop(self.manual_stop_stamp(latched))
         return {"ok": True, **note}
 
+    def handover_hold_note(self):
+        """Why Resume left the room held (desktop 06148f36 note): the host handover still holds it, and until when."""
+        handover = getattr(self, 'handover', None)
+        if handover is None or not handover.held:
+            return ''
+        record = handover.ack or handover.request or {}
+        try:
+            import host_handover
+            since = min(float(record['created']), handover.hold_since or time.time())
+            until = time.strftime('%H:%M', time.localtime(since + host_handover.SECONDS))
+        except (ImportError, KeyError, TypeError, ValueError):
+            return 'Held for a host handover. Resume can release it once its time limit has passed.'
+        return f"Held for host handover {str(record.get('nonce', ''))[:8]} until {until}. Resume releases it after that."
+
     async def user_resume(self, latch_only):
         """The user's Resume (POST /api/runtime/resume): the only thing that clears the latch."""
         handover = getattr(self, 'handover', None)
+        if getattr(self, 'handover_fault', None):
+            # Security N2: the user releases a hold caused by an unreadable handover record, and it is recorded.
+            fault, self.handover_fault = self.handover_fault, None
+            self.append_event(json.dumps({'type': 'host_handover_fault_released', 'time': time.time(),
+                                          'data': {'fault': fault}}) + '\n')
         if handover is not None and handover.held:
             # Security B2: only this user route reaches it; the bridge refuses before its bound and records it.
             await handover.release_for_user()
@@ -3034,7 +3066,9 @@ def install(host):
 
     @host.app.post("/api/runtime/resume")
     async def resume(request: Request):
-        return await runtime.user_resume(bool(request.scope.get('release_latch_only')))
+        result = await runtime.user_resume(bool(request.scope.get('release_latch_only')))
+        held = runtime.handover_hold_note()
+        return {**result, 'handover': held} if held else result
 
     @host.app.post("/api/runtime/reopen")
     async def reopen(request: Request):

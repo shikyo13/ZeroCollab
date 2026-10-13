@@ -72,7 +72,9 @@ def finished(runtime, run, outcome):
     owned = {t['id'] for t in room.state['tasks'] if t.get('owner') == run.name and t['status'] != 'done'}
     progress = {tid: sorted(kinds) for tid, kinds in run.progress.items() if tid in owned}
     now = time.time()
-    state['agents'][run.name] = {'run': run.id, 'started': run.started_at or now, 'ended': now, 'outcome': outcome,
+    # Run.started_at is the monotonic clock (turn deadlines); asks are stamped in wall time, so convert it here.
+    started = now - max(0.0, time.monotonic() - run.started_at) if run.started_at else now
+    state['agents'][run.name] = {'run': run.id, 'started': started, 'ended': now, 'outcome': outcome,
                                  'progress': progress, 'files': run.file_changes,
                                  'chain': (run.entry or {}).get('chain'), 'channel': run.channel}
     for claim in state['claims'].values():
@@ -220,12 +222,15 @@ def unseen_ask(runtime, state, name, last, now):
     asks = [('followups', f) for f in room_state.get('followups', [])
             if f['status'] == 'open' and f['assigned_to'] == name and f['created_by'] != name]
     asks += [('reviews', r) for r in room_state.get('reviews', []) if r['status'] == 'pending' and r['reviewer'] == name]
-    due = sorted((changed(item), kind, item) for kind, item in asks
-                 if changed(item) > max(seen, state['since']) and now - changed(item) >= ASK_GRACE_SECONDS)
-    if not due:
-        return None
-    stamp, kind, item = due[0]
-    return ask_wake(runtime, f"ask:{item['id']}:{stamp}", kind, item, last)
+    due = sorted(((changed(item), kind, item) for kind, item in asks
+                  if changed(item) > max(seen, state['since']) and now - changed(item) >= ASK_GRACE_SECONDS),
+                 key=lambda entry: (entry[0], entry[1], entry[2]['id']))
+    for stamp, kind, item in due:
+        key = f"ask:{item['id']}:{stamp}"
+        if state['claims'].get(key, {}).get('status') in ('done', 'exhausted'):
+            continue  # this revision was already woken; it must not hold back a newer ask behind it
+        return ask_wake(runtime, key, kind, item, last)
+    return None
 
 
 def ask_wake(runtime, key, kind, item, last):

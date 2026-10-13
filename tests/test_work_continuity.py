@@ -59,11 +59,11 @@ class Continuity(unittest.TestCase):
     def task(self):
         return next(t for t in self.room.state['tasks'] if t['id'] == self.task_id)
 
-    def turn(self, name='worker', progress=None, files=0, outcome='completed', continuity=''):
-        """A finished turn, as run_turn's end reports it."""
+    def turn(self, name='worker', progress=None, files=0, outcome='completed', continuity='', took=1):
+        """A finished turn, as run_turn's end reports it. Run.started_at is the monotonic clock, as in room_runtime."""
         requests = ([{'chain': self.chain, 'continuity': continuity, 'task_id': self.task_id}] if continuity
                     else [{'chain': self.chain}])  # as enqueue's routing records a room-started turn
-        run = SimpleNamespace(name=name, id=f'run{len(self.calls)}{time.time_ns()}', started_at=time.time() - 1,
+        run = SimpleNamespace(name=name, id=f'run{len(self.calls)}{time.time_ns()}', started_at=time.monotonic() - took,
                               progress=progress if progress is not None else {self.task_id: {'checkin'}},
                               file_changes=files, entry={'chain': self.chain, 'requests': requests}, channel='general')
         wc.finished(self.r, run, outcome)
@@ -201,6 +201,26 @@ class Asks(Continuity):
         self.turn(name='peer', progress={})  # it ran and chose not to answer: that revision is consumed
         self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + wc.RETRY_SECONDS), [])
         self.assertEqual(len(self.delivered), 1)
+
+    def test_an_ask_its_recipient_saw_in_a_turn_is_not_woken(self):
+        # 0.12.51 live check: the stored start was monotonic, so every open ask looked unseen and was woken.
+        self.room.records.followup('lead', 'create', assigned_to='peer', task_id=self.task_id, text='seen already')
+        self.turn(name='peer', progress={}, took=0)  # its turn started after the ask and left it open
+        self.assertGreater(self.room.state['continuity']['agents']['peer']['started'], 1e9)  # wall time
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + 1), [])
+        self.assertEqual(self.delivered, [])
+
+    def test_an_answered_wake_does_not_hold_back_a_newer_ask(self):
+        self.turn(name='peer', progress={}, took=10)
+        self.room.records.followup('lead', 'create', assigned_to='peer', task_id=self.task_id, text='first')
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + 1), ['woke'])
+        self.drain('peer')
+        self.room.state['continuity']['agents']['peer']['started'] = 0  # as if its turn began before both asks
+        for claim in self.claims().values():
+            claim['status'] = 'done'
+        second = self.room.records.followup('worker', 'create', assigned_to='peer', task_id=self.task_id, text='second')['item']
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + 2), ['woke'])
+        self.assertEqual(self.delivered[-1][:2], ('peer', second['id']))
 
 
 class Watchdog(Continuity):
