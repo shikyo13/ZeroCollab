@@ -185,28 +185,42 @@ def room_goal(action: str = 'status', goal_id: str = '', evidence: str = '') -> 
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': True, 'openWorldHint': False})
-def room_release(action: Literal['list', 'stage', 'rehearse', 'request', 'status', 'verify', 'rollback'] = 'status',
+def room_release(action: Literal['list', 'stage', 'rehearse', 'request', 'status', 'verify', 'rollback', 'check',
+                                 'intake', 'handoff', 'disposition', 'archive'] = 'status',
                  repository: str = '', commit: str = '', reviews: list[str] | None = None, release_id: str = '',
                  manifest_sha: str = '', expected_manifest_sha: str = '', idempotency_key: str = '', id: str = '',
-                 deployment_id: str = '') -> dict:
-    """The room's release pipeline, without the browser (Zero #15583). Only the profile Zero has granted release
-    permission to can change anything; the room takes who you are from this turn, never from arguments, and
-    rollback always goes to the release installed just before. If this tool refuses or is unavailable, report
-    that; never use the Updates page, credentials or files instead.
-    list: staged releases. stage repository commit (40 hex) reviews (1-12 approved review ids, 8 hex): package
-    exactly that reviewed commit. rehearse release_id manifest_sha: an isolated rehearsal of it. request
-    release_id manifest_sha expected_manifest_sha (the installed one) idempotency_key: ask to install it, under
-    Zero's grant, his Stop and the typing guard. status (id optional, 32 hex): the current deployment, gate and
-    jobs, or one job or deployment receipt. verify deployment_id: check an installed release. rollback
-    expected_manifest_sha idempotency_key: return to the release installed just before."""
+                 deployment_id: str = '', base: str = '', dependencies: list[str] | None = None, check_id: str = '',
+                 handoff_id: str = '', disposition: str = '', reason: str = '', target: str = '') -> dict:
+    """The room's release pipeline, without the browser (Zero #15583). The room takes who you are from this turn,
+    never from arguments. Any managed agent may check its own donor and read status and intake; everything else
+    belongs to the profile Zero granted release permission to. Rollback always goes to the release installed just
+    before. If this tool refuses or is unavailable, report that; never use the Updates page, credentials or files.
+    Any agent:
+    check repository commit (40 hex) reviews (1-12 approved review ids, 8 hex) base (40 hex, the commit your donor
+    applies to) dependencies (optional, up to 12 check ids or release ids your donor needs first): the room
+    validates the reviewed donor and returns a check job; one check per agent every 30 s.
+    status (id optional, 32 hex): the current deployment, gate and jobs, or one job, deployment receipt, check or
+    handoff. Shared with every managed agent.
+    intake: this project's donor checks and handoffs, with each handoff's state.
+    Release manager only:
+    handoff check_id: offer a passed check for the next release. disposition handoff_id disposition (open,
+    deferred or dropped) reason (1-1000 characters) target (optional, up to 160): decide an offered handoff.
+    archive check_id: move a check out of the active history when it is full; it still answers status.
+    list: staged releases. stage repository commit reviews: package exactly that reviewed commit. rehearse
+    release_id manifest_sha: an isolated rehearsal. request release_id manifest_sha expected_manifest_sha (the
+    installed one) idempotency_key: ask to install it, under Zero's grant and his Stop. verify deployment_id: check
+    an installed release. rollback expected_manifest_sha idempotency_key: return to the release installed before."""
     args = {'action': action}
     for key, value in dict(repository=repository, commit=commit, release_id=release_id, manifest_sha=manifest_sha,
                            expected_manifest_sha=expected_manifest_sha, idempotency_key=idempotency_key, id=id,
-                           deployment_id=deployment_id).items():
+                           deployment_id=deployment_id, base=base, check_id=check_id, handoff_id=handoff_id,
+                           disposition=disposition, reason=reason, target=target).items():
         if value:
-            args[key] = value
+            args[key] = value  # omitted optional fields (dependencies, target) take the core's defaults
     if reviews is not None:
         args['reviews'] = reviews
+    if dependencies is not None:
+        args['dependencies'] = dependencies
     return call('room_release', args, timeout=60)
 
 

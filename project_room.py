@@ -1211,12 +1211,6 @@ class ProjectRoom:
         decisions = getattr(self.runtime, 'decisions', None)
         return [m for m in messages if not (decisions and decisions.hidden(m, run.name))]
 
-    @staticmethod
-    def release_manager(name):
-        """Whether to name room_release in this agent's turn (harness 541d8351): Claude loads MCP tools deferred, so
-        an unnamed tool goes unused. Only the fixed grantee profile; everyone else's prompt is unchanged."""
-        return name == RELEASE_GRANTEE
-
     def context(self, run, changes=None):
         # A local model's context window can lower the room limit for its turns (room_runtime.local_input_budget).
         maximum = min(self.limits['input_chars'], getattr(run, 'input_budget', None) or self.limits['input_chars'])
@@ -1571,7 +1565,9 @@ class ProjectRoom:
             lines.append('- Room tools (room_read, room_task, room_update, room_review, room_followup, room_goal, room_repository, '
                          f"room_image, room_markup, room_motion{', room_browser' if native else ''}"
                          f"{', room_skill' if getattr(run, 'skills', None) else ''}"
-                         f"{', room_release' if native and self.release_manager(run.name) else ''}) are provided for this turn. If any is "
+                         # Named for every native turn (harness 541d8351: an unnamed deferred MCP tool goes unused): since
+                         # E4 any managed agent checks its donor and reads status and intake (astra 7c5e2a88).
+                         f"{', room_release' if native else ''}) are provided for this turn. If any is "
                          'missing from your tool list, say so in the chat as a harness fault and name the action it blocks; '
                          'do not report the action as done.')
             if native:
@@ -1801,4 +1797,14 @@ def coordination_tools():
                    {'action': {'type': 'string', 'enum': ['status', 'complete', 'block']}, 'goal_id': string, 'evidence': string}),
         definition('room_skill', 'Your approved skills. list gives each name and when to use it; load name returns its full procedure, which you then follow; load name with file returns one of that skill\'s listed extra files. Only your own skills load.',
                    {'action': {'type': 'string', 'enum': ['list', 'load']}, 'name': string, 'file': string}),
+        # The same surface as room_mcp.room_release (E4, astra 7c5e2a88); release_interface validates the values.
+        definition('room_release', 'The room release pipeline, without the browser. The room takes who you are from this turn, never from arguments. Any managed agent may check its own donor and read status and intake; everything else belongs to the profile the user granted release permission to. Any agent: check repository commit (40 hex) reviews (1-12 approved 8-hex review ids) base (40 hex, the commit the donor applies to) dependencies (optional, up to 12 check or release ids): validate a reviewed donor, one check per agent every 30 s; status (id optional, 32 hex): the deployment, gate and jobs, or one job, receipt, check or handoff, shared with every managed agent; intake: this project donor checks and handoffs. Release manager only: handoff check_id; disposition handoff_id disposition (open, deferred or dropped) reason (1-1000 characters) target (optional, up to 160); archive check_id (moves a check out of a full history; it still answers status); list; stage repository commit reviews; rehearse release_id manifest_sha; request release_id manifest_sha expected_manifest_sha idempotency_key; verify deployment_id; rollback expected_manifest_sha idempotency_key. If this tool refuses, report it; never use the Updates page, credentials or files instead.',
+                   {'action': {'type': 'string', 'enum': ['list', 'stage', 'rehearse', 'request', 'status', 'verify', 'rollback',
+                                                          'check', 'intake', 'handoff', 'disposition', 'archive']},
+                    'repository': string, 'commit': string, 'reviews': {'type': 'array', 'items': string, 'maxItems': 12},
+                    'release_id': string, 'manifest_sha': string, 'expected_manifest_sha': string, 'idempotency_key': string,
+                    'id': string, 'deployment_id': string, 'base': string,
+                    'dependencies': {'type': 'array', 'items': string, 'maxItems': 12}, 'check_id': string,
+                    'handoff_id': string, 'disposition': {'type': 'string', 'enum': ['open', 'deferred', 'dropped']},
+                    'reason': string, 'target': string}, ['action']),
     ]

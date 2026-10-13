@@ -109,7 +109,7 @@ ROOM_READS = {"room_read": None, "room_image": None, "room_skill": None, "room_t
               "room_team_builder": ({"get"}, 'get'), "room_decision": ({"get"}, 'get'), "room_browser": ({"status", "inspect", "screenshot"}, 'status'),
               # save, frame (new uploads) and export change the room, so sealed turns and check-ins never reach them.
               "room_motion": ({"list", "get", "validate", "export_status", "job_status"}, 'list'),
-              "room_release": ({"list", "status"}, 'status')}
+              "room_release": ({"list", "status", "intake"}, 'status')}
 
 
 # What an agent is doing, in plain words, for the Board's activity strip and Follow (Zero #13855): the provider's
