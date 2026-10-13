@@ -278,7 +278,8 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
                 new_id: str = '', composition: str = '', props: dict | None = None, ops: list[dict] | None = None,
                 url: str = '', asset_id: str = '', kind: str = '', layer_id: str = '', vs: str = '',
                 sheets: list[Literal['contact', 'dense', 'motion', 'shots', 'frames']] | None = None,
-                start: float | None = None, end: float | None = None, fps: float | None = None) -> list:
+                start: float | None = None, end: float | None = None, fps: float | None = None,
+                generation: int = 0) -> list:
     """Author motion scenes and product videos with the room's motion engine (data, never code).
     list: bundled and project scenes. get: one scene by ref (bundled:<id> or project:<id>).
     validate: check scene_json; returns {ok, issues: [{path, message}]}. Fix every issue, then save.
@@ -308,6 +309,11 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     sheets (default contact and motion) draws contact (8 frames), dense (every 1/fps s from start to end,
     fps up to 10, at most 48 tiles: small icon motion), motion (movement over time, cuts marked), shots
     (the middle of each shot) and frames (at t_ms); they come back as /uploads PNGs and are shown here.
+    Heavy jobs (export, frame, inspect, recordings) take turns, one at a time on this room. If inspect is
+    still waiting or running after a few seconds, it returns its handle (job_id, generation, phase,
+    position) and carries on: job_status job_id returns its phase and, once done, its result (sheets shown
+    here); job_cancel job_id generation stops a job you started. export_status lists this project's
+    media_jobs.
     Loop: validate until clean, save, frame 2-3 key moments and show them, export, inspect it against the
     reference, then publish."""
     args = dict(action=action)
@@ -334,6 +340,8 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
         args['profile'] = profile
     if job_id:
         args['job_id'] = job_id
+    if action == 'job_cancel' and generation:
+        args['generation'] = generation
     if action == 'publish':
         args.update(task_id=task_id, note=note, name=name, post=post)
     result = call('room_motion', args, timeout=MOTION_TIMEOUTS.get(action, 15))
@@ -342,6 +350,11 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     # Only frame and inspect return images; an export job's 'frames' is its frame count.
     if action == 'frame' and isinstance(result, dict) and isinstance(result.get('frames'), list) and result['frames']:
         shown = [result.get('sheet_url') or result['frames'][0].get('url')]
+    if action == 'job_status' and isinstance(result, dict) and isinstance(result.get('result'), dict):
+        result = result['result']  # a finished frame or inspect: show its images as the call itself would
+        action = 'frame' if isinstance(result.get('frames'), list) else 'inspect'
+        if action == 'frame' and result['frames']:
+            shown = [result.get('sheet_url') or result['frames'][0].get('url')]
     if action == 'inspect' and isinstance(result, dict):
         shown = [sheet.get('url') for sheet in result.get('sheets', [])][:MAX_SHOWN_SHEETS]
     if not any(shown):

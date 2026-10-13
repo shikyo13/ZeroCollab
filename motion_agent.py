@@ -9,9 +9,11 @@ inspect (Zero #14935/#14956, QA's video_analysis 53e691c7): measure a video and 
 judges its export against a reference from numbers and dense frames instead of a few stills.
 """
 import asyncio
+import contextlib
 import copy
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -22,6 +24,7 @@ from pathlib import Path
 
 from team_builder import text
 
+LOGGER = logging.getLogger(__name__)
 MAX_PATCH_OPS = 200
 # A browser recording's take (desktop d590dce6): clip.webm with this sidecar beside it.
 TAKE_SIDECAR = 'sidecar.json'
@@ -478,7 +481,6 @@ DENSE_FPS = 4             # default dense rate: 12 s in 48 tiles, enough to foll
 MAX_LISTED = 100          # times listed per series (cuts, transitions, silences); the motion chart draws them all
 SERIES = ('frame_motion', 'scene_per_second')  # per-sample series: drawn by the motion chart, not returned
 DERIVED_HEX = 16          # sheet names: the first 64 bits of the PNG's sha256, as app.UPLOAD_HASH_HEX names uploads
-INSPECT_SLOTS = asyncio.Semaphore(2)  # at most two inspections run FFmpeg at once; the rest wait their turn
 EXPORT_REF = 'export:'
 # A pasted original (app /api/files/reference): fileref:<id> or its served link /api/files/ref/<id>/<name>.
 FILEREF_INPUT = re.compile(r'(?:fileref:|/api/files/ref/)([0-9a-f]{16})(?:/[^/]+)?')
@@ -546,24 +548,28 @@ def analysis_summary(analysis):
     return summary
 
 
-def store_derived(made, upload_dir):
-    """A generated PNG into uploads under its content hash, so inspecting the same video again reuses the file."""
+def store_derived(made, upload_dir, created=None):
+    """A generated PNG into uploads under its content hash, so inspecting the same video again reuses the file.
+    A file this call adds goes into created, so a cancelled job removes only what it made, never a reused one."""
     target = upload_dir / (hashlib.sha256(made.read_bytes()).hexdigest()[:DERIVED_HEX] + made.suffix)
     if target.exists():
         made.unlink()
     else:
         os.replace(made, target)
+        if created is not None:
+            created.append(target)
     return '/uploads/' + target.name
 
 
-def inspect_files(ffmpeg, path, vs_path, options, upload_dir):
+def inspect_files(ffmpeg, path, vs_path, options, upload_dir, stop=None, created=None):
     """analyze, compare and draw the requested sheets; runs off the event loop. Sheets are drawn in a scratch
-    folder inside uploads (same volume, so the move is a rename) that is removed whatever happens."""
+    folder inside uploads (same volume, so the move is a rename) that is removed whatever happens. stop (the
+    media job's threading.Event) ends the running FFmpeg and raises video_analysis.Cancelled (QA r4b)."""
     import video_analysis
-    analysis = video_analysis.analyze(ffmpeg, path)
+    analysis = video_analysis.analyze(ffmpeg, path, stop=stop)
     result = {'analysis': analysis_summary(analysis)}
     if vs_path:
-        result['compare'] = video_analysis.compare(analysis, video_analysis.analyze(ffmpeg, vs_path))
+        result['compare'] = video_analysis.compare(analysis, video_analysis.analyze(ffmpeg, vs_path, stop=stop))
     length, cuts = analysis['measured_s'], analysis['cuts']
     sheets = []
     with tempfile.TemporaryDirectory(dir=upload_dir, prefix='.inspect-') as work:
@@ -572,30 +578,30 @@ def inspect_files(ffmpeg, path, vs_path, options, upload_dir):
             out = work / f'{kind}.png'
             entry = {'kind': kind}
             if kind == 'contact':
-                video_analysis.contact_sheet(ffmpeg, path, length, out)
+                video_analysis.contact_sheet(ffmpeg, path, length, out, stop=stop)
                 entry['frames'] = video_analysis.SHEET_FRAMES
             elif kind == 'dense':
                 start, fps = options['start'], options['fps']
                 if start >= length:
                     raise ValueError(f'start is past the end of the video ({length} s measured)')
                 end = options['end'] or min(length, start + video_analysis.DENSE_MAX_TILES / fps)
-                video_analysis.dense_sheet(ffmpeg, path, start, end, fps, out)
+                video_analysis.dense_sheet(ffmpeg, path, start, end, fps, out, stop=stop)
                 entry.update(start=start, end=round(end, 3), fps=fps)
             elif kind == 'motion':
-                video_analysis.motion_chart(ffmpeg, analysis['frame_motion'], cuts, length, out)
+                video_analysis.motion_chart(ffmpeg, analysis['frame_motion'], cuts, length, out, stop=stop)
             elif kind == 'shots':
                 fps = analysis['probe']['fps']
                 if not fps:
                     raise ValueError('The shot sheet needs the frame rate, and this video does not report one')
-                entry['shots'] = video_analysis.shot_sheet(ffmpeg, path, cuts, length, fps, out)
+                entry['shots'] = video_analysis.shot_sheet(ffmpeg, path, cuts, length, fps, out, stop=stop)
                 if len(entry['shots']) < analysis['shots']:  # the sheet shows only the first ones (QA r3b)
                     entry['truncated'] = True
             else:  # frames: one PNG per time
-                made = video_analysis.frames(ffmpeg, path, options['times'], work, 'frame')
-                sheets += [{'kind': kind, 't_ms': round(t * 1000), 'url': store_derived(m, upload_dir)}
+                made = video_analysis.frames(ffmpeg, path, options['times'], work, 'frame', stop=stop)
+                sheets += [{'kind': kind, 't_ms': round(t * 1000), 'url': store_derived(m, upload_dir, created)}
                            for t, m in zip(options['times'], made)]
                 continue
-            entry['url'] = store_derived(out, upload_dir)
+            entry['url'] = store_derived(out, upload_dir, created)
             sheets.append(entry)
     result['sheets'] = sheets
     return result
@@ -615,14 +621,95 @@ async def inspect(runtime, run, arguments):
         ffmpeg = motion_studio.ffmpeg_path(runtime)
     except motion_studio.Unavailable as exc:
         raise ValueError(str(exc)) from None
-    async with INSPECT_SLOTS:
-        try:
-            result = await asyncio.to_thread(inspect_files, ffmpeg, path, vs_path, options,
-                                             runtime.host.store.upload_dir)
-        except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
-            # An unreadable or truncated video is an answer for the agent, not a server fault.
-            raise ValueError(f'Could not analyse {ref}: {exc}') from None
-    if result['sheets']:
-        await runtime.live.publish(runtime.live.artifact(run, result['sheets'][0]['url'], 'upload'))
-    await runtime.activity_note(run, 'motion', f'Inspected {ref}' + (f' against {vs}' if vs else ''))
-    return {'video': ref, **({'vs': vs} if vs else {}), **result}
+    # A media job (media 19055e0e): one heavy job at a time on this host, first come first served, so an inspect
+    # waits behind an export or a take instead of running beside it. Everything above is checked first, so a bad
+    # call never queues. Submit, start and bind with no await between (systems d4eb65a0).
+    jobs = runtime.host.media_jobs
+    ticket = jobs.submit({'kind': 'inspect', 'project': runtime.identity or '', 'owner': run.name})
+    jobs.bind(ticket, asyncio.get_running_loop().create_task(
+        inspect_job(runtime, run, ticket, ref, vs, path, vs_path, ffmpeg, options)))
+    return job_answer(await jobs.reply(ticket))
+
+
+async def inspect_job(runtime, run, ticket, ref, vs, path, vs_path, ffmpeg, options):
+    """The owned inspect. Its thread owns FFmpeg; a cancel sets the job's stop event and this joins the thread
+    before the slot is freed, however often it is cancelled itself. A cancelled or failed job publishes nothing
+    and removes only the sheets it added (media r2, QA r4b)."""
+    import motion_jobs
+    import video_analysis
+    jobs = runtime.host.media_jobs
+    lease = await jobs.wait(ticket)  # cancelled while queued: wait() gives back anything it was granted
+    ticket.job['phase'] = 'running'
+    created, interrupted = [], False
+    phase, result, error = 'failed', None, None
+    try:
+        ticket.check_cancel()
+        worker = asyncio.get_running_loop().run_in_executor(
+            None, inspect_files, ffmpeg, path, vs_path, options, runtime.host.store.upload_dir, ticket.stop, created)
+        while not worker.done():
+            try:
+                await asyncio.wait({worker})  # never cancels the worker: it is joined, not abandoned
+            except asyncio.CancelledError:
+                interrupted = True
+                ticket.stop.set()
+        answer = {'video': ref, **({'vs': vs} if vs else {}), **worker.result()}
+        ticket.check_cancel()  # publication fence: nothing from a cancelled job or a changed project
+        result, phase = motion_jobs.validate_result(answer), 'done'
+    except (motion_jobs.Cancelled, video_analysis.Cancelled):
+        phase = 'cancelled'
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        # An unreadable or truncated video is an answer for the agent, not a server fault.
+        error = f'Could not analyse {ref}: {exc}'
+    except (ValueError, TypeError) as exc:
+        error = str(exc)
+    except Exception as exc:
+        LOGGER.exception('room_motion inspect failed')
+        error = f'Inspect failed: {exc}'
+    finally:
+        if phase != 'done':
+            for made in created:
+                with contextlib.suppress(OSError):
+                    made.unlink()
+        jobs.finish(lease, phase=phase, result=result, error=error)
+    if ticket.job['phase'] == 'done':
+        if result['sheets']:
+            await runtime.live.publish(runtime.live.artifact(run, result['sheets'][0]['url'], 'upload'))
+        await runtime.activity_note(run, 'motion', f'Inspected {ref}' + (f' against {vs}' if vs else ''))
+    if interrupted:
+        raise asyncio.CancelledError
+
+
+JOB_PENDING = ('Still {phase}: the job carries on. Check it with room_motion job_status job_id; job_cancel job_id '
+               'generation stops it.')
+
+
+def job_answer(status):
+    """A media job's tool reply after the bounded wait: its result when it finished in time, its failure as the
+    agent's error, otherwise its handle (job_id, generation, phase and queue position) for job_status."""
+    handle = {key: status[key] for key in ('job_id', 'generation') if key in status}
+    if status.get('phase') == 'done' and isinstance(status.get('result'), dict):
+        return {**status['result'], **handle}
+    if status.get('phase') == 'failed':
+        raise ValueError(status.get('error') or 'The media job failed')
+    if status.get('phase') in ('queued', 'starting', 'running'):
+        return {**status, 'note': JOB_PENDING.format(phase=status['phase'])}
+    return status
+
+
+def job_control(runtime, run, arguments):
+    """job_status and job_cancel for a media job in this project. Only the agent that started a job may cancel
+    it (the user can too, from the room); the caller is the run, never an argument (media r2 B2)."""
+    jobs = runtime.host.media_jobs
+    job_id = str(arguments.get('job_id', ''))
+    if arguments.get('action') == 'job_status':
+        return jobs.status(job_id, project=runtime.identity or '')
+    generation = arguments.get('generation')
+    if type(generation) is not int:
+        raise ValueError('job_cancel needs the job_id and generation from the job handle')
+    return jobs.cancel(job_id, generation, project=runtime.identity or '', actor=run.name)
+
+
+def media_jobs_list(runtime):
+    """export_status's media_jobs: this project's queued, running and recent media jobs, without their results."""
+    return [{k: v for k, v in status.items() if k != 'result'}
+            for status in runtime.host.media_jobs.snapshot(runtime.identity or '')]

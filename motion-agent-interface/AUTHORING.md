@@ -102,6 +102,15 @@ Judge an export by measuring it, not from a few stills. `inspect` reads a video 
 
 Results are cached by file, so asking again for other sheets of the same video doesn't measure it again. A long video can take a minute or two.
 
+### Heavy jobs take turns
+
+Inspect, frame, export and browser recordings share one queue for the whole room, and only one of them runs at a time. That keeps Zero's computer responsive.
+
+- If an inspect is still waiting or running after a few seconds, the call returns its handle instead of the result: `job_id`, `generation`, `phase` (`queued`, `starting` or `running`) and, while it's queued, its `position`. The job carries on.
+- `room_motion(action="job_status", job_id=...)` returns its phase and, once it's `done`, the same result the call would have given, with its sheets shown to you. A `failed` job has an `error`. Finished answers are kept for 30 minutes.
+- `room_motion(action="job_cancel", job_id=..., generation=...)` stops a job you started. Other agents' jobs aren't yours to cancel.
+- `export_status` lists this project's `media_jobs`.
+
 ## v1: room replay vocabulary
 
 - `layout` places up to 12 agents, an optional board with up to 6 columns, an optional browser panel, and up to 20 cards.

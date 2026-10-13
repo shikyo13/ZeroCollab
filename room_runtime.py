@@ -899,6 +899,10 @@ class RoomRuntime:
             project = project_registry.repository_root(project)
         if identity is None:
             identity = project_registry.identity_for(self, project)
+        jobs = getattr(self.host, 'media_jobs', None)
+        if jobs is not None and jobs.loop is not None and self.identity:
+            # Before the identity changes: the old project's queued media jobs end and running ones are told to stop.
+            jobs.invalidate_project(self.identity)
         self.project = project
         self.identity = identity
         self.project_room.use_project(identity)
@@ -1747,6 +1751,8 @@ class RoomRuntime:
                          'inspect': motion_agent.inspect}.get(arguments.get('action'))
             if authoring:
                 return await authoring(self, run, arguments)
+            if arguments.get('action') in ('job_status', 'job_cancel'):
+                return motion_agent.job_control(self, run, arguments)
             try:
                 result = await motion_studio.agent_action(self, run, arguments)
             except (RuntimeError, motion_studio.Unavailable) as exc:
@@ -1757,6 +1763,8 @@ class RoomRuntime:
             # Only frame returns a list of frames; an export job's 'frames' is its frame count.
             if isinstance(result, dict) and isinstance(result.get('frames'), list) and result['frames']:
                 await self.live.publish(self.live.artifact(run, result.get('sheet_url') or result['frames'][0]['url'], 'upload'))
+            if arguments.get('action') == 'export_status' and isinstance(result, dict):
+                result['media_jobs'] = motion_agent.media_jobs_list(self)
             return motion_agent.render_note(result, arguments.get('scene_json'), self)
         if tool == 'room_team_builder':
             action = arguments.get('action', 'get')
@@ -2434,10 +2442,27 @@ class RoomRuntime:
         if hasattr(self, 'browser'):
             async with self.browser.lock:
                 await self.browser.close()
+        jobs = getattr(self.host, 'media_jobs', None)
+        if jobs is not None:
+            # Last: every owner has torn down, so this joins what is left and frees the gate (media r2).
+            try:
+                await jobs.close()
+            except RuntimeError:
+                LOGGER.exception('A media job had not finished its teardown at shutdown')
 
 
 def install(host):
     runtime = RoomRuntime(host)
+    # One heavy-media admission gate for the host (media 19055e0e, backend a6922e60), built before any installer
+    # so every owner (exports, frames, inspect, recordings) finds it. At shutdown its signal goes first, so
+    # owners' own close hooks never wait on admission; RoomRuntime.close does the final join.
+    import motion_jobs
+    host.media_jobs = motion_jobs.MediaJobs()
+
+    async def stop_media_admission():
+        host.media_jobs.begin_close()  # signal only, no join
+
+    host.app.router.on_shutdown.insert(0, stop_media_admission)
     host.agents.runtime = runtime
     host.runtime = runtime
     import room_deploy
