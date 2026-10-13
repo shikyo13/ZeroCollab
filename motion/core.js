@@ -21,14 +21,28 @@ var ZCMotionCore = (() => {
   // core/index.ts
   var index_exports = {};
   __export(index_exports, {
+    AUDIO_PLAN_VERSION: () => AUDIO_PLAN_VERSION,
+    IDENTITY: () => IDENTITY,
     LABEL_H: () => LABEL_H,
+    NO_PROPS: () => NO_PROPS,
     PERSON: () => PERSON,
+    SPRING_PRESETS: () => SPRING_PRESETS,
+    audioPlan: () => audioPlan,
+    blendViews: () => blendViews,
+    cameraAt: () => cameraAt,
+    cameraKeyView: () => cameraKeyView,
+    cameraKeys: () => cameraKeys,
     clamp: () => clamp,
+    compose: () => compose,
+    compositionProps: () => compositionProps,
     cubicBezier: () => cubicBezier,
+    cursorTrack: () => cursorTrack,
     easing: () => easing,
     evaluate: () => evaluate,
     evaluateFrame: () => evaluateFrame,
     finite: () => finite,
+    followKeys: () => followKeys,
+    followShots: () => followShots,
     frameAtMilliseconds: () => frameAtMilliseconds,
     frameContext: () => frameContext,
     frameToMilliseconds: () => frameToMilliseconds,
@@ -36,15 +50,21 @@ var ZCMotionCore = (() => {
     integer: () => integer,
     interpolate: () => interpolate,
     interpolateColors: () => interpolateColors,
+    layerAffine: () => layerAffine,
+    layerToComposition: () => layerToComposition,
     layoutStage: () => layoutStage,
     loop: () => loop,
+    mapRegion: () => mapRegion,
     measureSpring: () => measureSpring,
     noise: () => noise,
     overlap: () => overlap,
+    pairCache: () => pairCache,
     personRect: () => personRect,
     placeBubble: () => placeBubble,
     random: () => random,
+    regionView: () => regionView,
     sampleField: () => sampleField,
+    screenMotion: () => screenMotion,
     seats: () => seats,
     segmentEasing: () => segmentEasing,
     sequence: () => sequence,
@@ -53,6 +73,9 @@ var ZCMotionCore = (() => {
     spring: () => spring,
     springStep: () => springStep,
     stagger: () => stagger,
+    timeMap: () => timeMap,
+    toScreen: () => toScreen,
+    toWorld: () => toWorld,
     validateFps: () => validateFps
   });
 
@@ -94,6 +117,10 @@ var ZCMotionCore = (() => {
     "ease-in-out": cubicBezier(0.42, 0, 0.58, 1),
     "step-start": ((p) => p < 0 ? 0 : 1),
     "step-end": ((p) => p < 1 ? 0 : 1),
+    // Demo presets (28cb5faf): camera and title moves that start decisively and land softly.
+    "expo-out": cubicBezier(0.16, 1, 0.3, 1),
+    "expo-in-out": cubicBezier(0.87, 0, 0.13, 1),
+    premium: cubicBezier(0.65, 0, 0.35, 1),
     cubicBezier
   });
   function interpolate(value, input, output, options = {}) {
@@ -174,8 +201,8 @@ var ZCMotionCore = (() => {
   }
 
   // core/spring.ts
-  function criticalState(displacement, velocity, seconds, omega) {
-    const e = Math.exp(-omega * seconds), step = (velocity + omega * displacement) * seconds;
+  function criticalState(displacement, velocity, seconds2, omega) {
+    const e = Math.exp(-omega * seconds2), step = (velocity + omega * displacement) * seconds2;
     return [(displacement + step) * e, (velocity - omega * step) * e];
   }
   function springStep(x, velocity, target, dt, omega = 9) {
@@ -229,8 +256,8 @@ var ZCMotionCore = (() => {
     };
   }
   function spring(frame, fps, options = {}) {
-    const m = model(options), seconds = Math.max(0, frameToMilliseconds(frame, fps)) / 1e3;
-    const value = seconds === 0 ? m.from : m.to + m.value(seconds);
+    const m = model(options), seconds2 = Math.max(0, frameToMilliseconds(frame, fps)) / 1e3;
+    const value = seconds2 === 0 ? m.from : m.to + m.value(seconds2);
     return options.overshootClamping ? clamp(value, Math.min(m.from, m.to), Math.max(m.from, m.to)) : value;
   }
   function measureSpring(fps, options = {}) {
@@ -475,11 +502,215 @@ var ZCMotionCore = (() => {
     return a + (b - a) * s;
   }
 
+  // core/camera.ts
+  var IDENTITY = [1, 0, 0, 1, 0, 0];
+  function regionView(region, width, height, padding = 0.08) {
+    const [x, y, w, h] = region;
+    if (!(w > 0 && h > 0)) throw new RangeError("A camera region needs a positive width and height");
+    const zoom = Math.min(width / (w * (1 + 2 * padding)), height / (h * (1 + 2 * padding)));
+    return { x: x + w / 2, y: y + h / 2, zoom, rotate: 0 };
+  }
+  function blendViews(a, b, e) {
+    const zoom = Math.exp(Math.log(a.zoom) + (Math.log(b.zoom) - Math.log(a.zoom)) * e);
+    const rotate = a.rotate + (b.rotate - a.rotate) * e;
+    if (Math.abs(a.zoom - b.zoom) <= 1e-3 * Math.max(a.zoom, b.zoom)) {
+      return { x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e, zoom, rotate };
+    }
+    const px = (a.zoom * a.x - b.zoom * b.x) / (a.zoom - b.zoom), py = (a.zoom * a.y - b.zoom * b.y) / (a.zoom - b.zoom);
+    const k = a.zoom / zoom;
+    return { x: px + (a.x - px) * k, y: py + (a.y - py) * k, zoom, rotate };
+  }
+  function toScreen(view, width, height, p) {
+    const r = view.rotate * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+    const dx = (p[0] - view.x) * view.zoom, dy = (p[1] - view.y) * view.zoom;
+    return [width / 2 + c * dx - s * dy, height / 2 + s * dx + c * dy];
+  }
+  function toWorld(view, width, height, p) {
+    const r = -view.rotate * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+    const dx = p[0] - width / 2, dy = p[1] - height / 2;
+    return [view.x + (c * dx - s * dy) / view.zoom, view.y + (s * dx + c * dy) / view.zoom];
+  }
+  function screenMotion(prev, now, width, height) {
+    let mx = 0, my = 0;
+    for (const [fx, fy] of [[0.5, 0.5], [0.1, 0.1], [0.9, 0.1], [0.1, 0.9], [0.9, 0.9]]) {
+      const s = [fx * width, fy * height];
+      const before = toScreen(prev, width, height, toWorld(now, width, height, s));
+      mx = Math.max(mx, Math.abs(s[0] - before[0]));
+      my = Math.max(my, Math.abs(s[1] - before[1]));
+    }
+    return [mx, my];
+  }
+  function layerAffine(v) {
+    const r = v.rotate * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+    const a = c * v.sx, b = s * v.sx, cc = -s * v.sy, d = c * v.sy;
+    const ox = v.ax * v.w, oy = v.ay * v.h;
+    return [a, b, cc, d, v.x - (a * ox + cc * oy), v.y - (b * ox + d * oy)];
+  }
+  function compose(parent, child) {
+    const [a, b, c, d, e, f] = parent, [a2, b2, c2, d2, e2, f2] = child;
+    return [a * a2 + c * b2, b * a2 + d * b2, a * c2 + c * d2, b * c2 + d * d2, a * e2 + c * f2 + e, b * e2 + d * f2 + f];
+  }
+  function mapRegion(m, region) {
+    const [x, y, w, h] = region, [a, b, c, d, e, f] = m;
+    const pts = [[x, y], [x + w, y], [x, y + h], [x + w, y + h]].map(([u, v]) => [a * u + c * v + e, b * u + d * v + f]);
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const x0 = Math.min(...xs), y0 = Math.min(...ys);
+    return [x0, y0, Math.max(...xs) - x0, Math.max(...ys) - y0];
+  }
+
+  // core/cursor.ts
+  var STEP_S = 1 / 240;
+  var CURSOR_OMEGA = 22;
+  var RIPPLE_S = 0.5;
+  var ARRIVE_S = 0.3;
+  var POINTER_TYPES = /* @__PURE__ */ new Set(["move", "down", "up", "click", "scroll"]);
+  var seconds = (frame, fps) => integer(frame, "event frame", 0) * fps.den / fps.num;
+  var isPress = (e) => e.type === "click" || e.type === "down";
+  function rippleTimes(events, fps) {
+    let lastDown = -Infinity;
+    const times = [];
+    for (const e of events) {
+      const t = seconds(e.frame, fps);
+      if (e.type === "down") {
+        lastDown = t;
+        times.push(t);
+      } else if (e.type === "click" && t - lastDown >= RIPPLE_S) times.push(t);
+    }
+    return times;
+  }
+  function pointerTargets(events, fps) {
+    const placed = events.filter((e) => POINTER_TYPES.has(e.type) && typeof e.x === "number" && typeof e.y === "number");
+    const targets = [];
+    placed.forEach((e, i) => {
+      const t = seconds(e.frame, fps), prev = targets[targets.length - 1];
+      if (prev && prev.x === e.x && prev.y === e.y) return;
+      const press = placed.slice(i).find((p) => p.x !== e.x || p.y !== e.y || isPress(p));
+      const pressAt = press && isPress(press) && press.x === e.x && press.y === e.y ? seconds(press.frame, fps) : null;
+      const lead = pressAt !== null && pressAt - t < ARRIVE_S ? pressAt - ARRIVE_S : t;
+      targets.push({ t: prev ? Math.max(prev.t, lead) : t, x: e.x, y: e.y });
+    });
+    return targets;
+  }
+  function cursorTrack(events, fps) {
+    const targets = pointerTargets(events, fps);
+    const clicks = rippleTimes(events, fps);
+    if (!targets.length) return () => ({ x: 0, y: 0, visible: false, clickAge: null });
+    const start = targets[0].t, end = targets[targets.length - 1].t + 1;
+    const n = Math.ceil((end - start) / STEP_S) + 1;
+    const xs = new Float64Array(n), ys = new Float64Array(n);
+    let x = targets[0].x, y = targets[0].y, vx = 0, vy = 0, k = 0;
+    for (let i = 0; i < n; i++) {
+      const t = start + i * STEP_S;
+      while (k + 1 < targets.length && targets[k + 1].t <= t) k++;
+      if (i) {
+        [x, vx] = springStep(x, vx, targets[k].x, STEP_S, CURSOR_OMEGA);
+        [y, vy] = springStep(y, vy, targets[k].y, STEP_S, CURSOR_OMEGA);
+      }
+      xs[i] = x;
+      ys[i] = y;
+    }
+    return (t) => {
+      if (t < start) return { x: xs[0], y: ys[0], visible: false, clickAge: null };
+      const f = Math.min(n - 1, (t - start) / STEP_S), i = Math.floor(f), j = Math.min(n - 1, i + 1), u = f - i;
+      let last = null;
+      for (const c of clicks) if (c <= t) last = c;
+      else break;
+      const age = last === null ? null : t - last;
+      return { x: xs[i] + (xs[j] - xs[i]) * u, y: ys[i] + (ys[j] - ys[i]) * u, visible: true, clickAge: age !== null && age < RIPPLE_S ? age : null };
+    };
+  }
+  function followShots(events, fps, viewport, options = {}) {
+    const zoom = options.zoom ?? 2.2, idle = (options.idleMs ?? 1200) / 1e3;
+    const active = events.filter((e) => e.type !== "move" && e.type !== "up");
+    const shots = [];
+    let burst = [];
+    const close = () => {
+      if (!burst.length) return;
+      const anchor = burst.find((e) => e.type === "click" || e.type === "down") ?? burst.find((e) => typeof e.x === "number");
+      const t0 = seconds(burst[0].frame, fps), t1 = seconds(burst[burst.length - 1].frame, fps);
+      if (anchor) {
+        const [vw, vh] = viewport, w = vw / zoom, h = vh / zoom;
+        const rect = anchor.rect && anchor.rect[2] > 0 && anchor.rect[3] > 0 ? anchor.rect : null;
+        const cx = rect ? rect[0] + rect[2] / 2 : anchor.x, cy = rect ? rect[1] + rect[3] / 2 : anchor.y;
+        const rw = Math.max(w, rect ? rect[2] : 0), rh = Math.max(h, rect ? rect[3] : 0);
+        const x = Math.min(Math.max(0, cx - rw / 2), Math.max(0, vw - rw)), y = Math.min(Math.max(0, cy - rh / 2), Math.max(0, vh - rh));
+        shots.push({ start: t0, end: t1 + idle, region: [x, y, Math.min(rw, vw), Math.min(rh, vh)] });
+      }
+      burst = [];
+    };
+    for (const e of active) {
+      if (burst.length && seconds(e.frame, fps) - seconds(burst[burst.length - 1].frame, fps) > idle) close();
+      burst.push(e);
+    }
+    close();
+    return shots;
+  }
+
+  // core/timemap.ts
+  var cache = /* @__PURE__ */ new WeakMap();
+  var number = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  function timeMap(layer, frames, props, fps) {
+    const key = `${frames}|${fps.num}/${fps.den}`;
+    const known = cache.get(layer)?.get(props)?.get(key);
+    if (known) return known;
+    const step = fps.den / fps.num, base = number(sampleField(layer, "rate", 0, props, fps), 1);
+    const trim = number(sampleField(layer, "trim", 0, props, fps), 0) * step;
+    const sums = new Float64Array(frames + 1);
+    sums[0] = trim;
+    for (let f = 0; f < frames; f++) {
+      const a = number(sampleField(layer, "speed", f, props, fps), base), b = number(sampleField(layer, "speed", f + 1, props, fps), base);
+      sums[f + 1] = sums[f] + (Math.max(0, a) + Math.max(0, b)) / 2 * step;
+    }
+    const map = {
+      seconds(contentFrame) {
+        if (contentFrame <= 0) return sums[0] + contentFrame * base * step;
+        if (contentFrame >= frames) return sums[frames] + (contentFrame - frames) * base * step;
+        const i = Math.floor(contentFrame), u = contentFrame - i;
+        return sums[i] + (sums[i + 1] - sums[i]) * u;
+      },
+      frameAt(seconds2) {
+        if (seconds2 <= sums[0]) return 0;
+        if (seconds2 >= sums[frames]) return frames;
+        let lo = 0, hi = frames;
+        while (hi - lo > 1) {
+          const mid = lo + hi >> 1;
+          if (sums[mid] < seconds2) lo = mid;
+          else hi = mid;
+        }
+        const span = sums[hi] - sums[lo];
+        return lo + (span > 0 ? (seconds2 - sums[lo]) / span : 0);
+      }
+    };
+    let byProps = cache.get(layer);
+    if (!byProps) cache.set(layer, byProps = /* @__PURE__ */ new WeakMap());
+    let byKey = byProps.get(props);
+    if (!byKey) byProps.set(props, byKey = /* @__PURE__ */ new Map());
+    byKey.set(key, map);
+    return map;
+  }
+
+  // core/memo.ts
+  var NO_PROPS = Object.freeze({});
+  function pairCache(compute) {
+    const outer = /* @__PURE__ */ new WeakMap();
+    return (a, b) => {
+      let inner = outer.get(a);
+      if (!inner) outer.set(a, inner = /* @__PURE__ */ new WeakMap());
+      if (!inner.has(b)) inner.set(b, compute(a, b));
+      return inner.get(b);
+    };
+  }
+
   // core/scene.ts
+  var SPRING_PRESETS = {
+    "spring-soft": { stiffness: 110, damping: 18 },
+    "spring-snappy": { stiffness: 320, damping: 30 }
+  };
   var META = /* @__PURE__ */ new Set(["id", "type", "name", "hidden", "keyframes", "layers"]);
   var isProp = (v) => !!v && typeof v === "object" && typeof v.prop === "string";
   function segmentEasing(spec, fps, length) {
     if (spec === void 0) return easing.linear;
+    if (typeof spec === "string" && spec in SPRING_PRESETS) return segmentEasing({ spring: SPRING_PRESETS[spec] }, fps, length);
     if (typeof spec === "string") {
       const curve = easing[spec];
       if (typeof curve !== "function" || spec === "cubicBezier") throw new RangeError(`Unknown easing "${spec}"`);
@@ -521,10 +752,10 @@ var ZCMotionCore = (() => {
     }
     return out;
   }
-  function evaluate(composition, frame, overrides = {}) {
+  function evaluate(composition, frame, overrides = NO_PROPS) {
     validateFps(composition.fps);
     if (!Number.isSafeInteger(frame) || frame < 0 || frame >= composition.duration) throw new RangeError(`frame must be an integer in [0, ${composition.duration - 1}]`);
-    const props = { ...composition.props ?? {}, ...overrides };
+    const props = compositionProps(composition, overrides);
     const entering = (clip) => {
       const t = clip.transition, local = frame - clip.from;
       if (!t || t.kind === "cut" || t.duration <= 0 || local < 0 || local >= t.duration) return null;
@@ -546,11 +777,165 @@ var ZCMotionCore = (() => {
           duration: clip.duration,
           transition: entering(clip),
           exit: next ? entering(next) : null,
+          fixed: !!track.fixed,
           layers: drawLayers(clip.layers, local, props, composition.fps)
         });
       });
     }
-    return { frame, width: composition.width, height: composition.height, background: composition.background ?? "#0c0e10", clips };
+    const camera = cameraAt(composition, frame, props), cameraPrev = frame > 0 ? cameraAt(composition, frame - 1, props) : camera;
+    return { frame, width: composition.width, height: composition.height, background: composition.background ?? "#0c0e10", clips, camera, cameraPrev };
+  }
+  var MEDIA = /* @__PURE__ */ new Set(["image", "capture", "video", "ui"]);
+  var num = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  function layerToComposition(composition, layerId, frame, props = compositionProps(composition)) {
+    const W = composition.width, H = composition.height;
+    const box = (layer, local) => {
+      const v = (name) => sampleField(layer, name, local, props, composition.fps);
+      const media = MEDIA.has(layer.type), s = num(v("scale"), 1);
+      const w = num(v("width"), media ? W : 0), h = num(v("height"), media ? H : 0);
+      return { w, h, m: layerAffine({ x: num(v("x"), 0), y: num(v("y"), 0), w, h, ax: num(v("anchor_x"), 0), ay: num(v("anchor_y"), 0), rotate: num(v("rotate"), 0), sx: s * num(v("scale_x"), 1), sy: s * num(v("scale_y"), 1) }) };
+    };
+    const find = (layers, local, parent) => {
+      for (const layer of layers) {
+        const b = box(layer, local), m = compose(parent, b.m);
+        if (layer.id === layerId) return { matrix: m, size: [b.w, b.h] };
+        if (layer.type === "group") {
+          const hit = find(layer.layers ?? [], local, m);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    };
+    for (const track of composition.tracks) for (const clip of track.clips) {
+      const local = Math.min(clip.duration - 1, Math.max(0, frame - clip.from));
+      const hit = find(clip.layers, local, IDENTITY);
+      if (hit) return hit;
+    }
+    throw new RangeError(`camera region names unknown layer "${layerId}"`);
+  }
+  var HOME = (c) => ({ x: c.width / 2, y: c.height / 2, zoom: 1, rotate: 0 });
+  function cameraKeyView(composition, key, props = compositionProps(composition)) {
+    let view = HOME(composition);
+    if (key.region) {
+      const region = key.layer ? mapRegion(layerToComposition(composition, key.layer, key.frame, props).matrix, key.region) : key.region;
+      view = regionView(region, composition.width, composition.height, key.padding ?? 0.08);
+    }
+    return { x: key.x ?? view.x, y: key.y ?? view.y, zoom: key.zoom ?? view.zoom, rotate: key.rotate ?? view.rotate };
+  }
+  function cameraAt(composition, frame, props = compositionProps(composition)) {
+    const keys = cameraKeys(composition, props);
+    if (!keys.length) return HOME(composition);
+    if (frame <= keys[0].frame) return cameraKeyView(composition, keys[0], props);
+    const last = keys[keys.length - 1];
+    if (frame >= last.frame) return cameraKeyView(composition, last, props);
+    let i = 1;
+    while (keys[i].frame <= frame) i++;
+    const a = keys[i - 1], b = keys[i], length = b.frame - a.frame;
+    const e = segmentEasing(b.easing ?? "premium", composition.fps, length)((frame - a.frame) / length);
+    return blendViews(cameraKeyView(composition, a, props), cameraKeyView(composition, b, props), e);
+  }
+  var FOLLOW = { leadS: 0.7, arriveS: 0.1, releaseS: 0.8 };
+  var cameraKeys = pairCache((composition, props) => {
+    const explicit = composition.camera?.keyframes ?? [];
+    if (!composition.camera?.follow) return explicit;
+    const generated = followKeys(composition, props);
+    if (!explicit.length) return generated;
+    const first = explicit[0].frame, last = explicit[explicit.length - 1].frame;
+    return [...generated.filter((k) => k.frame < first || k.frame > last), ...explicit].sort((a, b) => a.frame - b.frame);
+  });
+  var compositionProps = (() => {
+    const merge = pairCache((composition, overrides) => Object.freeze({ ...composition.props ?? {}, ...overrides }));
+    return (composition, overrides = NO_PROPS) => merge(composition, overrides);
+  })();
+  function followKeys(composition, props = compositionProps(composition)) {
+    const follow = composition.camera?.follow;
+    if (!follow) return [];
+    const fps = composition.fps, toCompFrames = (seconds2) => seconds2 * fps.num / fps.den;
+    for (const track of composition.tracks) for (const clip of track.clips) {
+      const all = [];
+      const walk = (layers) => layers.forEach((l) => {
+        all.push(l);
+        if (l.layers) walk(l.layers);
+      });
+      walk(clip.layers);
+      const cursor = all.find((l) => l.id === follow.cursor && l.type === "cursor");
+      if (!cursor) continue;
+      const source = all.find((l) => l.id === cursor.source && l.type === "video");
+      if (!source) throw new RangeError(`cursor "${cursor.id}" needs its source video in the same clip`);
+      const recFps = cursor.fps ?? fps;
+      const boxW = num(source.width, composition.width), boxH = num(source.height, composition.height);
+      const viewport = cursor.viewport ?? [boxW, boxH];
+      const k = boxW / viewport[0];
+      const offset = clip.offset ?? 0;
+      const clock = timeMap(source, clip.duration + offset, props, fps);
+      const frameOf = (t) => clip.from + clock.frameAt(t) - offset;
+      const shown = [clock.seconds(offset), clock.seconds(offset + clip.duration)];
+      const shots = followShots(cursor.events, recFps, viewport, { zoom: follow.zoom, idleMs: follow.idle_ms }).filter((shot) => shot.end > shown[0] && shot.start < shown[1]);
+      const lo = clip.from, hi = clip.from + clip.duration - 1, clampF = (f) => Math.round(Math.min(hi, Math.max(lo, f)));
+      const home = (frame) => ({ frame: clampF(frame), x: composition.width / 2, y: composition.height / 2, zoom: 1, rotate: 0, easing: "premium" });
+      const keys = [];
+      shots.forEach((shot, i) => {
+        const region = [shot.region[0] * k, shot.region[1] * k, shot.region[2] * k, shot.region[3] * k];
+        const arrive = frameOf(shot.start) - toCompFrames(FOLLOW.arriveS), push = frameOf(shot.start) - toCompFrames(FOLLOW.leadS);
+        const next = shots[i + 1], nextPush = next ? frameOf(next.start) - toCompFrames(FOLLOW.leadS) : Infinity;
+        const release = nextPush > frameOf(shot.end) + toCompFrames(FOLLOW.releaseS);
+        const hold = release ? frameOf(shot.end) : Math.min(frameOf(shot.end), nextPush);
+        const joined = keys.length > 0 && keys[keys.length - 1].region !== void 0;
+        if (!joined) keys.push(home(push));
+        keys.push({ frame: clampF(arrive), layer: source.id, region, padding: 0.04, easing: "premium" });
+        keys.push({ frame: clampF(Math.max(arrive, hold)), layer: source.id, region, padding: 0.04, easing: "premium" });
+        if (release) keys.push(home(hold + toCompFrames(FOLLOW.releaseS)));
+      });
+      for (let i = 1; i < keys.length; i++) if (keys[i].frame < keys[i - 1].frame) keys[i] = { ...keys[i], frame: keys[i - 1].frame };
+      return keys;
+    }
+    throw new RangeError(`camera follows unknown cursor layer "${follow.cursor}"`);
+  }
+
+  // core/audio.ts
+  var AUDIO_PLAN_VERSION = 1;
+  var AUDIBLE = /* @__PURE__ */ new Set(["audio", "video", "voiceover"]);
+  var number2 = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  function audioPlan(composition, overrides = NO_PROPS) {
+    const props = compositionProps(composition, overrides);
+    const field = (layer, name, frame = 0) => sampleField(layer, name, frame, props, composition.fps);
+    const sounds = [];
+    for (const track of composition.tracks) {
+      if (track.hidden || track.muted) continue;
+      for (const clip of track.clips) {
+        const visit = (layers) => {
+          for (const layer of layers) {
+            if (layer.hidden) continue;
+            if (layer.type === "group") {
+              visit(layer.layers ?? []);
+              continue;
+            }
+            if (!AUDIBLE.has(layer.type)) continue;
+            if (layer.type === "video" && field(layer, "muted") === true) continue;
+            const volume = Array.from({ length: clip.duration + 1 }, (_, f) => Math.min(1, Math.max(0, number2(field(layer, "volume", Math.min(f, clip.duration - 1)), 1))));
+            if (layer.type === "video" && volume.every((v) => v === 0)) continue;
+            if (layer.type === "video" && ("speed" in layer || "speed" in (layer.keyframes ?? {}))) {
+              throw new RangeError(`video "${layer.id}" has speed, which its sound can't follow: set muted true`);
+            }
+            const sound = {
+              id: layer.id,
+              type: layer.type,
+              track: track.id,
+              clip: { id: clip.id, from: clip.from, duration: clip.duration, offset: clip.offset ?? 0 },
+              trim: number2(field(layer, "trim"), 0),
+              rate: number2(field(layer, "rate"), 1),
+              loop: field(layer, "loop") === true,
+              volume
+            };
+            const optional = { asset: field(layer, "asset"), text: field(layer, "text"), voice: field(layer, "voice"), role: field(layer, "role"), duck: layer.duck };
+            for (const [key, value] of Object.entries(optional)) if (value !== void 0) sound[key] = value;
+            sounds.push(sound);
+          }
+        };
+        visit(clip.layers);
+      }
+    }
+    return { version: AUDIO_PLAN_VERSION, sounds };
   }
   return __toCommonJS(index_exports);
 })();

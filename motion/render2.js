@@ -40,6 +40,34 @@
     .z2-svg { display: block; overflow: visible; }
     .z2-room { overflow: hidden; }
     .z2-room > .zm-stage { position: absolute; left: 0; top: 0; background: transparent; transform-origin: 0 0; }
+    /* Camera (28cb5faf): one transform over every non-fixed clip. Fixed tracks and each clip's honesty HUD sit
+       above it, so titles, lower-thirds, the Simulated badge and captions never move with the shot. */
+    .z2-camera { position: absolute; left: 0; top: 0; width: 100%; height: 100%; transform-origin: 0 0; }
+    .z2-hud { pointer-events: none; }
+    .z2-ui { overflow: hidden; }
+    /* Recorded pointer: drawn in its recording's box, so the recording's transform and the camera carry it. */
+    .z2-cursor { position: absolute; left: 0; top: 0; z-index: 5; pointer-events: none; transform-origin: 0 0; }
+    .z2-cursor svg { display: block; overflow: visible; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .55)); }
+    .z2-ripple { position: absolute; left: 0; top: 0; border-radius: 50%; border: 3px solid var(--z2-ripple, #54d9ed); }
+    /* Brand window: the app framed like a product shot instead of a screenshot with bars. */
+    .z2-window { border-radius: 18px; overflow: hidden; background: #0c0e10;
+                 box-shadow: 0 0 0 1px rgba(255, 255, 255, .09), 0 18px 40px rgba(0, 0, 0, .45), 0 50px 140px rgba(0, 0, 0, .55); }
+    .z2-backdrop-paper { background: radial-gradient(130% 100% at 30% 10%, #f7f5f0 0%, #efece5 55%, #e6e2d9 100%) !important; }
+    .z2-backdrop-paper .z2-window { box-shadow: 0 0 0 1px rgba(20, 24, 27, .10), 0 16px 34px rgba(20, 24, 27, .16), 0 44px 110px rgba(20, 24, 27, .20); }
+    /* Content-sized plate: hugs the text it carries, so it never covers more of the shot than it needs. */
+    .z2-plate { padding: 14px 26px 16px; border-radius: 16px; background: rgba(11, 15, 18, .9);
+                box-shadow: 0 0 0 1px rgba(84, 217, 237, .18), 0 12px 32px rgba(0, 0, 0, .35); }
+    /* On paper a caption or narration plate stays dark, so its light text and word highlight keep their contrast
+       (design 3386aa7f); only its shadow softens to suit the light ground. */
+    .z2-backdrop-paper .z2-plate:not(.z2-plate-accent) { box-shadow: 0 0 0 1px rgba(20, 24, 27, .10), 0 12px 32px rgba(20, 24, 27, .22); }
+    .z2-plate-accent { padding: 8px 18px 9px; border-radius: 999px; background: #54d9ed; box-shadow: none; }
+    /* Square, so the corners cover too; above its siblings whatever the layer order, within its own group only. */
+    .z2-redact { z-index: 1; background: var(--z2-redact, #1b2023); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06); }
+    .z2-voice { position: absolute; left: 0; right: 0; width: fit-content; margin: 0 auto; max-width: 70%; text-align: center; }
+    .z2-voice span { transition: none; }
+    .z2-voice .z2-now { color: #8ee8f4; }
+    .z2-word { display: inline-block; white-space: pre; will-change: auto; }
+    .z2-backdrop-studio { background: radial-gradient(120% 90% at 22% 12%, #173037 0%, #10171a 42%, #0a0c0e 100%) !important; }
     .zm-transient { position: absolute; inset: 0; pointer-events: none; }
   `;
   const DEFAULT = {
@@ -52,6 +80,41 @@
   const SHRINK_STEPS = 18;            // binary search steps for fit: shrink (sub-pixel at any size)
   const SLIDE_ZOOM_FROM = 0.94;       // zoom transition starts at this scale
   const SVG = 'http://www.w3.org/2000/svg';
+  // Recorded pointer: height px in the recording's box, the arrow's drawing box, and a click ripple that opens from
+  // `from` to from + grow pointer heights over rippleS, fading from `alpha`; hotspot is the arrow tip's inset px.
+  const CURSOR = { size: 30, box: [20, 26], rippleS: 0.5, ripple: { from: 0.4, grow: 1.6, alpha: 0.7, hotspot: 2 } };
+  // Redaction is always an opaque cover: a blur can leave text partly recoverable and reads as a glitch on screen.
+  // Its own opacity, blur and colour alpha are never applied (systems e5552333); effects on its group or the camera
+  // act on the already-covered footage, so they can't uncover it.
+  const REDACT = { color: '#1b2023', opaque: { opacity: 1, blur: 0 } };
+  // Voice captions (b1e68bc7): pages of about two lines, held briefly after the last word.
+  const VOICE_CAPTION = { pageChars: 84, holdS: 0.6, bottom: 0.07, upcoming: 0.5 };
+  // 'ui' blur (design 14994): a hint of motion, never defocus. It is zero once the camera lands, because it comes
+  // from frame-to-frame camera motion only.
+  const BLUR = { shutter: 180, sigma: 3, max: 2.5, min: 0.35 };   // degrees; box-to-Gaussian ratio; px caps
+  // ZeroCollab brand text styles (28cb5faf): sizes on a 96/64/40/28/20 scale, colours from the app's tokens.
+  const TEXT_STYLES = {
+    // Weights follow design's Inter decision: 800 short hero lines, 600 captions and kickers, 400 body.
+    display: { size: 140, weight: 800, line_height: 1.0, letter_spacing: -3, color: '#eef2f3' },
+    title: { size: 96, weight: 800, line_height: 1.05, letter_spacing: -1.5, color: '#eef2f3' },
+    headline: { size: 64, weight: 800, line_height: 1.1, letter_spacing: -0.8, color: '#eef2f3' },
+    subtitle: { size: 40, weight: 400, line_height: 1.25, color: '#8ee8f4' },
+    kicker: { size: 24, weight: 600, line_height: 1.2, letter_spacing: 3, color: '#54d9ed', uppercase: true },
+    'lt-name': { size: 40, weight: 600, line_height: 1.15, color: '#eef2f3' },
+    'lt-role': { size: 28, weight: 400, line_height: 1.3, color: '#aab5ba' },
+    // A caption carries its own plate, sized to its text (design: no fixed full-width panel over every shot).
+    caption: { size: 36, weight: 600, line_height: 1.3, color: '#eef2f3', plate: true },
+    // A small accent pill for labels such as "Time-lapse x8" or "Example project".
+    badge: { size: 22, weight: 600, line_height: 1.2, letter_spacing: 2, color: '#071518', uppercase: true, plate: 'accent' },
+  };
+  // On the light paper backdrop, brand styles switch to ink so contrast holds (captions keep their dark plate).
+  const PAPER_INK = { display: '#121517', title: '#121517', headline: '#121517', subtitle: '#56626b', kicker: '#0b7f90',
+                      'lt-name': '#121517', 'lt-role': '#56626b' };
+  // Word stagger: each word rises this far and fades in over this many frames, a new word every `every` frames.
+  const STAGGER = { rise: 26, frames: 14, every: 4 };
+  // Clip stacking: picture clips count up from 1; every honesty HUD sits above all of them.
+  const HUD_Z = 1000;
+  const familyOf = id => 'zm-' + id.replace(/-w\d{3}$/, '');
 
   const core = window.ZCMotionCore, kit = window.ZCMotion;
   const fail = err => {
@@ -71,6 +134,11 @@
   const num = (v, fallback) => typeof v === 'number' && Number.isFinite(v) ? v : fallback;
   const str = (v, fallback) => typeof v === 'string' && v ? v : fallback;
   const px = v => v + 'px';
+  // Scene colours are #rgb, #rgba, #rrggbb or #rrggbbaa; dropping the alpha digits leaves the opaque colour.
+  const opaqueColor = c => {
+    const color = str(c, REDACT.color);
+    return color.length === 5 || color.length === 9 ? color.slice(0, color.length === 5 ? 4 : 7) : color;
+  };
   const twoFrames = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
   function decodeDataUrl(src) {
@@ -89,7 +157,10 @@
     const comp = (scene.compositions || []).find(c => c.id === input.composition.id);
     if (!comp) throw new Error(`composition "${input.composition.id}" is not in the scene`);
     const reduced = opts.reduced === true;
-    const props = opts.props && typeof opts.props === 'object' ? opts.props : {};
+    const props = opts.props && typeof opts.props === 'object' ? opts.props : core.NO_PROPS;
+    // The composition's defaults under these overrides: the one props object the frame, footage clocks, camera and
+    // sound plan all read (core caches by its identity).
+    const merged = core.compositionProps(comp, props);
     // The identity check (revision, seed, asset hashes and safe refs) runs once here and on every frame.
     const assets = new Map(core.frameContext({ ...input, frame: 0 }).assets.map(a => [a.id, a]));
     const asset = (id, kinds) => {
@@ -107,12 +178,29 @@
     const frame = document.getElementById('frame'), stage = document.getElementById('stage');
     for (const el of [frame, stage]) Object.assign(el.style, { width: px(W), height: px(H) });
     stage.style.background = str(comp.background, '');
+    if (comp.backdrop === 'studio' || comp.backdrop === 'paper') stage.classList.add('z2-backdrop-' + comp.backdrop);
+    const camera = document.createElement('div');
+    camera.className = 'z2-camera';
+    stage.append(camera);
+    // Velocity motion blur: one directional Gaussian on the camera layer, sized from the camera's own motion
+    // between frames n-1 and n (never playback history). Edges duplicate, so the frame border never darkens.
+    const shutter = comp.motion_blur ? num(comp.motion_blur.shutter, BLUR.shutter) : 0;
+    let blurNode = null;
+    if (shutter > 0) {
+      const svg = document.createElementNS(SVG, 'svg');
+      svg.setAttribute('width', '0'); svg.setAttribute('height', '0'); svg.style.position = 'absolute';
+      svg.innerHTML = '<filter id="z2-mblur" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="0 0" edgeMode="duplicate"/></filter>';
+      stage.append(svg);
+      blurNode = svg.querySelector('feGaussianBlur');
+    }
 
     const fontLoads = [];
     for (const a of assets.values()) {
       if (a.kind !== 'font') continue;
       // Bytes, not a URL: the face never fetches, so the page needs no font-src.
-      const face = new FontFace('zm-' + a.id, decodeDataUrl(a.src));
+      // An id ending in -w400, -w600 ... is that weight of one family: zc-sans-w700 is "zm-zc-sans" at 700.
+      const weight = /-w(\d{3})$/.exec(a.id);
+      const face = new FontFace(familyOf(a.id), decodeDataUrl(a.src), weight ? { weight: weight[1] } : {});
       document.fonts.add(face);
       fontLoads.push(face.load());
     }
@@ -121,6 +209,17 @@
     const clips = new Map();    // clip id -> { el, clip }
     const rooms = [];           // room layers, to fit once fonts have loaded
     const media = [];           // img and video elements to wait for
+    const cursors = [];         // cursor layers, moved into their source video's box once the clip is built
+    const uiMounts = [], uiHandles = [];   // ui layers: mounts to await before the first frame, handles to dispose
+    // The one context envelope a ui layer sees (frontend 08e00534, systems a991b3f7): the S1 frame identity, the
+    // composition, the clip (UI time is clip.contentFrame at composition.fps) and the layer's resolved values.
+    const contextFor = (clip, frameNumber, contentFrame, values) => ({
+      frameContext: core.frameContext({ ...input, frame: frameNumber }),
+      composition: { id: comp.id, width: W, height: H, fps, duration: comp.duration },
+      clip: { id: clip.id, from: clip.from, duration: clip.duration, frame: frameNumber - clip.from, contentFrame },
+      values,
+    });
+    addEventListener('pagehide', () => { for (const h of uiHandles.splice(0)) try { h.dispose(); } catch (e) { /* teardown only */ } });
 
     function buildLayer(layer, parent, clip) {
       const el = document.createElement('div');
@@ -162,8 +261,33 @@
           break;
         }
         case 'captions': el.classList.add('z2-captions'); break;
+        case 'redact': el.classList.add('z2-redact'); break;
         case 'group': for (const child of layer.layers || []) if (!child.hidden) buildLayer(child, el, clip); break;
         case 'room': buildRoom(node, clip); break;
+        case 'ui': {
+          // Real ZeroCollab components, mounted by frontend's motion/ui.js with scripted state. Each seek must be a
+          // pure function of its context; render2 awaits it like a video seek.
+          const ui = window.ZCMotionUI;
+          if (!ui || typeof ui.mount !== 'function') throw new Error(`ui layer "${layer.id}" needs motion/ui.js`);
+          el.classList.add('z2-ui');
+          const mounting = Promise.resolve(ui.mount(el, layer, contextFor(clip, clip.from, 0, {})));
+          uiMounts.push(mounting.then(handle => { node.handle = handle; uiHandles.push(handle); }));
+          break;
+        }
+        case 'cursor': {
+          if (!Array.isArray(layer.viewport) || !layer.fps) throw new Error(`cursor "${layer.id}" needs viewport and fps from its recording`);
+          node.ripple = document.createElement('div');
+          node.ripple.className = 'z2-ripple';
+          const svg = document.createElementNS(SVG, 'svg');
+          svg.setAttribute('viewBox', `0 0 ${CURSOR.box.join(' ')}`);
+          svg.innerHTML = '<path d="M2 2 L2 21.5 L7.2 16.6 L10.9 24.6 L14.3 23.1 L10.7 15.2 L17.6 15.2 Z" fill="#fff" stroke="#0c0e10" stroke-width="1.5" stroke-linejoin="round"/>';
+          node.svg = svg;
+          el.className = 'z2-cursor';
+          el.append(node.ripple, svg);
+          node.track = core.cursorTrack(layer.events || [], layer.fps);
+          cursors.push(node);
+          break;
+        }
         default: throw new Error(`layer "${layer.id}" has unknown type "${layer.type}"`);
       }
       nodes.set(layer.id, node);
@@ -206,14 +330,80 @@
         const el = document.createElement('div');
         el.className = 'z2-clip z2-off';
         el.dataset.clip = clip.id;
-        stage.append(el);
+        (track.fixed ? stage : camera).append(el);
         for (const layer of clip.layers) if (!layer.hidden) buildLayer(layer, el, clip);
-        // A capture's honesty label and caption belong to the frame, not the picture: zooming into a
-        // capture must never scale them out of view. They sit above the clip's layers.
-        const label = (cls, place) => { const n = document.createElement('div'); n.className = cls; Object.assign(n.style, place); el.append(n); return n; };
-        clips.set(clip.id, { el, clip,
+        for (const cursor of cursors.splice(0)) {
+          const source = nodes.get(cursor.layer.source);
+          if (!source || source.type !== 'video') throw new Error(`cursor "${cursor.layer.id}" needs its source video in the same clip`);
+          source.el.append(cursor.el);
+          cursor.source = source;
+        }
+        // A capture's honesty label and caption belong to the frame, not the picture: neither a layer zoom nor
+        // the camera may scale them out of view. They sit in the clip's own HUD, above the camera.
+        const hud = document.createElement('div');
+        hud.className = 'z2-clip z2-hud z2-off';
+        stage.append(hud);
+        const label = (cls, place) => { const n = document.createElement('div'); n.className = cls; Object.assign(n.style, place); hud.append(n); return n; };
+        clips.set(clip.id, { el, hud, clip,
           badge: label('z2-badge', { left: px(Math.round(W * LABEL.inset)), top: px(Math.round(H * LABEL.inset)) }),
           strip: label('z2-strip', { bottom: px(Math.round(H * LABEL.inset)), maxWidth: px(Math.round(W * LABEL.stripWidth)) }) });
+      }
+    }
+
+    // Voice captions: one fixed HUD caption per narrated voiceover layer whose captions are enabled and whose timing
+    // sidecar the server inlined (zm-options.voice_captions). 'word' highlights the spoken word; 'phrase' times whole
+    // pages from the first and last word only; 'none' draws nothing, so no timing is ever invented.
+    const voices = [];
+    for (const track of comp.tracks) {
+      if (track.hidden || track.muted || track.kind !== 'audio') continue;
+      for (const clip of track.clips) for (const layer of clip.layers) {
+        const sidecar = opts.voice_captions && opts.voice_captions[layer.id];
+        if (layer.type !== 'voiceover' || layer.hidden || !sidecar || (layer.captions && layer.captions.enabled === false)) continue;
+        if (!['word', 'phrase'].includes(sidecar.timing_quality) || !Array.isArray(sidecar.words) || !sidecar.words.length) continue;
+        const el = document.createElement('div');
+        el.className = 'z2-voice z2-text z2-plate';
+        const cap = TEXT_STYLES.caption;   // the brand caption style, so narration reads like every other caption
+        Object.assign(el.style, { bottom: px(Math.round(H * VOICE_CAPTION.bottom)), fontFamily: fontFamily({}), fontSize: px(cap.size),
+          fontWeight: String(cap.weight), lineHeight: String(cap.line_height), color: cap.color });
+        stage.append(el);
+        voices.push({ clip, sidecar, el, pages: pagesOf(sidecar.words) });
+      }
+    }
+
+    function pagesOf(words) {
+      const pages = [];
+      let page = [], chars = 0;
+      for (const w of words) {
+        if (page.length && chars + w.text.length + 1 > VOICE_CAPTION.pageChars) { pages.push(page); page = []; chars = 0; }
+        page.push(w); chars += w.text.length + 1;
+        if (/[.!?]$/.test(w.text)) { pages.push(page); page = []; chars = 0; }   // a sentence end turns the page
+      }
+      if (page.length) pages.push(page);
+      return pages;
+    }
+
+    function drawVoices(n) {
+      for (const voice of voices) {
+        const { clip, sidecar, el, pages } = voice, local = n - clip.from;
+        const sample = (local + (clip.offset || 0)) * fps.den / fps.num * sidecar.sample_rate;
+        const hold = VOICE_CAPTION.holdS * sidecar.sample_rate;
+        let current = -1;
+        pages.forEach((page, i) => { if (page[0].start_sample <= sample) current = i; });
+        const page = pages[current];
+        const showing = local >= 0 && local < clip.duration && page && sample <= page[page.length - 1].end_sample + hold;
+        el.style.display = showing ? '' : 'none';
+        if (!showing) continue;
+        if (voice.shown !== current) {
+          voice.shown = current;
+          el.textContent = '';
+          voice.spans = page.map((w, i) => { const span = document.createElement('span'); span.textContent = (i ? ' ' : '') + w.text; el.append(span); return span; });
+        }
+        if (sidecar.timing_quality !== 'word') continue;
+        page.forEach((w, i) => {
+          const span = voice.spans[i];
+          span.classList.toggle('z2-now', w.start_sample <= sample && sample < w.end_sample);
+          span.style.opacity = sample < w.start_sample ? String(VOICE_CAPTION.upcoming) : '1';
+        });
       }
     }
 
@@ -236,11 +426,17 @@
     }
 
     function fontFamily(v) {
-      if (v.font_asset) return `"zm-${asset(v.font_asset, ['font']).id}", var(--zm-font)`;
+      const fa = v.font_asset || (!v.font && comp.font_asset);
+      if (fa) return `"${familyOf(asset(fa, ['font']).id)}", var(--zm-font)`;
       return v.font ? `"${String(v.font).replace(/["\\]/g, '')}", var(--zm-font)` : '';
     }
 
-    function drawText(node, v) {
+    function drawText(node, given) {
+      // A brand style supplies defaults; anything the layer sets itself wins.
+      const preset = given.style && TEXT_STYLES[given.style];
+      const ink = comp.backdrop === 'paper' && PAPER_INK[given.style] ? { color: PAPER_INK[given.style] } : {};
+      const v = preset ? { ...preset, ...ink, ...given } : given;
+      if (v.stagger) return drawStagger(node, v, given);
       const el = node.el, text = String(v.text ?? '');
       const reveal = Math.max(0, Math.min(1, num(v.reveal, 1)));
       const chars = Array.from(text), shown = Math.round(chars.length * reveal);
@@ -261,7 +457,10 @@
         fontFamily: fontFamily(v), fontWeight: String(num(v.weight, 400)), color: str(v.color, DEFAULT.textColor),
         textAlign: str(v.align, 'left'), lineHeight: String(num(v.line_height, DEFAULT.lineHeight)),
         letterSpacing: px(num(v.letter_spacing, 0)), maxWidth: v.max_width === undefined ? '' : px(num(v.max_width, 0)),
+        textTransform: v.uppercase ? 'uppercase' : '', textShadow: v.shadow ? '0 2px 18px rgba(0, 0, 0, .55)' : '',
       });
+      el.classList.toggle('z2-plate', !!v.plate);
+      el.classList.toggle('z2-plate-accent', v.plate === 'accent');
       const size = num(v.size, DEFAULT.textSize);
       el.style.fontSize = px(size);
       if (v.fit !== 'shrink') return;
@@ -277,6 +476,54 @@
         if (fits()) low = mid; else high = mid;
       }
       el.style.fontSize = px(low);
+    }
+
+    // The pointer at the recording's own time (the same clock seekVideo uses), mapped from viewport px into the
+    // video's box. Its own x and y nudge it, scale sizes it, opacity fades it.
+    function drawCursor(node, v, clipDraw) {
+      let sv = {};
+      walk(clipDraw.layers, item => { if (item.id === node.layer.source) sv = item.values; });
+      const seconds = sourceSeconds(node.source.layer, clipDraw, clipDraw.contentFrame);
+      const at = node.track(seconds), k = num(sv.width, W) / node.layer.viewport[0];
+      const size = num(v.size, CURSOR.size) * num(v.scale, 1);
+      node.el.style.display = at.visible ? '' : 'none';
+      node.el.style.opacity = String(num(v.opacity, 1));
+      node.el.style.transform = `translate(${at.x * k + num(v.x, 0)}px, ${at.y * k + num(v.y, 0)}px)`;
+      node.svg.setAttribute('width', String(size * CURSOR.box[0] / CURSOR.box[1])); node.svg.setAttribute('height', String(size));
+      const r = node.ripple;
+      if (at.clickAge === null) { r.style.display = 'none'; return; }
+      // A ring that opens and fades over half a second, centred on the hotspot.
+      const ring = CURSOR.ripple, p = at.clickAge / CURSOR.rippleS, e = core.easing['expo-out'](p), d = size * (ring.from + ring.grow * e);
+      const edge = px(-d / 2 + ring.hotspot);
+      Object.assign(r.style, { display: '', width: px(d), height: px(d), left: edge, top: edge, opacity: String(ring.alpha * (1 - p)) });
+      if (v.color) r.style.setProperty('--z2-ripple', v.color);
+    }
+
+    // Kinetic type: words enter one after another from v.stagger.from (clip frame), every v.stagger.frames apart,
+    // each rising and fading in with expo-out. The text keeps its final layout, so nothing re-wraps mid-move.
+    function drawStagger(node, v, given) {
+      const el = node.el, words = String(v.text ?? '').split(/(\s+)/);
+      if (node.key !== 'stagger:' + v.text) {
+        node.key = 'stagger:' + v.text;
+        el.textContent = '';
+        node.words = words.map(w => { const span = document.createElement('span'); span.className = 'z2-word'; span.textContent = w; el.append(span); return span; });
+      }
+      Object.assign(el.style, {
+        fontFamily: fontFamily(v), fontWeight: String(num(v.weight, 400)), color: str(v.color, DEFAULT.textColor),
+        textAlign: str(v.align, 'left'), lineHeight: String(num(v.line_height, DEFAULT.lineHeight)),
+        letterSpacing: px(num(v.letter_spacing, 0)), fontSize: px(num(v.size, DEFAULT.textSize)),
+        maxWidth: v.max_width === undefined ? '' : px(num(v.max_width, 0)),
+      });
+      const st = v.stagger, from = num(st.from, 0), every = num(st.every, STAGGER.every), dur = num(st.frames, STAGGER.frames);
+      const local = node.clipFrame ?? 0, ease = core.easing['expo-out'];
+      let k = 0;
+      node.words.forEach((span, i) => {
+        if (!words[i].trim()) return;
+        const p = Math.max(0, Math.min(1, (local - from - k * every) / dur)), e = ease(p);
+        span.style.opacity = String(e);
+        span.style.transform = `translateY(${(1 - e) * num(st.rise, STAGGER.rise)}px)`;
+        k++;
+      });
     }
 
     function polygon(sides, w, h, inner) {
@@ -336,9 +583,16 @@
       });
     }
 
+    // One clock for recorded footage: the video, its cursor and the follow camera all read core.timeMap
+    // (trim, rate and keyframed speed ramps), so a ramp never desynchronises the pointer from the picture.
+    function sourceSeconds(layer, clipDraw, contentFrame) {
+      const frames = clipDraw.duration + (clipDraw.contentFrame - clipDraw.frame);
+      return core.timeMap(layer, frames, merged, fps).seconds(contentFrame);
+    }
+
     const waits = [];
-    function seekVideo(node, v, contentFrame) {
-      const seconds = (num(v.trim, 0) + contentFrame * num(v.rate, 1)) * fps.den / fps.num;
+    function seekVideo(node, v, clipDraw) {
+      const seconds = sourceSeconds(node.layer, clipDraw, clipDraw.contentFrame);
       const video = node.video, target = Math.min(seconds, Math.max(0, (video.duration || seconds) - 1e-3));
       if (Math.abs(video.currentTime - target) < 1e-4) return;
       waits.push(new Promise((resolve, reject) => {
@@ -354,11 +608,12 @@
       const node = nodes.get(item.id), v = item.values;
       if (!node) return;
       switch (item.type) {
-        case 'text': transform(node, v); drawText(node, v); break;
+        case 'text': transform(node, v); node.clipFrame = clipDraw.frame; drawText(node, v); break;
         case 'image': case 'capture': case 'video':
           transform(node, v, { width: W, height: H });
+          node.el.classList.toggle('z2-window', v.frame === 'window');
           (node.img || node.video).style.objectFit = str(v.fit, 'contain');
-          if (node.video) seekVideo(node, v, clipDraw.contentFrame);
+          if (node.video) seekVideo(node, v, clipDraw);
           break;
         case 'shape': transform(node, v); drawShape(node, v); break;
         case 'path': transform(node, v); drawPath(node, v); break;
@@ -370,10 +625,24 @@
           transform(node, v);
           // A group with a size is a viewport: zoom and pan a capture inside it without leaving its box.
           node.el.style.overflow = v.width !== undefined && v.height !== undefined ? 'hidden' : '';
+          node.el.classList.toggle('z2-window', v.frame === 'window');
           for (const child of item.children || []) drawLayer(child, clipDraw);
           break;
         case 'room':
           node.room.seek(core.frameToMilliseconds(clipDraw.contentFrame, fps));
+          break;
+        case 'cursor': drawCursor(node, v, clipDraw); break;
+        case 'redact':
+          // Covers keys, emails or account names inside footage; it sits in the footage's own group, so it moves
+          // and zooms with it.
+          transform(node, { ...v, ...REDACT.opaque }, { width: 0, height: 0 });
+          node.el.style.setProperty('--z2-redact', opaqueColor(v.color));
+          break;
+        case 'ui':
+          transform(node, v, { width: W, height: H });
+          node.el.classList.toggle('z2-window', v.frame === 'window');
+          if (!node.handle) throw new Error(`ui layer "${node.layer.id}" was not mounted`);
+          waits.push(Promise.resolve(node.handle.seek(contextFor(clips.get(clipDraw.id).clip, frameNow, clipDraw.contentFrame, v))));
           break;
       }
     }
@@ -412,15 +681,29 @@
       for (const item of items) { fn(item); if (item.children) walk(item.children, fn); }
     }
 
+    let frameNow = 0;
     async function draw(n) {
+      frameNow = n;
       const list = core.evaluateFrame({ ...input, frame: n }, () => core.evaluate(comp, n, props));
       const visible = new Set(list.clips.map(c => c.id));
-      for (const [id, { el }] of clips) el.classList.toggle('z2-off', !visible.has(id));
+      for (const [id, { el, hud }] of clips) { el.classList.toggle('z2-off', !visible.has(id)); hud.classList.toggle('z2-off', !visible.has(id)); }
+      const cam = list.camera;
+      camera.style.transform = `translate(${W / 2}px, ${H / 2}px) rotate(${cam.rotate}deg) scale(${cam.zoom}) translate(${-cam.x}px, ${-cam.y}px)`;
+      if (blurNode) {
+        // A box blur as long as the shutter-open motion looks like a Gaussian of about a third of that length. The
+        // filter runs in the camera's own space, before its zoom, so screen px are divided by the zoom.
+        const [mx, my] = core.screenMotion(list.cameraPrev, cam, W, H).map(d => Math.min(BLUR.max, d * shutter / 360 / BLUR.sigma));
+        const on = mx > BLUR.min || my > BLUR.min;
+        blurNode.setAttribute('stdDeviation', on ? `${(mx / cam.zoom).toFixed(2)} ${(my / cam.zoom).toFixed(2)}` : '0 0');
+        camera.style.filter = on ? 'url(#z2-mblur)' : '';
+      }
       waits.length = 0;
       list.clips.forEach((c, i) => {
-        const { el, badge, strip } = clips.get(c.id);
+        const { el, hud, badge, strip } = clips.get(c.id);
         el.style.zIndex = String(i + 1);
+        hud.style.zIndex = String(HUD_Z + i);
         transitionStyle(el, c.transition, c.exit);
+        transitionStyle(hud, c.transition, c.exit);
         for (const item of c.layers) drawLayer(item, c);
         // The topmost visible capture decides the label and caption.
         const shots = [];
@@ -431,6 +714,7 @@
         badge.style.display = badge.textContent ? '' : 'none';
         strip.style.display = strip.textContent ? '' : 'none';
       });
+      drawVoices(n);
       await Promise.all(waits.splice(0));
       await twoFrames();
       return n;
@@ -474,9 +758,10 @@
         })));
       // Room content is measured with its final fonts, so the fit is the same on every machine that has them.
       rooms.forEach(fitRoom);
+      await Promise.all(uiMounts);
     }
 
-    return { comp, durationMs, seekFrame, seek, frameAt, ready, info: { version: 2, id: scene.id, composition: comp.id, fps, duration: comp.duration, duration_ms: durationMs, width: W, height: H } };
+    return { comp, props, durationMs, seekFrame, seek, frameAt, ready, info: { version: 2, id: scene.id, composition: comp.id, fps, duration: comp.duration, duration_ms: durationMs, width: W, height: H } };
   }
 
   async function boot() {
@@ -489,6 +774,8 @@
       window.__scene = r.info;
       window.__seekFrame = r.seekFrame;
       window.__seek = r.seek;
+      // The mixer's plan (systems 6e90b5b7, b1e68bc7): what sounds, when and how loud, before any frame is drawn.
+      window.__audioPlan = () => core.audioPlan(r.comp, r.props);
       await r.ready();
       if (opts.render) await r.seekFrame(0);
       else {

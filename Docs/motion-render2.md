@@ -1,6 +1,6 @@
-# Motion scene v2 renderer (S5)
+# Motion scene v2 renderer (S5, S7)
 
-Task 45047b9a. Code: `motion/core/scene.ts` (pure evaluation), `motion/core/random.ts` (seeded random), `motion/render2.js` (DOM renderer and page bootstrap), and the opt-in `transient` option in `motion/motion.js`. Field names are pinned in `Docs/motion-scene-v2.md`; this file pins how they are drawn.
+Task 45047b9a (S5) and 28cb5faf (S7, demo-grade camera, footage and type). Code: `motion/core/scene.ts` (pure evaluation), `motion/core/camera.ts` (camera views and affine maths), `motion/core/cursor.ts` (recorded pointer and follow shots), `motion/core/timemap.ts` (source time for footage), `motion/core/audio.ts` (sound plan), `motion/core/random.ts` (seeded random), `motion/render2.js` (DOM renderer and page bootstrap), `motion/brand/fonts` (Inter, OFL), and the opt-in `transient` option in `motion/motion.js`. Field names are pinned in `Docs/motion-scene-v2.md`; this file pins how they are drawn.
 
 ## Pipeline
 
@@ -13,7 +13,9 @@ Task 45047b9a. Code: `motion/core/scene.ts` (pure evaluation), `motion/core/rand
 | Item | Meaning |
 |-|-|
 | Scripts | `core.js`, `motion.js`, `render2.js`, inline and hash-pinned; `boot.js` is not loaded |
-| `zm-options` | `render`, `reduced`, `embed`, `t` (ms), `frame_input` (required; `composition.id` selects the composition), `props` (optional overrides) |
+| `zm-options` | `render`, `reduced`, `embed`, `t` (ms), `frame_input` (required; `composition.id` selects the composition), `props` (optional overrides), `voice_captions` (optional: `{voiceover layer id: timing sidecar}`, inlined by the server after synthesis) |
+| `window.__audioPlan()` | the composition's sound plan (see "Sound plan and voice captions"), computed by the same core as the picture |
+| `window.ZCMotionUI` | optional: frontend's `motion/ui.js`, loaded before `render2.js`; required only by `ui` layers |
 | `window.__scene` | `{version: 2, id, composition, fps, duration (frames), duration_ms, width, height}` |
 | `window.__seekFrame(n)` | Promise resolving with the frame once its pixels are ready (videos seeked, room seeked, two animation frames). Requests made while a frame draws coalesce to the newest. |
 | `window.__seek(ms)` | the frame at `ms` (`frameAtMilliseconds`), clamped to `[0, duration - 1]` |
@@ -54,6 +56,49 @@ The default easing is `ease-in-out`. With reduced motion, `slide`, `wipe` and `z
 | `path` | coordinates in composition px; 4 px accent stroke; `progress` draws it on |
 | `captions` | centred 60 px above the bottom; 40 px white on `#000000b3`; at most 80% of the width |
 | `room` | the v1 room scene on its own 1920 x 1080 stage, scaled so its content fills the composition's 5% safe area (at most 2.5x). Handoff arrows and chips are transient here: they fade 1.2 s after the handoff lands (v1 pages are unchanged). |
+| `text` `style` | a brand style (below) supplies defaults; anything the layer sets itself wins. `stagger` brings words in one after another (expo-out, each rising `rise` px over `frames`, one every `every` frames from clip frame `from`); the final layout is kept, so nothing re-wraps mid-move. |
+| `frame: window` | on `image`, `capture`, `video`, `ui` and sized `group`: rounded corners, a hairline and a soft shadow, so the app reads as a product shot. A sized window group clips its children, which makes it a viewport. |
+| `video` `speed` | retimes the picture only (see "Recorded footage"); the schema requires `muted: true` with it |
+| `cursor` | the recorded pointer, drawn in its source video's box (see "Recorded footage") |
+| `redact` | an opaque box over a secret in footage: the transform's box filled with `color` (default `#1b2023`, any alpha dropped). Its own `opacity` and `blur` are never applied, its corners are square, and it sits above its siblings within its own group. Put it in the footage's group so it moves and zooms with it; effects on that group or the camera act on footage that is already covered. |
+| `ui` | `ZCMotionUI.mount(host, layer, context)` once at build, then `handle.seek(context)` every frame (awaited like a video seek), `handle.dispose()` on pagehide. `context` is `{frameContext, composition, clip: {id, from, duration, frame, contentFrame}, values}`; a seek must be a pure function of it. |
+
+## Brand kit
+
+| Style | Size, weight | Use |
+|-|-|-|
+| `display` | 140, 800 | one or two hero words |
+| `title` | 96, 800 | opening and closing lines |
+| `headline` | 64, 800 | a shot's one-line claim |
+| `subtitle` | 40, 400 | the line under a title |
+| `kicker` | 24, 600, caps | the label above a headline |
+| `lt-name`, `lt-role` | 40, 600 and 28, 400 | lower third |
+| `caption` | 36, 600, on a plate sized to its text | burned-in caption |
+| `badge` | 22, 600, caps, on an accent pill | "Example project", "Time-lapse x8", "Scripted data" |
+
+- **Type:** Inter v4.1 (SIL OFL 1.1, `motion/brand/fonts`, receipt with source hashes), loaded from bytes through `FontFace`. Font asset ids ending in `-w400`, `-w600` or `-w800` are weights of one family, so `font_asset: 'zc-sans-w400'` plus a style's weight picks the right file. Product footage keeps the app's own typography; Inter is for authored overlays.
+- **Backdrops:** `studio` (dark, a soft teal light top left) and `paper` (light and warm). On `paper`, brand styles switch to ink colours so contrast holds; captions and badges keep their plates.
+
+## Camera
+
+- One transform over every clip on a track that isn't `fixed`. Fixed tracks (titles, lower thirds, labels) and each clip's honesty HUD (the Simulated badge and caption strip) sit above it and never move with the shot.
+- `camera.keyframes`: each key is a framing at a composition frame: a `region` `[x, y, w, h]` (composition px, or the named `layer`'s own box px, followed through that layer's transforms) fitted with `padding`, or explicit `x`, `y` (the point at the centre), `zoom` and `rotate`. `easing` shapes the move into that key, including `premium`, `expo-out`, `expo-in-out`, `spring-soft` and `spring-snappy`.
+- Zoom blends in log space about the point both framings share, so a push-in feels even and nothing drifts sideways. That point ignores rotation: a key pair that also rotates blends its centre on the same curve but does not hold one point still.
+- `camera.follow: {cursor, zoom?, idle_ms?}` adds keys from a cursor layer's recording (below), outside the range the explicit keys cover; explicit keys win inside it.
+- **Motion blur is off unless a composition sets `motion_blur`, and product footage never sets it** (design aba6b24a): even capped, it softens UI text and on a zoom it reads as defocus. When set, it comes only from camera motion between frames, is capped at 2.5 screen px, and is zero once the camera lands. It is for decorative graphics.
+
+## Recorded footage
+
+- **One set of props.** `compositionProps(composition, overrides)` merges the composition's defaults under the caller's overrides once per pair. The frame, every footage clock, the camera and its follow keys, and the sound plan all read that object, so a prop-bound `trim`, `rate` or `speed` moves the picture and the camera together.
+- **One clock.** `timeMap(video)` integrates `speed` (keyframable, default `rate`) over the clip's content frames from `trim`, trapezoid by frame and cached per layer, with an exact inverse that returns the earliest frame showing a time (the first frame of a freeze). The picture, its cursor and the follow camera all read it, so a speed ramp keeps them together. Sound can't follow a ramp, so a video with `speed` must be muted; `audioPlan` refuses one that isn't.
+- **Cursor.** Events are in the recording's viewport px and frames. Only pointer events (move, down, up, click, scroll) place the pointer; a key never does. A critically damped spring chases each target at a fixed 1/240 s step, so every frame reads the same point however it is seeked. When the recording jumps to a point it then presses (scripted input does this a frame before the press), the move starts up to 0.3 s earlier, so the drawn pointer lands on the press rather than after it. A click draws a ring that opens and fades over 0.5 s.
+- **Follow.** Activity (clicks, scrolls, keys) groups into bursts; gaps under `idle_ms` join a burst. Each burst frames its first click's `rect`, or a `zoom` box around it, from 0.7 s before to `idle_ms` after, then releases; bursts close together pan instead of zooming out and in, the hold ending where the next push starts so the pan always takes about 0.6 s. Bursts outside what the clip shows (a trimmed head, past its end) are dropped. A click's ring starts on its `down`; a `click` starts one only when no `down` came in the last 0.5 s.
+- **Source density.** A capture should not be shown above about 1.15 screen px per recorded px. Record at device scale 2 for shots that zoom in; enlarging a 1x recording softens its text however the camera moves.
+
+## Sound plan and voice captions
+
+- `audioPlan(composition, props)` lists every audible layer (`audio`, `voiceover`, and `video` that isn't muted or silent), with the same hidden and muted rules as the picture: its clip timing, trim, rate, role, loop, ducking and a volume sample for every local frame, clamped to 0 to 1 (a spring-eased key may overshoot in the picture, not in the mix). The mixer owns synthesis and PCM.
+- Voice captions draw one HUD caption per narrated voiceover whose captions are enabled and whose timing sidecar the server inlined. Pages hold about two lines and turn at sentence ends, and stay 0.6 s after the last word. `word` timing highlights the spoken word, `phrase` times whole pages, and `none` draws nothing, so no timing is ever invented.
 
 ## Recipes
 

@@ -42,6 +42,10 @@ export const easing = Object.freeze({
   'ease-in-out': cubicBezier(.42, 0, .58, 1),
   'step-start': ((p: number) => p < 0 ? 0 : 1) as Easing,
   'step-end': ((p: number) => p < 1 ? 0 : 1) as Easing,
+  // Demo presets (28cb5faf): camera and title moves that start decisively and land softly.
+  'expo-out': cubicBezier(.16, 1, .3, 1),
+  'expo-in-out': cubicBezier(.87, 0, .13, 1),
+  premium: cubicBezier(.65, 0, .35, 1),
   cubicBezier,
 });
 
