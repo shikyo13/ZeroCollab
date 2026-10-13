@@ -86,6 +86,13 @@ class ReleaseTrain(unittest.TestCase):
         self.room.state['followups'].clear()
         self.assertEqual(self.tick(pe.TICK_SECONDS), ['opened'])
 
+    def test_adopts_an_untracked_escalation_item(self):
+        self.tick()
+        self.tick(pe.TRAIN_ESCALATE_SECONDS)
+        self.room.state['enforcement']['train'].pop('escalation')  # as if that board save was lost
+        self.assertEqual(self.tick(pe.TRAIN_ESCALATE_SECONDS), [])
+        self.assertEqual(len(self.items('user')), 1)
+
     def test_quiet_without_a_registered_release_manager(self):
         del self.runtime.states[RELEASE_GRANTEE]
         self.assertIsNone(self.tick())

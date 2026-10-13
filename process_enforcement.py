@@ -23,6 +23,7 @@ TICK_SECONDS = 60                    # one evaluation a minute at most
 TRAIN_ESCALATE_SECONDS = 3600        # release manager's item open this long with nothing staged: ask the user
 TRAIN_COOLDOWN_SECONDS = 2 * 3600    # after the release manager closes an item without staging (S3)
 TRAIN_PREFIX = 'E3 release train:'   # how the room recognises its own item after a crash (backend 0345591e)
+ESCALATION_PREFIX = 'E3: approved work'  # the same for its escalation bell item (backend 0466ff7e)
 
 
 def tick(runtime, now=None):
@@ -70,6 +71,13 @@ def release_train(runtime, now):
                      and f['assigned_to'] == RELEASE_GRANTEE and f['text'].startswith(TRAIN_PREFIX)), None)
         if item:
             train.update(item=item['id'], opened=item['created'])
+    if item and not bell:
+        # The same crash window for the bell item: adopt an open one from this train instead of opening a second.
+        bell = next((f for f in room.state.get('followups', []) if f['status'] == 'open' and f['created_by'] == SYSTEM
+                     and f['assigned_to'] == 'user' and f['text'].startswith(ESCALATION_PREFIX)
+                     and f['created'] >= train['opened']), None)
+        if bell:
+            train['escalation'] = bell['id']
     installed = signals.get('installed_at')
     actions = []
     if item and installed and installed > train['opened']:
@@ -102,7 +110,7 @@ def train_text(signals, hours, escalation=False):
     ids = ', '.join(t['id'] for t in visible[:8]) + (f' and {len(visible) - 8} more' if len(visible) > 8 else '')
     waited = f'{hours:.1f} h' if hours is not None else 'an unknown time'
     if escalation:
-        return (f'E3: approved work you would see has waited {waited} since the last install and nothing is staged '
+        return (f'{ESCALATION_PREFIX} you would see has waited {waited} since the last install and nothing is staged '
                 f'({ids}). Ask the release manager to cut a release, or resolve this when you have.')
     return (f'{TRAIN_PREFIX} {len(visible)} approved user-visible tasks have waited {waited} since the last install '
             f'({ids}). Cut a release from what is approved now. This closes itself on the next install.')
