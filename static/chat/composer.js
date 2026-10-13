@@ -154,6 +154,7 @@ function sendMessage() {
             name: a.name,
             url: a.url,
             ...(a.kind ? { kind: a.kind, size: a.size, type: a.type } : {}),
+            ...(a.id ? { id: a.id, ref: a.ref } : {}),
             ...(a.note ? { note: a.note } : {}),
             ...(a.source ? { source: a.source } : {}),
         })),
@@ -180,10 +181,16 @@ let composerUploadId = 0;
 
 function setupPaste() {
     document.getElementById('input').addEventListener('paste', e => {
+        const refs = FileReferences.clipboardPaths(e.clipboardData?.getData('text/plain'));
+        if (refs) {
+            if (window.chatSessionReadonly?.(activeChannel)) return;
+            e.preventDefault(); void referenceComposerFiles(refs); return;
+        }
         const files = [...(e.clipboardData?.items || [])].filter(item => item.kind === 'file').map(item => item.getAsFile()).filter(Boolean);
         if (!files.length) return; // ordinary text and URL pastes keep their native behavior
         e.preventDefault();
-        void uploadComposerFiles(files);
+        if (files.every(file => file.type.startsWith('image/'))) void uploadComposerFiles(files);
+        else offerComposerFiles(files);
     });
 }
 
@@ -192,7 +199,7 @@ function setupDragDrop() {
     const footer = input.closest('footer');
     const inChat = target => footer.contains(target) || !!target.closest?.('#timeline');
     const dropzone = document.getElementById('dropzone');
-    dropzone.querySelector('.dropzone-inner').textContent = 'Drop images, videos or files into chat';
+    dropzone.querySelector('.dropzone-inner').textContent = 'Link the original, or choose to upload a copy';
     const hint = footer.querySelector('.input-hint');
     if (hint) hint.textContent = 'Enter to send · Shift+Enter for newline · Paste/drop images, videos or files';
     const picker = document.createElement('input');
@@ -201,12 +208,19 @@ function setupDragDrop() {
     attach.id = 'attach-files'; attach.type = 'button'; attach.textContent = '＋';
     attach.title = 'Attach images, videos or files'; attach.setAttribute('aria-label', attach.title);
     attach.addEventListener('click', () => { if (!window.chatSessionReadonly?.(activeChannel)) picker.click(); });
-    picker.addEventListener('change', () => { void uploadComposerFiles([...picker.files]); picker.value = ''; });
+    picker.addEventListener('change', () => { offerComposerFiles([...picker.files]); picker.value = ''; });
     document.getElementById('input-row').insertBefore(attach, input);
     footer.appendChild(picker);
     const status = document.createElement('div');
     status.id = 'composer-uploads'; status.setAttribute('aria-live', 'polite');
     footer.insertBefore(status, document.getElementById('input-row'));
+    const choice = document.createElement('div');
+    choice.id = 'composer-file-choice'; choice.setAttribute('aria-live', 'polite');
+    footer.insertBefore(choice, status);
+    const referenceHint = document.createElement('p');
+    referenceHint.className = 'composer-reference-hint';
+    referenceHint.textContent = 'Paste a file path to reference it without copying.';
+    footer.appendChild(referenceHint);
     let dragCount = 0;
     document.addEventListener('dragenter', e => {
         if (!e.dataTransfer?.types?.includes('Files') || window.chatSessionReadonly?.(activeChannel)) return;
@@ -230,24 +244,36 @@ function setupDragDrop() {
         if (e.defaultPrevented) return; // e.g. Board gallery owns this drop
         if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
         if (!inComposer || !e.dataTransfer?.files?.length) return;
-        e.preventDefault(); void uploadComposerFiles([...e.dataTransfer.files]);
+        e.preventDefault(); offerComposerFiles([...e.dataTransfer.files]);
     });
     window.addEventListener('blur', () => { dragCount = 0; dropzone.classList.add('hidden'); });
+}
+
+function offerComposerFiles(files) {
+    if (window.chatSessionReadonly?.(activeChannel)) return;
+    FileReferences.offerFiles(activeChannel, files, uploadComposerFiles, repositionScrollAnchor);
 }
 
 function renderComposerUploads() {
     const status = document.getElementById('composer-uploads');
     if (!status) return;
     status.replaceChildren();
+    FileReferences.renderChoice(activeChannel, uploadComposerFiles, repositionScrollAnchor);
     for (const [id, job] of composerUploads) {
         if (job.channel !== activeChannel) continue;
         const chip = document.createElement('span');
         chip.className = 'composer-upload ' + job.state;
-        chip.textContent = job.state === 'error' ? `${job.name}: ${job.error}` : `Uploading ${job.name} · ${job.progress}`;
+        chip.textContent = job.state === 'error' ? `${job.name}: ${job.error}` : `${job.operation || 'Uploading'} ${job.name} · ${job.progress}`;
         if (job.state === 'error') {
             const dismiss = document.createElement('button');
             dismiss.type = 'button'; dismiss.textContent = '×'; dismiss.setAttribute('aria-label', `Dismiss upload error for ${job.name}`);
             dismiss.onclick = () => { composerUploads.delete(id); renderComposerUploads(); };
+            if (job.reference) {
+                const retry = document.createElement('button');
+                retry.type = 'button'; retry.textContent = 'Retry path';
+                retry.addEventListener('click', () => { composerUploads.delete(id); void referenceComposerFiles([job.reference]); });
+                chip.appendChild(retry);
+            }
             chip.appendChild(dismiss);
         }
         status.appendChild(chip);
@@ -290,45 +316,64 @@ function uploadAnchorPosition(anchor, text) {
     return prefix + text.length - prefix - suffix;
 }
 
-async function uploadComposerFiles(files) {
-    if (!files.length || window.chatSessionReadonly?.(activeChannel)) return;
+function insertComposerAttachment(attachment, channel, anchor) {
+    const input = document.getElementById('input');
+    if (attachment.kind === 'image') {
+        if (channel === activeChannel) { pendingAttachments.push(attachment); renderAttachments(); }
+        else {
+            const draft = sessionDrafts.get(channel) || { text: '', attachments: [] };
+            draft.attachments.push(attachment); sessionDrafts.set(channel, draft);
+        }
+        return;
+    }
+    const draft = channel === activeChannel ? null : (sessionDrafts.get(channel) || { text: '', attachments: [] });
+    const text = draft ? draft.text : input.value;
+    const pos = Math.max(0, Math.min(text.length, uploadAnchorPosition(anchor, text)));
+    const label = attachment.name.replace(/[\[\]\\\r\n]/g, ' ');
+    const link = `[${label}](${attachment.url})`;
+    const insertion = (pos && !/\s/.test(text[pos - 1]) ? '\n' : '') + link + '\n';
+    const next = text.slice(0, pos) + insertion + text.slice(pos);
+    anchor.text = next; anchor.position = pos + insertion.length;
+    if (draft) { draft.text = next; sessionDrafts.set(channel, draft); }
+    else { input.value = next; input.setSelectionRange(anchor.position, anchor.position); input.dispatchEvent(new Event('input', { bubbles: true })); }
+    composerLinks.set(channel, [...(composerLinks.get(channel) || []), attachment]);
+}
+
+async function transferComposerFiles(items, operation, request) {
+    if (!items.length || window.chatSessionReadonly?.(activeChannel)) return;
     const channel = activeChannel;
     const input = document.getElementById('input');
     const anchor = { text: input.value, position: input.selectionStart ?? input.value.length };
-    // Register the whole batch before the first await so Send cannot race the next file.
-    const jobs = files.map(file => {
+    const jobs = items.map(item => {
         const id = ++composerUploadId;
-        const job = { channel, name: file.name || 'Pasted image', state: 'uploading', progress: '0%' };
-        composerUploads.set(id, job); return { id, job, file };
+        const job = { channel, name: item.name, reference: item.reference, operation, state: 'uploading', progress: '0%' };
+        composerUploads.set(id, job); return { id, job, item };
     });
     renderComposerUploads();
-    for (const { id, job, file } of jobs) {
+    for (const { id, job, item } of jobs) {
         try {
-            const data = await requestComposerUpload(file, job);
-            const attachment = { name: data.name || file.name || 'Pasted image', url: data.url, kind: data.kind || (file.type.startsWith('image/') ? 'image' : 'file'), size: data.size ?? file.size, type: data.type || file.type };
-            if (attachment.kind === 'image') {
-                if (channel === activeChannel) { pendingAttachments.push(attachment); renderAttachments(); }
-                else {
-                    const draft = sessionDrafts.get(channel) || { text: '', attachments: [] };
-                    draft.attachments.push(attachment); sessionDrafts.set(channel, draft);
-                }
-            } else {
-                const draft = channel === activeChannel ? null : (sessionDrafts.get(channel) || { text: '', attachments: [] });
-                const text = draft ? draft.text : input.value;
-                const pos = Math.max(0, Math.min(text.length, uploadAnchorPosition(anchor, text)));
-                const label = attachment.name.replace(/[\[\]\\\r\n]/g, ' ');
-                const link = `[${label}](${attachment.url})`;
-                const insertion = (pos && !/\s/.test(text[pos - 1]) ? '\n' : '') + link + '\n';
-                const next = text.slice(0, pos) + insertion + text.slice(pos);
-                anchor.text = next; anchor.position = pos + insertion.length;
-                if (draft) { draft.text = next; sessionDrafts.set(channel, draft); }
-                else { input.value = next; input.setSelectionRange(anchor.position, anchor.position); input.dispatchEvent(new Event('input', { bubbles: true })); }
-                composerLinks.set(channel, [...(composerLinks.get(channel) || []), attachment]);
-            }
+            const data = await request(item, job);
+            insertComposerAttachment(data, channel, anchor);
             composerUploads.delete(id);
-        } catch (error) { job.state = 'error'; job.error = error.message || 'Upload failed'; }
+            if (item.reference) FileReferences.clearChoice(channel, uploadComposerFiles, repositionScrollAnchor);
+        } catch (error) { job.state = 'error'; job.error = error.message || `${operation} failed`; }
         renderComposerUploads();
     }
+}
+
+async function uploadComposerFiles(files) {
+    await transferComposerFiles(files.map(file => ({ name: file.name || 'Pasted image', file })), 'Uploading',
+        async (item, job) => {
+            const data = await requestComposerUpload(item.file, job);
+            return { name: data.name || item.name, url: data.url,
+                kind: data.kind || (item.file.type.startsWith('image/') ? 'image' : 'file'),
+                size: data.size ?? item.file.size, type: data.type || item.file.type };
+        });
+}
+
+async function referenceComposerFiles(refs) {
+    await transferComposerFiles(refs.map(reference => ({ name: reference, reference })), 'Referencing',
+        item => FileReferences.register(item.reference));
 }
 
 // Kept for existing image callers, using the same accepted/error path.
@@ -342,7 +387,7 @@ function renderAttachments() {
         const wrap = document.createElement('div');
         wrap.className = 'attachment-preview';
         wrap.innerHTML = `
-            <img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" data-source="${escapeHtml(att.source || '')}" data-url="${escapeHtml(att.url)}" onclick="openImageModal(this.dataset.url)" title="Click to preview">
+            <img src="${escapeHtml(FileReferences.authenticatedURL(att.url) || att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" data-source="${escapeHtml(att.source || '')}" data-url="${escapeHtml(att.url)}" onclick="openImageModal(this.dataset.url)" title="Click to preview">
             <button class="remove-btn" onclick="removeAttachment(${i})">x</button>
         `;
         container.appendChild(wrap);

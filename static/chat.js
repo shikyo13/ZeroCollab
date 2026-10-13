@@ -589,11 +589,15 @@ function appendMessage(msg, options = {}) {
             attachmentsHtml = '<div class="msg-attachments">';
             for (const att of msg.attachments) {
                 if ((att.kind === 'file' || att.kind === 'video') && msg.text.includes(att.url)) continue;
-                if (/^\/uploads\/[a-z0-9_-][a-z0-9_.-]*\.(webm|mp4)$/i.test(att.url)) {
-                    attachmentsHtml += `<div class="msg-video"><video src="${escapeHtml(att.url)}" controls playsinline preload="metadata" aria-label="${escapeHtml(att.name || 'Rendered video')}"></video><a href="${escapeHtml(att.url)}" target="_blank" rel="noopener noreferrer">Open full size ↗</a></div>`;
+                if (FileReferences.mediaURL(att.url) && (att.kind === 'video' || /\.(webm|mp4)$/i.test(FileReferences.mediaURL(att.url).pathname))) {
+                    attachmentsHtml += `<div class="msg-video"><video src="${escapeHtml(FileReferences.authenticatedURL(att.url))}" controls playsinline preload="metadata" aria-label="${escapeHtml(att.name || 'Rendered video')}"></video><a href="${escapeHtml(att.url)}" target="_blank" rel="noopener noreferrer">Open full size ↗</a></div>`;
                     continue;
                 }
-                attachmentsHtml += `<img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" data-source="${escapeHtml(att.source || '')}" data-url="${escapeHtml(att.url)}" onclick="openImageModal(this.dataset.url)">`;
+                if (att.kind === 'file' && FileReferences.mediaURL(att.url)) {
+                    attachmentsHtml += `<a class="msg-file-link" href="${escapeHtml(FileReferences.authenticatedURL(att.url))}" download="${escapeHtml(att.name || '')}">${escapeHtml(att.name || 'File')}</a>`;
+                    continue;
+                }
+                attachmentsHtml += `<img src="${escapeHtml(FileReferences.authenticatedURL(att.url) || att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" data-source="${escapeHtml(att.source || '')}" data-url="${escapeHtml(att.url)}" onclick="openImageModal(this.dataset.url)">`;
             }
             attachmentsHtml += '</div>';
         }
@@ -621,6 +625,9 @@ function appendMessage(msg, options = {}) {
         el.innerHTML = `${isSelf ? '' : avatarHtml}<div class="chat-bubble">${replyHtml}<div class="bubble-header"><span class="msg-sender"></span><span class="msg-time">${msg.time || ''}</span><span class="msg-num">#${msg.id}</span><div class="message-toolbar" role="group" aria-label="Message actions"><button class="create-task-pill" onclick="createTaskFromMessage(${msg.id}); event.stopPropagation();" title="Create a Board task from this message">Create task</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><button class="reply-btn" onclick="startReply(${msg.id}, event)">Reply</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete">Delete</button></div></div><div class="msg-text">${textHtml}</div>${attachmentsHtml}</div>`;
         applySender(el);
         renderUploadedFileLinks(el, msg.attachments || []);
+        for (const media of el.querySelectorAll('.msg-attachments img, .msg-attachments video')) {
+            media.addEventListener('error', () => FileReferences.explainFailure(media, media.getAttribute('src')), { once: true });
+        }
 
         // Add copy buttons to code blocks
         addCodeCopyButtons(el);
@@ -1120,11 +1127,12 @@ function renderUploadedFileLinks(container, attachments) {
     for (const link of container.querySelectorAll('.msg-text a[href]')) {
         let url;
         try { url = new URL(link.getAttribute('href'), location.href); } catch { continue; }
-        if (url.origin !== location.origin || url.username || url.password || !/^\/uploads\/[a-z0-9_-][a-z0-9_.-]*$/i.test(url.pathname)) continue;
+        if (!FileReferences.mediaURL(url.href)) continue;
         if (/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(url.pathname)) continue;
         const meta = attachments.find(a => a.url === url.pathname);
-        const video = /\.(webm|mp4)$/i.test(url.pathname);
+        const video = meta?.kind === 'video' || /\.(webm|mp4)$/i.test(url.pathname);
         link.classList.add('msg-file-link');
+        link.href = FileReferences.authenticatedURL(url.href);
         link.setAttribute('target', '_blank'); link.setAttribute('rel', 'noopener noreferrer');
         if (!video) link.setAttribute('download', meta?.name || '');
         if (Number.isFinite(meta?.size)) {
@@ -1135,9 +1143,10 @@ function renderUploadedFileLinks(container, attachments) {
         if (!video || seenVideos.has(url.pathname)) continue;
         seenVideos.add(url.pathname);
         const wrap = document.createElement('div'); wrap.className = 'msg-video';
-        const player = document.createElement('video'); player.src = url.pathname;
+        const player = document.createElement('video'); player.src = FileReferences.authenticatedURL(url.href);
         player.controls = true; player.playsInline = true; player.preload = 'metadata';
         player.setAttribute('aria-label', meta?.name || link.textContent || 'Video');
+        player.addEventListener('error', () => FileReferences.explainFailure(player, url.href), { once: true });
         wrap.appendChild(player); link.after(wrap);
     }
 }

@@ -2105,3 +2105,10 @@ footer {
 .msg-file-link { display:inline-block; padding:7px 10px; margin:4px 0; border:1px solid var(--border-subtle); border-radius:8px; overflow-wrap:anywhere; }
 .msg-file-link small { font-size:11px; color:var(--text-dim); }
 #send:disabled { opacity:.45; cursor:wait; }
+
+/* Referencing originals is the default; disk uploads require an explicit choice. */
+.composer-reference-hint { color:var(--text-dim); font-size:11px; margin:6px 0 0; }
+#composer-file-choice:not(:empty) { display:grid; gap:6px; padding:10px; margin-bottom:8px; border:1px solid var(--border-subtle); border-radius:8px; background:var(--bg-msg); font-size:12px; overflow-wrap:anywhere; }
+.composer-file-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.composer-file-actions button { border:1px solid var(--border-subtle); border-radius:6px; padding:5px 8px; background:var(--bg-msg); color:var(--text); cursor:pointer; }
+.msg-reference-status { display:block; font-size:12px; color:var(--text-dim); overflow-wrap:anywhere; }
