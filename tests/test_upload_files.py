@@ -34,6 +34,41 @@ class UploadFileLines(unittest.TestCase):
         out = self.text('/uploads/9c0d1e2f.png /uploads/00000000.zip /uploads/../secret.txt /uploads/..secret.txt')
         self.assertNotIn('File:', out)
 
+    def test_pasted_reference_resolves_through_the_registry_only(self):
+        # harness 86468487, Zero #14949: an original pasted by path is read in place; the client's path is ignored.
+        import local_files
+        from project_room import Files
+        original = Path(tempfile.mkdtemp()) / 'm2 promo.mp4'
+        original.write_bytes(b'm' * 3072)
+        registry = local_files.Registry(Path(tempfile.mkdtemp()) / 'file_references.json')
+        key, _, _ = registry.register(str(original))
+        url = f'/api/files/ref/{key}/m2%20promo.mp4'
+        attach = {'url': url, 'name': 'm2 promo.mp4', 'path': 'C:/Windows/System32/evil.dll'}
+
+        def text(body, attachments):
+            return message_text({'id': 7, 'sender': 'Zero', 'text': body, 'attachments': attachments}, '',
+                                Files(self.uploads, registry))
+        out = text(f'[m2 promo.mp4]({url})', [attach])
+        self.assertIn(f'File: m2 promo.mp4 is at {original} (video, 3.0 KB)', out)
+        self.assertNotIn('evil.dll is at', out)
+        self.assertEqual(out.count('File: '), 1)
+        original.write_bytes(b'm' * 4096)  # edited after it was pasted
+        self.assertIn('(video, 4.0 KB) (changed since pasted)', text('', [attach]))
+        original.unlink()
+        self.assertIn('File: m2 promo.mp4 is unavailable: The original file is gone', text('', [attach]))
+        self.assertIn('is unavailable: Unknown file reference', text('/api/files/ref/0123456789abcdef/x.pdf', []))
+
+    def test_original_vanishing_after_lookup_costs_one_line(self):
+        # backend 236cdebc: lookup saw the file, then it went; the prompt must still build.
+        from project_room import Files
+        gone = Path(tempfile.mkdtemp()) / 'gone.pdf'
+        registry = type('Registry', (), {'lookup': lambda self, key: (gone, False)})()
+        message = {'id': 7, 'sender': 'Zero', 'text': '',
+                   'attachments': [{'url': '/api/files/ref/0123456789abcdef/gone.pdf', 'name': 'two\nlines'}]}
+        out = message_text(message, '', Files(self.uploads, registry))
+        # The client's name is collapsed to one line, so it can't add lines to the prompt.
+        self.assertIn(f'File: two lines is unavailable: The original file is gone: {gone}', out)
+
     def test_without_upload_folder_is_unchanged(self):
         message = {'id': 7, 'sender': 'Zero', 'text': '/uploads/1a2b3c4d.pdf', 'attachments': []}
         self.assertEqual(message_text(message, ''), '#7 Zero:\n/uploads/1a2b3c4d.pdf')

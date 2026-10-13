@@ -5,7 +5,9 @@ import math
 import os
 import re
 import time
+import urllib.parse
 import uuid
+from collections import namedtuple
 from coordination_records import TASK_HISTORY
 from pathlib import Path, PurePosixPath
 from coordination_records import CoordinationRecords, bounded
@@ -104,6 +106,13 @@ def task_labels(values):
 RASTER_IMAGES = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 # Videos an agent rendered with room_motion and published (Zero #14291: videos arrive in chat and on tasks).
 VIDEOS = {'webm', 'mp4'}
+IMAGES = RASTER_IMAGES | {'svg', 'bmp'}  # what the upload API calls kind 'image'
+# A pasted original served in place (backend local_files, Zero #14949): /api/files/ref/<16 hex id>/<name>.
+REFERENCE_LINK = r'/api/files/ref/([0-9a-f]{16})/([^\s)\]]+)'
+REFERENCE_REGISTRY = 'file_references.json'  # in the server's data_dir, written by app.file_references()
+MAX_FILE_LABEL = 120  # same bound as the composer's [label](link) match
+# What agents can resolve for a message: the upload folder and the pasted-reference registry (either may be None).
+Files = namedtuple('Files', 'uploads references')
 
 
 def upload_url(raw, video=False):
@@ -1251,7 +1260,23 @@ class ProjectRoom:
         return f"http://127.0.0.1:{self.runtime.cfg['server']['port']}"
 
     def uploads(self):
-        return getattr(self.runtime.host.store, 'upload_dir', None)
+        return Files(getattr(self.runtime.host.store, 'upload_dir', None), self.references())
+
+    def references(self):
+        """The pasted-reference registry the server writes (app.file_references, Zero #14949). Reloaded only when
+        its file changes, so a reference pasted after the room started resolves without rereading every time."""
+        cfg = getattr(self.runtime, 'cfg', None)
+        server = cfg.get('server') if isinstance(cfg, dict) else None
+        path = Path((server or {}).get('data_dir', './data')) / REFERENCE_REGISTRY
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        cached = getattr(self, '_references', None)
+        if cached is None or cached[0] != stamp:
+            import local_files
+            cached = self._references = (stamp, local_files.Registry(path))
+        return cached[1]
 
 
 def file_size(size):
@@ -1261,18 +1286,69 @@ def file_size(size):
         size /= 1024
 
 
-def upload_files(message, uploads, limit=8):
+def linked(message, link):
+    """(url, label) for each attachment and each [label](link) or bare link in the text matching link."""
+    named = [(str(a.get('url', '')), a.get('name')) for a in message.get('attachments', []) if isinstance(a, dict)]
+    # The composer pastes [name](link); a bare or absolute link has no label.
+    pattern = r'(?:\[([^\]\n]{1,120})\]\()?(?:https?://[^\s/)]+)?(' + link + ')'
+    named += [(m.group(2), m.group(1) or None) for m in re.finditer(pattern, str(message.get('text', '')))]
+    return named
+
+
+def one_line(name, limit=MAX_FILE_LABEL):
+    """A client-supplied file name as one bounded line: it must not add lines to an agent's prompt."""
+    return ' '.join(str(name).split())[:limit]
+
+
+def file_kind(extension):
+    return 'image' if extension in IMAGES else 'video' if extension in VIDEOS else 'file'
+
+
+def reference_files(message, references, limit):
+    """Pasted originals (/api/files/ref/<id>/<name>, Zero #14949). The path comes only from the server's registry,
+    never from the client's attachment, and the file is read in place: nothing is copied."""
+    lines, seen = [], set()
+    for url, name in linked(message, REFERENCE_LINK):
+        match = re.search(REFERENCE_LINK, url)
+        if not match or match.group(1) in seen:
+            continue
+        key, seen_name = match.group(1), urllib.parse.unquote(match.group(2))
+        seen.add(key)
+        label = one_line(name or seen_name)
+        try:
+            path, changed = references.lookup(key)
+            # The original can vanish between lookup's check and this one (deleted, moved, share dropped);
+            # it must cost one line, never the whole prompt (backend 236cdebc).
+            size = path.stat().st_size
+        except ValueError as exc:
+            lines.append(f"File: {label} is unavailable: {exc}")
+        except OSError:
+            lines.append(f"File: {label} is unavailable: The original file is gone: {path}")
+        else:
+            extension = path.suffix.lstrip('.').lower()
+            lines.append(f"File: {label} is at {path} ({file_kind(extension)}, {file_size(size)})"
+                         + (' (changed since pasted)' if changed else ''))
+        if len(lines) == limit:
+            break
+    return lines
+
+
+def upload_files(message, files, limit=8):
     """Videos and other files a message attaches or links (Zero #14495: drop or paste any file into chat).
     room_image shows raster images only, so for anything else name the local copy an agent can open with its
-    own file tools. Only names inside the upload folder count; existence, kind and size come from disk."""
-    if not isinstance(uploads, (str, os.PathLike)):
+    own file tools. Only names inside the upload folder count; existence, kind and size come from disk.
+    Pasted references to originals follow (reference_files)."""
+    if isinstance(files, (str, os.PathLike)):
+        files = Files(files, None)
+    if not isinstance(files, Files):
         return []
-    named = [(a.get('url', ''), a.get('name')) for a in message.get('attachments', []) if isinstance(a, dict)]
-    # The composer pastes [name](/uploads/x.pdf); a bare or absolute link has no label.
-    named += [(link, label or None) for label, link in
-              re.findall(r'(?:\[([^\]\n]{1,120})\]\()?(?:https?://[^\s/)]+)?(/uploads/[\w.-]+)', str(message.get('text', '')))]
-    root, lines, seen = Path(uploads).resolve(), [], set()
-    for url, name in named:
+    lines = reference_files(message, files.references, limit) if files.references is not None else []
+    if not isinstance(files.uploads, (str, os.PathLike)):
+        return lines
+    root, seen = Path(files.uploads).resolve(), set()
+    for url, name in linked(message, r'/uploads/[\w.-]+'):
+        if len(lines) >= limit:
+            break
         upload = str(url).split('/uploads/', 1)[1].rstrip('.') if '/uploads/' in str(url) else ''
         if (not upload or upload in seen or upload.startswith('.')
                 or not all(c.isascii() and (c.isalnum() or c in '._-') for c in upload)):
@@ -1283,10 +1359,11 @@ def upload_files(message, uploads, limit=8):
         # Message text and attachments are not validated: same containment rule as serve_upload.
         if extension in RASTER_IMAGES or not path.is_relative_to(root) or not path.is_file():
             continue
-        kind = 'video' if extension in VIDEOS else 'file'
-        lines.append(f"File: {name or upload} is at {path} ({kind}, {file_size(path.stat().st_size)})")
-        if len(lines) == limit:
-            break
+        try:
+            size = path.stat().st_size
+        except OSError:  # removed since is_file(); skip it rather than fail the prompt
+            continue
+        lines.append(f"File: {one_line(name or upload)} is at {path} ({file_kind(extension)}, {file_size(size)})")
     return lines
 
 
@@ -1325,13 +1402,17 @@ def coordination_tools():
                         'x1': {'type': 'number'}, 'y1': {'type': 'number'}, 'x2': {'type': 'number'}, 'y2': {'type': 'number'}, 'note': string, 'color': string},
                         'required': ['kind', 'x1', 'y1']}},
                     'summary': string, 'task_id': string, 'post': {'type': 'boolean'}}, ['image']),
-        definition('room_motion', 'Author motion scenes and product videos (JSON data, never code). list/get scenes; validate scene_json (returns issues [{path, message}]); save it as project:<id> (overwrite to replace); frame renders t_ms (one time or up to 6) exactly as the video looks, returning /uploads PNGs and a contact sheet; export starts the video in profile webm (default), vp9-alpha or av1 (WebM), prores4444 (.mov with alpha), gif, png (first frame only; use frame for a chosen time) or png-sequence (.zip of numbered frames); a profile this room\'s FFmpeg cannot encode is refused, never swapped; export_status; export_cancel job_id; publish job_id posts a finished WebM export to this chat (post false to skip) and task_id attaches it to a task you own; other profiles are not published, share their video_url from export_status. Author new work as v2 (field reference: Docs/motion-scene-v2.md); v1 room replays still render. frame and export use the first composition. Sound is not exported yet: export refuses audio layers and unmuted video, and validate and save warn first. Loop: validate until clean, save, frame key moments and show them with room_markup, export, then publish.',
-                   {'action': {'type': 'string', 'enum': ['list', 'get', 'validate', 'save', 'frame', 'export', 'export_status', 'export_cancel', 'publish']},
+        definition('room_motion', 'Author motion scenes and product videos (JSON data, never code). list/get scenes; validate scene_json (returns issues [{path, message}]); save it as project:<id> (overwrite to replace); frame renders t_ms (one time or up to 6) exactly as the video looks, returning /uploads PNGs and a contact sheet; export starts the video in profile webm (default), vp9-alpha or av1 (WebM), prores4444 (.mov with alpha), gif, png (first frame only; use frame for a chosen time) or png-sequence (.zip of numbered frames); a profile this room\'s FFmpeg cannot encode is refused, never swapped; export_status; export_cancel job_id; publish job_id posts a finished WebM export to this chat (post false to skip) and task_id attaches it to a task you own; other profiles are not published, share their video_url from export_status. Author new work as v2 (field reference: Docs/motion-scene-v2.md); v1 room replays still render. frame and export use the first composition. Sound is not exported yet: export refuses audio layers and unmuted video, and validate and save warn first. variant scene new_id saves a template re-render as project:<new_id> with composition (default first) and props overriding its props, checked against props_schema. patch scene ops applies RFC 6902 JSON Patch to a saved project scene; nothing is written unless the result validates. import_asset url asset_id turns a room upload (a room_browser screenshot, a recording, an image) into an asset with its real sha256 and, for images, size and how it fits the frame; with scene it is added to that project scene. Loop: validate until clean, save, frame key moments and show them with room_markup, export, then publish.',
+                   {'action': {'type': 'string', 'enum': ['list', 'get', 'validate', 'save', 'frame', 'export', 'export_status', 'export_cancel', 'publish', 'variant', 'patch', 'import_asset']},
                     'scene': string, 'scene_json': {'type': 'object'}, 'overwrite': {'type': 'boolean'},
                     't_ms': {'anyOf': [{'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}, 'maxItems': 6}]},
                     'reduced': {'type': 'boolean'}, 'job_id': string, 'task_id': string, 'note': string, 'name': string,
                     'post': {'type': 'boolean'},
-                    'profile': {'type': 'string', 'enum': ['webm', 'vp9-alpha', 'av1', 'prores4444', 'gif', 'png', 'png-sequence']}}, ['action']),
+                    'profile': {'type': 'string', 'enum': ['webm', 'vp9-alpha', 'av1', 'prores4444', 'gif', 'png', 'png-sequence']},
+                    'new_id': string, 'composition': string, 'props': {'type': 'object'},
+                    'ops': {'type': 'array', 'items': {'type': 'object'}, 'maxItems': 200},
+                    'url': string, 'asset_id': string,
+                    'kind': {'type': 'string', 'enum': ['image', 'capture', 'video', 'font', 'audio']}}, ['action']),
         definition('room_update', 'Post a concise progress, decision, reference, blocker, or handoff update to project memory and the chatroom without waking peers.',
                    {'kind': string, 'text': string, 'supersedes': string, 'resolves': string}, ['kind', 'text']),
         definition('room_review', 'Request peer review of an approach or patch using an explicit artifact/revision reference, or respond with findings for that exact reference. Optional files selects relative files for backend hash snapshots (otherwise declared file paths). Changed snapshots block approval; room_read review_artifact retrieves captured content. Requests remain in the inbox; notify attempts one bounded wake-up.',

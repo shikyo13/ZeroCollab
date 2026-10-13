@@ -1,8 +1,10 @@
 """ZeroCollab - FastAPI web UI + agent auto-trigger."""
 
 import asyncio
+import hashlib
 import hmac
 import json
+import os
 import re as _re
 import sys
 import threading
@@ -10,6 +12,7 @@ import uuid
 import logging
 import weakref
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.requests import Request
@@ -21,6 +24,7 @@ from router import Router
 from agents import AgentTrigger
 from registry import RuntimeRegistry
 from durable import atomic_write
+import local_files
 
 log = logging.getLogger(__name__)
 
@@ -1144,6 +1148,7 @@ VIDEO_UPLOAD_EXTS = {'.webm', '.mp4'}  # play inline in chat and on tasks
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB default for images
 MAX_FILE_BYTES = 512 * 1024 * 1024  # videos and other files dropped or pasted into chat (Zero, chat box)
 UPLOAD_CHUNK = 1024 * 1024
+UPLOAD_HASH_HEX = 16  # stored name: the first 64 bits of the content's sha256, then the extension
 UPLOAD_SUFFIX = _re.compile(r'\.[a-z0-9]{1,10}')
 PASTED_IMAGE_TYPES = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp',
                       'image/bmp': '.bmp', 'image/svg+xml': '.svg'}
@@ -1158,16 +1163,22 @@ def upload_suffix(filename, content_type):
     return suffix if UPLOAD_SUFFIX.fullmatch(suffix) else '.bin'
 
 
+def upload_kind(ext):
+    """How chat shows a file: 'image' embeds, 'video' plays inline, 'file' is a download link."""
+    return 'image' if ext in ALLOWED_UPLOAD_EXTS else 'video' if ext in VIDEO_UPLOAD_EXTS else 'file'
+
+
 async def save_upload(file, target, max_bytes):
-    """Streams the upload to target in chunks, never reading more than max_bytes + 1. Returns the size,
-    or None (and leaves no file) when the upload is larger than max_bytes."""
-    size = 0
+    """Streams the upload to target in chunks, never reading more than max_bytes + 1, hashing as it goes.
+    Returns (size, sha256 hex), or None (and leaves no file) when the upload is larger than max_bytes."""
+    size, digest = 0, hashlib.sha256()
     try:
         with open(target, 'wb') as out:
             while chunk := await file.read(min(UPLOAD_CHUNK, max_bytes + 1 - size)):
                 size += len(chunk)
                 if size > max_bytes:
                     break
+                digest.update(chunk)
                 await asyncio.to_thread(out.write, chunk)
     except BaseException:
         target.unlink(missing_ok=True)
@@ -1175,7 +1186,7 @@ async def save_upload(file, target, max_bytes):
     if size > max_bytes:
         target.unlink(missing_ok=True)
         return None
-    return size
+    return size, digest.hexdigest()
 
 
 @app.post("/api/upload")
@@ -1188,17 +1199,26 @@ async def upload_image(file: UploadFile = File(...)):
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     ext = upload_suffix(file.filename, file.content_type)
-    kind = 'image' if ext in ALLOWED_UPLOAD_EXTS else 'video' if ext in VIDEO_UPLOAD_EXTS else 'file'
+    kind = upload_kind(ext)
     if kind == 'image':
         max_bytes = int(images.get("max_size_mb", MAX_UPLOAD_BYTES // (1024 * 1024)) * 1024 * 1024)
     else:
         max_bytes = int(images.get("max_file_mb", MAX_FILE_BYTES // (1024 * 1024)) * 1024 * 1024)
     max_bytes = max(0, max_bytes)
 
-    filename = f"{uuid.uuid4().hex[:8]}{ext}"
-    size = await save_upload(file, upload_dir / filename, max_bytes)
-    if size is None:
+    partial = upload_dir / f".upload-{uuid.uuid4().hex}.part"
+    saved = await save_upload(file, partial, max_bytes)
+    if saved is None:
         return JSONResponse({"error": f"file too large (max {max_bytes // 1024 // 1024} MB)"}, status_code=400)
+    size, sha256 = saved
+    # Content-addressed (Zero #14949): the same bytes uploaded again reuse the one stored copy.
+    filename = f"{sha256[:UPLOAD_HASH_HEX]}{ext}"
+    target = upload_dir / filename
+    duplicate = target.is_file()
+    if duplicate:
+        partial.unlink(missing_ok=True)
+    else:
+        os.replace(partial, target)
 
     return JSONResponse({
         "name": file.filename or f"pasted{ext}",
@@ -1206,6 +1226,8 @@ async def upload_image(file: UploadFile = File(...)):
         "kind": kind,
         "size": size,
         "type": UPLOAD_MEDIA_TYPES.get(ext, "application/octet-stream"),
+        "sha256": sha256,
+        "deduplicated": duplicate,
     })
 
 
@@ -1618,6 +1640,20 @@ UPLOAD_HEADERS = {
 }
 
 
+def serve_file(filepath, download_name=None, headers=None):
+    """Images and videos inline (Range included); anything else only ever downloads, never renders. With
+    download_name the download keeps that name; without it a chat link's download="<name>" decides."""
+    headers = {**UPLOAD_HEADERS, **(headers or {})}
+    media_type = UPLOAD_MEDIA_TYPES.get(filepath.suffix.lower())
+    if media_type is not None:
+        return FileResponse(filepath, media_type=media_type, headers=headers)
+    if download_name:
+        return FileResponse(filepath, media_type="application/octet-stream", headers=headers,
+                            content_disposition_type="attachment", filename=download_name)
+    return FileResponse(filepath, media_type="application/octet-stream",
+                        headers={**headers, "Content-Disposition": "attachment"})
+
+
 @app.get("/uploads/{filename}")
 async def serve_upload(filename: str):
     upload_dir = Path(config.get("images", {}).get("upload_dir", "./uploads"))
@@ -1626,10 +1662,53 @@ async def serve_upload(filename: str):
         return JSONResponse({"error": "invalid path"}, status_code=400)
     if not filepath.is_file():
         return JSONResponse({"error": "not found"}, status_code=404)
-    media_type = UPLOAD_MEDIA_TYPES.get(filepath.suffix.lower())
-    if media_type is None:
-        # Not an image or video: never rendered, only saved. No filename in the header, so a chat link's
-        # download="<original name>" names the saved file (QA #14693); a bare link saves as the upload name.
-        return FileResponse(filepath, media_type="application/octet-stream",
-                            headers={**UPLOAD_HEADERS, "Content-Disposition": "attachment"})
-    return FileResponse(filepath, media_type=media_type, headers=UPLOAD_HEADERS)
+    # No filename in the download header, so a chat link's download="<original name>" names it (QA #14693).
+    return serve_file(filepath)
+
+
+# --- Files referenced in place (Zero #14949: paste a path, no copy) ---
+
+_file_references = None
+
+
+def file_references():
+    """The room's reference registry, in its data folder; created on first use."""
+    global _file_references
+    if _file_references is None:
+        data_dir = Path(config.get("server", {}).get("data_dir", "./data"))
+        _file_references = local_files.Registry(data_dir / "file_references.json")
+    return _file_references
+
+
+@app.post("/api/files/reference")
+async def reference_file(request: Request):
+    """Register a pasted path, UNC path or file:// URI. Nothing is copied: the returned attachment's url
+    serves the original, read-only, through /api/files/ref/<id>/<name>."""
+    try:
+        body = await request.json()
+        key, path, info = await asyncio.to_thread(file_references().register, body.get("ref"))
+    except (ValueError, AttributeError) as exc:
+        return JSONResponse({"error": str(exc) if isinstance(exc, ValueError) else "Send {\"ref\": \"<path>\"}"},
+                            status_code=400)
+    ext = path.suffix.lower()
+    return JSONResponse({
+        "id": key,
+        "name": path.name,
+        "url": f"/api/files/ref/{key}/{quote(path.name)}",
+        "kind": upload_kind(ext),
+        "size": info.st_size,
+        "type": UPLOAD_MEDIA_TYPES.get(ext, "application/octet-stream"),
+        "path": str(path),
+        "ref": path.as_uri(),
+    })
+
+
+@app.get("/api/files/ref/{key}/{name}")
+async def serve_referenced_file(key: str, name: str):
+    """The original file behind a reference, read in place. X-File-Changed: 1 when its size or modified
+    time differ from when it was pasted; 404 with the original path when it's gone."""
+    try:
+        path, changed = await asyncio.to_thread(file_references().lookup, key)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    return serve_file(path, download_name=path.name, headers={"X-File-Changed": "1"} if changed else None)

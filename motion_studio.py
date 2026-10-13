@@ -241,7 +241,7 @@ def require_silent_composition(scene, composition):
         if isinstance(node, dict):
             if node.get('hidden'):
                 return False
-            if (node.get('type') == 'audio' or
+            if (node.get('type') in ('audio', 'voiceover') or
                     node.get('type') == 'video' and not node.get('muted', False)
                     and node.get('volume', 1) != 0):
                 return True
@@ -250,7 +250,7 @@ def require_silent_composition(scene, composition):
     if scene['version'] == 2:
         comp = next(c for c in scene['compositions'] if c['id'] == composition)
         if has_audio(comp):
-            raise ValueError('Audio mixing is not available yet; mute video layers or remove audio layers before export')
+            raise ValueError('Audio mixing is not available yet; mute video layers or remove audio and voiceover layers before export')
 
 
 MAX_INLINE_ASSET_BYTES = 64 * 1024 * 1024  # total raw bytes in one generated page

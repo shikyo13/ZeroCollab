@@ -1,0 +1,77 @@
+{
+ "version": 2,
+ "id": "ui-board",
+ "name": "UI layer example: a card moves to Done while Frontend replies",
+ "assets": [],
+ "compositions": [
+  {
+   "id": "main",
+   "width": 1920,
+   "height": 1080,
+   "fps": {"num": 30, "den": 1},
+   "duration": 180,
+   "background": "#0f1115",
+   "tracks": [
+    {
+     "id": "v",
+     "kind": "visual",
+     "clips": [
+      {
+       "id": "board",
+       "from": 0,
+       "duration": 180,
+       "layers": [
+        {
+         "id": "board-ui",
+         "type": "ui",
+         "component": "board",
+         "label": "scripted",
+         "x": 960, "y": 540, "anchor_x": 0.5, "anchor_y": 0.5, "width": 1760, "height": 960,
+         "keyframes": {"scale": [{"frame": 0, "value": 1}, {"frame": 150, "value": 1.15, "easing": "ease-in-out"}]},
+         "data": {
+          "project_title": "ZeroCollab",
+          "epoch_seconds": 1791900000,
+          "agents": [
+           {"id": "frontend", "label": "Frontend", "color": "#4fb3c8"},
+           {"id": "design", "label": "Design", "color": "#e0a33a"}
+          ],
+          "tasks": [
+           {"id": "t1", "title": "Board previews beside the work", "status": "working", "owner": "frontend",
+            "labels": ["frontend"], "priority": 1, "execution_state": "executing", "updated": 1791899940},
+           {"id": "t2", "title": "Readable names on Live", "status": "review", "owner": "design", "labels": ["design"]}
+          ],
+          "follow": [
+           {"agent": "frontend", "task": "t1", "text": "Previews now stay in their lane until you've seen them.", "open": false}
+          ]
+         },
+         "states": [
+          {
+           "frame": 60,
+           "data": {
+            "project_title": "ZeroCollab",
+            "epoch_seconds": 1791900002,
+            "agents": [
+             {"id": "frontend", "label": "Frontend", "color": "#4fb3c8"},
+             {"id": "design", "label": "Design", "color": "#e0a33a"}
+            ],
+            "tasks": [
+             {"id": "t1", "title": "Board previews beside the work", "status": "done", "owner": "frontend",
+              "labels": ["frontend"], "priority": 1, "execution_state": "done", "updated": 1791900002},
+             {"id": "t2", "title": "Readable names on Live", "status": "review", "owner": "design", "labels": ["design"]}
+            ],
+            "follow": [
+             {"agent": "frontend", "task": "t1", "text": "Previews now stay in their lane until you've seen them. Moved to Done.",
+              "open": true, "scroll": "end", "move": {"from": "working", "to": "done"}}
+            ]
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

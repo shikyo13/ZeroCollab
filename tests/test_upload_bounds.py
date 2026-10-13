@@ -41,7 +41,7 @@ class UploadBoundsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             response, video, _ = self.upload(root, 'Demo Cut.MP4', b'\x00\x00\x00 ftypisom')
             self.assertEqual((response.status_code, video['kind'], video['type'], video['size']), (200, 'video', 'video/mp4', 12))
-            self.assertRegex(video['url'], r'^/uploads/[0-9a-f]{8}\.mp4$')
+            self.assertRegex(video['url'], r'^/uploads/[0-9a-f]{16}\.mp4$')
             self.assertEqual(self.serve(root, video['url'].split('/')[-1]).media_type, 'video/mp4')
             _, file, _ = self.upload(root, 'notes.ZIP', b'PK\x03\x04')
             self.assertEqual((file['kind'], file['type'], file['name']), ('file', 'application/octet-stream', 'notes.ZIP'))
@@ -59,6 +59,19 @@ class UploadBoundsTests(unittest.TestCase):
             self.assertTrue(pasted['url'].endswith('.png') and pasted['kind'] == 'image', pasted)
             _, bare, _ = self.upload(root, 'Makefile', b'all:')
             self.assertTrue(bare['url'].endswith('.bin') and bare['kind'] == 'file', bare)
+
+    def test_the_same_bytes_uploaded_twice_are_stored_once(self):
+        # Zero #14949: no pile of duplicate copies. The stored name is content-addressed.
+        with tempfile.TemporaryDirectory() as root:
+            _, first, _ = self.upload(root, 'clip.webm', b'same bytes')
+            _, again, _ = self.upload(root, 'renamed copy.webm', b'same bytes')
+            _, other, _ = self.upload(root, 'clip.webm', b'different bytes')
+            self.assertEqual(first['url'], again['url'])
+            self.assertEqual((first['deduplicated'], again['deduplicated']), (False, True))
+            self.assertNotEqual(first['url'], other['url'])
+            self.assertEqual(sorted(p.name for p in Path(root).iterdir()),
+                             sorted([first['url'].split('/')[-1], other['url'].split('/')[-1]]))
+            self.assertEqual(again['name'], 'renamed copy.webm')  # the name the user dropped is kept
 
     def test_files_have_their_own_larger_limit_and_oversized_writes_nothing(self):
         with tempfile.TemporaryDirectory() as root:

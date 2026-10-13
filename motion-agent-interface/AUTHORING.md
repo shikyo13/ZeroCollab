@@ -43,9 +43,15 @@ For a profile that doesn't publish, `export_status` gives the job's `video_url`;
 
 Not available yet:
 - Sound in exports. Mute video layers and leave out audio layers.
-- `composition` on `frame` and `export`. The first composition is used, so put the video you want first.
-- `import_asset`. Reference room uploads (`/uploads/<file>`) directly in `assets`. One page can carry at most 64 MB of assets.
-- `patch` (JSON Patch edits to large v2 scenes). Use whole-scene `save` with `overwrite`.
+- Rendering a composition other than the first in place. Use `variant` (below), which saves the one you choose as its own scene.
+
+## Templates, edits and real assets
+
+- **`variant`**: re-render a template without editing it. `room_motion(action="variant", scene="project:launch", new_id="launch-square", composition="square", props={"title": "Now in 1:1"})` saves `project:launch-square` with only that composition, its props overridden. Props are checked against the composition's `props_schema`, so an unknown name or a wrong type comes back as an issue and nothing is saved. Then `frame`, `export` and `publish` it as usual.
+- **`patch`**: change part of a large saved scene with RFC 6902 JSON Patch, for example `ops=[{"op": "replace", "path": "/compositions/0/props/title", "value": "Shipped"}]`. Supported ops are `add` (`-` appends to a list), `remove`, `replace`, `move`, `copy` and `test`. If any op fails, or the result doesn't validate, nothing is written. A patch can't change the scene id.
+- **`import_asset`**: use a real room upload, such as a `room_browser` screenshot url or an image someone dropped in chat. `room_motion(action="import_asset", url="/uploads/1a2b3c4d.png", asset_id="board", kind="capture", scene="project:launch")` adds `{id, kind, ref, sha256}` with the file's real hash. For images it also returns `width`, `height` and `aspect`, plus `fit`: the `contain` size in the scene's first composition and the `fill_scale` that fills the frame with no black bars. Wide room screenshots are often 2.4 to 2.9:1, so plan a zoom or pan to the region that matters, not a letterboxed full view.
+
+One page can carry at most 64 MB of assets.
 
 ## v1: room replay vocabulary
 

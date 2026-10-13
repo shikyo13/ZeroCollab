@@ -32,9 +32,35 @@ MAX_DEPTH = 8
 MAX_LAYERS = 1000
 MAX_KEYFRAMES = 400
 
-LAYER_TYPES = ('text', 'image', 'video', 'audio', 'shape', 'path', 'captions', 'group', 'capture', 'room')
+LAYER_TYPES = ('text', 'image', 'video', 'audio', 'shape', 'path', 'captions', 'group', 'capture', 'room', 'ui',
+               'cursor', 'voiceover')
+# Sound (systems 6e90b5b7, Docs/motion-audio.md r1, pinned in 3e2fee27): audio layers gain a role, looping and
+# explicit ducking under named voice layers; a voiceover layer is narration synthesized once by a local voice,
+# named by an opaque registry id (never a path or URL). Both sit only on audio tracks.
+SOUND_TYPES = ('audio', 'voiceover')
+AUDIO_ROLES = ('voice', 'music', 'sfx')
+VOICE_ID = re.compile(r'^[a-z0-9]{1,16}:[a-z0-9][a-z0-9._-]{0,63}$')
+# Demo-grade presentation (motion-design 28cb5faf, pinned in 524774cb): named text styles, a window frame around
+# media, and the cursor recorded with a clip (desktop d590dce6 sidecar), drawn by render2 in its source's box.
+TEXT_STYLES = ('display', 'title', 'headline', 'subtitle', 'kicker', 'lt-name', 'lt-role', 'caption')
+BACKDROPS = ('studio', 'paper')  # paper is light and warm; brand text styles switch to ink colours on it
+# text.stagger (motion-design 8bd4558b): words enter one after another with expo-out. All integers except rise.
+STAGGER_EVERY_MAX = 120
+STAGGER_FRAMES_MAX = 240
+STAGGER_RISE_MAX = 400
+CURSOR_EVENTS = ('move', 'down', 'up', 'click', 'scroll', 'key')
+MAX_CURSOR_EVENTS = 20000
+MAX_CAMERA_KEYS = 2000
+# 'ui' layers mount real ZeroCollab components (frontend d7fe16c8, motion/ui.js) on scripted data: a complete
+# snapshot in `data`, replaced whole by each `states` entry from its clip content frame on (step, no tweening).
+UI_COMPONENTS = ('board', 'task-card')
+UI_STATUSES = ('open', 'working', 'blocked', 'review', 'done')
+UI_EXECUTION = ('executing', 'queued', 'waiting_on_human', 'needs_attention', 'blocked', 'waiting_on_dependency',
+                'in_review', 'idle', 'done')
+UI_LIMITS = {'tasks': 40, 'agents': 16, 'follow': 16, 'labels': 4, 'states': 120}
 ASSET_KINDS = ('image', 'video', 'audio', 'font', 'capture')
-EASINGS = ('linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out', 'step-start', 'step-end')
+EASINGS = ('linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out', 'step-start', 'step-end',
+           'expo-out', 'expo-in-out', 'premium', 'spring-soft', 'spring-snappy')
 TRANSITIONS = ('cut', 'fade', 'slide', 'wipe', 'zoom')
 DIRECTIONS = ('left', 'right', 'up', 'down')
 
@@ -49,13 +75,19 @@ TYPE_FIELDS = {
     'text': {'text': ('text', 4000), 'font': ('text', 80), 'font_asset': ('asset', ('font',)), 'size': (NUM, 1, 2000),
              'weight': (INT, 100, 900), 'color': ('color',), 'align': ('enum', ('left', 'center', 'right')),
              'line_height': (NUM, 0.5, 4), 'letter_spacing': (NUM, -50, 200), 'max_width': (NUM, 1, 100000),
-             'fit': ('enum', ('none', 'shrink')), 'reveal': (NUM, 0, 1)},
-    'image': {'asset': ('asset', ('image', 'capture')), 'fit': ('enum', ('contain', 'cover', 'fill', 'none'))},
+             'fit': ('enum', ('none', 'shrink')), 'reveal': (NUM, 0, 1), 'style': ('enum', TEXT_STYLES),
+             'stagger': ('stagger',)},
+    'image': {'asset': ('asset', ('image', 'capture')), 'fit': ('enum', ('contain', 'cover', 'fill', 'none')),
+              'frame': ('enum', ('window',))},
     'capture': {'asset': ('asset', ('capture', 'image')), 'fit': ('enum', ('contain', 'cover', 'fill', 'none')),
-                'label': ('enum', ('real', 'synthetic')), 'caption': ('text', 200)},
+                'label': ('enum', ('real', 'synthetic')), 'caption': ('text', 200), 'frame': ('enum', ('window',))},
     'video': {'asset': ('asset', ('video',)), 'fit': ('enum', ('contain', 'cover', 'fill', 'none')),
-              'trim': (INT, 0, 10 ** 7), 'rate': (NUM, 0.1, 8), 'volume': (NUM, 0, 1), 'muted': ('bool',)},
-    'audio': {'asset': ('asset', ('audio',)), 'trim': (INT, 0, 10 ** 7), 'rate': (NUM, 0.1, 8), 'volume': (NUM, 0, 1)},
+              'trim': (INT, 0, 10 ** 7), 'rate': (NUM, 0.1, 8), 'volume': (NUM, 0, 1), 'muted': ('bool',),
+              'frame': ('enum', ('window',))},
+    'audio': {'asset': ('asset', ('audio',)), 'trim': (INT, 0, 10 ** 7), 'rate': (NUM, 0.1, 8), 'volume': (NUM, 0, 1),
+              'role': ('enum', AUDIO_ROLES), 'loop': ('bool',), 'duck': ('duck',)},
+    'voiceover': {'text': ('text', 4000), 'voice': ('voice',), 'rate': (NUM, 0.5, 2), 'volume': (NUM, 0, 1),
+                  'captions': ('voice_captions',)},
     'shape': {'shape': ('enum', ('rect', 'ellipse', 'polygon', 'star', 'line')), 'fill': ('color',),
               'stroke': ('color',), 'stroke_width': (NUM, 0, 1000), 'radius': (NUM, 0, 100000),
               'sides': (INT, 3, 64), 'points': ('points',), 'inner_radius': (NUM, 0, 1)},
@@ -63,12 +95,27 @@ TYPE_FIELDS = {
              'progress': (NUM, 0, 1)},
     'captions': {'cues': ('cues',), 'font': ('text', 80), 'size': (NUM, 1, 2000), 'color': ('color',),
                  'background': ('color',), 'align': ('enum', ('left', 'center', 'right'))},
-    'group': {'layers': ('layers',)},
+    'group': {'layers': ('layers',), 'frame': ('enum', ('window',))},
     'room': {'scene': ('room',)},
+    # label records provenance: the components are real, the data is scripted (never a live room's).
+    'ui': {'component': ('enum', UI_COMPONENTS), 'label': ('enum', ('scripted',)), 'task': ('text', 48),
+           'data': ('ui',), 'states': ('ui',), 'frame': ('enum', ('window',))},
+    # source names a video layer in the same clip; events are in that recording's frames and viewport px.
+    # viewport and fps come from the recording's sidecar: px map by box width / viewport width (right at device
+    # scale 2), and event frames convert to time on the recording's own clock.
+    'cursor': {'source': ('text', 48), 'events': ('cursor',), 'viewport': ('viewport',), 'fps': ('rate',),
+               'size': (NUM, 4, 400), 'color': ('color',)},
 }
 REQUIRED = {'text': ('text',), 'image': ('asset',), 'capture': ('asset',), 'video': ('asset',), 'audio': ('asset',),
-            'shape': ('shape',), 'path': ('d',), 'captions': ('cues',), 'group': ('layers',), 'room': ('scene',)}
+            'shape': ('shape',), 'path': ('d',), 'captions': ('cues',), 'group': ('layers',), 'room': ('scene',),
+            'ui': ('component', 'label', 'data'), 'cursor': ('source', 'events', 'viewport', 'fps'),
+            'voiceover': ('text', 'voice')}
 COMMON = ('id', 'type', 'name', 'keyframes', 'hidden')
+
+
+def known(value, names):
+    """value is one of names; a list or object where an id belongs is simply not one (no TypeError)."""
+    return isinstance(value, str) and value in names
 
 
 class Report:
@@ -307,19 +354,15 @@ class V2:
     def composition(self, c, path, seen):
         r = self.r
         if not r.keys(c, path, ('id', 'name', 'width', 'height', 'fps', 'duration', 'background', 'seed', 'props',
-                                'props_schema', 'tracks'), ('id', 'width', 'height', 'fps', 'duration', 'tracks')):
+                                'props_schema', 'tracks', 'camera', 'motion_blur', 'backdrop', 'font_asset'),
+                      ('id', 'width', 'height', 'fps', 'duration', 'tracks')):
             return
         r.ident(c.get('id'), f'{path}.id', seen)
         r.text(c.get('name'), f'{path}.name', 80, required=False)
         r.number(c.get('width'), f'{path}.width', 16, MAX_SIDE, whole=True)
         r.number(c.get('height'), f'{path}.height', 16, MAX_SIDE, whole=True)
         fps = c.get('fps')
-        fps_ok = r.keys(fps, f'{path}.fps', ('num', 'den'), ('num', 'den')) and \
-            r.number(fps.get('num'), f'{path}.fps.num', 1, 240000, whole=True) & \
-            r.number(fps.get('den'), f'{path}.fps.den', 1, 1001, whole=True)
-        if fps_ok and not 1 <= fps['num'] / fps['den'] <= 240:
-            r.add(f'{path}.fps', 'must be between 1 and 240 frames per second')
-            fps_ok = False
+        fps_ok = self.rational_fps(fps, f'{path}.fps')
         self.fps = fps if fps_ok else None
         limit = math.floor(MAX_SECONDS * fps['num'] / fps['den']) if fps_ok else 10 ** 9
         duration = c.get('duration')
@@ -331,10 +374,101 @@ class V2:
         self.props = self.props_schema(c.get('props_schema'), f'{path}.props_schema')
         if 'props' in c:
             self.props_values(c['props'], f'{path}.props')
-        self.ids, self.count = set(), 0
+        self.ids, self.count, self.layer_kinds, self.voice_ids, self.ducks = set(), 0, {}, set(), []
         track_ids = set()
         for i, track in enumerate(r.listing(c.get('tracks'), f'{path}.tracks', 64, 1)):
             self.track(track, f'{path}.tracks[{i}]', track_ids, duration if duration_ok else None)
+        if 'font_asset' in c:
+            self.value(c['font_asset'], f'{path}.font_asset', ('asset', ('font',)))
+        if 'backdrop' in c and c['backdrop'] not in BACKDROPS:
+            r.add(f'{path}.backdrop', f'must be one of {", ".join(BACKDROPS)}')
+        if 'motion_blur' in c and r.keys(c['motion_blur'], f'{path}.motion_blur', ('shutter',)):
+            if 'shutter' in c['motion_blur']:
+                r.number(c['motion_blur']['shutter'], f'{path}.motion_blur.shutter', 0, 360)
+        if 'camera' in c:
+            self.camera(c['camera'], f'{path}.camera', duration if duration_ok else None)
+        for where, duck in self.ducks:
+            self.duck(duck, where)
+
+    def duck(self, duck, path):
+        """Explicit ducking of a music layer under named voice layers (no automatic global mix)."""
+        r = self.r
+        if not r.keys(duck, path, ('against', 'gain', 'attack_ms', 'release_ms'), ('against',)):
+            return
+        for i, name in enumerate(r.listing(duck.get('against'), f'{path}.against', 16, 1)):
+            if not known(name, self.voice_ids):
+                r.add(f'{path}.against[{i}]', 'must name a voiceover layer or an audio layer with role voice')
+        for name, low, high in (('gain', 0, 1), ('attack_ms', 0, 5000), ('release_ms', 0, 10000)):
+            if name in duck:
+                r.number(duck[name], f'{path}.{name}', low, high)
+
+    def stagger(self, stagger, path, length):
+        """Word-by-word entrance on a text layer: {from, every, frames, rise}, all optional. Not keyframable."""
+        r = self.r
+        if not r.keys(stagger, path, ('from', 'every', 'frames', 'rise')):
+            return
+        bounds = (('from', 0, length - 1 if length else 10 ** 9, True), ('every', 0, STAGGER_EVERY_MAX, True),
+                  ('frames', 1, STAGGER_FRAMES_MAX, True), ('rise', 0, STAGGER_RISE_MAX, False))
+        for name, low, high, whole in bounds:
+            if name in stagger:
+                r.number(stagger[name], f'{path}.{name}', low, high, whole=whole)
+
+    def rational_fps(self, fps, path):
+        """A {num, den} frame rate between 1 and 240 fps (compositions, and recordings on cursor layers)."""
+        r = self.r
+        if not r.keys(fps, path, ('num', 'den'), ('num', 'den')):
+            return False
+        # Bitwise & on purpose, not `and`: both halves run, so a bad num and a bad den are both reported.
+        ok = r.number(fps.get('num'), f'{path}.num', 1, 240000, whole=True) & \
+            r.number(fps.get('den'), f'{path}.den', 1, 1001, whole=True)
+        if ok and not 1 <= fps['num'] / fps['den'] <= 240:
+            r.add(path, 'must be between 1 and 240 frames per second')
+            return False
+        return ok
+
+    def camera(self, cam, path, duration):
+        """One camera over every clip on a track that isn't fixed: explicit keyframes, cursor follow or both;
+        keyframes win within their range."""
+        r = self.r
+        if not r.keys(cam, path, ('keyframes', 'follow')):
+            return
+        follow = cam.get('follow')
+        if 'follow' in cam and r.keys(follow, f'{path}.follow', ('cursor', 'zoom', 'idle_ms'), ('cursor',)):
+            if not known(follow.get('cursor'), self.layer_kinds) or self.layer_kinds[follow['cursor']] != 'cursor':
+                r.add(f'{path}.follow.cursor', 'must name a cursor layer in this composition')
+            if 'zoom' in follow:
+                r.number(follow['zoom'], f'{path}.follow.zoom', 1, 8)
+            if 'idle_ms' in follow:
+                r.number(follow['idle_ms'], f'{path}.follow.idle_ms', 200, 10000)
+        if 'keyframes' not in cam:
+            return
+        last = 0
+        for i, key in enumerate(r.listing(cam['keyframes'], f'{path}.keyframes', MAX_CAMERA_KEYS, 1)):
+            where = f'{path}.keyframes[{i}]'
+            if not r.keys(key, where, ('frame', 'region', 'layer', 'padding', 'x', 'y', 'zoom', 'rotate', 'easing'),
+                          ('frame',)):
+                continue
+            if r.number(key.get('frame'), f'{where}.frame', 0, duration - 1 if duration else 10 ** 9, whole=True):
+                if key['frame'] < last:
+                    r.add(f'{where}.frame', 'must not be earlier than the previous camera key')
+                last = key['frame']
+            if 'region' in key:
+                region = key['region']
+                if not (isinstance(region, list) and len(region) == 4
+                        and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                                for v in region) and region[2] > 0 and region[3] > 0):
+                    r.add(f'{where}.region', 'must be [x, y, width, height] with width and height above 0')
+            if 'layer' in key:
+                if 'region' not in key:
+                    r.add(f'{where}.layer', 'only applies with a region (the region is in that layer\'s box)')
+                if not known(key['layer'], self.layer_kinds):
+                    r.add(f'{where}.layer', 'must name a layer in this composition')
+            for name, low, high in (('padding', 0, 1), ('x', -100000, 100000), ('y', -100000, 100000),
+                                    ('zoom', 0.05, 40), ('rotate', -36000, 36000)):
+                if name in key:
+                    r.number(key[name], f'{where}.{name}', low, high)
+            if 'easing' in key:
+                self.easing(key['easing'], f'{where}.easing')
 
     def props_schema(self, schema, path):
         """A JSON Schema subset the Studio inspector can render: an object of typed properties."""
@@ -392,8 +526,10 @@ class V2:
 
     def track(self, t, path, seen, duration):
         r = self.r
-        if not r.keys(t, path, ('id', 'kind', 'name', 'muted', 'hidden', 'clips'), ('id', 'kind', 'clips')):
+        if not r.keys(t, path, ('id', 'kind', 'name', 'muted', 'hidden', 'fixed', 'clips'), ('id', 'kind', 'clips')):
             return
+        if 'fixed' in t and not isinstance(t['fixed'], bool):
+            r.add(f'{path}.fixed', 'must be true or false (a fixed track ignores the camera)')
         r.ident(t.get('id'), f'{path}.id', seen)
         if t.get('kind') not in ('visual', 'audio'):
             r.add(f'{path}.kind', "must be 'visual' or 'audio'")
@@ -425,9 +561,43 @@ class V2:
         if 'transition' in c:
             fade = self.transition(c['transition'], f'{path}.transition', c.get('duration') if length_ok else None)
         length = c['duration'] if length_ok else None
+        self.clip_videos, self.clip_cursors = set(), []
         for i, layer in enumerate(r.listing(c.get('layers'), f'{path}.layers', 200, 1)):
             self.layer(layer, f'{path}.layers[{i}]', track_kind, length, 1)
+        for where, source in self.clip_cursors:
+            # A cursor is drawn in its recording's box, so the recording must be in this clip (groups included).
+            if not isinstance(source, str) or source not in self.clip_videos:
+                r.add(where, 'must name a video layer in the same clip')
         return (c['from'], c['from'] + c['duration'], fade) if start_ok and length_ok else None
+
+    def cursor_events(self, events, path):
+        """Pointer and key markers from a recording's sidecar: frames in the recording's own clock,
+        non-decreasing; x and y in its viewport px; key markers carry no key or text."""
+        r = self.r
+        last = 0
+        for i, event in enumerate(r.listing(events, path, MAX_CURSOR_EVENTS, 1)):
+            where = f'{path}[{i}]'
+            if not r.keys(event, where, ('frame', 'type', 'x', 'y', 'button', 'rect'), ('frame', 'type')):
+                continue
+            if r.number(event.get('frame'), f'{where}.frame', 0, 10 ** 7, whole=True):
+                if event['frame'] < last:
+                    r.add(f'{where}.frame', 'must not be earlier than the previous event')
+                last = event['frame']
+            if event.get('type') not in CURSOR_EVENTS:
+                r.add(f'{where}.type', f'must be one of {", ".join(CURSOR_EVENTS)}')
+            for axis in ('x', 'y'):
+                if axis in event:
+                    r.number(event[axis], f'{where}.{axis}', -100000, 100000)
+                elif event.get('type') != 'key':
+                    r.add(f'{where}.{axis}', 'is required except on key markers')
+            if 'button' in event and event['button'] not in ('left', 'middle', 'right'):
+                r.add(f'{where}.button', 'must be left, middle or right')
+            if 'rect' in event:
+                rect = event['rect']
+                if not (isinstance(rect, list) and len(rect) == 4
+                        and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                                for v in rect) and rect[2] >= 0 and rect[3] >= 0):
+                    r.add(f'{where}.rect', 'must be [x, y, width, height] in viewport px')
 
     def transition(self, t, path, length):
         r = self.r
@@ -458,14 +628,24 @@ class V2:
             r.add(f'{path}.type', f'must be one of {", ".join(LAYER_TYPES)}')
             return
         fields = TYPE_FIELDS[kind]
-        visual = kind not in ('audio', 'room')
+        visual = kind not in ('audio', 'room', 'voiceover')
         allowed = COMMON + tuple(fields) + (tuple(TRANSFORM) if visual else ())
         if not r.keys(layer, path, allowed, ('id', 'type') + REQUIRED[kind]):
             return
         r.ident(layer.get('id'), f'{path}.id', self.ids)
+        if isinstance(layer.get('id'), str):
+            self.layer_kinds[layer['id']] = kind
+            if kind == 'video':
+                self.clip_videos.add(layer['id'])
+        if kind == 'cursor':
+            self.clip_cursors.append((f'{path}.source', layer.get('source')))
         r.text(layer.get('name'), f'{path}.name', 80, required=False)
-        if (track_kind == 'audio') != (kind == 'audio'):
-            r.add(f'{path}.type', 'audio tracks hold only audio layers, and audio layers sit on audio tracks')
+        if (track_kind == 'audio') != (kind in SOUND_TYPES):
+            r.add(f'{path}.type', 'audio tracks hold only audio and voiceover layers, and those sit only on audio tracks')
+        if isinstance(layer.get('id'), str) and (kind == 'voiceover' or (kind == 'audio' and layer.get('role') == 'voice')):
+            self.voice_ids.add(layer['id'])
+        if 'duck' in layer and layer.get('role') != 'music':
+            r.add(f'{path}.duck', "only music layers duck (set role 'music')")
         for name, (low, high) in TRANSFORM.items():
             if visual and name in layer:
                 self.value(layer[name], f'{path}.{name}', ('num', low, high))
@@ -480,12 +660,119 @@ class V2:
                     self.layer(child, f'{path}.layers[{i}]', track_kind, length, depth + 1)
             elif spec[0] == 'room':
                 self.room(layer['scene'], f'{path}.scene', length)
+            elif spec[0] == 'ui':
+                continue  # data and states are checked together below
+            elif spec[0] == 'cursor':
+                self.cursor_events(layer['events'], f'{path}.events')
+            elif spec[0] == 'viewport':
+                size = layer['viewport']
+                if not (isinstance(size, list) and len(size) == 2 and all(
+                        isinstance(v, int) and not isinstance(v, bool) and 16 <= v <= MAX_SIDE for v in size)):
+                    r.add(f'{path}.viewport', f'must be [width, height] in CSS px, whole numbers from 16 to {MAX_SIDE}')
+            elif spec[0] == 'rate':
+                self.rational_fps(layer['fps'], f'{path}.fps')
+            elif spec[0] == 'duck':
+                self.ducks.append((f'{path}.duck', layer['duck']))
+            elif spec[0] == 'stagger':
+                self.stagger(layer['stagger'], f'{path}.stagger', length)
+            elif spec[0] == 'voice':
+                if not isinstance(layer['voice'], str) or not VOICE_ID.match(layer['voice']):
+                    r.add(f'{path}.voice', "must be a voice id such as 'piper:en-us-ljspeech-high' (never a path or URL)")
+            elif spec[0] == 'voice_captions':
+                captions = layer['captions']
+                if r.keys(captions, f'{path}.captions', ('enabled',), ('enabled',)) \
+                        and not isinstance(captions['enabled'], bool):
+                    r.add(f'{path}.captions.enabled', 'must be true or false')
             else:
                 self.value(layer[name], f'{path}.{name}', spec)
+        if kind == 'ui':
+            self.ui(layer, path, length)
         if 'keyframes' in layer:
+            # Sound plays at one rate from one trim per clip (systems' mix); only its volume moves.
+            fixed = ('rate', 'trim') if kind in SOUND_TYPES else ()
             animatable = {**({n: ('num', lo, hi) for n, (lo, hi) in TRANSFORM.items()} if visual else {}),
-                          **{n: s for n, s in fields.items() if s[0] in (NUM, INT, 'color')}}
+                          **{n: s for n, s in fields.items() if s[0] in (NUM, INT, 'color') and n not in fixed}}
             self.keyframes(layer['keyframes'], f'{path}.keyframes', animatable, length)
+
+    def ui(self, layer, path, length):
+        """A 'ui' layer: the initial snapshot in data, then states [{frame, data}] each replacing it whole from
+        that clip content frame on. Every snapshot is checked alone, and a task-card names a task in each."""
+        r = self.r
+        snapshots = [(f'{path}.data', layer.get('data'))]
+        if 'states' in layer:
+            last = 0
+            for i, state in enumerate(r.listing(layer['states'], f'{path}.states', UI_LIMITS['states'], 1)):
+                where = f'{path}.states[{i}]'
+                if not r.keys(state, where, ('frame', 'data'), ('frame', 'data')):
+                    continue
+                if r.number(state.get('frame'), f'{where}.frame', 1, 10 ** 7, whole=True):
+                    if state['frame'] <= last:
+                        r.add(f'{where}.frame', 'must be later than the previous state (data is frame 0)')
+                    last = max(last, state['frame'])
+                snapshots.append((f'{where}.data', state.get('data')))
+        if layer.get('component') == 'task-card' and 'task' not in layer:
+            r.add(f'{path}.task', 'is required for a task-card: the id of the task it shows')
+        for where, data in snapshots:
+            tasks = self.ui_data(data, where)
+            if layer.get('component') == 'task-card' and tasks is not None and not known(layer.get('task'), tasks):
+                r.add(f'{path}.task', f'names no task in {where}')
+
+    def ui_data(self, data, path):
+        """One complete snapshot: project_title, epoch_seconds (the clock for "2m ago"), agents, tasks and
+        follow (live bubbles on cards). Returns the task ids, or None when it isn't an object."""
+        r = self.r
+        if not r.keys(data, path, ('project_title', 'epoch_seconds', 'agents', 'tasks', 'follow'),
+                      ('epoch_seconds', 'agents', 'tasks')):
+            return None
+        r.text(data.get('project_title'), f'{path}.project_title', 80, required=False)
+        r.number(data.get('epoch_seconds'), f'{path}.epoch_seconds', 0, 10 ** 11)
+        agents, tasks = set(), set()
+        for i, agent in enumerate(r.listing(data.get('agents'), f'{path}.agents', UI_LIMITS['agents'])):
+            where = f'{path}.agents[{i}]'
+            if r.keys(agent, where, ('id', 'label', 'color'), ('id', 'label', 'color')):
+                r.ident(agent.get('id'), f'{where}.id', agents)
+                r.text(agent.get('label'), f'{where}.label', 40)
+                self.color(agent.get('color'), f'{where}.color')
+        task_fields = ('id', 'title', 'status', 'owner', 'labels', 'priority', 'next_action', 'execution_state',
+                       'updated')
+        for i, task in enumerate(r.listing(data.get('tasks'), f'{path}.tasks', UI_LIMITS['tasks'])):
+            where = f'{path}.tasks[{i}]'
+            if not r.keys(task, where, task_fields, ('id', 'title', 'status')):
+                continue
+            r.ident(task.get('id'), f'{where}.id', tasks)
+            r.text(task.get('title'), f'{where}.title', 120)
+            if task.get('status') not in UI_STATUSES:
+                r.add(f'{where}.status', f'must be one of {", ".join(UI_STATUSES)}')
+            if 'owner' in task and task['owner'] != '' and not known(task['owner'], agents):
+                r.add(f'{where}.owner', 'must be an agent id from agents, or empty')
+            for j, label in enumerate(r.listing(task.get('labels', []), f'{where}.labels', UI_LIMITS['labels'])):
+                r.text(label, f'{where}.labels[{j}]', 24)
+            if 'priority' in task:
+                r.number(task['priority'], f'{where}.priority', 1, 5, whole=True)
+            r.text(task.get('next_action'), f'{where}.next_action', 300, required=False)
+            if 'execution_state' in task and task['execution_state'] not in UI_EXECUTION:
+                r.add(f'{where}.execution_state', f'must be one of {", ".join(UI_EXECUTION)}')
+            if 'updated' in task:
+                r.number(task['updated'], f'{where}.updated', 0, 10 ** 11)
+        for i, live in enumerate(r.listing(data.get('follow', []), f'{path}.follow', UI_LIMITS['follow'])):
+            where = f'{path}.follow[{i}]'
+            if not r.keys(live, where, ('agent', 'task', 'text', 'tool', 'open', 'scroll', 'move'), ('agent', 'task')):
+                continue
+            if not known(live.get('agent'), agents):
+                r.add(f'{where}.agent', 'must be an agent id from agents')
+            if not known(live.get('task'), tasks):
+                r.add(f'{where}.task', 'must be a task id from tasks')
+            r.text(live.get('text', ''), f'{where}.text', 4000, required=False)
+            r.text(live.get('tool'), f'{where}.tool', 60, required=False)
+            if 'open' in live and not isinstance(live['open'], bool):
+                r.add(f'{where}.open', 'must be true or false')
+            if 'scroll' in live and live['scroll'] != 'end':
+                r.number(live['scroll'], f'{where}.scroll', 0, 100000)
+            if 'move' in live and r.keys(live['move'], f'{where}.move', ('from', 'to'), ('from', 'to')):
+                for end in ('from', 'to'):
+                    if live['move'].get(end) not in UI_STATUSES:
+                        r.add(f'{where}.move.{end}', f'must be one of {", ".join(UI_STATUSES)}')
+        return tasks
 
     def value(self, value, path, spec):
         """A literal, or {"prop": name} bound to a composition prop of a matching type."""
@@ -516,7 +803,7 @@ class V2:
             if not isinstance(value, bool):
                 r.add(path, 'must be true or false')
         elif kind == 'asset':
-            if value not in self.assets:
+            if not known(value, self.assets):
                 r.add(path, f'names no asset {value!r}' if isinstance(value, str) else 'must be an asset id')
             elif self.assets[value] not in spec[1]:
                 r.add(path, f'must name a {" or ".join(spec[1])} asset')

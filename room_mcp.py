@@ -238,7 +238,9 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
 def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None = None, overwrite: bool = False,
                 t_ms: float | list[float] = 0, reduced: bool = False, job_id: str = '', task_id: str = '',
                 note: str = '', name: str = '', post: bool = True,
-                profile: Literal['webm', 'vp9-alpha', 'av1', 'prores4444', 'gif', 'png', 'png-sequence'] = 'webm') -> list:
+                profile: Literal['webm', 'vp9-alpha', 'av1', 'prores4444', 'gif', 'png', 'png-sequence'] = 'webm',
+                new_id: str = '', composition: str = '', props: dict | None = None, ops: list[dict] | None = None,
+                url: str = '', asset_id: str = '', kind: str = '') -> list:
     """Author motion scenes and product videos with the room's motion engine (data, never code).
     list: bundled and project scenes. get: one scene by ref (bundled:<id> or project:<id>).
     validate: check scene_json; returns {ok, issues: [{path, message}]}. Fix every issue, then save.
@@ -252,15 +254,27 @@ def room_motion(action: str = 'list', scene: str = '', scene_json: dict | None =
     profiles are not published; share their video_url from export_status. Author new work as v2
     (Docs/motion-scene-v2.md: compositions, layers, keyframes, transitions); v1 room replays (get
     bundled:m01) still render. frame and export use the first composition. Sound is not exported yet:
-    export refuses audio layers and unmuted video, and validate and save warn first. Loop: validate until
-    clean, save, frame 2-3 key moments and show them, export, then publish."""
+    export refuses audio layers and unmuted video, and validate and save warn first.
+    variant scene new_id: save a template re-render as project:<new_id>, with composition (default first)
+    and props overriding its props, checked against props_schema. patch scene ops: RFC 6902 JSON Patch on a
+    saved project scene (for example replace /compositions/0/props/title); nothing is written unless the
+    result validates. import_asset url asset_id: turn a room upload (a room_browser screenshot url, a
+    recording, an image) into an asset with its real sha256 and, for images, width, height and how it fits
+    the frame; with scene it's added to that project scene (kind is inferred, or image, capture, video,
+    font, audio). Loop: validate until clean, save, frame 2-3 key moments and show them, export, then publish."""
     args = dict(action=action)
     if scene:
         args['scene'] = scene
     if scene_json is not None:
         args['scene_json'] = scene_json
-    if action == 'save':
+    if action in ('save', 'variant', 'import_asset'):
         args['overwrite'] = overwrite
+    if action == 'variant':
+        args.update(new_id=new_id, composition=composition, props=props or {}, name=name)
+    if action == 'patch':
+        args['ops'] = ops
+    if action == 'import_asset':
+        args.update(url=url, asset_id=asset_id, kind=kind)
     if action == 'frame':
         args['t_ms'] = t_ms
     if action in ('frame', 'export'):
