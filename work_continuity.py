@@ -40,6 +40,7 @@ SPIN_TURNS = 3                   # continued turns in a row with no status, evid
 CLAIMS_KEPT = 500
 WAITING_STATES = ('waiting', 'deferred')
 SUBSTANTIVE = {'status', 'evidence'}
+SPIN_KEYS = ('continue:', 'idle:', 'wait:', 'deps:', 'recheck:')  # room-started turns that count toward spinning
 INSTALL_NOTE_CHARS = 500         # an install resumption quotes at most this much of the task's next action
 RECHECK_SECONDS = 3 * 3600       # C6b: an unnamed wait is re-checked this long after it last changed
 WAIT_NOTE_CHARS = 300            # C6: each wait reason a wake quotes is capped at this
@@ -89,11 +90,15 @@ def finished(runtime, run, outcome):
         if claim['agent'] == run.name and claim['status'] != 'done':
             claim.update(status='done', at=now)  # a turn ran: every wake waiting for this agent is answered
     continued = next((q for q in run.entry.get('requests', [])
-                      if (q.get('continuity') or '').startswith(('continue:', 'idle:')) and q.get('task_id')), None)
+                      if (q.get('continuity') or '').startswith(SPIN_KEYS) and q.get('task_id')), None)
     if continued:
-        task_id = continued['task_id']  # a room-started turn on this task, continued or woken by the watchdog
-        substantive = run.file_changes or SUBSTANTIVE & set(progress.get(task_id, ()))
-        state['spin'][task_id] = 0 if substantive else state['spin'].get(task_id, 0) + 1
+        # A room-started turn: continued, woken by the watchdog, or by a wait that ended (C6, security 9701e700 W3).
+        # A C6b batch counts for each task it asked about, so re-deferring with new words is still spinning.
+        key = continued['continuity']
+        batch = state['recheck_tasks'].pop(key, None) if key.startswith('recheck:') else None
+        for task_id in batch or [continued['task_id']]:
+            substantive = run.file_changes or SUBSTANTIVE & set(progress.get(task_id, ()))
+            state['spin'][task_id] = 0 if substantive else state['spin'].get(task_id, 0) + 1
     for task_id in progress:
         if not state['spin'].get(task_id):  # a spinning continuation is not "moving again"
             clear_stall(runtime, room, state, task_id, f'{run.name} moved it again.')
@@ -143,8 +148,12 @@ def evaluate(runtime, room, state, now):
         for wake in (continuation(runtime, state, name, last, now), unseen_ask(runtime, state, name, last, now),
                      waits(runtime, state, name, last, now), watchdog(runtime, state, name, last, now)):
             if wake and send(runtime, room, state, name, wake, now, actions):
-                for revision in state['recheck_batches'].pop(wake[0], []) if wake[1] == 'recheck' else []:
-                    state['rechecked'][revision] = now  # each re-checked wait revision is asked about once
+                if wake[1] == 'recheck':
+                    revisions = state['recheck_batches'].pop(wake[0], [])
+                    for revision in revisions:
+                        state['rechecked'][revision] = now  # each re-checked wait revision is asked about once
+                    # finished() counts the turn toward spinning for every task in the batch (W3).
+                    state['recheck_tasks'][wake[0]] = [revision.split('@', 1)[0] for revision in revisions]
                 break
     if not busy:
         team_wake(runtime, room, state, idle, now, actions)
@@ -284,7 +293,8 @@ def waits(runtime, state, name, last, now):
     room_state = runtime.project_room.state
     board = {t['id']: t for t in room_state['tasks']}
     mine = [t for t in room_state['tasks'] if t.get('owner') == name and t['status'] != 'done'
-            and not t.get('closure') and not t.get('wait')]  # a user wait's delivery is the user's bell
+            and not t.get('closure') and not t.get('wait')  # a user wait's delivery is the user's bell
+            and state['spin'].get(t['id'], 0) < SPIN_TURNS]  # a spinning wait is a stall for the lead (W3)
     claims = state['claims']
 
     def fresh(key):
@@ -307,7 +317,9 @@ def waits(runtime, state, name, last, now):
         key = f"deps:{task['id']}:{','.join(sorted(deps))}"
         if deps and fresh(key) and all(d not in board or board[d]['status'] == 'done' for d in deps):
             finished_at = max((board[d].get('updated', 0) for d in deps if d in board), default=0)
-            if finished_at > state['since']:  # finished since continuity started, never from history
+            # Finished since continuity started (never from history), and not already seen by a turn that started
+            # after it, as a ready task's dependency wake would be (harness 801cf8bb note).
+            if finished_at > max(state['since'], last.get('started', 0)):
                 return wake(key, 'deps', task, f"Work continuity: the last dependency of task {task['id']} "
                             f"({', '.join(deps)}) has finished. Start it, or record what it still waits on.")
     due = []
@@ -350,10 +362,10 @@ def satisfied(runtime, ref):
 
 
 def version_tuple(value):
-    try:
-        return tuple(int(part) for part in str(value).split('.')) if value else None
-    except ValueError:
-        return None  # an unreadable installed version is never "reached"
+    """x.y.z as integers, so 0.12.100 sorts after 0.12.55 (security 9701e700 W2); anything else is None, and an
+    unreadable installed version is never "reached"."""
+    return tuple(int(part) for part in value.split('.')) if isinstance(value, str) and re.fullmatch(
+        r'\d+\.\d+\.\d+', value) else None
 
 
 def fence(text, limit):
@@ -434,7 +446,7 @@ def stalls(runtime, room, state, now, actions):
             open_stall(runtime, room, state, task['id'], name, subject(task, name), reason, actions, task)
     for task_id, count in state['spin'].items():
         task = next((t for t in room.state['tasks'] if t['id'] == task_id), None)
-        if task and count >= SPIN_TURNS and not task_hold(runtime, task, task['owner']):
+        if task and count >= SPIN_TURNS and (not task_hold(runtime, task, task['owner']) or spun_wait(state, task)):
             open_stall(runtime, room, state, task_id, task['owner'], subject(task, task['owner']),
                        f'{count} room-started turns with no status, evidence or file change', actions, task)
     for key in list(state['stalls']):
@@ -445,9 +457,16 @@ def stalls(runtime, room, state, now, actions):
                 clear_stall(runtime, room, state, key, 'It was answered, or its recipient has had a turn since.', actions)
             continue
         task = next((t for t in room.state['tasks'] if t['id'] == key), None)
-        if not task or task_hold(runtime, task, task.get('owner')):
+        if not task or (task_hold(runtime, task, task.get('owner')) and not spun_wait(state, task)):
             state['spin'].pop(key, None)
             clear_stall(runtime, room, state, key, 'It is no longer ready work.', actions)
+
+
+def spun_wait(state, task):
+    """A waiting or deferred task its owner keeps re-deferring after C6 wakes, with no status, evidence or file
+    change (security 9701e700 W3): a stall for the lead, kept until a substantive turn resets it."""
+    return (task['status'] != 'done' and not task.get('closure') and task.get('next_action_state') in WAITING_STATES
+            and state['spin'].get(task['id'], 0) >= SPIN_TURNS)
 
 
 def subject(task, name):
@@ -592,7 +611,7 @@ def changed(item):
 
 def store(room):
     state = room.state.setdefault('continuity', {})
-    for key in ('agents', 'claims', 'fired', 'asked', 'spin', 'stalls', 'rechecked', 'recheck_batches'):
+    for key in ('agents', 'claims', 'fired', 'asked', 'spin', 'stalls', 'rechecked', 'recheck_batches', 'recheck_tasks'):
         state.setdefault(key, {})
     return state
 
@@ -612,3 +631,5 @@ def prune(state):
     if len(rechecked) > CLAIMS_KEPT:  # C6b's asked-about wait revisions, oldest first
         for key in sorted(rechecked, key=rechecked.get)[:len(rechecked) - CLAIMS_KEPT]:
             rechecked.pop(key, None)
+    for key in list(state['recheck_tasks'])[:-CLAIMS_KEPT]:  # batches whose turn never came, oldest first
+        state['recheck_tasks'].pop(key, None)

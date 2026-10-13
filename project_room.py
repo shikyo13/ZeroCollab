@@ -43,7 +43,7 @@ NEXT_ACTION_STATES = {'ready', 'deferred', 'waiting', ''}
 # C6 (Docs/work-continuity.md r4): what a waiting task may name as its wait.
 MAX_WAIT_ON = 4
 WAIT_COLLECTIONS = {'task': 'tasks', 'review': 'reviews', 'followup': 'followups'}
-RELEASE_VERSION = re.compile(r'\d+(\.\d+){1,3}')
+RELEASE_VERSION = re.compile(r'\d+\.\d+\.\d+')  # x.y.z only, compared as integers (security 9701e700 W2)
 # Changes to these fields by anyone other than the owner are new work for the owner (work_rev).
 SEMANTIC_FIELDS = ('status', 'owner', 'transfer', 'depends_on', 'wait', 'next_action', 'next_action_state', 'paths')
 # The board holds at most TASK_LIMIT tasks. Finished tasks that nothing open still references move,
@@ -669,9 +669,12 @@ class ProjectRoom:
                 task['wait_on'] = refs
             else:
                 task.pop('wait_on', None)
-        if not previous or any(task.get(k) != previous.get(k) for k in ('next_action', 'next_action_state', 'wait_on')):
+        if not previous or task['owner'] != previous['owner'] or ((human or actor == task['owner']) and any(
+                task.get(k) != previous.get(k) for k in ('next_action', 'next_action_state', 'wait_on'))):
             # C6 (Docs/work-continuity.md r4): when this task's wait last changed. A wait's checks are keyed on it,
             # so re-deferring with a new reason or new references re-arms them, and an unchanged wait never repeats.
+            # Only the owner, the user or a new owner starts a new wait (security 9701e700 W1): nobody else can
+            # re-arm a met wait against the owner's budget or push back its re-check.
             task['wait_since'] = time.time()
         if evidence is not None:
             if not isinstance(evidence, dict) or set(evidence) - {'implementation', 'review', 'installation', 'acceptance'}:

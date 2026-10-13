@@ -368,8 +368,35 @@ class Waits(Continuity):
         self.assertTrue(wc.satisfied(runtime, {'release': '0.12.54'}))
         self.assertTrue(wc.satisfied(runtime, {'release': '0.12.55'}))
         self.assertFalse(wc.satisfied(runtime, {'release': '0.12.56'}))
+        self.assertFalse(wc.satisfied(runtime, {'release': '0.12.100'}))  # numeric, not string order (W2)
+        runtime.deployment.version = {'version': '0.12.100'}
+        self.assertTrue(wc.satisfied(runtime, {'release': '0.12.55'}))
         runtime.deployment.version = {'version': 'dev'}
         self.assertFalse(wc.satisfied(runtime, {'release': '0.12.54'}))  # unreadable is never reached
+        with self.assertRaisesRegex(ValueError, 'version'):
+            self.room.task('worker', 'update', task_id=self.task_id, wait_on=[{'release': '0.12'}])
+
+    def test_only_the_owner_or_user_starts_a_new_wait(self):
+        # security 9701e700 W1: a user edit is a new revision; another agent can't reach the task at all.
+        self.room.task('worker', 'update', task_id=self.task_id, next_action_state='waiting', next_action='a')
+        stamp = self.room.state['tasks'][0]['wait_since']
+        self.room.task('worker', 'update', task_id=self.task_id, update='a check-in only')
+        self.assertEqual(self.room.state['tasks'][0]['wait_since'], stamp)  # nothing about the wait changed
+        self.room.task('user', 'update', task_id=self.task_id, next_action='the user re-scoped it')
+        self.assertGreater(self.room.state['tasks'][0]['wait_since'], stamp)
+
+    def test_rechecks_answered_with_new_words_only_become_a_stall(self):
+        # security 9701e700 W3: re-deferring after each C6b wake, with no status or evidence, is spinning.
+        self.room.task('worker', 'update', task_id=self.task_id, next_action_state='deferred', next_action='later 0')
+        for n in range(wc.SPIN_TURNS):
+            self.assertEqual(self.tick((n + 1) * (wc.RECHECK_SECONDS + 60)), ['woke'])
+            key = self.calls[-1]['key']
+            self.drain()
+            self.room.task('worker', 'update', task_id=self.task_id, next_action=f'later {n + 1}')
+            self.turn(progress={self.task_id: {'next_action'}}, continuity=key)
+        self.assertEqual(self.room.state['continuity']['spin'][self.task_id], wc.SPIN_TURNS)
+        self.assertEqual(self.tick((wc.SPIN_TURNS + 1) * (wc.RECHECK_SECONDS + 60)), ['opened'])  # one stall
+        self.assertEqual(self.tick((wc.SPIN_TURNS + 2) * (wc.RECHECK_SECONDS + 60)), [])  # and no more wakes
 
 
 class InstallResume(Continuity):
