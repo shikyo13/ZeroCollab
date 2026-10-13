@@ -25,6 +25,7 @@ from agents import AgentTrigger
 from registry import RuntimeRegistry
 from durable import atomic_write
 import local_files
+import ui_composing
 
 log = logging.getLogger(__name__)
 
@@ -774,24 +775,32 @@ async def _handle_new_message(msg: dict):
 
 # --- broadcasting ---
 
+async def _send_text(client, raw_json: str):
+    """One socket, in order with its other sends; a slow or broken socket is dropped, never waited on."""
+    lock = _ws_send_locks.setdefault(client, asyncio.Lock())
+    async with lock:
+        if client not in ws_clients:
+            return
+        try:
+            await asyncio.wait_for(client.send_text(raw_json), WS_SEND_TIMEOUT_SECONDS)
+        except Exception:
+            # Remove before releasing the lock so queued broadcasts skip this
+            # socket. Closing lets the browser reconnect and reload history.
+            ws_clients.discard(client)
+            composing.gone(client)
+            try:
+                await asyncio.wait_for(client.close(code=1013), WS_CLOSE_TIMEOUT_SECONDS)
+            except Exception:
+                pass
+
+
+# Which connected tabs may be mid-edit, for the deployment typing guard (ui_composing.py).
+composing = ui_composing.Composing(ws_clients, _send_text)
+
+
 async def _broadcast(raw_json: str):
     """Deliver in order per socket without making healthy clients wait for a slow one."""
-    async def send(client):
-        lock = _ws_send_locks.setdefault(client, asyncio.Lock())
-        async with lock:
-            if client not in ws_clients:
-                return
-            try:
-                await asyncio.wait_for(client.send_text(raw_json), WS_SEND_TIMEOUT_SECONDS)
-            except Exception:
-                # Remove before releasing the lock so queued broadcasts skip this
-                # socket. Closing lets the browser reconnect and reload history.
-                ws_clients.discard(client)
-                try:
-                    await asyncio.wait_for(client.close(code=1013), WS_CLOSE_TIMEOUT_SECONDS)
-                except Exception:
-                    pass
-    await asyncio.gather(*(send(client) for client in list(ws_clients)))
+    await asyncio.gather(*(_send_text(client, raw_json) for client in list(ws_clients)))
 
 
 async def broadcast(msg: dict):
@@ -879,6 +888,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
     ws_clients.add(websocket)
+    composing.connected(websocket)  # counts as busy until the tab reports
 
     # Send settings
     await websocket.send_text(json.dumps({"type": "settings", "data": settings_payload()}))
@@ -940,6 +950,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 ping_id = event.get("id")
                 if isinstance(ping_id, str) and _PING_ID.fullmatch(ping_id):
                     await websocket.send_text(json.dumps({"type": "pong", "id": ping_id}))
+                continue
+            if composing.receive(websocket, event):
+                # Composing reports and deployment acknowledgements: before the gate too, booleans only, recorded
+                # for this socket; nothing is stored, broadcast or woken.
                 continue
 
             gate = getattr(_runtime(), 'deployment', None)
@@ -1136,8 +1150,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         ws_clients.discard(websocket)
+        composing.gone(websocket)
     except Exception:
         ws_clients.discard(websocket)
+        composing.gone(websocket)
         log.exception("WebSocket error")
 
 
