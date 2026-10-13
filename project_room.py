@@ -587,10 +587,13 @@ class ProjectRoom:
                     if status != 'done':
                         task.pop('closure', None)  # reopening a closed task clears its closure
                 if close_reason or close_pointer:
-                    if status:
-                        raise ValueError('Close with close_reason and close_pointer, without a status')
+                    if status or wait:
+                        raise ValueError('Close with close_reason and close_pointer, without a status or wait')
                     closing = self.closure(task, tasks, actor, close_reason, close_pointer)
                     task.update(status='done', closure=closing)
+                    # A closed task waits on nobody and moves to nobody (backend 9dd7990a note 1).
+                    task.pop('transfer', None)
+                    task.pop('wait', None)
             else:
                 raise ValueError('Choose get, create, claim, delegate, accept, release, or update')
             if previous['status'] == 'done' and task['status'] != 'done' and task.get('depends_on'):

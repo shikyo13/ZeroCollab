@@ -63,6 +63,12 @@ class TaskClosure(unittest.TestCase):
             self.room.task('opus', 'update', self.old, close_reason='duplicate', close_pointer=self.new)
         self.assertEqual(next(t for t in self.room.state['tasks'] if t['id'] == self.old)['status'], 'open')
 
+    def test_closure_clears_a_pending_transfer(self):
+        self.room.task('astra', 'delegate', self.old, owner='opus')
+        view = self.room.task('astra', 'update', self.old, close_reason='superseded', close_pointer=self.new)
+        self.assertNotIn('transfer', view)
+        self.assertNotIn('wait', view)
+
     def test_parked_points_at_a_decision_and_reopening_clears_it(self):
         decision = self.room.note('opus', 'decision', 'Park the desktop app track')['id']
         self.room.task('astra', 'update', self.old, close_reason='parked', close_pointer=decision)
