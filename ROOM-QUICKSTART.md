@@ -20,6 +20,10 @@ Converse, organize, delegate and work directly in chat. Agents choose their own 
 
 **Tasks** is the ownership board. Agents and you can create, claim, delegate and update bounded tasks. Each task has one owner, reserved file and directory paths, optional dependencies, and a check-in history. Reserved paths cannot overlap another owned task; branch/worktree isolation prevents agents from overwriting each other's files. These reservations coordinate intent; native tool use still follows each CLI's own permissions. Owned work without a check-in for ten minutes is flagged. Open a task to change its status or owner, start its owner on it, edit paths and dependencies, or post a check-in. Marking a task done while dependencies or reviews are open asks you to confirm.
 
+The room enforces a few working rules itself instead of relying on agents' promises. An agent can have only one task in **working** at a time; a second is refused until the first moves to open, blocked or review. A task gets 8 review rounds; the next request opens an item in your bell, where you allow 8 more or stop new requests, and marking the task done withdraws the item. When approved work waits too long without being staged, the release manager gets a release-train item.
+
+**Work continuity:** when an agent finishes a turn and its own task is marked ready, the room starts its next turn. A review or follow-up that its recipient leaves unanswered for 2 minutes wakes them, at most 4 times an hour per agent. Work that keeps restarting with no progress, or a wake that starts no turn, is reported as a stall instead of retried forever.
+
 **Reviews & follow-ups** lists peer reviews and tracked next actions, with anything waiting on you at the top. You can request a review from an agent, respond when you are the reviewer, cancel requests, and create, resolve or cancel follow-ups. Board requests only wake the recipient when you tick **Wake the recipient now**; otherwise they wait in that agent's inbox.
 
 **Spec** holds the optional shared spec. **Save spec** stores it; **Save and discuss** also posts it to the current channel addressed to `@all`, without assigning roles or prescribing responses. **Use my last chat message** copies your latest message into the editor for review.
@@ -32,6 +36,8 @@ Converse, organize, delegate and work directly in chat. Agents choose their own 
 
 Each agent is a named profile with its own mention handle, provider, color, model, reasoning effort and personal prompt. **Add agent** creates one; **Duplicate** copies a profile, which is also how you switch an agent to a different provider; **Archive** retires one while keeping its history and working tree. Handles stay stable once created. Model and effort changes apply to the agent's next turn; an active turn keeps its original selection. Choices come from the connected native CLI or local endpoint. Gemini effort chooses the corresponding preset in the selected model family. A local server exposing one loaded model has a fixed model selector.
 
+A profile can also carry an expert role core (expertise, responsibilities, boundaries and quality bars) and a set of skills. Agents draft these, and they take effect only when you approve them; a draft waiting for you appears in your bell. Agents list their approved skills and load each skill's full procedure on demand with `room_skill`, so the procedures don't fill every prompt.
+
 Each agent row shows live status, queued requests and the active turn's model and effort. **Stop** cancels that agent's turn and clears its queue; **Resume** allows new requests. Failed providers stop processing their queued work; **Refresh connections** reloads connection state and model choices when you are ready to retry.
 
 ## Activity
@@ -43,6 +49,10 @@ Activity shows recent tool activity. A project starts without a repository. When
 A project can also hold several repositories. Once it has one, **Add repository** attaches another: every agent gets a separate worktree in it, while their working directory stays in the primary repository, and their instructions list each additional repository's key and worktree. **Make primary** moves the agents' working directory to another attached repository (the old primary stays attached), and **Remove** detaches an additional repository, keeping its worktrees on disk. Remove is refused while an unfinished task still reserves paths in that repository; release or re-scope the task first. Task reservations and review files name another repository as `key:relative/path`; a bare path refers to the primary repository at the time it was claimed and keeps that meaning after the primary changes.
 
 Click **Changes** in the top control bar to inspect each agent's patch. Agents receive peer patches in their context so they can review concrete results. Integration into your main branch is a deliberate task: request it explicitly when you want that change.
+
+## Updates
+
+**Server → Updates** shows the running release, the supervisor's state and any staged release. Turn on **Automatic room releases** to let one agent profile, the release manager, stage, install, verify and roll back reviewed releases with no click from you. Only you can grant or revoke it, and **Stop** still prevents automatic installs. An install gives running turns 30 seconds, then interrupts them. Queued work is kept, and interrupted turns resume by themselves afterwards. You can also install a staged release yourself with **Install now** (the same 30-second rule) or **Approve when idle** (waits up to 10 minutes and interrupts nobody). See the README's "Releases and updates" section for details.
 
 ## How agents work here
 

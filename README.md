@@ -12,21 +12,23 @@ ZeroCollab is a local workspace where you and your AI coding agents share one ch
 
 For the managed project-room workflow (Start-Room, Team, Board, worktrees), start with **[ROOM-QUICKSTART.md](ROOM-QUICKSTART.md)**. The rest of this README covers the launcher scripts and reference material.
 
-## Release packaging
+## Releases and updates
 
-Build a managed release from committed source with:
+A managed installation updates itself from reviewed release packages. `supervisor.py` owns the running server: it drains the room, snapshots data, swaps the files, verifies the new release and reopens the room, and it rolls back if verification fails.
+
+**Agent-managed releases.** In **Updates**, the **Automatic room releases** switch lets one agent profile, the release manager, install releases without an approval click. Only you can turn it on or revoke it. Changing that profile's name, handle or template lapses the grant for good. The release manager uses the `room_release` tool to `stage` a reviewed commit, `rehearse` it in isolation, `request` the install, then `verify` it or `rollback` to the release installed just before. Staging is refused unless approved reviews cover every changed file, and an install request is refused until each owner on the installed release's live-check list has recorded a pass. **Stop** still prevents automatic installs.
+
+**How an install treats running work.** An agent-requested install gives running turns 30 seconds to finish, then interrupts them. Queued work is kept, and each interrupted turn resumes once by itself after the install, a rollback or an abort, unless its task is finished or you pressed Stop. In **Updates** you can also install a staged release yourself: **Install now** behaves the same way, and **Approve when idle** waits up to 10 minutes without interrupting anyone. The last step before files change waits briefly for you to stop typing, and if it refuses, the reason is kept in the deploy receipt and the server log.
+
+**Supervisor updates.** Changes to `supervisor.py` itself are applied by a reviewed host-handover helper after the app release is installed, with no manual step.
+
+**Building a package by hand** is still possible from committed source:
 
 ```sh
 python release_pack.py build --repo . --commit HEAD --spool ./release-staging
 ```
 
-The output is a manifest and payload under `release-staging/releases/<id>/`.
-It excludes live configuration, runtime data and supervisor-owned files; it is
-an update package for an existing managed installation, not a standalone ZIP.
-Uncommitted changes are not included. Building does not deploy the release;
-live deployment still requires approval through the Deployments panel.
-The old `build_release.py` ZIP command is retired because its file list omitted
-required runtime modules. Use a source checkout for a fresh installation.
+The output is a manifest and payload under `release-staging/releases/<id>/`. It excludes live configuration, runtime data and supervisor-owned files; it is an update package for an existing managed installation, not a standalone ZIP. Uncommitted changes are not included, and building does not deploy anything. Use a source checkout for a fresh installation.
 
 ## Quickstart (Windows)
 
@@ -204,7 +206,7 @@ A message that @mentions an offline agent is still queued and delivered when its
 ### MCP tools
 Launcher-driven agents get seven chat tools: `chat_send`, `chat_read`, `chat_resync`, `chat_join`, `chat_who`, `chat_claim` and `chat_channels`. Message tools accept an optional `channel`. Any MCP-compatible agent can take part without special integration.
 
-Agents run by the managed workspace also get the coordination tools (`room_read`, `room_task`, `room_review`, `room_followup`, `room_update`, `room_goal`, `room_image`, `room_markup`, `room_repository`, `room_team_builder`); see ROOM-QUICKSTART.md and COLLABORATION.md.
+Agents run by the managed workspace also get the coordination tools: `room_read`, `room_task`, `room_review`, `room_followup`, `room_update`, `room_decision`, `room_goal`, `room_image`, `room_markup`, `room_browser`, `room_motion`, `room_repository`, `room_team_builder`, `room_skill` and `room_release`. See ROOM-QUICKSTART.md and COLLABORATION.md.
 
 Each launcher-driven instance gets its own MCP proxy (on an automatically chosen port) that injects its sender identity into every tool call, so agents never need to know their own name. The MCP instructions tell agents to answer in chat when they are addressed in chat, and to treat the latest message addressed to them as their active task.
 
@@ -505,6 +507,10 @@ Launcher-driven agents run in their own terminal under `wrapper.py`, which regis
 | `team_builder.py`, `agent_profiles.py`, `provider_controls.py` | Team proposals, agent profiles, model and effort choices |
 | `room_markup.py`, `steering_delivery.py`, `local_protocol.py`, `git_preview.py`, `durable.py` | Image markup, mid-turn steering, local model call validation, bounded Git previews, atomic writes |
 | `supervisor.py`, `room_deploy.py`, `release_pack.py` | Supervised deployment of approved release packages |
+| `release_manager.py`, `release_stage.py`, `release_rehearse.py`, `release_request.py`, `release_maintenance.py`, `host_handover.py` | Agent-managed releases: staging, isolated rehearsal, the install gate, the drain's final write-close step and supervisor handover |
+| `work_continuity.py` | Restarts idle agents that have ready work, wakes unanswered requests, and reports stalls |
+| `process_enforcement.py` | Room-enforced process rules, such as the release-train item for approved work that isn't staged |
+| `profile_bell.py`, `agent_skills.py`, `agent-skills/` | Profile approvals in your bell, and the shared skills agents load on demand with `room_skill` |
 | `config.toml` | Configuration: agents, ports, routing, runtime |
 | `frontend/` | React workspace source, built into `static/modern/` |
 | `static/` | Chat client (`chat.js` plus `static/chat/*.js`), styles and brand assets |

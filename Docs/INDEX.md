@@ -12,13 +12,21 @@ Start here. Each document covers one subject; read the one that matches the ques
 | [file-index.md](file-index.md) | Files and data | Every root file, Python module, frontend file and test with its purpose; the `data/` directory layout and which module writes each record |
 | [providers.md](providers.md) | Feature design | Provider templates, sign-in and local models today (with gaps), auth options, local model plan, release build slices and open decisions |
 | [repositories.md](repositories.md) | Feature design | Repositories per project as built: data model, worktrees, `key:path` scopes, the replace/add/primary/remove actions, agent requests, open items |
+| [chat-file-references.md](chat-file-references.md) | Feature design | Pasting a local file path into chat as a reference instead of uploading a copy (`local_files.py`, `app.py` routes) |
+| [decisions-in-chat-contract.md](decisions-in-chat-contract.md) | Feature design | Backend contract for in-chat team decisions |
+| [decision-flow-model.md](decision-flow-model.md) | Feature design | Decision flow backend model v2 (`decisions.json`), a design for review |
+| [motion-scene-v2.md](motion-scene-v2.md) | Motion | Scene v2 field reference shared by the motion core, render farm, Studio, layers and `room_motion` (`motion_scene.py`) |
+| [motion-render2.md](motion-render2.md) | Motion | The scene v2 renderer: evaluation pipeline, camera, cursor and footage (`motion/core/`) |
+| [motion-jobs.md](motion-jobs.md) | Motion | Shared admission for heavy media jobs |
+| [motion-audio.md](motion-audio.md) | Motion | Audio plan: local voice-over, music, sound effects and mixing |
+| [motion-skills/SKILL.md](motion-skills/SKILL.md), [motion-skills/RECIPES.md](motion-skills/RECIPES.md) | Motion | The product-demo skill for agents using `room_motion`, and ready-to-run recipes |
 
 ## Elsewhere in the repository
 
 | Document | Audience |
 |-|-|
-| [../README.md](../README.md) | Setup, launcher agents, configuration, MCP registration, security notes |
-| [../ROOM-QUICKSTART.md](../ROOM-QUICKSTART.md) | Using the managed workspace: start/stop, chat, board, team, repositories |
+| [../README.md](../README.md) | Setup, launcher agents, releases and updates, configuration, MCP registration, security notes |
+| [../ROOM-QUICKSTART.md](../ROOM-QUICKSTART.md) | Using the managed workspace: start/stop, chat, board and its enforced rules, work continuity, team profiles and skills, repositories, updates |
 | [../COLLABORATION.md](../COLLABORATION.md) | The collaboration rules appended to every managed agent's instructions |
 | [../config.toml](../config.toml) | Agents, ports, routing and runtime limits (commented) |
 
