@@ -1,0 +1,455 @@
+{
+ "version": 2,
+ "id": "tpl-product-demo-30s",
+ "name": "Template: 30 s product demo (ask, work, result, call to action)",
+ "source": "Docs/motion-skills/templates (demo-marketing, b805b88b). Replace the three capture refs and the props.",
+ "assets": [
+  {
+   "id": "ask-shot",
+   "kind": "capture",
+   "ref": "/uploads/replace-ask.png",
+   "name": "Chat with the request"
+  },
+  {
+   "id": "work-shot",
+   "kind": "capture",
+   "ref": "/uploads/replace-work.png",
+   "name": "Board or browser while the team works"
+  },
+  {
+   "id": "result-shot",
+   "kind": "capture",
+   "ref": "/uploads/replace-result.png",
+   "name": "The finished result"
+  }
+ ],
+ "compositions": [
+  {
+   "id": "main",
+   "width": 1920,
+   "height": 1080,
+   "fps": {
+    "num": 30,
+    "den": 1
+   },
+   "duration": 900,
+   "background": "#0c0e10",
+   "props_schema": {
+    "type": "object",
+    "properties": {
+     "product": {
+      "type": "string",
+      "title": "Product name",
+      "maxLength": 40,
+      "default": "ZeroCollab"
+     },
+     "promise": {
+      "type": "string",
+      "title": "One-line promise",
+      "maxLength": 70,
+      "default": "Ask once. Watch your team ship it."
+     },
+     "ask": {
+      "type": "string",
+      "title": "What the user asks",
+      "maxLength": 70,
+      "default": "Add a dark mode toggle"
+     },
+     "result": {
+      "type": "string",
+      "title": "What the viewer sees at the end",
+      "maxLength": 70,
+      "default": "Built, reviewed and checked"
+     },
+     "cta": {
+      "type": "string",
+      "title": "Call to action",
+      "maxLength": 50,
+      "default": "Try it on your next task"
+     },
+     "accent": {
+      "type": "string",
+      "format": "color",
+      "title": "Accent colour",
+      "default": "#54d9ed"
+     }
+    },
+    "required": [
+     "product",
+     "promise",
+     "ask",
+     "result",
+     "cta"
+    ]
+   },
+   "props": {
+    "product": "ZeroCollab",
+    "promise": "Ask once. Watch your team ship it.",
+    "ask": "Add a dark mode toggle",
+    "result": "Built, reviewed and checked",
+    "cta": "Try it on your next task",
+    "accent": "#54d9ed"
+   },
+   "tracks": [
+    {
+     "id": "v",
+     "kind": "visual",
+     "clips": [
+      {
+       "id": "intro",
+       "from": 0,
+       "duration": 105,
+       "layers": [
+        {
+         "id": "intro-product",
+         "type": "text",
+         "text": {
+          "prop": "product"
+         },
+         "size": 120,
+         "weight": 800,
+         "color": "#e8ecee",
+         "align": "center",
+         "x": 960,
+         "y": 460,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 0,
+            "value": 0
+           },
+           {
+            "frame": 15,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        },
+        {
+         "id": "intro-promise",
+         "type": "text",
+         "text": {
+          "prop": "promise"
+         },
+         "size": 56,
+         "color": {
+          "prop": "accent"
+         },
+         "align": "center",
+         "x": 960,
+         "y": 600,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "max_width": 1600,
+         "fit": "shrink",
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 12,
+            "value": 0
+           },
+           {
+            "frame": 30,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        }
+       ]
+      },
+      {
+       "id": "ask",
+       "from": 90,
+       "duration": 165,
+       "transition": {
+        "kind": "fade",
+        "duration": 15
+       },
+       "layers": [
+        {
+         "id": "ask-capture",
+         "type": "capture",
+         "asset": "ask-shot",
+         "label": "real",
+         "fit": "contain",
+         "x": 960,
+         "y": 470,
+         "width": 1600,
+         "height": 760,
+         "keyframes": {
+          "scale": [
+           {
+            "frame": 0,
+            "value": 0.96
+           },
+           {
+            "frame": 30,
+            "value": 1,
+            "easing": {
+             "spring": {
+              "damping": 16
+             }
+            }
+           }
+          ]
+         },
+         "anchor_x": 0.5,
+         "anchor_y": 0.5
+        },
+        {
+         "id": "ask-plate",
+         "type": "shape",
+         "shape": "rect",
+         "fill": {
+          "prop": "accent"
+         },
+         "radius": 16,
+         "x": 960,
+         "y": 960,
+         "width": 1640,
+         "height": 110,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 10,
+            "value": 0
+           },
+           {
+            "frame": 25,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        },
+        {
+         "id": "ask-text",
+         "type": "text",
+         "text": {
+          "prop": "ask"
+         },
+         "size": 60,
+         "weight": 700,
+         "color": "#0c0e10",
+         "align": "center",
+         "x": 960,
+         "y": 960,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "max_width": 1600,
+         "fit": "shrink",
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 10,
+            "value": 0
+           },
+           {
+            "frame": 25,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        }
+       ]
+      },
+      {
+       "id": "work",
+       "from": 240,
+       "duration": 375,
+       "transition": {
+        "kind": "slide",
+        "duration": 15,
+        "direction": "left"
+       },
+       "layers": [
+        {
+         "id": "work-capture",
+         "type": "capture",
+         "asset": "work-shot",
+         "label": "real",
+         "fit": "cover",
+         "x": 960,
+         "y": 540,
+         "width": 1920,
+         "height": 1080,
+         "keyframes": {
+          "scale": [
+           {
+            "frame": 0,
+            "value": 1
+           },
+           {
+            "frame": 180,
+            "value": 1.25,
+            "easing": "ease-in-out"
+           },
+           {
+            "frame": 360,
+            "value": 1,
+            "easing": "ease-in-out"
+           }
+          ]
+         },
+         "anchor_x": 0.5,
+         "anchor_y": 0.5
+        },
+        {
+         "id": "work-caption",
+         "type": "captions",
+         "cues": [
+          {
+           "from": 15,
+           "duration": 165,
+           "text": "The team splits the work."
+          },
+          {
+           "from": 195,
+           "duration": 165,
+           "text": "They review and check each other."
+          }
+         ],
+         "size": 56,
+         "color": "#e8ecee",
+         "background": "#0c0e10cc",
+         "align": "center"
+        }
+       ]
+      },
+      {
+       "id": "result",
+       "from": 600,
+       "duration": 210,
+       "transition": {
+        "kind": "fade",
+        "duration": 15
+       },
+       "layers": [
+        {
+         "id": "result-capture",
+         "type": "capture",
+         "asset": "result-shot",
+         "label": "real",
+         "fit": "contain",
+         "x": 160,
+         "y": 90,
+         "width": 1600,
+         "height": 760
+        },
+        {
+         "id": "result-plate",
+         "type": "shape",
+         "shape": "rect",
+         "fill": {
+          "prop": "accent"
+         },
+         "radius": 16,
+         "x": 960,
+         "y": 960,
+         "width": 1640,
+         "height": 110,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 10,
+            "value": 0
+           },
+           {
+            "frame": 25,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        },
+        {
+         "id": "result-text",
+         "type": "text",
+         "text": {
+          "prop": "result"
+         },
+         "size": 60,
+         "weight": 700,
+         "color": "#0c0e10",
+         "align": "center",
+         "x": 960,
+         "y": 960,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "max_width": 1600,
+         "fit": "shrink",
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 10,
+            "value": 0
+           },
+           {
+            "frame": 25,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        }
+       ]
+      },
+      {
+       "id": "outro",
+       "from": 795,
+       "duration": 105,
+       "transition": {
+        "kind": "fade",
+        "duration": 15
+       },
+       "layers": [
+        {
+         "id": "outro-promise",
+         "type": "text",
+         "text": {
+          "prop": "promise"
+         },
+         "size": 88,
+         "weight": 800,
+         "color": "#e8ecee",
+         "align": "center",
+         "x": 960,
+         "y": 470,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "max_width": 1700,
+         "fit": "shrink"
+        },
+        {
+         "id": "outro-cta",
+         "type": "text",
+         "text": {
+          "prop": "cta"
+         },
+         "size": 56,
+         "color": {
+          "prop": "accent"
+         },
+         "align": "center",
+         "x": 960,
+         "y": 610,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

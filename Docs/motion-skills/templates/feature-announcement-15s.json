@@ -1,0 +1,353 @@
+{
+ "version": 2,
+ "id": "tpl-feature-15s",
+ "name": "Template: 15 s feature announcement (new, where, why)",
+ "source": "Docs/motion-skills/templates (demo-marketing, b805b88b). Replace the capture ref, the props and the highlight position.",
+ "assets": [
+  {
+   "id": "feature-shot",
+   "kind": "capture",
+   "ref": "/uploads/replace-feature.png",
+   "name": "Screenshot with the new feature visible"
+  }
+ ],
+ "compositions": [
+  {
+   "id": "main",
+   "width": 1920,
+   "height": 1080,
+   "fps": {
+    "num": 30,
+    "den": 1
+   },
+   "duration": 450,
+   "background": "#0c0e10",
+   "props_schema": {
+    "type": "object",
+    "properties": {
+     "label": {
+      "type": "string",
+      "title": "Badge text",
+      "maxLength": 12,
+      "default": "New"
+     },
+     "feature": {
+      "type": "string",
+      "title": "Feature name",
+      "maxLength": 50,
+      "default": "Decisions in your bell"
+     },
+     "benefit": {
+      "type": "string",
+      "title": "Why it matters, one line",
+      "maxLength": 80,
+      "default": "Never miss a choice the team is waiting on."
+     },
+     "cta": {
+      "type": "string",
+      "title": "Where to find it",
+      "maxLength": 60,
+      "default": "Click the bell to try it"
+     },
+     "accent": {
+      "type": "string",
+      "format": "color",
+      "title": "Accent colour",
+      "default": "#f0c674"
+     },
+     "box_x": {
+      "type": "integer",
+      "title": "Highlight centre x (px)",
+      "minimum": 0,
+      "maximum": 1920,
+      "default": 1500
+     },
+     "box_y": {
+      "type": "integer",
+      "title": "Highlight centre y (px)",
+      "minimum": 0,
+      "maximum": 1080,
+      "default": 260
+     }
+    },
+    "required": [
+     "feature",
+     "benefit",
+     "cta"
+    ]
+   },
+   "props": {
+    "label": "New",
+    "feature": "Decisions in your bell",
+    "benefit": "Never miss a choice the team is waiting on.",
+    "cta": "Click the bell to try it",
+    "accent": "#f0c674",
+    "box_x": 1500,
+    "box_y": 260
+   },
+   "tracks": [
+    {
+     "id": "v",
+     "kind": "visual",
+     "clips": [
+      {
+       "id": "title",
+       "from": 0,
+       "duration": 90,
+       "layers": [
+        {
+         "id": "badge-plate",
+         "type": "shape",
+         "shape": "rect",
+         "fill": {
+          "prop": "accent"
+         },
+         "radius": 12,
+         "x": 960,
+         "y": 400,
+         "width": 200,
+         "height": 72,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "keyframes": {
+          "scale": [
+           {
+            "frame": 0,
+            "value": 0.6
+           },
+           {
+            "frame": 18,
+            "value": 1,
+            "easing": {
+             "spring": {
+              "damping": 12
+             }
+            }
+           }
+          ]
+         }
+        },
+        {
+         "id": "badge-text",
+         "type": "text",
+         "text": {
+          "prop": "label"
+         },
+         "size": 44,
+         "weight": 800,
+         "color": "#0c0e10",
+         "align": "center",
+         "x": 960,
+         "y": 400,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5
+        },
+        {
+         "id": "title-text",
+         "type": "text",
+         "text": {
+          "prop": "feature"
+         },
+         "size": 104,
+         "weight": 800,
+         "color": "#e8ecee",
+         "align": "center",
+         "x": 960,
+         "y": 560,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "max_width": 1700,
+         "fit": "shrink",
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 8,
+            "value": 0
+           },
+           {
+            "frame": 24,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        }
+       ]
+      },
+      {
+       "id": "where",
+       "from": 75,
+       "duration": 270,
+       "transition": {
+        "kind": "fade",
+        "duration": 15
+       },
+       "layers": [
+        {
+         "id": "shot",
+         "type": "capture",
+         "asset": "feature-shot",
+         "label": "real",
+         "fit": "cover",
+         "x": 960,
+         "y": 540,
+         "width": 1920,
+         "height": 1080,
+         "keyframes": {
+          "scale": [
+           {
+            "frame": 0,
+            "value": 1
+           },
+           {
+            "frame": 90,
+            "value": 1.15,
+            "easing": "ease-in-out"
+           }
+          ]
+         },
+         "anchor_x": 0.5,
+         "anchor_y": 0.5
+        },
+        {
+         "id": "highlight",
+         "type": "shape",
+         "shape": "rect",
+         "fill": "#00000000",
+         "stroke": {
+          "prop": "accent"
+         },
+         "stroke_width": 8,
+         "radius": 18,
+         "x": {
+          "prop": "box_x"
+         },
+         "y": {
+          "prop": "box_y"
+         },
+         "width": 420,
+         "height": 180,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 60,
+            "value": 0
+           },
+           {
+            "frame": 75,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        },
+        {
+         "id": "benefit-plate",
+         "type": "shape",
+         "shape": "rect",
+         "fill": "#0c0e10dd",
+         "radius": 16,
+         "x": 960,
+         "y": 960,
+         "width": 1640,
+         "height": 110,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 90,
+            "value": 0
+           },
+           {
+            "frame": 105,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        },
+        {
+         "id": "benefit-text",
+         "type": "text",
+         "text": {
+          "prop": "benefit"
+         },
+         "size": 56,
+         "weight": 700,
+         "color": "#e8ecee",
+         "align": "center",
+         "x": 960,
+         "y": 960,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "max_width": 1580,
+         "fit": "shrink",
+         "keyframes": {
+          "opacity": [
+           {
+            "frame": 90,
+            "value": 0
+           },
+           {
+            "frame": 105,
+            "value": 1,
+            "easing": "ease-out"
+           }
+          ]
+         }
+        }
+       ]
+      },
+      {
+       "id": "cta",
+       "from": 330,
+       "duration": 120,
+       "transition": {
+        "kind": "fade",
+        "duration": 15
+       },
+       "layers": [
+        {
+         "id": "cta-feature",
+         "type": "text",
+         "text": {
+          "prop": "feature"
+         },
+         "size": 80,
+         "weight": 800,
+         "color": "#e8ecee",
+         "align": "center",
+         "x": 960,
+         "y": 480,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5,
+         "max_width": 1700,
+         "fit": "shrink"
+        },
+        {
+         "id": "cta-text",
+         "type": "text",
+         "text": {
+          "prop": "cta"
+         },
+         "size": 56,
+         "color": {
+          "prop": "accent"
+         },
+         "align": "center",
+         "x": 960,
+         "y": 600,
+         "anchor_x": 0.5,
+         "anchor_y": 0.5
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

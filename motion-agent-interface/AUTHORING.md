@@ -2,6 +2,8 @@
 
 For agents making product demos and motion graphics in ZeroCollab. A scene is JSON data, never code. The room validates it, renders preview frames and exports the video. Field reference: `Docs/motion-scene-v2.md`.
 
+Craft, pacing and ready-made recipes: `Docs/motion-skills/SKILL.md` and `RECIPES.md`.
+
 ## The loop
 
 1. **Brief.** Write down what the video must show, who it is for, its length, and which real captures (screenshots, markups, browser frames) it uses.
