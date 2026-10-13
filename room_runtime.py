@@ -141,9 +141,9 @@ RECORD_NOT_READY = ('Not recording yet: the take is {phase}. Poll record_status 
 # queue merging, the checkpoint and repeated restores dedupe it, and its turn's receipt stops later replays.
 RELEASE_WAKES_FILE = 'release-wakes.json'
 RELEASE_WAKES_VERSION = 1
-# Delivered keys are pruned only past this many records, oldest first, so a still-pollable receipt is never
-# replayed; pending ones are never pruned.
-MAX_RELEASE_WAKES = 4096
+# Keys are never pruned: a receipt the core can still replay must find its key (Astra 648775e5 B3, 6e99c753).
+# Retention will follow the core's receipt retention once that policy exists; a record is a few hundred bytes.
+MANUAL_STOP_FAULT_FILE = 'manual-control.fault'  # a latch write failed: no automatic reopen until a user Resume
 RELEASE_FIELDS = ('deployment_id', 'project', 'receipt_id', 'outcome')  # required, non-empty strings
 RELEASE_TEXT_FIELDS = ('version', 'manifest', 'reason')  # optional strings
 MAX_RELEASE_FIELD_CHARS = 2000
@@ -814,6 +814,7 @@ class RoomRuntime:
         # Host-wide user Stop latch (release_control.ManualStopState), built in start() when the room has a
         # deployment root; None means no automatic reopen.
         self.manual_stop = None
+        self.manual_stop_fault = None  # why automatic reopen is off, for the release core to report
         self.release_wakes_lock = threading.Lock()
 
     def handles(self, name):
@@ -2477,27 +2478,50 @@ class RoomRuntime:
 
     def open_manual_stop(self, stopped):
         """The host-wide user Stop latch. The first run on a host records the room's saved paused state; an
-        existing latch is never overwritten. One that can't be read stays unset: Stop and Resume still work and
-        nothing reopens the room automatically."""
+        existing latch is never overwritten. One that can't be read, or that failed before (its fault marker),
+        stays unset: Stop and Resume still work and nothing reopens the room automatically."""
         if not self.deployment or self.deployment.rehearsal:
             return
         from release_control import ManualStopState
+        fault = self.deployment.root / MANUAL_STOP_FAULT_FILE
+        if fault.exists():
+            self.manual_stop_fault = 'an earlier Stop or Resume could not be recorded'
+            return
         try:
             self.manual_stop = ManualStopState(self.deployment.root, self.deployment.lock, initially_stopped=stopped)
         except (OSError, ValueError) as exc:
             LOGGER.warning('Manual Stop state unavailable; automatic deployment is disabled: %s', exc)
-            self.manual_stop = None
+            self.manual_stop, self.manual_stop_fault = None, str(exc) or type(exc).__name__
+
+    def poison_manual_stop(self, error):
+        """Any latch failure turns automatic reopen off for good (Astra 648775e5 B1): a Stop that could not be
+        written must never be undone by a reopen against the old generation. The marker keeps it off across a
+        restart; only a user Resume whose latch write succeeds clears it."""
+        self.manual_stop, self.manual_stop_fault = None, error
+        with contextlib.suppress(OSError):
+            atomic_write(self.deployment.root / MANUAL_STOP_FAULT_FILE, lambda stream: stream.write(error[:500]))
 
     def manual_stop_call(self, method, *args, state):
-        """A latch call from a user route, which never refuses: a broken latch only means a warning."""
+        """A latch call from a user route, which never refuses: a broken latch only means a warning. A user
+        Resume on a poisoned latch tries it afresh, and re-enables automatic reopen only if that write succeeds."""
         if not self.deployment or self.deployment.rehearsal:
             return None, {}
-        error = 'its state could not be read'
-        if self.manual_stop is not None:
+        latch = self.manual_stop
+        if latch is None and method == 'clear_user_stop':
+            from release_control import ManualStopState
+            with contextlib.suppress(OSError, ValueError):
+                latch = ManualStopState(self.deployment.root, self.deployment.lock, initially_stopped=True)
+        error = self.manual_stop_fault or 'its state could not be read'
+        if latch is not None:
             try:
-                return getattr(self.manual_stop, method)(*args), {}
+                result = getattr(latch, method)(*args)
+                if latch is not self.manual_stop:  # a poisoned latch recovered by the user's own Resume
+                    (self.deployment.root / MANUAL_STOP_FAULT_FILE).unlink(missing_ok=True)
+                    self.manual_stop, self.manual_stop_fault = latch, None
+                return result, {}
             except (OSError, ValueError, TypeError) as exc:
                 error = str(exc) or type(exc).__name__
+                self.poison_manual_stop(error)
         LOGGER.warning('Manual Stop %s failed: %s', method, error)
         return None, {'warning': MANUAL_STOP_BROKEN.format(error=error, state=state)}
 
@@ -2515,12 +2539,13 @@ class RoomRuntime:
     async def reopen_if(self, generation):
         """Automatic reopen after a deployment, never a Resume: only if the user has not pressed Stop since
         `generation`; the latch compares and unpauses under one lock."""
-        if self.manual_stop is None:
-            return False
+        if self.manual_stop is None or not self.deployment.admission_open():
+            return False  # the core opens maintenance admission first, then asks (Astra 648775e5)
         try:
             reopened = self.manual_stop.reopen_if(generation, self.unpause)
         except (OSError, ValueError, TypeError) as exc:
             LOGGER.warning('Automatic reopen refused: %s', exc)
+            self.poison_manual_stop(str(exc) or type(exc).__name__)
             return False
         if reopened:
             await self.after_resume()
@@ -2541,12 +2566,6 @@ class RoomRuntime:
 
     def write_release_wakes(self, data):
         from room_deploy import atomic_json
-        wakes = data['wakes']
-        if len(wakes) > MAX_RELEASE_WAKES:
-            delivered = sorted((k for k, r in wakes.items() if r.get('state') == 'delivered'),
-                               key=lambda k: wakes[k].get('created', 0))
-            for key in delivered[:len(wakes) - MAX_RELEASE_WAKES]:
-                del wakes[key]
         atomic_json(self.release_wakes_path(), data)
 
     def enqueue_release_completion(self, receipt, recipients):
@@ -2582,8 +2601,9 @@ class RoomRuntime:
                     added.append(key)
             if added:
                 self.write_release_wakes(data)
-        if added:
-            self.restore_release_wakes()
+        # On retries too (Astra 648775e5 B2): a wake the queue refused earlier (full, or its agent paused or
+        # signed out) is offered again now; restore skips any that are delivered, queued, held or running.
+        self.restore_release_wakes()
         return added
 
     def release_receipted(self, key, recipient):
