@@ -166,8 +166,10 @@ def send(runtime, room, state, name, wake, now, actions):
     room.save()  # durable before anything is queued; a lost enqueue is re-sent after RETRY_SECONDS
     if kind == 'ask':
         collection, item = record
+        # The ask's own action, so the queue's current_request checks it as that ask is checked (pending and this
+        # reviewer; open and this assignee). Any other action reads as a verdict or result and is pruned at once.
         ref = {'collection': collection, 'id': item['id'], 'updated': item.get('updated', item['created']),
-               'action': 'continuity'}
+               'action': 'request' if collection == 'reviews' else 'create'}
         queued = runtime.deliver_record(name, [item], channel, item.get('chain'), prompt, ref).get('queued')
     else:
         queued = runtime.enqueue(name, channel, prompt=prompt, chain=chain,

@@ -19,7 +19,7 @@ class Continuity(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.calls, self.delivered, self.chat = [], [], []
+        self.calls, self.delivered, self.chat, self.refs = [], [], [], []
         r = SimpleNamespace(data=Path(self.tmp.name), project=None, paused=False, deployment=None,
                             running={}, deploy_held={}, repository_transition=None,
                             states={n: {'state': 'ready'} for n in NAMES},
@@ -43,6 +43,7 @@ class Continuity(unittest.TestCase):
 
         def deliver_record(name, items, channel, chain, text, ref):
             self.delivered.append((name, ref['id'], text))
+            self.refs.append(ref)
             if name in r.queues:
                 r.queues[name].put_nowait({'channel': channel, 'requests': [{'ref': ref}]})
             return {'queued': name in r.queues}
@@ -201,6 +202,24 @@ class Asks(Continuity):
         self.turn(name='peer', progress={})  # it ran and chose not to answer: that revision is consumed
         self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + wc.RETRY_SECONDS), [])
         self.assertEqual(len(self.delivered), 1)
+
+    def test_an_ask_wake_survives_the_queue_prune(self):
+        # 0.12.52 live: a review ask-wake was pruned at admission as "already delivered", because its ref action
+        # read as a verdict for the task owner. The wake must pass current_request exactly as the ask itself does.
+        from coordination_queue import current_request
+        self.turn(name='peer', progress={}, took=10)
+        review = self.room.records.review('worker', 'request', task_id=self.task_id, reviewer='peer',
+                                          revision='r1', text='look')['item']
+        self.room.records.followup('lead', 'create', assigned_to='peer', task_id=self.task_id, text='and this')
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + 1), ['woke'])
+        self.assertEqual(self.refs[-1]['id'], review['id'])
+        self.assertTrue(current_request({'ref': self.refs[-1]}, 'peer', self.room.state, []))
+        self.drain('peer')
+        self.turn(name='peer', progress={}, took=0)
+        self.room.state['continuity']['agents']['peer']['started'] = 0  # both asks still unseen
+        self.assertEqual(self.tick(wc.ASK_GRACE_SECONDS + 2), ['woke'])
+        self.assertEqual(self.refs[-1]['collection'], 'followups')
+        self.assertTrue(current_request({'ref': self.refs[-1]}, 'peer', self.room.state, []))
 
     def test_an_ask_its_recipient_saw_in_a_turn_is_not_woken(self):
         # 0.12.51 live check: the stored start was monotonic, so every open ask looked unseen and was woken.
