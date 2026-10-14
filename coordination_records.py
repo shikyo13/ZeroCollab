@@ -410,7 +410,8 @@ class CoordinationRecords:
             now = time.time()
             # The lead decides, not the user (Zero #17173 decision fatigue, task e14159ba); the user only without one.
             lead = self.room.room_lead()
-            decider = lead if lead and lead in self.room.runtime.states else 'user'
+            # Never the lead's own task: it would grant itself more rounds (harness 8cc3aa33 note 2).
+            decider = lead if lead and lead in self.room.runtime.states and lead != task['owner'] else 'user'
             item = opened = {'id': uuid.uuid4().hex[:8], 'task_id': task['id'], 'created_by': SYSTEM,
                              'assigned_to': decider, 'kind': 'scope_cap', 'status': 'open', 'result': '',
                              'text': f"E5: task {task['id']} ({task['title']}) has had {len(rounds)} review rounds. "

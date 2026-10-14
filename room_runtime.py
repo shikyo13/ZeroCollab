@@ -2385,13 +2385,14 @@ class RoomRuntime:
 
     def result_wakes(self, actor, recipient, items):
         """Task e14159ba part 5 (harness d3f45553: 44 empty turns): a follow-up result starts the other party's turn
-        only when the user gave it, or a task that party owns links it as its wait. Otherwise the result's chat line
-        reaches them in their next turn, and a task whose wait_on names the follow-up is woken by C6a."""
+        only when the user gave it, or it belongs to an open task that party owns, which is an implicit wait (harness
+        8cc3aa33: 41 of the productive wakes). A result about someone else's task reaches them through its chat line
+        in their next turn, and a task whose wait_on names the follow-up is woken by C6a."""
         if actor == 'user':
             return True
-        ids = {item['id'] for item in items}
-        return any(task.get('owner') == recipient and task['status'] != 'done'
-                   and (task.get('wait') or {}).get('record_id') in ids for task in self.project_room.state['tasks'])
+        ids = {item.get('task_id') for item in items} - {''}
+        return any(task['id'] in ids and task.get('owner') == recipient and task['status'] != 'done'
+                   and not task.get('closure') for task in self.project_room.state['tasks'])
 
     def deliver_record(self, recipient, items, channel, chain, text, ref):
         """Tell one waiting party about a changed review or follow-up. Shared by single and batch resolve so the

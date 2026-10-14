@@ -178,6 +178,9 @@ class NoRelays(ScopeCap):
         self.room.state['responders'] = {'lead': 'peer'}
         with self.assertRaisesRegex(ValueError, 'owned by worker'):
             self.room.task('peer', 'update', self.first, status='done')  # only a closure, not other edits
+        with self.assertRaisesRegex(ValueError, 'the lead may only close it here'):
+            self.room.task('peer', 'update', self.first, close_reason='parked', close_pointer=self.second,
+                           labels=['x'])
         self.room.task('peer', 'update', self.first, close_reason='parked', close_pointer=self.second)
         task = next(t for t in self.room.state['tasks'] if t['id'] == self.first)
         self.assertEqual((task['status'], task['closure']['by']), ('done', 'peer'))
@@ -202,6 +205,13 @@ class NoRelays(ScopeCap):
         self.room.records.followup('peer', 'cancel', followup_id=second.exception.record['id'], result='enough')
         with self.assertRaisesRegex(ValueError, 'E5: stopped by the lead or the user'):
             self.request('r9', task_id=self.second)
+
+    def test_the_lead_never_answers_the_cap_on_its_own_task(self):
+        self.room.state['responders'] = {'lead': 'worker'}  # worker owns self.first
+        self.fill()
+        with self.assertRaises(RuleRefused) as refused:
+            self.request('r8')
+        self.assertEqual(refused.exception.record['assigned_to'], 'user')
 
 
 class InstallChecks(unittest.TestCase):
