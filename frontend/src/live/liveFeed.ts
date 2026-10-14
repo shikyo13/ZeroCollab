@@ -1,3 +1,4 @@
+import { projectState } from '../lib/projectState';
 /* Live view data seam (task b42437b9). Live is about the team right now: who is working, with whom,
  * on what, and what they last produced. The shape follows backend's pinned /api/live contract
  * (b1af7a3a, follow-up ec632edd). While that route is not installed (404), the same model is derived
@@ -390,11 +391,27 @@ export function useLiveFeed(active: boolean): LiveFeed {
       tasks = new Map(); reviews = new Map(); followups = new Map(); ready = false;
     }
 
+    function applyBoardBaseline() {
+      const { data, error: boardError } = projectState.read();
+      if (!data || (data.project_id !== undefined && data.project_id !== project)) {
+        throw new Error(boardError || 'The board is catching up with the open project. Reload Live to try again.');
+      }
+      applyProject(data, true);
+    }
+    let lastBoard: ProjectState | null = null;
+    const unsubscribeBoard = projectState.subscribe(() => {
+      const { data, baseline } = projectState.read();
+      if (data && data !== lastBoard && ready && (data.project_id === undefined || data.project_id === project)) {
+        applyProject(data, baseline);
+      }
+      lastBoard = data;
+    });
+
     async function load() {
       const request = ++generation;
       ready = false; publish(true);
       try {
-        const [current, board] = await Promise.all([runtime<RuntimeState>(''), runtime<ProjectState>('/project-state')]);
+        const [current] = await Promise.all([runtime<RuntimeState>(''), projectState.refresh()]);
         if (stopped || request !== generation) return;
         reset();
         project = current.project_id || '';
@@ -405,7 +422,7 @@ export function useLiveFeed(active: boolean): LiveFeed {
           applyRoom(current);
           for (const agent of live.agents) applyServerAgent(agent);
           for (const item of live.interactions) interact({ ...item, fresh: false });
-          applyProject(board, true);
+          applyBoardBaseline();
         } catch (e) {
           // An older request that lost the race: a newer load owns the state (frontend d692c617 F3).
           if (stopped || request !== generation) return;
@@ -419,7 +436,7 @@ export function useLiveFeed(active: boolean): LiveFeed {
           if (!(e instanceof ApiError && e.status === 404)) { error = `Live feed unavailable: ${errorMessage(e)}`; publish(true); return; }
           source = 'derived';
           applyRoom(current);
-          applyProject(board, true);
+          applyBoardBaseline();
           // Seed from history so a new Live view is never an empty stage.
           for (const a of agents.values()) {
             const latest = [...tasks.values()].filter(t => t.owner === a.id).flatMap(t => (t.attachments ?? []).filter(x => IMAGE.test(x.url)).map(x => ({ x, t })))
@@ -439,8 +456,12 @@ export function useLiveFeed(active: boolean): LiveFeed {
     }
 
     const handlers: [string, (event: RoomEvent) => void][] = [
-      ['runtime_state', e => applyRoom(e.data as RuntimeState)],
-      ['project_state', e => applyProject(e.data as ProjectState, !ready)],
+      ['runtime_state', e => {
+        const next = e.data as RuntimeState;
+        const changed = next.project_id !== undefined && next.project_id !== project;
+        applyRoom(next);
+        if (changed) void load();
+      }],
       ['runtime_start', onRuntime], ['runtime_delta', onRuntime], ['runtime_draft', onRuntime], ['runtime_tool', onRuntime], ['runtime_end', onRuntime],
       ['message', onMessage],
       ['browser_activity', onBrowser],
@@ -460,6 +481,7 @@ export function useLiveFeed(active: boolean): LiveFeed {
     }, 1000);
     return () => {
       stopped = true; generation++;
+      unsubscribeBoard();
       if (timer !== null) window.clearTimeout(timer);
       window.clearInterval(watch);
       window.removeEventListener('load', attach);

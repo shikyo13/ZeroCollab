@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { errorMessage, runtime } from './api';
 import type { ProjectState, RoomEvent, RuntimeState } from './types';
 import { USER } from './constants';
+import { projectState } from './projectState';
 
 type Listener = (event: RoomEvent) => void;
 
@@ -158,30 +159,10 @@ interface Resource<T> {
   refresh: () => Promise<void>;
 }
 
-/** Live /api/runtime/project-state, refreshed by project_state events, reconnects and channel changes. */
+/** Shared full board, assembled from snapshots and project_delta events. */
 export function useProjectState(): Resource<ProjectState> {
-  const [data, setData] = useState<ProjectState | null>(null);
-  const [error, setError] = useState('');
-  const channel = useActiveChannel();
-  const refresh = useCallback(async () => {
-    try {
-      setData(await runtime<ProjectState>('/project-state'));
-      setError('');
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  }, []);
-  useEffect(() => {
-    void refresh();
-  }, [refresh, channel]);
-  // The event payload omits last_human_message; keep the last fetched value.
-  useRoomEvent<ProjectState>('project_state', event =>
-    setData(prev => ({ ...event.data, last_human_message: prev?.last_human_message ?? '' })),
-  );
-  // chat.js consumes history_complete without relaying it; 'settings' is the
-  // first frame of every (re)connect and does reach the Hub, so resync on it.
-  useRoomEvent('settings', () => void refresh());
-  return { data, error, refresh };
+  const { data, error } = useSyncExternalStore(projectState.subscribe, projectState.read);
+  return { data, error, refresh: projectState.refresh };
 }
 
 interface Snapshot<T> {

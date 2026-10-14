@@ -156,6 +156,9 @@ export interface Chain {
 
 /** GET /api/runtime/project-state and the `project_state` WS event. */
 export interface ProjectState {
+  project_id?: string;
+  stream_id?: string;
+  rev?: number;
   spec: string;
   tasks: Task[];
   notes: Note[];

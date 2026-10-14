@@ -105,6 +105,7 @@ export function useProjects() {
   useEffect(() => { void refresh(); }, [refresh]);
   const refreshSoon = useCoalesced(() => void refresh(), PROJECT_REFRESH_MS);
   useRoomEvent('project_state', refreshSoon);
+  useRoomEvent('project_delta', refreshSoon);
   useRoomEvent('settings', () => void refresh());
   // runtime_state fires often (agent state, streaming); only a new project needs a re-read.
   const [attached, setAttached] = useState<string | null>(null);

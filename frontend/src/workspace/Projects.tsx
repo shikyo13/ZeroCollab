@@ -111,6 +111,7 @@ function Detail({ id, onRenamed, navigate, browseHistory }: { id: string; onRena
   const loadSoon = useCoalesced(() => void load(), PROJECT_REFRESH_MS);
   const lastTeam = useRef('');
   useRoomEvent('project_state', () => { if (detail?.active) loadSoon(); });
+  useRoomEvent('project_delta', () => { if (detail?.active) loadSoon(); });
   useRoomEvent('settings', () => { if (detail?.active) loadSoon(); });
   // runtime_state streams constantly; the detail only shows each member's state and branch.
   useRoomEvent<RuntimeState>('runtime_state', event => {

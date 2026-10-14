@@ -1,3 +1,4 @@
+import { projectState } from '../lib/projectState';
 /* Follow mode: a live view of what the team is doing, built only from events the room
  * already emits (runtime_start/delta/tool/end, project_state, browser_activity).
  * Tool events carry a name and status, not reliable parameters (Claude reports input {} at
@@ -275,13 +276,13 @@ function onEnd(event: RoomEvent) {
   publish();
 }
 
-function onProjectState(event: RoomEvent) {
-  const state = event.data as ProjectState & {project_id?: string};
+function onProjectState(state: ProjectState, baseline: boolean) {
   if (!state || !Array.isArray(state.tasks)) return;
   if (state.project_id && currentProject && state.project_id !== currentProject) {
     lastTasks = null; lastReviews = null; moves.clear(); ticker.length = 0; pips.length = 0; pip = null; pipSeen.clear();
   }
   currentProject = state.project_id || currentProject;
+  if (baseline) { lastTasks = null; lastReviews = null; }
   const tasks = new Map(state.tasks.map(t => [t.id, t]));
   const reviews = new Map((state.reviews ?? []).map(r => [r.id, r]));
   const time = now();
@@ -428,7 +429,6 @@ const HANDLERS: [string, Listener][] = [
   ['runtime_draft', onDelta],
   ['runtime_tool', onTool],
   ['runtime_end', onEnd],
-  ['project_state', onProjectState],
   ['browser_activity', onBrowser],
   ['message', onMessage],
 ];
@@ -510,6 +510,15 @@ function subscribe(listener: () => void) {
 export function useFollow(): FollowSnapshot {
   return useSyncExternalStore(subscribe, () => shown);
 }
+
+let lastBoard: ProjectState | null = null;
+projectState.subscribe(() => {
+  const { data, baseline } = projectState.read();
+  if (data && data !== lastBoard) onProjectState(data, baseline);
+  lastBoard = data;
+});
+const initialBoard = projectState.read();
+if (initialBoard.data) { onProjectState(initialBoard.data, true); lastBoard = initialBoard.data; }
 
 // Start tracking as soon as the shell loads, so follow has state to show when turned on.
 attach();
