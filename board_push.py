@@ -100,7 +100,9 @@ class BoardPush:
             ids = list(texts)
             if ids[:len(kept)] != kept:
                 return self.reset(snapshot, project_id, records, values)  # reordered: not expressible as a delta
-            changed = [record for record in snapshot[collection] if pushed.get(record['id']) != texts[record['id']]]
+            # A new project's snapshot has no followups key at all (texts() reads it as empty too).
+            changed = [record for record in snapshot.get(collection, [])
+                       if pushed.get(record['id']) != texts[record['id']]]
             removed = [i for i in pushed if i not in texts]
             if changed:
                 delta['upsert'][collection] = changed

@@ -109,6 +109,16 @@ class BoardPushTest(unittest.TestCase):
         self.assertEqual((kind, switched['project_id'], switched['rev']), ('project_state', 'p2', 1))
         self.assertNotEqual(switched['stream_id'], first['stream_id'])
 
+    def test_a_collection_missing_from_the_snapshot_reads_as_empty(self):
+        del self.room.state['followups']  # a new project's state has no followups key (paired /ws check, 500 on GET)
+        self.advance()
+        self.room.state['spec'] = 'changed'
+        _, (kind, delta) = self.advance()
+        self.assertEqual((kind, delta['values']), ('project_delta', {'spec': 'changed'}))
+        self.room.state['followups'] = [{'id': 'f1', 'status': 'open'}]
+        _, (kind, delta) = self.advance()
+        self.assertEqual(delta['upsert'], {'followups': [{'id': 'f1', 'status': 'open'}]})
+
     def test_no_active_project_reports_an_empty_project_id_like_runtime_state(self):
         self.room.identity = None  # backend ee8155fb note 1: runtime_state sends identity or ''
         snapshot, _ = self.advance()
