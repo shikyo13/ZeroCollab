@@ -468,7 +468,10 @@ def stalls(runtime, room, state, now, actions):
         if task and count >= SPIN_TURNS and (not task_hold(runtime, task, task['owner']) or spun_wait(state, task)):
             open_stall(runtime, room, state, task_id, task['owner'], subject(task, task['owner']),
                        f'{count} room-started turns with no status, evidence or file change', actions, task)
+    unavailable_agents(runtime, room, state, now, actions)
     for key in list(state['stalls']):
+        if key.startswith(UNAVAILABLE_PREFIX):
+            continue  # unavailable_agents opens and closes these
         if key.startswith('ask:'):
             claims = [c for c in state['claims'].values() if c['kind'] == 'ask' and (c.get('record') or [None, None])[1] == key[4:]]
             if (not claims or any(c['status'] == 'done' for c in claims)
@@ -479,6 +482,41 @@ def stalls(runtime, room, state, now, actions):
         if not task or (task_hold(runtime, task, task.get('owner')) and not spun_wait(state, task)):
             state['spin'].pop(key, None)
             clear_stall(runtime, room, state, key, 'It is no longer ready work.', actions)
+
+
+UNAVAILABLE_PREFIX = 'unavailable:'
+# What a person does about each state that only they can clear.
+UNAVAILABLE_ACTIONS = {'blocked': 'check the error on Team, then click Refresh connections',
+                       'login_required': 'sign in on Team > Providers, then click Refresh connections'}
+
+
+def unavailable_agents(runtime, room, state, now, actions):
+    """An agent that only a person can bring back (blocked, signed out) is skipped by every wake here, so open asks
+    or ready work for it would wait silently (task f5dbe565: Astra sat blocked on a 429 for hours while 0.12.65
+    waited). After IDLE_WAKE_SECONDS such an agent gets one stall item for the lead naming the cause and the action.
+    It closes itself once the agent is available again or nothing waits on it. Stopped and archived agents are the
+    user's own choice and stay quiet."""
+    room_state, since = room.state, state['unavailable']
+    for name, agent in runtime.states.items():
+        key = f'{UNAVAILABLE_PREFIX}{name}'
+        status = agent.get('state')
+        waiting = None
+        if (status in UNAVAILABLE_ACTIONS and name != SYSTEM and not agent.get('paused') and not agent.get('archived')
+                and not agent.get('desktop_unavailable')):
+            asks = sum(1 for f in room_state.get('followups', []) if f['status'] == 'open' and f['assigned_to'] == name)
+            asks += sum(1 for r in room_state.get('reviews', []) if r['status'] == 'pending' and r['reviewer'] == name)
+            ready = len(ready_tasks(runtime, name))
+            if asks or ready:
+                waiting = f'{asks} open ask(s) and {ready} ready task(s) wait for it'
+        if waiting is None:
+            since.pop(name, None)
+            if key in state['stalls']:
+                clear_stall(runtime, room, state, key, f'{name} is available again, or nothing waits on it.', actions)
+            continue
+        if now - since.setdefault(name, now) >= IDLE_WAKE_SECONDS:
+            detail = (agent.get('detail') or status)[:300]
+            open_stall(runtime, room, state, key, name, f'{name} is {status}: {detail}',
+                       f'{waiting}. Action: {UNAVAILABLE_ACTIONS[status]}', actions)
 
 
 def spun_wait(state, task):
@@ -641,7 +679,8 @@ def changed(item):
 
 def store(room):
     state = room.state.setdefault('continuity', {})
-    for key in ('agents', 'claims', 'fired', 'asked', 'spin', 'stalls', 'rechecked', 'recheck_batches', 'recheck_tasks'):
+    for key in ('agents', 'claims', 'fired', 'asked', 'spin', 'stalls', 'rechecked', 'recheck_batches', 'recheck_tasks',
+                'unavailable'):
         state.setdefault(key, {})
     return state
 

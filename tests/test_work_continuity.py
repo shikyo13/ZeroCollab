@@ -341,6 +341,38 @@ class Watchdog(Continuity):
         self.assertEqual(self.calls, [])  # not continued again
 
 
+class Unavailable(Continuity):
+    """Task f5dbe565: a blocked agent with work waiting for it is never silently skipped."""
+
+    def stall_items(self):
+        return [f for f in self.room.state['followups'] if f['created_by'] == wc.SYSTEM and f['status'] == 'open'
+                and 'unavailable:peer' in f['text']]
+
+    def test_a_blocked_agent_with_an_open_ask_gives_the_lead_one_stall_that_closes_itself(self):
+        self.r.states['peer'].update(state='blocked', detail='exceeded retry limit, last status: 429')
+        self.room.records.followup('worker', 'create', assigned_to='peer', task_id=self.task_id, text='stage it')
+        self.tick(1)  # first seen blocked with work waiting
+        self.tick(wc.IDLE_WAKE_SECONDS - 5)
+        self.assertEqual(self.stall_items(), [])  # not before IDLE_WAKE_SECONDS
+        self.tick(wc.IDLE_WAKE_SECONDS + 5)
+        self.tick(wc.IDLE_WAKE_SECONDS + 10)
+        item, = self.stall_items()  # exactly one, not one per tick
+        self.assertEqual(item['assigned_to'], 'lead')
+        self.assertIn('Refresh connections', item['text'])
+        self.assertIn('429', item['text'])
+        self.r.states['peer'].update(state='ready', detail='')
+        self.tick(wc.IDLE_WAKE_SECONDS + 15)
+        self.assertEqual(self.stall_items(), [])
+
+    def test_a_stopped_or_idle_blocked_agent_stays_quiet(self):
+        self.r.states['peer'].update(state='blocked', detail='x')  # nothing waits for it
+        self.tick(wc.IDLE_WAKE_SECONDS + 5)
+        self.r.states['peer'].update(paused=True)  # the user's own Stop
+        self.room.records.followup('worker', 'create', assigned_to='peer', task_id=self.task_id, text='later')
+        self.tick(wc.IDLE_WAKE_SECONDS * 2)
+        self.assertEqual(self.stall_items(), [])
+
+
 class TeamIdle(Continuity):
     def test_lead_is_woken_when_everyone_is_idle_and_work_waits(self):
         self.room.task('worker', 'update', task_id=self.task_id, next_action_state='waiting')

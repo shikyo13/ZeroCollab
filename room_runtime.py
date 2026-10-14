@@ -88,6 +88,13 @@ ROOM_SERVER = 'zerocollab_coordination'
 EVENT_LOG_LIMIT = 32 * 1024 * 1024  # runtime_events.jsonl starts a new file past this size (append_event)
 # One automatic retry for a turn that failed before producing any output (task 33f0aa98).
 STARTUP_RETRY_SECONDS = 5
+# A provider that is rate-limited, overloaded or failing server-side recovers on its own (task f5dbe565: a Codex 429
+# left Astra blocked for hours until someone clicked Refresh). Such a turn is re-queued after each of these delays,
+# and only blocks once they are spent.
+TRANSIENT_RETRY_SECONDS = (120, 300, 900)
+TRANSIENT_FAILURE = re.compile(
+    r'too many requests|rate.?limit|overloaded|exceeded retry limit|service unavailable|internal server error'
+    r'|bad gateway|gateway timeout|\b(?:api error|status|statuscode|httpstatuscode)\W{0,6}(?:429|5\d\d)\b', re.I)
 # An agent's follow-up result that nothing waits on (task e14159ba part 5): recorded, read at the next turn.
 RESULT_NOT_WOKEN = {'status': 'deferred', 'queued': False,
                     'reason': 'Recorded; they see it in their next turn. A task whose wait_on names this follow-up '
@@ -1814,14 +1821,21 @@ class RoomRuntime:
                 diagnostic = re.sub(r'(?i)(?:bearer\s+|(?:token|api[-_]?key|password|secret)\s*[=:]\s*)\S+', '[redacted]', run.stderr)
                 diagnostic = re.sub(r'\b(?:sk-|hf_)[A-Za-z0-9_-]+', '[redacted]', diagnostic)
                 detail += ": " + diagnostic[-1200:]
+            transient = self.transient_failure(run, exc, detail)
             if self.signed_out(run, name, detail):
                 pass
-            elif self.retry_startup(run, exc, detail):
+            elif transient == 'retry':
+                # Like a startup retry: Activity only, so the chat doesn't look broken while the provider recovers.
+                await self.activity_note(run, 'provider retry', self.states[name]['detail'])
+            elif not transient and self.retry_startup(run, exc, detail):
                 # A retry is routine: Activity only, so the chat doesn't look broken while it recovers.
                 await self.activity_note(run, 'startup retry',
                                          f"Failed to start; retrying once in {STARTUP_RETRY_SECONDS} s: {detail[:600]}")
             else:
-                self.states[name].update(state='ready' if run.manager_audit else 'blocked', detail=detail[:600])
+                if transient == 'resume':
+                    detail = f'The provider was busy and the turn ended early; the agent stays available: {detail}'
+                self.states[name].update(state='ready' if run.manager_audit or transient == 'resume' else 'blocked',
+                                         detail=detail[:600])
                 await self.activity_note(run, 'turn failed', detail[:4000])
                 # One plain sentence in chat, once per cause; the raw error is in Activity and the roster.
                 # Same key as enqueue's blocked notice, so the next direct mention doesn't repeat it.
@@ -2132,6 +2146,31 @@ class RoomRuntime:
                             f"Sign in again (Team > Providers, or `{state['provider']} login` in a terminal), then Refresh connections. "
                             'Its work is kept.', channel=run.channel, metadata={'no_route': True})
         return True
+
+    def transient_failure(self, run, exc, detail):
+        """A provider-side failure that clears on its own (rate limit, overload, server error), and what to do:
+        - 'retry': nothing was produced, so the same work goes back at the front of the queue after the next of
+          TRANSIENT_RETRY_SECONDS and the agent stays ready (the mark lives on the entry, as for a startup retry);
+        - 'resume': output or tool calls happened, so re-running the work could repeat them. The turn just ends,
+          and the agent stays ready for its next wake instead of blocking;
+        - 'exhausted': the delays are spent, so it blocks as before (and work continuity tells the lead);
+        - '': not transient. Configuration and key problems (ValueError), turn limits and timeouts never count."""
+        if (run.manager_audit or isinstance(exc, (ValueError, TimeoutError)) or run.stop_reason
+                or not TRANSIENT_FAILURE.search(detail)):
+            return ''
+        if run.text or run.published_messages or run.native_tool_calls or run.coordination_calls:
+            return 'resume'
+        entry = run.entry
+        count = entry.get('transient_retries', 0)
+        if count >= len(TRANSIENT_RETRY_SECONDS):
+            return 'exhausted'
+        delay = TRANSIENT_RETRY_SECONDS[count]
+        entry.update(transient_retries=count + 1, retry_after=time.time() + delay)
+        self.states[run.name].update(state='ready', detail=(
+            f'The provider is busy or rate-limited; retrying in {delay // 60} min '
+            f'({count + 1} of {len(TRANSIENT_RETRY_SECONDS)}): {detail[:300]}'))
+        self.queues[run.name].retry(entry)
+        return 'retry'
 
     def retry_startup(self, run, exc, detail):
         """A failure before the provider produced anything (no text, message, tool or room call) is usually a
