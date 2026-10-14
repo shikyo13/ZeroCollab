@@ -38,6 +38,9 @@ def decode_args(ffmpeg, source, destination, max_bytes):
             # rather than silently shortened and then looped as a different song.
             '-vn', '-sn', '-dn', '-t', format((samples + 1) / SAMPLE_RATE, '.9f'),
             '-threads', str(DECODE_THREADS), '-filter_threads', str(DECODE_THREADS),
+            # Raw PCM is sample-relative. Codec delay/container timestamps must
+            # not consume the output time budget (Opus/WebM lost 312 samples).
+            '-af', 'asetpts=N/SR/TB',
             '-ac', str(CHANNELS), '-ar', str(SAMPLE_RATE), '-c:a', 'pcm_f32le',
             '-f', 'f32le', str(destination)]
 
