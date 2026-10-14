@@ -76,7 +76,8 @@ def worker(directory):
     packages = list((spool / 'releases').iterdir())
     if len(packages) != 1:
         raise ValueError('Expected one private release package')
-    package = packages[0]
+    from release_metadata import package as bind_metadata
+    package = bind_metadata(packages[0], data.get('metadata', {}))
     if sum(p.stat().st_size for p in (package / 'payload').rglob('*') if p.is_file()) > MAX_BYTES:
         raise ValueError('Filtered payload exceeds the byte limit')
     coverage = review_coverage(package, Path(data['predecessor']), data['reviews'], data['records'],
@@ -154,7 +155,11 @@ def prepare(manager, caller, values):
                if r.get('id') in values['reviews']}
     if any(records.get(i, {}).get('status') != 'approved' for i in values['reviews']):
         raise ValueError('Every selected review must be approved')
-    return {'repository': str(Path(repo['path']).resolve()), 'repository_key': repo['key'],
+    from release_metadata import resolve, FIELDS
+    metadata_input = {key: copy.deepcopy(values[key]) for key in FIELDS if key in values}
+    metadata = resolve(manager, metadata_input)
+    return {'metadata_input': metadata_input, 'metadata': metadata,
+            'repository': str(Path(repo['path']).resolve()), 'repository_key': repo['key'],
             'commit': values['commit'], 'reviews': values['reviews'], 'records': records,
             'current': current, 'predecessor': str(manager._path('releases/' + current['id'])),
             'artifacts': str(manager.runtime.project_room.path.parent / 'review-artifacts'),
@@ -162,6 +167,9 @@ def prepare(manager, caller, values):
 
 
 def revalidate(manager, context):
+    from release_metadata import resolve
+    if resolve(manager, context.get('metadata_input', {})) != context.get('metadata', {}):
+        raise ValueError('Shipped task ownership changed during staging')
     rt, state = manager.runtime, manager.state
     if manager.closing or context['caller']['project'] != rt.identity or not state.admission_open():
         raise ValueError('Room changed or closed during staging')
@@ -201,11 +209,13 @@ async def stage(manager, job, context):
             check()
             from release_intake import stage_snapshot
             dispositions = stage_snapshot(manager, context, result)
-            receipt = {**result, 'repository': context['repository_key'], 'commit': context['commit'],
+            receipt = {**result, **context.get('metadata', {}), 'repository': context['repository_key'], 'commit': context['commit'],
                        'reviews': context['reviews'], 'profile': context['caller']['profile'],
                        'project': context['caller']['project'], 'run': context['caller']['run'],
                        'grant_revision': context['grant_revision'], 'created': time.time(),
                        'handoff_dispositions': dispositions}
+            from release_metadata import verify
+            verify(package, stage=receipt)
             atomic_json(package / 'stage.json', receipt)
             atomic_json(package / 'review.json', {'release_id': identifier, 'manifest_sha': result['manifest_sha'],
                                                    'reviews': context['reviews']})
@@ -214,7 +224,7 @@ async def stage(manager, job, context):
                 # Do not overwrite an existing package or its review/receipt.
                 existing = manager._record('releases/' + identifier + '/stage.json')
                 fixed = ('release_id', 'manifest_sha', 'predecessor_manifest_sha', 'coverage',
-                         'repository', 'commit', 'reviews', 'project')
+                         'repository', 'commit', 'reviews', 'project', 'title', 'notes', 'shipped_tasks')
                 if not existing or any(existing.get(key) != receipt.get(key) for key in fixed):
                     raise ValueError('Package already exists; inspect its recorded staging identity')
                 # An existing package cannot acquire new inclusion claims.

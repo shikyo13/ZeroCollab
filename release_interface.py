@@ -11,7 +11,7 @@ PROTOCOL = 1
 MUTATIONS = frozenset({'stage', 'rehearse', 'request', 'rollback', 'handoff', 'disposition', 'archive'})
 FIELDS = {
     'list': frozenset(),
-    'stage': frozenset({'repository', 'commit', 'reviews'}),
+    'stage': frozenset({'repository', 'commit', 'reviews', 'title', 'notes', 'shipped_tasks'}),
     'rehearse': frozenset({'release_id', 'manifest_sha'}),
     'request': frozenset({'release_id', 'manifest_sha', 'expected_manifest_sha', 'idempotency_key'}),
     'status': frozenset({'id'}),
@@ -51,12 +51,15 @@ def arguments(action, value):
     if not isinstance(value, dict):
         raise ValueError('Release arguments must be an object')
     expected = FIELDS[action]
-    optional = {'status': {'id'}, 'check': {'dependencies'}, 'disposition': {'target'}}.get(action, set())
+    optional = {'stage': {'title', 'notes', 'shipped_tasks'}, 'status': {'id'}, 'check': {'dependencies'}, 'disposition': {'target'}}.get(action, set())
     if set(value) - expected or expected - optional - set(value):
         raise ValueError('Unexpected or missing release arguments')
     result = {'dependencies': []} if action == 'check' else {'target': ''} if action == 'disposition' else {}
     for name, item in value.items():
-        if name == 'dependencies':
+        if name in ('title', 'notes', 'shipped_tasks'):
+            from release_metadata import argument
+            result[name] = argument(name, item)
+        elif name == 'dependencies':
             if (not isinstance(item, list) or len(item) > 12 or any(
                     not isinstance(i, str) or not re.fullmatch(r'(?:[0-9a-f]{12}|[0-9a-f]{32})', i)
                     for i in item) or len(set(item)) != len(item)):

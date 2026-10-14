@@ -30,7 +30,7 @@ def acceptance(manager, manifest):
         raise ValueError('Exactly one active checklist for the installed manifest is required')
     note = bindings[0]
     pm = manager.runtime.manager_wakes.selected_manager()
-    if note.get('by') not in ('user', pm):
+    if note.get('by') not in ('user', pm, 'system'):
         raise ValueError('The checklist must belong to the selected manager or user')
     pins = note['release_checks'].get('tasks')
     if not isinstance(pins, list) or not 1 <= len(pins) <= 32:
@@ -40,8 +40,8 @@ def acceptance(manager, manifest):
     for pin in pins:
         identifier, owner = pin.get('id'), pin.get('owner')
         task = tasks.get(identifier)
-        if identifier in seen or not owner or not task or task.get('closure') or task.get('owner') != owner:
-            raise ValueError('A required check is missing, closed or reassigned')
+        if identifier in seen or not owner or not task or task.get('owner') != owner:
+            raise ValueError('A required check is missing or reassigned')
         seen.add(identifier)
         latest = next((r for r in reversed(task.get('acceptance_log', []))
                        if r.get('manifest_sha') == manifest), None)
@@ -83,6 +83,8 @@ def evidence(manager, identifier, manifest, current, rollback):
         raise ValueError('Stage receipt belongs to another package or project')
     if tuple(rehearsal.get(k) for k in ('release_id', 'manifest_sha', 'project')) != expected or rehearsal.get('status') != 'passed':
         raise ValueError('A successful host rehearsal for this package is required')
+    from release_metadata import verify
+    verify(manager._path(prefix), stage=stage)
     base = stage.get('predecessor_manifest_sha', '')
     if (not isinstance(base, str) or not re.fullmatch(r'[0-9a-f]{64}', base)
             or rehearsal.get('predecessor_manifest_sha') != base

@@ -83,6 +83,9 @@ def review_coverage(package, predecessor, review_ids, records, artifact_root, *,
             or any(not isinstance(i, str) or not re.fullmatch(r'[0-9a-f]{8}', i)
                    for i in review_ids) or len(set(review_ids)) != len(review_ids)):
         raise ValueError('Choose at most twelve distinct review ids')
+    from release_metadata import verify
+    verify(Path(package))
+    verify(Path(predecessor))
     candidate_manifest, candidate = check_release(Path(package))
     old_manifest, old = check_release(Path(predecessor))
     files, old_files = _files(candidate_manifest), _files(old_manifest)
