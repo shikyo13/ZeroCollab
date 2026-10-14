@@ -1,7 +1,8 @@
-"""Disposable ASGI checks for the real write gate and composing protocol.
+"""Disposable ASGI checks for the real write gate.
 
 The grant/evidence validator is a stand-in; no supervisor, providers, live data,
-credentials or installed files are used. Real 20s/60s bounds are intentional.
+credentials or installed files are used. Open tabs and typing never hold the
+gate (Zero #17109, task abc2b8e3); only another in-flight write does.
 """
 import asyncio
 import json
@@ -30,7 +31,6 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.tmp.cleanup)
         data = Path(self.tmp.name)
         self.socket = object()
-        self.acknowledge = True
         self.authority_error = ''
         self.validations = 0
         self.events = []
@@ -62,79 +62,59 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
         self.host.composing.receive(self.socket, {'type': 'ui_composing', 'busy': busy})
 
     async def send(self, socket, text):
-        event = json.loads(text)
-        self.events.append(event['type'])
-        if event['type'] == 'deployment_prepare' and self.acknowledge:
-            self.host.composing.receive(socket, {'type': 'deployment_prepare_ack', 'id': event['id'], 'busy': False})
+        self.events.append(json.loads(text)['type'])
 
     async def block(self):
         return await self.client.post(PATH, json={'action': 'block'})
 
+    def hold_write(self):
+        """Another write in flight: the one thing the gate still waits for."""
+        self.assertTrue(self.state.enter_mutation())
+        self.addCleanup(lambda: self.state.mutations and self.state.leave_mutation())
+
     def assert_open(self):
+        if self.state.mutations:
+            self.state.leave_mutation()
         self.assertEqual(self.state.reload()['writes'], 'open')
         self.assertEqual(self.state.mutations, 0)
         self.assertFalse(self.host.composing.attempts)
 
-    async def test_editor_busy_twenty_seconds_then_closes(self):
+    async def test_typing_never_holds_writes_or_the_supervisor(self):
         self.report(True)
-        async def editor():
-            for _ in range(20):
-                await asyncio.sleep(1)
-                self.report(True)
-            self.report(False)
-        task = asyncio.create_task(editor())
+        response = await self.client.get(PATH)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['composing']['busy'], 0)  # the supervisor's tab wait passes at once
+        self.assertEqual(response.json()['composing']['clients'], 1)
         start = time.monotonic()
         response = await self.block()
-        await task
-        elapsed = time.monotonic() - start
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertGreaterEqual(elapsed, 20)
-        self.assertLess(elapsed, 25)
+        self.assertLess(time.monotonic() - start, 1)
         self.assertEqual(self.state.reload()['writes'], 'blocked')
         self.assertEqual(self.state.mutations, 0)
-        self.assertGreater(self.validations, 50)
-        print(f'20s editor elapsed={elapsed:.3f}s validations={self.validations}', flush=True)
+        self.assertNotIn('deployment_prepare', self.events)
 
-    async def test_editor_past_sixty_seconds_refuses_and_keeps_reason(self):
-        self.report(True)
-        start = time.monotonic()
-        with self.assertLogs('release_maintenance', level='WARNING') as logs:
-            response = await self.block()
-        elapsed = time.monotonic() - start
+    async def test_a_write_past_the_bound_refuses_and_keeps_reason(self):
+        self.hold_write()
+        with patch.object(release_maintenance, 'BLOCK_WAIT_SECONDS', .5):
+            with self.assertLogs('release_maintenance', level='WARNING') as logs:
+                response = await self.block()
         self.assertEqual(response.status_code, 409, response.text)
         reason = response.json()['error']
-        self.assertIn('timed out after 60s', reason)
-        self.assertIn('editors', reason)
+        self.assertIn('timed out after 0.5s', reason)
+        self.assertIn('other active writes', reason)
         self.assertIn(reason, self.state.reload()['reason'])
         self.assertTrue(any(reason in line for line in logs.output))
-        self.assertGreaterEqual(elapsed, 60)
-        self.assertLess(elapsed, 65)
         self.assert_open()
-        print(f'60s editor elapsed={elapsed:.3f}s reason={reason}', flush=True)
-
-    async def test_legacy_host_refuses_at_fifteen_seconds(self):
-        room_deploy.atomic_json(self.spool / 'status.json', {'updated': time.time()})
-        self.report(True)
-        start = time.monotonic()
-        with self.assertLogs('release_maintenance', level='WARNING'):
-            response = await self.block()
-        elapsed = time.monotonic() - start
-        self.assertEqual(response.status_code, 409, response.text)
-        self.assertIn('timed out after 15s', response.json()['error'])
-        self.assertGreaterEqual(elapsed, 15)
-        self.assertLess(elapsed, 18)
-        self.assert_open()
-        print(f'legacy host elapsed={elapsed:.3f}s', flush=True)
 
     async def test_stale_or_nonliteral_capability_uses_legacy_bound(self):
-        for record in ({'updated': time.time()-30, 'agent_install_interrupt': 1},
+        for record in ({'updated': time.time()}, {'updated': time.time()-30, 'agent_install_interrupt': 1},
                        {'updated': time.time(), 'agent_install_interrupt': '1'},
                        {'updated': time.time(), 'agent_install_interrupt': True},
                        {'updated': time.time(), 'agent_install_interrupt': 2},
                        {'updated': time.time()+30, 'agent_install_interrupt': 1}):
             with self.subTest(record=record):
                 room_deploy.atomic_json(self.spool / 'status.json', record)
-                self.report(True)
+                self.hold_write()
                 with patch.object(release_maintenance, 'LEGACY_BLOCK_WAIT_SECONDS', .1):
                     with self.assertLogs('release_maintenance', level='WARNING'):
                         response = await self.block()
@@ -154,43 +134,11 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.state.reload()['writes'], 'blocked')
         self.assertEqual(self.state.mutations, 0)
 
-    async def test_missing_ack_retries_then_closes(self):
-        self.acknowledge = False
-        async def tab():
-            await asyncio.sleep(.8)
-            self.acknowledge = True
-        task = asyncio.create_task(tab())
-        with patch.object(release_maintenance, 'TAB_ACK_SECONDS', .5):
-            response = await self.block()
-        await task
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertGreaterEqual(self.events.count('deployment_prepare'), 2)
-        self.assertIn('deployment_release', self.events)
-
-    async def test_delayed_ack_keeps_the_attempt_and_rechecks_authority(self):
-        self.acknowledge = False
-        original = self.send
-        async def delayed(socket, text):
-            await original(socket, text)
-            event = json.loads(text)
-            if event['type'] == 'deployment_prepare':
-                async def ack():
-                    await asyncio.sleep(1)
-                    self.host.composing.receive(socket, {'type': 'deployment_prepare_ack',
-                        'id': event['id'], 'busy': False})
-                self.ack_task = asyncio.create_task(ack())
-        self.host.composing.send = delayed
-        response = await self.block()
-        await self.ack_task
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.events.count('deployment_prepare'), 1)
-        self.assertGreaterEqual(self.validations, 3)
-
     async def test_authority_changes_refuse_during_wait(self):
         for reason in ('User Stop prevents deployment', 'Release grant was revoked'):
             with self.subTest(reason=reason):
                 self.authority_error = ''
-                self.report(True)
+                self.hold_write()
                 async def revoke():
                     await asyncio.sleep(.1)
                     self.authority_error = reason
@@ -214,7 +162,7 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
         self.assert_open()
 
     async def test_journal_changes_refuse_during_wait(self):
-        self.report(True)
+        self.hold_write()
         async def change():
             await asyncio.sleep(.1)
             room_deploy.atomic_json(self.spool / 'journal.json', {'id': 'b' * 32})
@@ -240,46 +188,6 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.get(PATH)
         self.assertEqual(response.status_code, 409)
         self.assertEqual(self.state.reload()['reason'], 'Another deployment')
-
-    async def test_late_run_after_ack_releases_tabs_without_closing(self):
-        original = self.send
-        async def late_run(socket, text):
-            await original(socket, text)
-            if json.loads(text)['type'] == 'deployment_prepare':
-                self.runtime.running['agent'] = object()
-        self.host.composing.send = late_run
-        with self.assertLogs('release_maintenance', level='WARNING'):
-            response = await self.block()
-        self.assertEqual(response.status_code, 409)
-        self.assertIn('deployment_release', self.events)
-        self.assert_open()
-
-    async def test_disconnect_during_ack_services_stop_promptly(self):
-        self.acknowledge = False
-        original = self.send
-        disconnected = []
-        stopped = []
-        async def stop():
-            await asyncio.sleep(.05)
-            self.authority_error = 'User Stop prevents deployment'
-            stopped.append(time.monotonic())
-        async def disconnect(socket, text):
-            await original(socket, text)
-            if json.loads(text)['type'] == 'deployment_prepare':
-                self.host.composing.clients.remove(socket)
-                self.host.composing.gone(socket)
-                disconnected.append(time.monotonic())
-                self.stop_task = asyncio.create_task(stop())
-        self.host.composing.send = disconnect
-        with self.assertLogs('release_maintenance', level='WARNING'):
-            response = await self.block()
-        await self.stop_task
-        self.assertEqual(response.status_code, 409, response.text)
-        self.assertEqual(response.json()['error'], self.authority_error)
-        self.assert_open()
-        delay = stopped[0] - disconnected[0]
-        print(f'disconnect scheduled Stop serviced after={delay:.3f}s', flush=True)
-        self.assertLess(delay, 1, 'The ack loop blocked the event loop and delayed Stop')
 
 
 if __name__ == '__main__':

@@ -1827,6 +1827,25 @@ class RoomRuntime:
                         "system", self.plain_failure(name, detail), channel=run.channel, metadata={'no_route': True})['id']
             await run.finish_message(partial=True)
         finally:
+            # A cancel landing here (an install's interrupt or Stop while a finished CLI exits within EXIT_GRACE)
+            # must not cut the cleanup short: running.pop and runtime_end would be skipped, so the run would count
+            # as active forever and the install abort (0.12.55, receipt 0e4dac23; task abc2b8e3). The cleanup runs
+            # as its own task, finishes, and the cancel is raised after it.
+            cleanup = asyncio.ensure_future(self.end_turn(run, name, entry, outcome))
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleanup.result()
+            if cancelled:
+                raise asyncio.CancelledError
+
+    async def end_turn(self, run, name, entry, outcome):
+        """The end of every turn, whatever its outcome: close the relay and steering, end the CLI, settle approvals
+        and bookkeeping, and leave running. Always runs to completion (see run_turn's finally)."""
+        try:
             # First, so nothing below (shutdown grace, a failing close) leaves the relay usable after the turn.
             run.relay_token = None
             await run.steering.close(outcome)
@@ -1847,7 +1866,8 @@ class RoomRuntime:
                 work_continuity.finished(self, run, outcome)
             except Exception:
                 LOGGER.exception('Work continuity turn record failed; the watchdog still covers this agent')
-            self.running.pop(name, None)
+        finally:
+            self.running.pop(name, None)  # even if a step above failed: a run left here blocks every install
             self.team_builder.turn_finished(entry)
             self.decisions.turn_finished(name, entry)
             await self.emit("runtime_end", {"run": run.id, "agent": name, "outcome": outcome}, persist=True)

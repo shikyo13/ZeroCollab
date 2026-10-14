@@ -13,8 +13,6 @@ ID = re.compile(r'[0-9a-f]{32}')
 BLOCK_WAIT_SECONDS = 60
 LEGACY_BLOCK_WAIT_SECONDS = 15
 BLOCK_POLL_SECONDS = 0.25
-TAB_SEND_SECONDS = 2
-TAB_ACK_SECONDS = 10
 LOG = logging.getLogger(__name__)
 
 
@@ -57,7 +55,9 @@ class ReleaseMaintenance:
     def status(self, identifier):
         try:
             self.validate(identifier)
-            return {'protocol': PROTOCOL, 'composing': self.host.composing.state(),
+            # Typing never holds or aborts an install (Zero #17109, task abc2b8e3): the supervisor waits while
+            # composing.busy is non-zero, so it is always 0 here. The tab counts stay for diagnostics.
+            return {'protocol': PROTOCOL, 'composing': {**self.host.composing.state(), 'busy': 0},
                     'active_runs': active_runs(self.runtime), 'active_mutations': self.state.mutations}
         except (OSError, ValueError, TypeError) as exc:
             self.refusal(identifier, 'status', exc)
@@ -92,7 +92,6 @@ class ReleaseMaintenance:
 
     async def block(self, identifier):
         from room_deploy import atomic_json
-        composing = self.host.composing
         waiting = 'another maintenance preparation'
         wait_seconds = LEGACY_BLOCK_WAIT_SECONDS
         try:
@@ -104,74 +103,25 @@ class ReleaseMaintenance:
                 wait_seconds = BLOCK_WAIT_SECONDS
             if self.preparing.locked():
                 raise ValueError('Another maintenance preparation is already active')
-            # Includes lock contention and tab sends, not just the polling loop.
             async with asyncio.timeout(wait_seconds):
                 async with self.preparing:
                     while True:
-                        self.validate(identifier)  # journal, grant and Stop on every pass
-                        gate = self.state.reload()
-                        if (gate.get('deployment_id'), gate['admission'], gate['writes']) != (identifier, 'closed', 'open'):
-                            raise ValueError('Admission must be drained before composing acknowledgement')
-                        if active_runs(self.runtime):
-                            raise ValueError('An agent turn became active before writes could close')
-                        if self.state.mutations != 1:
+                        # Open tabs and typing never hold writes open (Zero #17109, task abc2b8e3); only other
+                        # in-flight writes do. Checked and closed in one synchronous step under the gate lock.
+                        with self.state.lock:
+                            self.validate(identifier)  # journal, grant and Stop on every pass
+                            gate = self.state.reload()
+                            if (gate.get('deployment_id'), gate['admission'], gate['writes']) != (identifier, 'closed', 'open'):
+                                raise ValueError('Admission must be drained before writes close')
+                            if active_runs(self.runtime):
+                                raise ValueError('An agent turn became active before writes could close')
+                            if self.state.mutations == 1:  # this HTTP request is the only counted write
+                                gate.update(seq=gate['seq'] + 1, writes='blocked', interrupt=False,
+                                    reason='Deployment in progress; room resumes automatically unless stopped')
+                                atomic_json(self.state.root / 'maintenance.json', gate)
+                                self.state.reload()
+                                return {'ok': True, 'seq': gate['seq']}
                             waiting = f'other active writes (count {self.state.mutations})'
-                        elif composing.state()['busy']:
-                            waiting = 'active, unknown or stale editors'
-                        else:
-                            completed = False
-                            try:
-                                waiting = 'open tabs to acknowledge an idle maintenance state'
-                                try:
-                                    async with asyncio.timeout(TAB_SEND_SECONDS):
-                                        await composing.prepare(identifier)
-                                except TimeoutError:
-                                    pass  # a slow tab is transient, within the overall bound
-                                else:
-                                    ack_until = asyncio.get_running_loop().time() + TAB_ACK_SECONDS
-                                    while not await composing.wait_acks(identifier, timeout=0.5):
-                                        # wait_acks can return without yielding after a tab-set
-                                        # change. Always service Stop/websocket work, then discard
-                                        # that obsolete attempt and prepare the current tab set.
-                                        await asyncio.sleep(0)
-                                        attempt = composing.attempts.get(identifier)
-                                        if (attempt is None or
-                                                frozenset(composing.clients) != attempt['sockets']):
-                                            break
-                                        # Retain this attempt for delayed acks, but never retain
-                                        # authority through a ten-second unchecked await.
-                                        self.validate(identifier)
-                                        gate = self.state.reload()
-                                        if (gate.get('deployment_id'), gate['admission'], gate['writes']) != (identifier, 'closed', 'open'):
-                                            raise ValueError('Maintenance changed during preparation')
-                                        if active_runs(self.runtime):
-                                            raise ValueError('An agent turn became active before writes could close')
-                                        if (composing.state()['busy'] or self.state.mutations != 1
-                                                or asyncio.get_running_loop().time() >= ack_until):
-                                            break
-                                    with self.state.lock:
-                                        self.validate(identifier)
-                                        gate = self.state.reload()
-                                        if (gate.get('deployment_id'), gate['admission'], gate['writes']) != (identifier, 'closed', 'open'):
-                                            raise ValueError('Maintenance changed during preparation')
-                                        if active_runs(self.runtime):
-                                            raise ValueError('An agent turn became active before writes could close')
-                                        if self.state.mutations == 1 and composing.ready(identifier):
-                                            # No await from ready() to durable close. This HTTP
-                                            # request is the sole counted mutation throughout.
-                                            gate.update(seq=gate['seq'] + 1, writes='blocked', interrupt=False,
-                                                reason='Deployment in progress; room resumes automatically unless stopped')
-                                            atomic_json(self.state.root / 'maintenance.json', gate)
-                                            self.state.reload()
-                                            completed = True
-                                            return {'ok': True, 'seq': gate['seq']}
-                            finally:
-                                if not completed:
-                                    try:
-                                        async with asyncio.timeout(TAB_SEND_SECONDS):
-                                            await composing.release(identifier)
-                                    except TimeoutError as exc:
-                                        raise ValueError('Open tabs did not release the maintenance preparation') from exc
                         await asyncio.sleep(BLOCK_POLL_SECONDS)
         except TimeoutError as exc:
             error = ValueError(f'Maintenance block timed out after {wait_seconds}s waiting for {waiting}')
