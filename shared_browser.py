@@ -29,6 +29,9 @@ LEASE_SECONDS = 60
 # Pages per browser, including ones a page opened itself; each headless page costs a renderer process.
 MAX_PAGES = 4
 IDLE_SECONDS = 300
+# Opening the room: how long the launch page may take to sign the browser in, and how often to look.
+ROOM_SIGN_IN_SECONDS = 8
+ROOM_SIGN_IN_POLL_SECONDS = .1
 RECORDING_CLOSE_GRACE_SECONDS = 10
 WINDOWS_CREATE_SUSPENDED = 4
 WINDOWS_JOB_LIMIT_PRIORITY_CLASS = 0x20
@@ -404,9 +407,9 @@ class Browser:
         self.pages[page.id] = page  # registered before any await, so the tripwire and sweep leave it alone
         await self.release_openers(skip=page)  # an opener is blocked in window.open until then
         try:
-            # Resumed before its setup: a paused cross-site tab (target=_blank, noopener) answers no command
-            # until it runs (checked on headless Edge). Its first URL was checked above; setup then fences
-            # every later request like any page's.
+            # Resumed before its setup: a paused cross-site tab (target=_blank, noopener) answers neither
+            # Page.enable nor Network.enable until it runs (both checked on headless Edge), so no fence can go
+            # on first. Its first URL was checked above; setup then fences every later request like any page's.
             await self.command('Runtime.runIfWaitingForDebugger', page=page)
             await self.setup(page)
             # Its first navigation can commit before Page.enable, so read where it is now; later ones are events.
@@ -417,6 +420,8 @@ class Browser:
             self.drop(page)
             await self.close_popup(target, session, 'A new window could not be set up as a shared page and was closed')
             return
+        if self.pages.get(page.id) is not page:
+            return  # closed (close_page or stop) while it was being set up
         self.active = page.id
         self.generation += 1
         self.note('browser', 'A link opened a new page; it is now the active page', page)
@@ -500,11 +505,12 @@ class Browser:
             if urlsplit(page.url).hostname == ROOM_HOST:
                 await self.navigate(page, 'about:blank')  # a fragment-only change would not rerun the launch page
             await self.navigate(page, f'{sessions.origin}/launch#code={sessions.mint()}')
-            deadline = time.monotonic() + 8
+            deadline = time.monotonic() + ROOM_SIGN_IN_SECONDS
             while not await self.room_signed_in(page, sessions):
                 if time.monotonic() >= deadline:
-                    raise ValueError('The room did not sign this browser in within 8 seconds; open the room again')
-                await asyncio.sleep(.1)
+                    raise ValueError(f'The room did not sign this browser in within {ROOM_SIGN_IN_SECONDS} seconds; '
+                                     'open the room again')
+                await asyncio.sleep(ROOM_SIGN_IN_POLL_SECONDS)
         await self.navigate(page, url)
 
     async def route_document(self, params, session):
@@ -565,13 +571,16 @@ class Browser:
             raise ValueError('Page changed; inspect it again')
         return data.get('result', {}).get('value')
 
+    def blocked_urls(self):
+        """Chromium's blocklist for the DevTools ports: the first fence, before route_document's full check."""
+        return [f'*://{host}:{p}/*' for host in ('localhost', '127.0.0.1', '[::1]', ROOM_HOST) for p in self.debug_ports()]
+
     async def setup(self, page):
         """Per-session protections: every page gets the same blocklist, routing fence, viewport and file-chooser intercept."""
         for domain in ('Page', 'Runtime', 'Network'):
             await self.command(domain + '.enable', page=page)
         await self.command('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]}, page=page)
-        await self.command('Network.setBlockedURLs', {'urls': [f'*://{host}:{p}/*'
-            for host in ('localhost', '127.0.0.1', '[::1]', ROOM_HOST) for p in self.debug_ports()]}, page=page)
+        await self.command('Network.setBlockedURLs', {'urls': self.blocked_urls()}, page=page)
         await self.command('Emulation.setDeviceMetricsOverride', {'width': page.width, 'height': page.height, 'deviceScaleFactor': 1, 'mobile': False}, page=page)
         await self.command('Page.setInterceptFileChooserDialog', {'enabled': True}, page=page)
 
