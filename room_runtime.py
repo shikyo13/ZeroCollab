@@ -43,6 +43,7 @@ from response_claims import ResponseClaims
 from manager_wakes import ManagerWakes, install as install_manager_wakes
 import project_registry
 import live_feed
+from board_push import BoardPush
 from agent_profiles import AgentProfiles
 import agent_skills
 from team_builder import TeamBuilder
@@ -860,6 +861,7 @@ class RoomRuntime:
         self.live = live_feed.LiveFeed(self)  # the Live view's people-centred feed (b1af7a3a)
         self.controls = ProviderControls(self)
         self.project_room = ProjectRoom(self)
+        self.board_push = BoardPush(self)  # board changes go out as deltas (eaba007f)
         self.goals = RoomGoals(self)
         self.ready_wakes = ReadyWakes(self)
         self.response_claims = ResponseClaims(self)
@@ -1011,7 +1013,14 @@ class RoomRuntime:
     async def flush_project_state(self):
         self.project_state_due = False
         if self.project_room.path is not None:
-            await self.emit('project_state', self.project_room.snapshot())
+            await self.board_state()
+
+    async def board_state(self):
+        """The board at its current rev, after pushing every client what changed since the last push (board_push)."""
+        snapshot, message = self.board_push.advance()
+        if message:
+            await self.emit(*message)
+        return snapshot
 
     def save_project(self):
         for name, state in self.states.items():
@@ -3448,7 +3457,8 @@ def install(host):
 
     @host.app.get('/api/runtime/project-state')
     async def project_state():
-        result = runtime.project_room.snapshot()
+        # The exact board at the rev it reports; any change found here was pushed to every client first.
+        result = await runtime.board_state()
         messages = host.store.get_recent(30)
         humans = [m for m in messages if m['sender'] not in runtime.states and m['sender'] != 'system']
         result['last_human_message'] = humans[-1]['text'] if humans else ''

@@ -169,6 +169,8 @@ class LiveFeed:
             return out + [d for agent in self.runtime.states for d in self.agent_delta(agent)]
         if kind == 'project_state':
             return self.handoffs(data.get('tasks') or [])
+        if kind == 'project_delta':
+            return self.handoff_delta(data)
         if kind == 'browser_activity':
             activity = data.get('activity') or {}
             name = activity.get('label')
@@ -182,8 +184,23 @@ class LiveFeed:
                                             'frame_at': time.time()})
         return []
 
+    def handoff_delta(self, delta):
+        """handoffs() for a project_delta (board_push): the last owners, updated by its upserted and removed tasks."""
+        if self.owners is None:
+            return []  # no baseline yet; the next full project_state sets it
+        owners = dict(self.owners)
+        for task_id in (delta.get('remove') or {}).get('tasks') or []:
+            owners.pop(task_id, None)
+        for task in (delta.get('upsert') or {}).get('tasks') or []:
+            if isinstance(task, dict) and 'id' in task:
+                owners[task['id']] = task.get('owner') or ''
+        return self.owner_changes(owners)
+
     def handoffs(self, tasks):
         owners = {t['id']: t.get('owner') or '' for t in tasks if isinstance(t, dict) and 'id' in t}
+        return self.owner_changes(owners)
+
+    def owner_changes(self, owners):
         previous, self.owners = self.owners, owners
         if previous is None:
             return []  # the first snapshot is the baseline
