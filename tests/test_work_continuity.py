@@ -426,6 +426,25 @@ class Waits(Continuity):
         self.drain('lead')
         self.assertEqual(self.tick(wc.TEAM_IDLE_SECONDS + 2), [])  # once per idle stretch
 
+    def test_a_named_wait_alone_decides_met_in_the_lead_wake(self):
+        # harness 10617908: fe8ab780 read "its wait is met" while QA's named task was open and its dependency done.
+        dep = self.room.task('lead', 'create', title='Built', owner='peer')['id']
+        self.room.task('user', 'update', task_id=dep, status='done')
+        self.room.task('worker', 'update', task_id=self.task_id, next_action_state='waiting', priority=1,
+                       next_action='waiting on QA', depends_on=[dep], wait_on=[{'task': self.other}])
+        docs = self.room.task('lead', 'create', title='Docs', owner='peer', priority=1)['id']
+        self.room.task('peer', 'update', task_id=docs, depends_on=[dep], next_action_state='waiting', next_action='after Built')
+        for task_id, owner in ((self.task_id, 'worker'), (docs, 'peer')):  # their own C6c dependency wakes already ran
+            self.claims()[f'deps:{task_id}:{dep}'] = {'agent': owner, 'task': task_id, 'kind': 'deps', 'sends': 1,
+                                                       'status': 'done', 'at': time.time(), 'record': None}
+        self.turn(name='lead', progress={})
+        self.turn(name='peer', progress={})
+        self.assertEqual(self.tick(wc.TEAM_IDLE_SECONDS + 1), ['woke'])
+        prompt = self.calls[-1]['prompt']
+        self.assertIn(f'{self.task_id} (worker, waiting), recorded', prompt)  # named wait unmet: not met
+        self.assertIn(f'{docs} (peer, waiting, its wait is met)', prompt)  # nothing named: dependencies decide
+        self.assertLess(prompt.index(docs), prompt.index(self.task_id))  # met first
+
     def test_wait_on_is_validated(self):
         for refs, message in (([{'task': 'nope'}], 'was not found'), ([{'release': 'soon'}], 'version'),
                               ([{'task': self.task_id}], 'itself'), ([{'colour': 'red'}], 'each entry'),

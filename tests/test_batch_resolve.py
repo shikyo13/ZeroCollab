@@ -100,6 +100,13 @@ class BatchResolve(unittest.TestCase):
         self.assertIn('Matching skill: room-review.', texts[0][1])
         for name, text in texts[1:]:  # room-release isn't pinned, a plain follow-up matches nothing, opus has no profile
             self.assertNotIn('Matching skill', text)
+        # harness d07fb1eb: the lead's binding item matches room-release too, as an owner's live check does.
+        pinned = {'name': 'room-release', 'sha256': agent_skills.read_skill('room-release').sha256}
+        self.runtime.profiles.items['harness']['skills'] = [pinned]
+        lead = {'id': 'f8', 'text': 'L1 release 0.12.62 (d0963f1b25af) is installed, and its live checks need you: ...'}
+        for item in (l1, lead):
+            self.runtime.deliver_record('harness', [item], 'chat', 'chain', 'news', {'collection': 'followups'})
+        self.assertTrue(all('Matching skill: room-release.' in text for _, text in texts[-2:]))
 
 
 if __name__ == '__main__':

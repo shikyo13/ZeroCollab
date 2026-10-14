@@ -2419,10 +2419,11 @@ class RoomRuntime:
     def skill_hint(self, recipient, items, ref):
         """One line naming the skill this delivery matches, only when the recipient's approved profile pins it
         (harness d69d12c5, agent-profiles pilot b8bc48b6): a review ask or verdict matches room-review, an L1 live
-        check matches room-release. Profiled agents answered 23 reviews without ever loading room-review."""
+        check or the lead's L1 binding item matches room-release (harness d07fb1eb). Profiled agents answered 23 reviews without ever loading room-review."""
         if ref.get('collection') == 'reviews':
             name = 'room-review'
-        elif any(str(item.get('text', '')).startswith(process_enforcement.L1_PREFIX) for item in items):
+        elif any(str(item.get('text', '')).startswith((process_enforcement.L1_PREFIX, process_enforcement.L1_LEAD_PREFIX))
+                 for item in items):
             name = 'room-release'
         else:
             return ''

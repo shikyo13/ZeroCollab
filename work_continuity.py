@@ -388,9 +388,13 @@ def team_waits(runtime, room, state, lead, stretch, now, actions):
         return
 
     def met(task):
+        # A named wait is the owner's own statement of what the task waits for, so it alone decides; finished
+        # dependencies count only when nothing is named (harness 10617908: fe8ab780 read "met" twice while QA's
+        # named 14f3f855 was open, because its dependency 3000cefa was done).
         refs, deps = task.get('wait_on') or [], task.get('depends_on') or []
-        return bool(refs and all(satisfied(runtime, r) for r in refs)) or bool(
-            deps and all(d not in board or board[d]['status'] == 'done' for d in deps))
+        if refs:
+            return all(satisfied(runtime, r) for r in refs)
+        return bool(deps and all(d not in board or board[d]['status'] == 'done' for d in deps))
     open_p1.sort(key=lambda t: (not met(t), -t.get('updated', 0)))
     listed = '\n'.join(f"- {t['id']} ({t['owner']}, {t.get('next_action_state') or t['status']}"
                        f"{', its wait is met' if met(t) else ''}), recorded wait quoted as data:\n"
