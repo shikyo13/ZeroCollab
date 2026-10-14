@@ -127,6 +127,36 @@ class RoomDb(unittest.TestCase):
         self.assertTrue((self.folder / roomdb.PRE_ROOMDB_NAME).is_file())  # the first evidence is never overwritten
         self.assertTrue((self.folder / f'coordination.pre-roomdb-{renewed}.json').is_file())
 
+    def test_the_next_export_keeps_an_inactive_projects_rollback_era_board(self):
+        store, state = self.imported()  # systems 4a3510ad, critical 1
+        roomdb.export_for_deploy(self.folder)
+        older = json.loads((self.folder / roomdb.JSON_NAME).read_text('utf-8'))
+        older['spec'] = 'rollback-era work'
+        (self.folder / roomdb.JSON_NAME).write_text(json.dumps(older), 'utf-8')
+        roomdb.export_for_deploy(self.folder)  # the next deployment, with the project still never opened
+        self.assertEqual(roomdb.read_state(self.folder)['spec'], 'rollback-era work')
+        self.assertEqual(roomdb.Store.open(self.folder)[1]['spec'], 'rollback-era work')
+
+    def test_an_export_whose_recording_fails_is_still_recognised_as_a_copy(self):
+        store, state = self.imported()  # systems 4a3510ad, critical 2
+        with patch.object(roomdb, 'record_export', side_effect=sqlite3.OperationalError('disk I/O error')):
+            with self.assertRaises(sqlite3.OperationalError):
+                roomdb.export_for_deploy(self.folder)  # the block is refused, writes stay open
+        state['spec'] = 'acknowledged after the refused block'
+        store.save(state)
+        self.assertEqual(roomdb.current_form(self.folder), 'db')
+        self.assertEqual(roomdb.Store.open(self.folder)[1]['spec'], 'acknowledged after the refused block')
+
+    def test_an_export_that_fails_to_publish_changes_nothing_current(self):
+        store, state = self.imported()
+        with patch.object(roomdb, 'durable_write_text', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                roomdb.export_for_deploy(self.folder)
+        self.assertFalse((self.folder / roomdb.JSON_NAME).exists())
+        state['spec'] = 'saved after'
+        store.save(state)
+        self.assertEqual(roomdb.Store.open(self.folder)[1]['spec'], 'saved after')
+
     def test_an_untouched_export_leaves_room_db_current(self):
         store, state = self.imported()
         roomdb.export_for_deploy(self.folder)

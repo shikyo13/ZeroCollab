@@ -28,14 +28,16 @@ upgrade imports it again. Run it only while the room is stopped.
 
 Rollback by deployment (harness c8d41869). A release before room.db reads only coordination.json. So before writes
 close for any deployment, export_all() writes every project's coordination.json beside its room.db, and room.db
-records that file's sha256 (meta last_export). On the next open, an export nobody changed is retired and room.db stays
-current. One that an older release rewrote is newer, so it is imported as a new generation and the old room.db is kept
-as room.db.superseded-<generation>.
+records that file's sha256 (meta pending_export before publishing, last_export after). On the next open, an export
+nobody changed is retired and room.db stays current. One that an older release rewrote is newer, so it is imported as
+a new generation and the old room.db is kept as room.db.superseded-<generation>; the next export imports it first too.
 
-Durability (systems ab210df2). A rollback journal needs synchronous=EXTRA, so the journal's deletion is on disk
-before COMMIT returns. Every rename that publishes or retires a file goes through durable_replace(), which returns
-only once the rename itself is on disk, and a file is published before its source is retired. A folder that has lost
-both live files but keeps their evidence is refused, never opened as an empty board.
+Durability (systems ab210df2, 4a3510ad). Saves ask SQLite for synchronous=EXTRA, read back. On POSIX that syncs the
+directory after the rollback journal is deleted; SQLite's Windows VFS ignores that directory sync, so on Windows a
+committed save's survival of power loss is not established. Only process kills were tested. Every rename that
+publishes or retires a file goes through durable_replace() (MoveFileExW with MOVEFILE_WRITE_THROUGH on Windows, a
+directory fsync elsewhere), and a file is published before its source is retired. A folder that has lost both live
+files but keeps their evidence is refused, never opened as an empty board.
 """
 import hashlib
 import json
@@ -58,6 +60,7 @@ IMPORTING_SUFFIX = '.importing'
 RETIRED_SUFFIX = '.exported'
 SUPERSEDED_SUFFIX = '.superseded'
 LAST_EXPORT_KEY = 'last_export'  # meta: sha256 of the coordination.json export_for_deploy() wrote
+PENDING_EXPORT_KEY = 'pending_export'  # meta: sha256 of an export about to be published (systems 4a3510ad)
 SYNCHRONOUS_EXTRA = 3            # PRAGMA synchronous value for EXTRA
 MOVEFILE_REPLACE_EXISTING = 0x1
 MOVEFILE_WRITE_THROUGH = 0x8     # MoveFileExW returns only once the rename is on disk
@@ -201,8 +204,8 @@ def read_db(db):
     try:
         with closing(connect(db, readonly=True)) as conn:
             return read_rows(conn)[0], meta(conn)
-    except sqlite3.OperationalError:
-        LOGGER.warning('%s needed recovery; reopening it read-write', db)
+    except sqlite3.OperationalError as exc:
+        LOGGER.warning('%s could not be read read-only (%s); reopening it read-write', db, exc)
         with closing(connect(db)) as conn:
             return read_rows(conn)[0], meta(conn)
 
@@ -216,13 +219,14 @@ def evidence(folder):
 
 def current_form(folder):
     """Which file holds the project's current records: 'db', 'json', 'new' (nothing there yet) or 'missing' (both
-    live files gone, evidence kept). With both present the JSON is current, unless it is the untouched export that
-    export_for_deploy() wrote or equals room.db (a crash between an import and retiring the JSON)."""
+    live files gone, evidence kept). With both present the JSON is current, unless it is an untouched export that
+    export_for_deploy() wrote (its digest is recorded as last_export, or as pending_export when the recording after
+    publication failed) or equals room.db (a crash between an import and retiring the JSON)."""
     folder = Path(folder)
     db, source = folder / DB_NAME, folder / JSON_NAME
     if db.is_file() and source.is_file():
         state, values = read_db(db)
-        if values.get(LAST_EXPORT_KEY) == hashlib.sha256(source.read_bytes()).hexdigest():
+        if hashlib.sha256(source.read_bytes()).hexdigest() in {values.get(LAST_EXPORT_KEY), values.get(PENDING_EXPORT_KEY)}:
             return 'db'
         return 'db' if json.loads(source.read_text('utf-8')) == state else 'json'
     if db.is_file():
@@ -536,19 +540,42 @@ def export_json(folder):
     return target
 
 
+def set_meta(conn, values):
+    """Commit meta changes in one transaction: {key: text}, or None to delete the key."""
+    conn.execute('BEGIN IMMEDIATE')
+    for key, value in values.items():
+        if value is None:
+            conn.execute('DELETE FROM meta WHERE key = ?', (key,))
+        else:
+            conn.execute('INSERT INTO meta(key, value) VALUES(?, ?) '
+                         'ON CONFLICT(key) DO UPDATE SET value = excluded.value', (key, value))
+    conn.execute('COMMIT')
+
+
 def export_for_deploy(folder):
     """Before writes close for a deployment: coordination.json beside room.db, so a release before room.db (a
     rollback) reads the current board. room.db stays current and records the export's sha256, so the next open tells
-    an untouched export from one an older release rewrote (current_form)."""
+    an untouched export from one an older release rewrote (current_form).
+
+    Two rules keep it from losing work (systems 4a3510ad). A coordination.json an older release rewrote is current,
+    so it is imported before anything is exported over it; that covers a project nobody opened since a rollback. And
+    the digest is committed as pending_export before the file is published, so whatever fails afterwards, a published
+    export is still recognised as a copy and never re-imported over later saves."""
     folder = Path(folder)
+    if current_form(folder) == 'json':
+        Store.open(folder)  # imports the newer JSON as room.db and retires it
     db = folder / DB_NAME
     with closing(connect(db)) as conn:
         state, _ = exportable(conn, db)
-        digest = durable_write_text(folder / JSON_NAME, as_json(state))
-        conn.execute('BEGIN IMMEDIATE')
-        conn.execute('INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-                     (LAST_EXPORT_KEY, digest))
-        conn.execute('COMMIT')
+        text = as_json(state)
+        digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+        set_meta(conn, {PENDING_EXPORT_KEY: digest})
+        durable_write_text(folder / JSON_NAME, text)
+        record_export(conn, digest)
+
+
+def record_export(conn, digest):
+    set_meta(conn, {LAST_EXPORT_KEY: digest, PENDING_EXPORT_KEY: None})
 
 
 def export_all(projects):
