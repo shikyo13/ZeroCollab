@@ -9,6 +9,8 @@ import re
 import sqlite3
 import time
 
+import roomdb
+
 PROTOCOL = 1
 ID = re.compile(r'[0-9a-f]{32}')
 BLOCK_WAIT_SECONDS = 60
@@ -99,7 +101,10 @@ class ReleaseMaintenance:
             return  # no project open, so no board to save
         try:
             room.save()
-        except (sqlite3.Error, RuntimeError) as exc:
+            # Every project's coordination.json beside its room.db, so a rollback to a release before room.db reads
+            # the current boards (harness c8d41869). The snapshot is taken after this block, so it holds them too.
+            roomdb.export_all(self.runtime.data / 'projects')
+        except (sqlite3.Error, RuntimeError, OSError) as exc:
             raise OSError(f'The board could not be saved before writes close ({exc}); the block was refused, '
                           'so the deployment can be retried') from exc
 

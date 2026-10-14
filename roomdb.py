@@ -2,7 +2,7 @@
 
 coordination.json was rewritten whole on every save: 57 ms for the live room's 11 MB, on the event loop, from 83 call
 sites. room.db keeps the same state, one row per record, and a save writes only the rows that changed, in one
-transaction (synchronous=FULL). ProjectRoom still holds the whole state in memory, so every reader in the room is
+transaction (synchronous=EXTRA). ProjectRoom still holds the whole state in memory, so every reader in the room is
 unchanged; only how it is persisted changes.
 
 Each save opens room.db, commits and closes it again, with a rollback journal rather than WAL (plan r3). Measured on
@@ -25,6 +25,17 @@ coordination.pre-roomdb.json, as evidence only. A project never opened since the
 and read_state() reads either form. Rollback: `python roomdb.py export <project folder>` writes the current room.db
 back to coordination.json in today's format, then retires room.db, so the previous release reads it and a later
 upgrade imports it again. Run it only while the room is stopped.
+
+Rollback by deployment (harness c8d41869). A release before room.db reads only coordination.json. So before writes
+close for any deployment, export_all() writes every project's coordination.json beside its room.db, and room.db
+records that file's sha256 (meta last_export). On the next open, an export nobody changed is retired and room.db stays
+current. One that an older release rewrote is newer, so it is imported as a new generation and the old room.db is kept
+as room.db.superseded-<generation>.
+
+Durability (systems ab210df2). A rollback journal needs synchronous=EXTRA, so the journal's deletion is on disk
+before COMMIT returns. Every rename that publishes or retires a file goes through durable_replace(), which returns
+only once the rename itself is on disk, and a file is published before its source is retired. A folder that has lost
+both live files but keeps their evidence is refused, never opened as an empty board.
 """
 import hashlib
 import json
@@ -42,8 +53,14 @@ from pathlib import Path
 DB_NAME = 'room.db'
 JSON_NAME = 'coordination.json'
 PRE_ROOMDB_NAME = 'coordination.pre-roomdb.json'
+EXPORT_LEFT_NAME = 'coordination.last-export.json'  # an untouched deployment export, once room.db is opened again
 IMPORTING_SUFFIX = '.importing'
 RETIRED_SUFFIX = '.exported'
+SUPERSEDED_SUFFIX = '.superseded'
+LAST_EXPORT_KEY = 'last_export'  # meta: sha256 of the coordination.json export_for_deploy() wrote
+SYNCHRONOUS_EXTRA = 3            # PRAGMA synchronous value for EXTRA
+MOVEFILE_REPLACE_EXISTING = 0x1
+MOVEFILE_WRITE_THROUGH = 0x8     # MoveFileExW returns only once the rename is on disk
 SCHEMA_VERSION = 1           # PRAGMA user_version; a reader refuses a file newer than it knows
 BUSY_TIMEOUT_MS = 5000       # a reader in this process waits this long for a writer's lock
 # A touched save is a full comparison when this long has passed since the last one, so a record a caller forgot
@@ -93,6 +110,43 @@ def is_record_list(value):
     return True
 
 
+def durable_replace(source, target):
+    """os.replace that returns only once the rename is on disk: MoveFileExW with MOVEFILE_WRITE_THROUGH on Windows,
+    an fsync of the directory elsewhere. Flushing a file's data does not make its new name durable (systems ab210df2)."""
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        kernel.MoveFileExW.restype = wintypes.BOOL
+        if not kernel.MoveFileExW(str(source), str(target), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return
+    os.replace(source, target)
+    directory = os.open(Path(target).parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def durable_write_text(path, text):
+    """Write text to a sibling temp file, flush it to disk, then durably rename it into place. Returns the sha256 of
+    the bytes written."""
+    path = Path(path)
+    data = text.encode('utf-8')
+    temp = path.with_name(f'{path.name}.{uuid.uuid4().hex[:8]}.tmp')
+    try:
+        with open(temp, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        durable_replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+    return hashlib.sha256(data).hexdigest()
+
+
 def connect(path, *, readonly=False):
     """A connection for one save or one read. Callers close it (closing())."""
     if readonly:
@@ -101,7 +155,11 @@ def connect(path, *, readonly=False):
     else:
         conn = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
         conn.execute('PRAGMA journal_mode=DELETE')
-        conn.execute('PRAGMA synchronous=FULL')
+        conn.execute('PRAGMA synchronous=EXTRA')
+        if conn.execute('PRAGMA synchronous').fetchone()[0] != SYNCHRONOUS_EXTRA:
+            conn.close()
+            raise RoomDbError(f'{path}: this SQLite did not accept synchronous=EXTRA, so a commit could be lost on power '
+                              'loss; nothing was written. Report the Python and SQLite versions.')
     conn.execute(f'PRAGMA busy_timeout={BUSY_TIMEOUT_MS}')
     version = conn.execute('PRAGMA user_version').fetchone()[0]
     if version > SCHEMA_VERSION:
@@ -137,18 +195,56 @@ def meta(conn):
     return dict(conn.execute('SELECT key, value FROM meta'))
 
 
-def read_state(folder):
-    """A project's coordination state, read-only, whichever form it is in: room.db when present, otherwise
-    coordination.json, otherwise {}. Never imports or migrates; only ProjectRoom loading a project does."""
-    folder = Path(folder)
-    db = folder / DB_NAME
-    if db.is_file():
-        with closing(connect(db, readonly=True)) as conn:
-            return read_rows(conn)[0]
+def read_db(db):
+    """(state, meta) from room.db, read-only. A crash can leave a hot journal that a read-only connection can't roll
+    back (SQLITE_READONLY_ROLLBACK), so that case reopens read-write, which recovers it (harness c8d41869)."""
     try:
-        return json.loads((folder / JSON_NAME).read_text('utf-8'))
-    except (OSError, ValueError):
-        return {}
+        with closing(connect(db, readonly=True)) as conn:
+            return read_rows(conn)[0], meta(conn)
+    except sqlite3.OperationalError:
+        LOGGER.warning('%s needed recovery; reopening it read-write', db)
+        with closing(connect(db)) as conn:
+            return read_rows(conn)[0], meta(conn)
+
+
+def evidence(folder):
+    """Files an import, export or supersede left behind: proof the project had records if both live files are gone."""
+    folder = Path(folder)
+    return sorted(p.name for p in [folder / PRE_ROOMDB_NAME, *folder.glob(f'{DB_NAME}.*')]
+                  if p.is_file() and not p.name.endswith((IMPORTING_SUFFIX, '-journal')))
+
+
+def current_form(folder):
+    """Which file holds the project's current records: 'db', 'json', 'new' (nothing there yet) or 'missing' (both
+    live files gone, evidence kept). With both present the JSON is current, unless it is the untouched export that
+    export_for_deploy() wrote or equals room.db (a crash between an import and retiring the JSON)."""
+    folder = Path(folder)
+    db, source = folder / DB_NAME, folder / JSON_NAME
+    if db.is_file() and source.is_file():
+        state, values = read_db(db)
+        if values.get(LAST_EXPORT_KEY) == hashlib.sha256(source.read_bytes()).hexdigest():
+            return 'db'
+        return 'db' if json.loads(source.read_text('utf-8')) == state else 'json'
+    if db.is_file():
+        return 'db'
+    if source.is_file():
+        return 'json'
+    return 'missing' if evidence(folder) else 'new'
+
+
+def read_state(folder):
+    """A project's coordination state, read-only, from whichever file is current (current_form), otherwise {}. Never
+    imports or migrates; only ProjectRoom loading a project does."""
+    folder = Path(folder)
+    try:
+        form = current_form(folder)
+        if form == 'db':
+            return read_db(folder / DB_NAME)[0]
+        if form == 'json':
+            return json.loads((folder / JSON_NAME).read_text('utf-8'))
+    except (OSError, ValueError, sqlite3.Error):
+        LOGGER.exception('Could not read the records in %s', folder)
+    return {}
 
 
 def has_state(folder):
@@ -167,25 +263,34 @@ class Store:
         self.cache = {}
         self.lock = threading.Lock()
         self.last_full = time.monotonic()  # open() reads the whole file, which counts as the first comparison
+        self.full_due = False  # set by a failed save: what it meant to write is retried by a full comparison
 
     @classmethod
     def open(cls, folder):
-        """(store, state) for a project folder: open room.db, or import coordination.json first, or create an
-        empty room.db for a new project."""
+        """(store, state) for a project folder: open room.db, or import a current coordination.json first, or create
+        an empty room.db for a new project. Refuses a folder whose live files are gone but whose evidence remains."""
         store = cls(folder)
         store.folder.mkdir(parents=True, exist_ok=True)
         source = store.folder / JSON_NAME
-        if not store.path.exists():
-            initial = json.loads(source.read_text('utf-8')) if source.exists() else dict(EMPTY_STATE)
-            store.create(initial, imported_from=source if source.exists() else None)
+        form = current_form(store.folder)
+        if form == 'missing':
+            raise RoomDbError(f'{store.folder} has neither {DB_NAME} nor {JSON_NAME}, but holds '
+                              f'{", ".join(evidence(store.folder))}. Nothing was created: restore the newest of those as '
+                              f'{DB_NAME} or {JSON_NAME}, then open the project again.')
+        if form == 'json':
+            store.create(json.loads(source.read_text('utf-8')), imported_from=source)
+        elif form == 'new':
+            store.create(dict(EMPTY_STATE))
         with closing(connect(store.path)) as conn:
             state, store.cache = read_rows(conn)
-        store.retire_json()
+            generation = meta(conn).get('room_generation', 'unknown')
+        store.retire_json(imported=form == 'json', generation=generation)
         return store, state
 
     def create(self, state, imported_from=None):
-        """Write state to a new file beside room.db, read it back and compare, then move it into place. A crash
-        before the move leaves only the .importing file, which the next open replaces."""
+        """Write state to a new file beside room.db, read it back and compare, then move it into place. An existing
+        room.db is first kept as room.db.superseded-<generation>. A crash before the move leaves the .importing file,
+        which the next open replaces, and coordination.json, which it imports again."""
         temp = self.path.with_name(DB_NAME + IMPORTING_SUFFIX)
         for leftover in (temp, Path(f'{temp}-journal')):
             leftover.unlink(missing_ok=True)
@@ -215,16 +320,28 @@ class Store:
                 leftover.unlink(missing_ok=True)
             raise
         conn.close()
-        os.replace(temp, self.path)
+        if self.path.is_file():
+            old = read_db(self.path)[1].get('room_generation', 'unknown')
+            durable_replace(self.path, self.path.with_name(f'{DB_NAME}{SUPERSEDED_SUFFIX}-{old}'))
+        durable_replace(temp, self.path)
         if imported_from is not None:
             LOGGER.info('Imported %s into %s (%s)', imported_from, self.path,
                         ', '.join(f'{k} {v}' for k, v in cutover['sections'].items()))
 
-    def retire_json(self):
-        """Once room.db is in place, coordination.json is evidence only: renamed so nothing reads it as current."""
+    def retire_json(self, imported, generation):
+        """Once room.db is in place, coordination.json is evidence only: renamed so nothing reads it as current. An
+        imported file takes coordination.pre-roomdb.json, or a per-generation name once that exists, so no evidence
+        is overwritten. An untouched deployment export is only a copy of room.db."""
         source = self.folder / JSON_NAME
-        if source.exists():
-            os.replace(source, self.folder / PRE_ROOMDB_NAME)
+        if not source.exists():
+            return
+        if not imported:
+            target = self.folder / EXPORT_LEFT_NAME
+        elif (self.folder / PRE_ROOMDB_NAME).exists():
+            target = self.folder / f'coordination.pre-roomdb-{generation}.json'
+        else:
+            target = self.folder / PRE_ROOMDB_NAME
+        durable_replace(source, target)
 
     def save(self, state, touched=None):
         """Write what differs from the last commit, in one transaction, and return the number of statements; 0 means
@@ -233,28 +350,36 @@ class Store:
         still a full comparison once FULL_DIFF_SECONDS have passed since the last one."""
         with self.lock:
             now = time.monotonic()
-            if touched is None or now - self.last_full >= FULL_DIFF_SECONDS:
+            full = touched is None or self.full_due or now - self.last_full >= FULL_DIFF_SECONDS
+            if full:
                 ops, cache = plan_full(state, self.cache)
-                self.last_full = now
             else:
                 ops, cache = plan_touched(state, self.cache, touched)
                 if VERIFY:
                     self.verify(state, cache, touched)
-            if not ops:
-                return 0
-            with closing(connect(self.path)) as conn:
-                conn.execute('BEGIN IMMEDIATE')
+            if ops:
                 try:
-                    for statement, params in ops:
-                        conn.execute(statement, params)
-                    conn.execute("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'commit_seq'")
-                    conn.execute('COMMIT')
+                    self.commit(ops)
                 except BaseException:
-                    if conn.in_transaction:  # SQLite may already have rolled back (an I/O error does)
-                        conn.execute('ROLLBACK')
+                    self.full_due = True  # the next save compares everything, so nothing this one held is skipped
                     raise
-            self.cache = cache  # only after the commit: a failed save is retried in full by the next one
+                self.cache = cache  # only after the commit
+            if full:
+                self.last_full, self.full_due = now, False
             return len(ops)
+
+    def commit(self, ops):
+        with closing(connect(self.path)) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                for statement, params in ops:
+                    conn.execute(statement, params)
+                conn.execute("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'commit_seq'")
+                conn.execute('COMMIT')
+            except BaseException:
+                if conn.in_transaction:  # SQLite may already have rolled back (an I/O error does)
+                    conn.execute('ROLLBACK')
+                raise
 
     @staticmethod
     def verify(state, cache, touched):
@@ -381,31 +506,58 @@ def plan_list_touched(name, ord_, value, old, named, ops):
     return LIST, ord_, new_rows
 
 
+def exportable(conn, db):
+    """(state, meta) to export, refused with nothing changed if room.db holds a record kind this release can't write."""
+    kinds = {kind for (kind,) in conn.execute('SELECT DISTINCT kind FROM section')}
+    unsupported = kinds - {LIST, VALUE}
+    if unsupported:
+        raise RoomDbError(f'{db} holds record kinds this export does not know ({sorted(unsupported)}); '
+                          'nothing was changed. Export it with the release that wrote it.')
+    return read_rows(conn)[0], meta(conn)
+
+
+def as_json(state):
+    return json.dumps(state, ensure_ascii=False, indent=2)  # coordination.json exactly as a release before room.db writes it
+
+
 def export_json(folder):
-    """Rollback (e3): write the current room.db back to coordination.json as today's release writes it, then retire
-    room.db so the previous release reads the JSON and a later upgrade imports it again. Run only while the room is
-    stopped. Returns the path written."""
-    from durable import atomic_write
+    """Rollback by hand (e3): write the current room.db back to coordination.json as today's release writes it, then
+    retire room.db so the previous release reads the JSON and a later upgrade imports it again. Run only while the
+    room is stopped. Returns the path written."""
     folder = Path(folder)
     db = folder / DB_NAME
     if not db.is_file():
         raise RoomDbError(f'{db} does not exist; {folder} is already in coordination.json form')
-    conn = connect(db)
-    try:
-        kinds = {kind for (kind,) in conn.execute('SELECT DISTINCT kind FROM section')}
-        unsupported = kinds - {LIST, VALUE}
-        if unsupported:
-            raise RoomDbError(f'{db} holds record kinds this export does not know ({sorted(unsupported)}); '
-                              'nothing was changed. Export it with the release that wrote it.')
-        state = read_rows(conn)[0]
-        generation = meta(conn).get('room_generation', 'unknown')
-    finally:
-        conn.close()
-    content = json.dumps(state, ensure_ascii=False, indent=2)
+    with closing(connect(db)) as conn:
+        state, values = exportable(conn, db)
     target = folder / JSON_NAME
-    atomic_write(target, lambda stream: stream.write(content))
-    os.replace(db, folder / f'{DB_NAME}{RETIRED_SUFFIX}-{generation}')
+    durable_write_text(target, as_json(state))  # published, and on disk, before room.db is retired
+    durable_replace(db, folder / f'{DB_NAME}{RETIRED_SUFFIX}-{values.get("room_generation", "unknown")}')
     return target
+
+
+def export_for_deploy(folder):
+    """Before writes close for a deployment: coordination.json beside room.db, so a release before room.db (a
+    rollback) reads the current board. room.db stays current and records the export's sha256, so the next open tells
+    an untouched export from one an older release rewrote (current_form)."""
+    folder = Path(folder)
+    db = folder / DB_NAME
+    with closing(connect(db)) as conn:
+        state, _ = exportable(conn, db)
+        digest = durable_write_text(folder / JSON_NAME, as_json(state))
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute('INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                     (LAST_EXPORT_KEY, digest))
+        conn.execute('COMMIT')
+
+
+def export_all(projects):
+    """export_for_deploy() for every project folder that holds room.db, active or not. Returns how many."""
+    projects = Path(projects)
+    folders = [f for f in sorted(projects.iterdir()) if (f / DB_NAME).is_file()] if projects.is_dir() else []
+    for folder in folders:
+        export_for_deploy(folder)
+    return len(folders)
 
 
 def main(argv):

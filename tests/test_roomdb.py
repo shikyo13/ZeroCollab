@@ -91,18 +91,82 @@ class RoomDb(unittest.TestCase):
     def test_the_maintenance_block_writes_a_missed_mark_or_refuses(self):
         from types import SimpleNamespace
         from release_maintenance import ReleaseMaintenance
-        store, state = self.imported()
+        project = self.folder / 'projects' / 'p'
+        project.mkdir(parents=True)
+        (project / roomdb.JSON_NAME).write_text(json.dumps(sample()), 'utf-8')
+        store, state = roomdb.Store.open(project)
         state['tasks'][3]['title'] = 'missed'
         with patch.object(roomdb, 'VERIFY', False):
             store.save(state, touched=[])
         room = SimpleNamespace(store=store, save=lambda: store.save(state))
         maintenance = object.__new__(ReleaseMaintenance)
-        maintenance.runtime = SimpleNamespace(project_room=room)
+        maintenance.runtime = SimpleNamespace(project_room=room, data=self.folder)
         maintenance.save_board()  # before writes close, so the install snapshot holds it
-        self.assertEqual(roomdb.read_state(self.folder), state)
+        self.assertEqual(roomdb.read_state(project), state)
+        # ...with the deployment export a rollback reads, which room.db knows is an untouched copy
+        self.assertEqual(json.loads((project / roomdb.JSON_NAME).read_text('utf-8')), state)
+        self.assertEqual(roomdb.current_form(project), 'db')
         room.save = lambda: (_ for _ in ()).throw(sqlite3.OperationalError('disk I/O error'))
         with self.assertRaisesRegex(OSError, 'block was refused'):
             maintenance.save_board()
+
+    def test_a_board_written_by_an_older_release_after_a_rollback_is_imported(self):
+        store, state = self.imported()
+        generation = store.generation()[0]
+        roomdb.export_for_deploy(self.folder)
+        older = json.loads((self.folder / roomdb.JSON_NAME).read_text('utf-8'))  # what a release before room.db reads
+        self.assertEqual(older, state)
+        older['tasks'].append({'id': 'rollback', 'title': 'written on the older release'})
+        (self.folder / roomdb.JSON_NAME).write_text(json.dumps(older, indent=2), 'utf-8')
+        self.assertEqual(roomdb.read_state(self.folder), older)  # an inactive project shows it too
+        again, reopened = roomdb.Store.open(self.folder)
+        self.assertEqual(reopened, older)
+        renewed = again.generation()[0]
+        self.assertNotEqual(renewed, generation)
+        self.assertTrue((self.folder / f'{roomdb.DB_NAME}{roomdb.SUPERSEDED_SUFFIX}-{generation}').is_file())
+        self.assertTrue((self.folder / roomdb.PRE_ROOMDB_NAME).is_file())  # the first evidence is never overwritten
+        self.assertTrue((self.folder / f'coordination.pre-roomdb-{renewed}.json').is_file())
+
+    def test_an_untouched_export_leaves_room_db_current(self):
+        store, state = self.imported()
+        roomdb.export_for_deploy(self.folder)
+        state['tasks'][0]['title'] = 'written after an aborted deployment'
+        store.save(state)
+        committed = store.generation()
+        again, reopened = roomdb.Store.open(self.folder)
+        self.assertEqual(reopened, state)
+        self.assertEqual(again.generation(), committed)
+        self.assertFalse((self.folder / roomdb.JSON_NAME).exists())
+        self.assertTrue((self.folder / roomdb.EXPORT_LEFT_NAME).is_file())
+
+    def test_a_folder_that_lost_its_live_files_is_refused_not_emptied(self):
+        self.imported()
+        (self.folder / roomdb.DB_NAME).unlink()
+        with self.assertRaisesRegex(roomdb.RoomDbError, 'Nothing was created'):
+            roomdb.Store.open(self.folder)
+        self.assertFalse((self.folder / roomdb.DB_NAME).exists())
+
+    def test_saves_run_with_synchronous_extra(self):
+        store, _ = self.imported()
+        with closing(roomdb.connect(store.path)) as conn:
+            self.assertEqual(conn.execute('PRAGMA synchronous').fetchone()[0], roomdb.SYNCHRONOUS_EXTRA)
+
+    def test_after_a_failed_commit_the_next_save_compares_everything(self):
+        store, state = self.imported()  # systems ab210df2 note: a touched save after a failure missed this task
+        state['tasks'][1]['title'] = 'pending'
+        real, failed = store.commit, []
+
+        def commit_once_failing(ops):
+            if not failed:
+                failed.append(True)
+                raise sqlite3.OperationalError('disk I/O error')
+            return real(ops)
+        with patch.object(store, 'commit', commit_once_failing), patch.object(roomdb, 'VERIFY', False):
+            with self.assertRaises(sqlite3.OperationalError):
+                store.save(state)
+            state['spec'] = 'changed after the failure'
+            store.save(state, touched=())
+        self.assertEqual(roomdb.read_state(self.folder), state)
 
     def test_generation_and_commit_seq(self):
         store, state = self.imported()
