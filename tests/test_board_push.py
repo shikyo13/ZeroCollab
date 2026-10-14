@@ -1,6 +1,8 @@
 """The board push (task eaba007f): deltas against the last push, resets when a delta can't express the change, and a
 client that applies them as the contract says ends on the same board as a fresh GET."""
+import asyncio
 import copy
+import json
 import random
 import sys
 import unittest
@@ -11,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from board_push import BoardPush, COLLECTIONS, ENVELOPE
+from board_push import BoardPush, COLLECTIONS, ENVELOPE, detached
 
 
 def board():
@@ -25,11 +27,11 @@ class Room:
         self.state, self.identity, self.clock = board(), 'p1', 0.0
 
     def snapshot(self):
+        """Copies as ProjectRoom.snapshot does: new top-level dict, new task and review views, but follow-ups, notes
+        and every nested value shared with the live state."""
         self.clock += 1  # task views are rebuilt with a new observed_at on every snapshot
-        state = copy.deepcopy(self.state)
-        for task in state['tasks']:
-            task['observed_at'] = self.clock
-        return state
+        return {**self.state, 'tasks': [{**t, 'observed_at': self.clock} for t in self.state['tasks']],
+                'reviews': [dict(r) for r in self.state['reviews']]}
 
 
 def apply(client, kind, message):
@@ -49,16 +51,14 @@ def apply(client, kind, message):
             else:
                 client[collection].append(record)
     for key, value in message.get('values', {}).items():
-        if value is None:
-            client.pop(key, None)
-        else:
-            client[key] = value
+        client[key] = copy.deepcopy(value)  # null is a value: a cleared or removed key reads as null
     client['rev'] = message['rev']
     return client
 
 
 def without_time(state):
-    state = copy.deepcopy(state)
+    """For comparison: observed_at dropped, and a missing top-level key the same as null (the agreed convention)."""
+    state = {key: value for key, value in copy.deepcopy(state).items() if value is not None}
     for task in state.get('tasks', []):
         task.pop('observed_at', None)
     return state
@@ -116,6 +116,37 @@ class BoardPushTest(unittest.TestCase):
         self.room.state['spec'] = 'changed'
         self.assertEqual(self.advance()[1][0], 'project_state')
 
+    def test_the_first_comparable_board_after_a_whole_push_is_a_reset(self):
+        self.room.state['notes'] = [{'kind': 'progress', 'text': 'no id'}]  # frontend f7e96ca6, critical 1
+        self.advance()
+        self.room.state['tasks'] = []
+        self.room.state['notes'] = [{'id': 'n1', 'time': 1}]
+        snapshot, (kind, message) = self.advance()
+        self.assertEqual(kind, 'project_state')  # upserts against an empty baseline could never remove t0 to t3
+        self.assertEqual(message['tasks'], [])
+        self.room.state['spec'] = 'next'
+        self.assertEqual(self.advance()[1][0], 'project_delta')
+
+    def test_a_change_during_the_push_await_never_reaches_that_rev(self):
+        from room_runtime import RoomRuntime  # frontend f7e96ca6, critical 2
+        self.advance()
+        followup = {'id': 'f1', 'status': 'open'}
+        self.room.state['followups'].append(followup)  # the live list: snapshots share it
+        runtime = SimpleNamespace(board_push=self.push, emitted=[])
+
+        async def emit(kind, data):
+            followup['status'] = 'resolved'  # another handler runs while the broadcast awaits
+            runtime.emitted.append(data)
+        runtime.emit = emit
+        response = asyncio.run(RoomRuntime.board_response(runtime, {'last_human_message': ''}))
+        body = json.loads(response.body)
+        self.assertEqual(body['followups'], [{'id': 'f1', 'status': 'open'}])
+        self.assertEqual(runtime.emitted[0]['upsert']['followups'], [{'id': 'f1', 'status': 'open'}])
+        self.assertEqual(body['rev'], runtime.emitted[0]['rev'])
+        self.assertNotIn('last_human_message', runtime.emitted[0])
+        _, (kind, later) = self.advance()  # the resolve goes out in the next rev
+        self.assertEqual(later['upsert']['followups'], [{'id': 'f1', 'status': 'resolved'}])
+
     def test_a_client_applying_every_push_matches_a_fresh_snapshot(self):
         rng = random.Random(7)
         client, (kind, message) = None, self.advance()[1]
@@ -132,11 +163,13 @@ class BoardPushTest(unittest.TestCase):
                 items.insert(0, items.pop())  # occasional reorder: must reset, never mis-apply
             elif roll < 0.85:
                 rng.choice(items)['value'] = step
+            elif roll < 0.92:
+                state['goal'] = None if state.get('goal') else {'text': f'goal {step}'}  # to and from a real null
             else:
                 state['spec'] = f'spec {step}'
             snapshot, pushed = self.advance()
             if pushed:
-                client = apply(client, *pushed)
+                client = apply(client, *detached(pushed))
             self.assertEqual(without_time(client), without_time(snapshot), f'step {step}')
             self.assertTrue(all(client[key] == snapshot[key] for key in ENVELOPE))
 

@@ -14,8 +14,13 @@ project_delta: {project_id, stream_id, rev, base, upsert, remove, values}.
 - upsert and remove hold only the collections (tasks, reviews, followups, notes) that changed. An upsert replaces a
   record by id in place; a new id appends in payload order. remove lists ids.
 - values holds each other top-level key that changed, replaced whole; a key that disappeared is sent as null.
-- A change these can't express (records reordered, or a collection that isn't a list of records with unique ids) is
-  pushed as a full project_state reset with the new envelope instead.
+- A change these can't express (records reordered, or a collection that isn't a list of records with unique ids, and
+  the first change after one) is pushed as a full project_state reset with the new envelope instead.
+
+Detached data. project_room.snapshot() shares nested objects with the live state (follow-ups and notes are the live
+lists), and a broadcast awaits, so other code can change them in between. detached() copies a message before its
+first await, and the GET route renders its response before pushing (RoomRuntime.board_response), so every rev is
+exactly the board it names.
 
 A task's observed_at is the time its view was built, so it is left out of the comparison.
 """
@@ -36,6 +41,15 @@ def record_ids(items):
     if any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids):
         return None
     return ids
+
+
+def detached(message):
+    """A copy of a push sharing nothing with the live state. Deltas are a few KB; a reset copies the whole board, which
+    only a restart, a project switch, a reorder or a fallback sends."""
+    if message is None:
+        return None
+    kind, data = message
+    return kind, json.loads(json.dumps(data, ensure_ascii=False))
 
 
 def compared(collection, record):
@@ -74,8 +88,10 @@ class BoardPush:
             message = self.reset(snapshot, project_id, None, {})
             self.whole = whole
             return message
-        self.whole = None
-        if not same_stream:
+        was_whole, self.whole = self.whole is not None, None
+        if not same_stream or was_whole:
+            # Clients hold a whole board pushed without per-record baselines, so the first comparable change resets
+            # them too; upserts against an empty baseline would leave records they can never remove (frontend f7e96ca6).
             return self.reset(snapshot, project_id, records, values)
         delta = {'upsert': {}, 'remove': {}, 'values': {}}
         for collection, texts in records.items():

@@ -43,7 +43,7 @@ from response_claims import ResponseClaims
 from manager_wakes import ManagerWakes, install as install_manager_wakes
 import project_registry
 import live_feed
-from board_push import BoardPush
+from board_push import BoardPush, detached
 from agent_profiles import AgentProfiles
 import agent_skills
 from team_builder import TeamBuilder
@@ -1013,14 +1013,19 @@ class RoomRuntime:
     async def flush_project_state(self):
         self.project_state_due = False
         if self.project_room.path is not None:
-            await self.board_state()
+            message = detached(self.board_push.advance()[1])
+            if message:
+                await self.emit(*message)
 
-    async def board_state(self):
-        """The board at its current rev, after pushing every client what changed since the last push (board_push)."""
+    async def board_response(self, extra):
+        """GET project-state: the board at its current rev, rendered before anything awaits, then the push of what
+        changed since the last one to every client (board_push). extra adds GET-only keys to the response."""
         snapshot, message = self.board_push.advance()
+        message = detached(message)
+        response = JSONResponse({**snapshot, **extra})
         if message:
             await self.emit(*message)
-        return snapshot
+        return response
 
     def save_project(self):
         for name, state in self.states.items():
@@ -3457,12 +3462,10 @@ def install(host):
 
     @host.app.get('/api/runtime/project-state')
     async def project_state():
-        # The exact board at the rev it reports; any change found here was pushed to every client first.
-        result = await runtime.board_state()
+        # The exact board at the rev it reports; any change found here is pushed to every client too.
         messages = host.store.get_recent(30)
         humans = [m for m in messages if m['sender'] not in runtime.states and m['sender'] != 'system']
-        result['last_human_message'] = humans[-1]['text'] if humans else ''
-        return result
+        return await runtime.board_response({'last_human_message': humans[-1]['text'] if humans else ''})
 
     @host.app.get('/api/runtime/coordination-tools')
     async def coordination_catalog():
