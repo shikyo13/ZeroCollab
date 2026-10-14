@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import project_room
 import work_continuity as wc
 from project_room import ProjectRoom
 from ready_wakes import ReadyWakes
@@ -188,6 +189,64 @@ class Lifecycle(Continuity):
         self.assertEqual(self.claims(), {})
         self.r.paused = False
         self.assertEqual(self.tick(wc.CONTINUE_GRACE_SECONDS), ['woke'])
+
+
+class Restart(Continuity):
+    """Task 70f48e0a: 0.12.55's install restart held 6 of 7 wakes as "conversation gone". Conversation records now
+    come back from coordination.json, so nothing here copies room.chains across the restart."""
+
+    def restart(self, identity='p'):
+        restored = ProjectRoom(self.r)
+        restored.use_project(identity)
+        restored.change_limits({'ready_task_wakes': 1}, save=False)
+        self.r.project_room = self.room = restored
+        return restored
+
+    def test_a_due_wake_after_a_restart_is_sent_on_the_same_conversation(self):
+        self.turn()
+        self.room.save()
+        self.restart()
+        self.assertEqual(self.tick(wc.CONTINUE_GRACE_SECONDS), ['woke'])
+        self.assertEqual(self.calls[-1]['chain'], self.chain)  # the same budget, never a new one
+
+    def test_turns_and_a_pause_survive_and_still_hold(self):
+        chain = self.room.chains[self.chain]
+        chain.update(turns=7, reported_tokens=900, paused=True)
+        self.room.save()
+        restored = self.restart()
+        self.assertEqual({k: restored.chains[self.chain][k] for k in ('turns', 'reported_tokens', 'paused')},
+                         {'turns': 7, 'reported_tokens': 900, 'paused': True})
+        self.assertFalse(wc.budget_open(restored, self.chain))
+        self.assertNotIn('chain_records', restored.state)  # on disk only, never broadcast
+
+    def test_a_project_switch_never_carries_the_other_projects_conversations(self):
+        self.room.save()
+        other = self.restart('q')
+        self.assertEqual(other.chains, {})
+        saved = json.loads(other.path.read_text('utf-8'))
+        self.assertEqual(saved['chain_records'], [])
+        self.assertIn(self.chain, self.restart('p').chains)
+
+    def test_bad_records_are_skipped_and_the_room_still_loads(self):
+        saved = json.loads(self.room.path.read_text('utf-8'))
+        saved['chain_records'] = [None, {'id': 5}, {'id': ''}, 'x',
+                                  {'id': 'ok', 'turns': -3, 'handoffs': 'many', 'reported_tokens': float('inf'), 'paused': 1}]
+        self.room.path.write_text(json.dumps(saved), 'utf-8')
+        chains = self.restart().chains
+        self.assertEqual(list(chains), ['ok'])
+        self.assertEqual({k: chains['ok'][k] for k in ('turns', 'handoffs', 'reported_tokens', 'paused')},
+                         {'turns': 0, 'handoffs': 0, 'reported_tokens': 0, 'paused': True})
+
+    def test_the_newest_and_those_in_use_are_kept(self):
+        goal = self.room.new_chain('goal')
+        self.r.goals.goal = {'status': 'active', 'chain': goal}
+        self.room.current_chain.pop('goal')
+        for _ in range(project_room.CHAINS_PRUNE_AT + 5):
+            self.room.new_chain('general')
+        kept = [r['id'] for r in self.room.chain_records()]
+        self.assertIn(goal, kept)  # an open shared goal's budget outlives pruning (harness 4b5bbefe 2)
+        self.assertNotIn(self.chain, kept)
+        self.assertEqual(len(kept), project_room.CHAINS_KEPT + 1)
 
 
 class Asks(Continuity):

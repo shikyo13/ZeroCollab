@@ -50,6 +50,11 @@ SEMANTIC_FIELDS = ('status', 'owner', 'transfer', 'depends_on', 'wait', 'next_ac
 # oldest first and ARCHIVE_BATCH at a time, to tasks-archive.jsonl beside coordination.json.
 TASK_LIMIT = 200
 ARCHIVE_BATCH = 20
+# Conversation records (budgets) kept in memory and in coordination.json's chain_records: the newest CHAINS_KEPT plus
+# every chain still in use; memory prunes to that once it passes CHAINS_PRUNE_AT (task 70f48e0a, harness 4b5bbefe).
+CHAINS_KEPT = 60
+CHAINS_PRUNE_AT = 100
+CHAIN_COUNTERS = ('turns', 'handoffs', 'reported_tokens', 'input_chars')
 # Owned work without a check-in for this long is flagged as stale in context and on the board.
 # This is visibility only; turn cutoffs stay governed by the optional limits (0 = off).
 STALE_SECONDS = 600
@@ -342,9 +347,26 @@ class ProjectRoom:
             if note.get('kind') == 'decision':
                 note.setdefault('id', uuid.uuid4().hex[:8])
                 note.setdefault('status', 'active')
-        self.save()
+        # This project's budgets replace the previous project's before anything is saved (harness 4b5bbefe 1).
         self.chains.clear()
         self.current_chain.clear()
+        self.restore_chains(self.state.pop('chain_records', None))
+        self.save()
+
+    def restore_chains(self, records):
+        """Conversation records saved by save(), so a restart keeps each budget, turn count and pause (K1: no fresh
+        budget is created) and the room's automatic wakes still find the chain they continue (task 70f48e0a). A
+        malformed entry is skipped, never fatal to loading (harness 4b5bbefe 4)."""
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict) or not isinstance(record.get('id'), str) or not record['id']:
+                continue
+            chain = self.fresh_chain(record['id'], record['channel'] if isinstance(record.get('channel'), str) else '')
+            for key in CHAIN_COUNTERS:
+                value = record.get(key)
+                chain[key] = max(0, int(value)) if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and math.isfinite(value) else 0
+            chain['paused'] = bool(record.get('paused'))  # anything truthy stays paused
+            self.chains[chain['id']] = chain
 
     def snapshot(self):
         review_hashes = {}
@@ -402,7 +424,34 @@ class ProjectRoom:
         return summary
 
     def save(self):
-        write_json(self.path, self.state)
+        """Writes the board and, under chain_records, the conversation records (task 70f48e0a). Their counters move
+        in memory between saves, so a crash undercounts a budget by at most what was spent since the last save
+        (harness 4b5bbefe 3). chain_records lives only on disk, never in self.state or the snapshot."""
+        write_json(self.path, {**self.state, 'chain_records': self.chain_records()})
+
+    def chain_records(self):
+        """The conversation records worth keeping across a restart: those in use plus the newest CHAINS_KEPT. The
+        manager audit chain is left out: its own record in manager_audit restores it and its reserve_turn fence,
+        which permit() still consults for every turn (harness 4b5bbefe 7)."""
+        keep = self.chains_in_use() | set(list(self.chains)[-CHAINS_KEPT:])
+        audit = (self.state.get('manager_audit', {}).get('chain') or {}).get('id')
+        return [{'id': chain['id'], 'channel': chain.get('channel', ''), 'paused': bool(chain.get('paused')),
+                 **{key: chain.get(key, 0) for key in CHAIN_COUNTERS}}
+                for identifier, chain in self.chains.items()
+                if identifier in keep and identifier != audit and chain.get('kind') != 'manager_audit']
+
+    def chains_in_use(self):
+        """Chains pruning must keep: running turns, an open shared goal, the manager audit and each channel's
+        current conversation (harness 4b5bbefe 2)."""
+        # Every save() reads this, so a run without an entry yet must not fail the board's write.
+        active = {(getattr(r, 'entry', None) or {}).get('chain') for r in getattr(self.runtime, 'running', {}).values()}
+        goal = getattr(getattr(self.runtime, 'goals', None), 'goal', None)
+        if goal and goal.get('status') in ('active', 'paused', 'blocked'):
+            active.add(goal.get('chain'))
+        audit = self.state.get('manager_audit', {}).get('chain') or {}
+        if audit.get('id'):
+            active.add(audit['id'])
+        return (active | set(self.current_chain.values())) - {None}
 
     def change_limits(self, updates, save=True):
         values = dict(self.limits)
@@ -434,9 +483,10 @@ class ProjectRoom:
                 'handoffs': 0, 'reported_tokens': 0, 'input_chars': 0, 'paused': False}
 
     def adopt_chain(self, identifier, channel):
-        """Conversation records live in memory only. Admitted work that names one lost to a restart (a restored
-        install checkpoint) or to pruning gets a fresh record under the same id instead of being refused as if
-        its budget ran out (harness 8016e379). Never used for manager check-ins, whose fences must hold."""
+        """Conversation records survive a restart through chain_records (task 70f48e0a). Admitted work that names
+        one they don't hold (from before that upgrade, or pruned) gets a fresh record under the same id instead of
+        being refused as if its budget ran out (harness 8016e379). Never used for manager check-ins, whose fences
+        must hold."""
         if identifier and identifier not in self.chains:
             self.chains[identifier] = self.fresh_chain(identifier, channel)
 
@@ -444,18 +494,12 @@ class ProjectRoom:
         identifier = uuid.uuid4().hex[:12]
         self.current_chain[channel] = identifier
         self.chains[identifier] = self.fresh_chain(identifier, channel)
-        # Completed old conversations need not stay in memory; audit retains events.
-        if len(self.chains) > 100:
-            active = {r.entry.get('chain') for r in self.runtime.running.values()}
-            # An open shared goal keeps continuing on its chain; its budget must survive pruning.
-            goal = getattr(getattr(self.runtime, 'goals', None), 'goal', None)
-            if goal and goal.get('status') in ('active', 'paused', 'blocked'):
-                active.add(goal.get('chain'))
-            audit = self.state.get('manager_audit', {}).get('chain') or {}
-            if audit.get('id'):
-                active.add(audit['id'])
-            for old in list(self.chains)[:-60]:
-                if old not in active and old not in self.current_chain.values():
+        # Completed old conversations need not stay in memory; audit retains events. An open shared goal keeps
+        # continuing on its chain, so its budget survives pruning with the others in use.
+        if len(self.chains) > CHAINS_PRUNE_AT:
+            active = self.chains_in_use()
+            for old in list(self.chains)[:-CHAINS_KEPT]:
+                if old not in active:
                     self.chains.pop(old, None)
         return identifier
 
