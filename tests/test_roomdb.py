@@ -1,6 +1,7 @@
 """room.db: import, saves that write only what changed, touched saves and their verifier, generations and the
 rollback export (task d6139872, plan roomdb-plan/plan.md)."""
 import json
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -87,17 +88,38 @@ class RoomDb(unittest.TestCase):
             store.save(state, touched=[])
         self.assertEqual(roomdb.read_state(self.folder), state)
 
+    def test_the_maintenance_block_writes_a_missed_mark_or_refuses(self):
+        from types import SimpleNamespace
+        from release_maintenance import ReleaseMaintenance
+        store, state = self.imported()
+        state['tasks'][3]['title'] = 'missed'
+        with patch.object(roomdb, 'VERIFY', False):
+            store.save(state, touched=[])
+        room = SimpleNamespace(store=store, save=lambda: store.save(state))
+        maintenance = object.__new__(ReleaseMaintenance)
+        maintenance.runtime = SimpleNamespace(project_room=room)
+        maintenance.save_board()  # before writes close, so the install snapshot holds it
+        self.assertEqual(roomdb.read_state(self.folder), state)
+        room.save = lambda: (_ for _ in ()).throw(sqlite3.OperationalError('disk I/O error'))
+        with self.assertRaisesRegex(OSError, 'block was refused'):
+            maintenance.save_board()
+
     def test_generation_and_commit_seq(self):
         store, state = self.imported()
         generation, seq = store.generation()
         self.assertEqual(seq, 0)
         state['spec'] = 'one'
         store.save(state)
+        backup = self.folder / 'backup'
+        backup.mkdir()
+        shutil.copy2(store.path, backup / roomdb.DB_NAME)
         state['spec'] = 'two'
         store.save(state)
         self.assertEqual(store.generation(), (generation, 2))
         reopened, _ = roomdb.Store.open(self.folder)
         self.assertEqual(reopened.generation(), (generation, 2))  # an ordinary restart keeps both
+        restored, _ = roomdb.Store.open(backup)  # a file copy: same generation, lower commit_seq
+        self.assertEqual(restored.generation(), (generation, 1))
 
     def test_a_failed_save_commits_nothing_and_the_next_save_retries(self):
         store, state = self.imported()

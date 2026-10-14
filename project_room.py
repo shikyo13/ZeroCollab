@@ -569,8 +569,10 @@ class ProjectRoom:
         return {}
 
     def complete(self, run):
+        # Every turn ends here. It changes only value sections (cursors, receipts, sessions), which a touched save
+        # always compares, so the 3,400 list records are skipped (roomdb.plan_touched).
         if getattr(run, 'manager_audit', None):
-            self.save()
+            self.save(touched=())
             return  # Timer sessions never replace the ordinary conversation continuation.
         self.state.setdefault('cursors', {})[run.session_key] = run.context_delivery
         receipts = self.state.setdefault('receipts', {}).get(run.session_key, [])
@@ -582,7 +584,7 @@ class ProjectRoom:
                 'settings': run.settings, 'provider': self.runtime.states[run.name]['provider'],
                 'instruction_hash': run.instruction_hash,
                 'context': run.context_delivery, 'usage_total': getattr(run, 'provider_usage_total', 0)}
-        self.save()
+        self.save(touched=())
 
     def task(self, actor, action, task_id='', title='', details='', paths=None, owner='', status='', update='', depends_on=None, labels=None, attachments=None,
              next_action=None, priority=None, wait=None, evidence=None, next_action_state=None,

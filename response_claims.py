@@ -58,7 +58,8 @@ class ResponseClaims:
         done = [k for k, c in self.claims.items() if c['status'] != 'open']
         for key in sorted(done, key=lambda k: self.claims[k].get('created', 0))[:-KEEP_CLAIMS or None]:
             del self.claims[key]
-        self.runtime.project_room.save()
+        # Claims and scopes are value sections, which a touched save always compares (roomdb.plan_touched).
+        self.runtime.project_room.save(touched=())
 
     # ----- who answers -----
     def available(self, name):
@@ -91,7 +92,7 @@ class ResponseClaims:
         """Human-only setting (the HTTP route checks the UI token); empty values return to the defaults."""
         self.check_responders(lead, backup)
         self.state['responders'] = {'lead': lead or '', 'backup': backup or ''}
-        self.runtime.project_room.save()
+        self.runtime.project_room.save(touched=())
         return self.state['responders']
 
     # ----- the claim lifecycle -----

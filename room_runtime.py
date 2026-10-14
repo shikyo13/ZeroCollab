@@ -3155,6 +3155,13 @@ class RoomRuntime:
                 self.save_deploy_queue()
         else:
             await self.stop()
+            # stop() ends with touched saves; this full comparison writes anything they left for the next one
+            # (roomdb.FULL_DIFF_SECONDS), so a planned stop never loses a record.
+            if self.project_room.store is not None:
+                try:
+                    self.project_room.save()
+                except Exception:
+                    LOGGER.exception('The board could not be saved at shutdown; room.db keeps its last commit')
         self.heartbeat.cancel()
         for worker in self.workers.values():
             worker.cancel()

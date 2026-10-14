@@ -6,6 +6,7 @@ policy is supplied by ReleaseManager.validate_queued; absent policy fails closed
 import asyncio
 import logging
 import re
+import sqlite3
 import time
 
 PROTOCOL = 1
@@ -90,6 +91,18 @@ class ReleaseMaintenance:
                 uid=uid, channel=self.runtime.default_channel(), metadata={'no_route': True})
         return {'ok': True}
 
+    def save_board(self):
+        """A full room.db comparison before writes close, so the install snapshot holds every record, including
+        one a touched save left for the next full comparison (roomdb.FULL_DIFF_SECONDS). A failure refuses the block."""
+        room = getattr(self.runtime, 'project_room', None)
+        if getattr(room, 'store', None) is None:
+            return  # no project open, so no board to save
+        try:
+            room.save()
+        except (sqlite3.Error, RuntimeError) as exc:
+            raise OSError(f'The board could not be saved before writes close ({exc}); the block was refused, '
+                          'so the deployment can be retried') from exc
+
     async def block(self, identifier):
         from room_deploy import atomic_json
         waiting = 'another maintenance preparation'
@@ -116,6 +129,7 @@ class ReleaseMaintenance:
                             if active_runs(self.runtime):
                                 raise ValueError('An agent turn became active before writes could close')
                             if self.state.mutations == 1:  # this HTTP request is the only counted write
+                                self.save_board()
                                 gate.update(seq=gate['seq'] + 1, writes='blocked', interrupt=False,
                                     reason='Deployment in progress; room resumes automatically unless stopped')
                                 atomic_json(self.state.root / 'maintenance.json', gate)
