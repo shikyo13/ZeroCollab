@@ -45,6 +45,7 @@ class RuntimeRegistry:
         self._reserved: dict[str, float] = {}       # name → deregister timestamp
         self._renames: dict[str, str] = {}           # old name → new name (for heartbeat redirect)
         self._reclaimable: dict[str, Instance] = {}  # name → deregistered Instance, recoverable on reconnect
+        self._managed: set[str] = set()             # room-owned profile IDs: never registered by a wrapper
         self._on_change_cbs: list = []
         self._data_dir = Path(data_dir)
         self._load_renames()
@@ -192,6 +193,7 @@ class RuntimeRegistry:
         """Activate an app-owned stable profile ID without renumbering its peers."""
         with self._lock:
             self._bases[name] = dict(cfg)
+            self._managed.add(name)
             inst = self._instances.get(name) or self._reclaimable.pop(name, None)
             if inst is None:
                 inst = Instance(name=name, base=name, slot=1, label=cfg['label'], color=cfg['color'])
@@ -213,8 +215,14 @@ class RuntimeRegistry:
             if inst:
                 self._reclaimable[name] = inst
             self._bases.pop(name, None)
+            self._managed.discard(name)
         self._save_instances()
         self._notify()
+
+    def is_managed(self, base: str) -> bool:
+        """A room-owned profile ID: the room starts it; a wrapper registering it would rename the live agent."""
+        with self._lock:
+            return base in self._managed
 
     def register(self, base: str, label: str | None = None) -> dict | None:
         """Register a new instance of `base`. Returns slot info or None if unknown base.

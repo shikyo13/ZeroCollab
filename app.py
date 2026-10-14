@@ -236,6 +236,11 @@ def _install_security_middleware(token: str, cfg: dict, sessions=None):
 
             # Agent registration/heartbeat: loopback only (no remote agent minting).
             if path.startswith(("/api/register", "/api/deregister/", "/api/heartbeat/")):
+                # Wrappers never send Origin; a browser always does on a cross-origin POST, including a no-cors
+                # text/plain one that needs no preflight. Without this, any web page could register an instance
+                # of a room agent and rename the live one (task 6be90c9a).
+                if request.headers.get("origin"):
+                    return forbidden("agent registration does not accept browser requests")
                 client_ip = request.client.host if request.client else ""
                 if client_ip not in ("127.0.0.1", "::1", "localhost"):
                     return JSONResponse(
@@ -1371,6 +1376,9 @@ async def register_agent(request: Request):
     label = body.get("label")
     if not base:
         return JSONResponse({"error": "base is required"}, status_code=400)
+    if registry.is_managed(base):
+        return JSONResponse({"error": f"{base} is a room agent: the room starts it, so it can't be registered"},
+                            status_code=403)
     result = registry.register(base, label)
     if result is None:
         return JSONResponse({"error": f"unknown base: {base}"}, status_code=400)
