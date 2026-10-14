@@ -46,7 +46,6 @@ IMPORTING_SUFFIX = '.importing'
 RETIRED_SUFFIX = '.exported'
 SCHEMA_VERSION = 1           # PRAGMA user_version; a reader refuses a file newer than it knows
 BUSY_TIMEOUT_MS = 5000       # a reader in this process waits this long for a writer's lock
-DIGEST_BYTES = 16
 # A touched save is a full comparison when this long has passed since the last one, so a record a caller forgot
 # to name is written within this window (harness 4b789e62). The room's shutdown save is always full.
 FULL_DIFF_SECONDS = 30
@@ -70,12 +69,13 @@ class RoomDbError(RuntimeError):
     """room.db can't be opened, imported or exported. The message names the file and what to do."""
 
 
+# One reused compact encoder. ASCII output is the C fast path: 27 ms for the live room's 3,508 records, against 34 ms
+# with ensure_ascii=False. json.loads reads either form back to the same value.
+ENCODER = json.JSONEncoder(separators=(',', ':'))
+
+
 def dump(value):
-    return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
-
-
-def digest(doc):
-    return hashlib.blake2b(doc.encode('utf-8'), digest_size=DIGEST_BYTES).digest()
+    return ENCODER.encode(value)
 
 
 def is_record_list(value):
@@ -112,7 +112,9 @@ def connect(path, *, readonly=False):
 
 
 def read_rows(conn):
-    """(state, cache) from an open room.db. cache maps each section to what a later save compares against."""
+    """(state, cache) from an open room.db. cache maps each section to what a later save compares against: each
+    record's committed JSON text. Comparing the text directly costs about 11 MB of memory on the live room and saves
+    the 10 ms a digest of every record took."""
     state, cache = {}, {}
     rows = {}
     for section, rid, ord_, doc in conn.execute('SELECT section, id, ord, doc FROM rec ORDER BY section, ord'):
@@ -124,10 +126,10 @@ def read_rows(conn):
                 raise RoomDbError(f'room.db section {name!r} is damaged: expected one value row, found {len(found)}')
             doc = found[0][2]
             state[name] = json.loads(doc)
-            cache[name] = (VALUE, ord_, digest(doc))
+            cache[name] = (VALUE, ord_, doc)
         else:
             state[name] = [json.loads(doc) for _, _, doc in found]
-            cache[name] = (LIST, ord_, {rid: (index, digest(doc)) for index, (rid, _, doc) in enumerate(found)})
+            cache[name] = (LIST, ord_, {rid: (index, doc) for index, (rid, _, doc) in enumerate(found)})
     return state, cache
 
 
@@ -226,7 +228,7 @@ class Store:
 
     def save(self, state, touched=None):
         """Write what differs from the last commit, in one transaction, and return the number of statements; 0 means
-        nothing changed and nothing was committed. touched=None compares everything (always correct, about 45 ms on
+        nothing changed and nothing was committed. touched=None compares everything (always correct, about 35 ms on
         the live room). touched names everything the caller mutated since the last save (plan_touched), and is
         still a full comparison once FULL_DIFF_SECONDS have passed since the last one."""
         with self.lock:
@@ -305,14 +307,14 @@ def plan_section(name, ord_, value, old, ops):
         new_rows = {}
         for index, record in enumerate(value):
             doc = dump(record)
-            entry = (index, digest(doc))
+            entry = (index, doc)
             if rows.get(record['id']) != entry:
                 ops.append((UPSERT_REC, (name, record['id'], index, doc)))
             new_rows[record['id']] = entry
         ops.extend((DELETE_REC, (name, rid)) for rid in rows.keys() - new_rows.keys())
         return LIST, ord_, new_rows
     doc = dump(value)
-    entry = (VALUE, ord_, digest(doc))
+    entry = (VALUE, ord_, doc)
     if old != entry:
         if old is None or old[0] != VALUE or old[1] != ord_:
             if old is not None and old[0] != VALUE:
@@ -372,7 +374,7 @@ def plan_list_touched(name, ord_, value, old, named, ops):
     positions.update((rid, index) for index, rid in enumerate(ids[known:], known))  # appended records
     for rid, index in positions.items():
         doc = dump(value[index])
-        entry = (index, digest(doc))
+        entry = (index, doc)
         if rows.get(rid) != entry:
             ops.append((UPSERT_REC, (name, rid, index, doc)))
         new_rows[rid] = entry
