@@ -103,7 +103,8 @@ def current_request(request, actor, state, receipts):
         if ref['action'] == 'request':
             return item['status'] == 'pending' and item['reviewer'] == actor
         task = next((t for t in state['tasks'] if t['id'] == item['task_id']), {})
-        if task.get('status') == 'done' or task.get('owner') != actor:
+        # A verdict is for the task's owner and for the agent whose work it reviewed (task e14159ba).
+        if task.get('status') == 'done' or (task.get('owner') != actor and item.get('requested_by') != actor):
             return False
     elif ref['collection'] == 'followups':
         if ref['action'] == 'create':

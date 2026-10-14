@@ -25,7 +25,8 @@ REVIEW_FIELDS = ('id', 'task_id', 'revision', 'status', 'reviewer', 'owner', 're
 # The room's own actor for records it creates (Docs/process-enforcement.md S5): reserved as an agent id and handle,
 # set only by server code, and never woken.
 SYSTEM = 'system'
-SCOPE_ANSWER = 'E5: only the user answers a scope-cap item (resolve to allow more review rounds, cancel to stop)'
+SCOPE_ANSWER = ('E5: only the lead it is assigned to, or the user, answers a scope-cap item '
+                '(resolve to allow more review rounds, cancel to stop)')
 
 
 SEVERITY_ITEMS = 12          # L2: at most this many critical entries, and as many notes
@@ -214,9 +215,11 @@ class CoordinationRecords:
             self.note_task(actor, task, text)
         self.room.save()
 
-    def capture(self, task, files=None):
-        """Capture bounded declared source files; never guess a different workspace."""
-        raw_root = self.room.runtime.states.get(task.get('owner'), {}).get('worktree')
+    def capture(self, task, files=None, author=None):
+        """Capture bounded declared source files from the author's workspace (the owner's by default); never guess
+        a different workspace."""
+        author = author or task.get('owner')
+        raw_root = self.room.runtime.states.get(author, {}).get('worktree')
         if not raw_root:
             if files:
                 raise ValueError('Review source workspace is unavailable')
@@ -228,10 +231,10 @@ class CoordinationRecords:
         entries, blobs, unavailable, total = [], {}, [], 0
         branches = {}  # file root -> branch checked out there when the review was requested
         for relative in dict.fromkeys(selected):
-            file_root, file_relative = self.review_source(task, relative, root)
+            file_root, file_relative = self.review_source(task, relative, root, author)
             path = (file_root / file_relative).resolve()
             if Path(file_relative).is_absolute() or not path.is_relative_to(file_root):
-                raise ValueError('Review files must stay inside the owner workspace')
+                raise ValueError("Review files must stay inside the author's workspace")
             if any(p.lower() in ('.git', '.venv', 'node_modules') for p in path.relative_to(file_root).parts) or path.name.lower().startswith(('.env', 'credentials', 'secrets')) or path.suffix.lower() in ('.pem', '.key', '.pfx'):
                 raise ValueError('Review snapshots exclude environment, credential and generated files')
             if not path.is_file():
@@ -255,14 +258,15 @@ class CoordinationRecords:
             blobs[sha] = data
         return {'root': str(root), 'files': entries, 'unavailable': unavailable}, blobs
 
-    def review_source(self, task, relative, primary_root):
+    def review_source(self, task, relative, primary_root, author=None):
         runtime = self.room.runtime
+        author = author or task.get('owner')
         primary_key = self.room.primary_repository_key()
         if ':' in relative:
             key, relative = relative.split(':', 1)
         else:
             key = self.room.task_repository_key(task)
-        sources = runtime.states.get(task.get('owner'), {}).get('repositories', {})
+        sources = runtime.states.get(author, {}).get('repositories', {})
         if key in sources:
             return Path(sources[key]['worktree']).resolve(), relative
         if key == primary_key:
@@ -272,7 +276,7 @@ class CoordinationRecords:
         for entry in reversed(self.room.project_record().get('repository_history', [])):
             from project_registry import repository_key
             if entry.get('key', repository_key(entry['path'])) == key:
-                root = entry.get('worktrees', {}).get(task.get('owner'))
+                root = entry.get('worktrees', {}).get(author)
                 if root:
                     return Path(root).resolve(), relative
         raise ValueError('Review repository workspace is unavailable; attach it or re-scope the task')
@@ -393,7 +397,7 @@ class CoordinationRecords:
             return
         cap = task.get('scope_cap') or {}
         if cap.get('stopped'):
-            raise ValueError(f"E5: stopped by the user. Task {task['id']} takes no new review rounds from agents. "
+            raise ValueError(f"E5: stopped by the lead or the user. Task {task['id']} takes no new review rounds from agents. "
                              'The user can request one directly, or lift the stop with any update to the task; the '
                              'coordinator can also split the rest into a new task.')
         limit = SCOPE_REVIEW_ROUNDS + cap.get('allowance', 0)
@@ -404,22 +408,26 @@ class CoordinationRecords:
         opened = None
         if item is None:
             now = time.time()
+            # The lead decides, not the user (Zero #17173 decision fatigue, task e14159ba); the user only without one.
+            lead = self.room.room_lead()
+            decider = lead if lead and lead in self.room.runtime.states else 'user'
             item = opened = {'id': uuid.uuid4().hex[:8], 'task_id': task['id'], 'created_by': SYSTEM,
-                             'assigned_to': 'user', 'kind': 'scope_cap', 'status': 'open', 'result': '',
+                             'assigned_to': decider, 'kind': 'scope_cap', 'status': 'open', 'result': '',
                              'text': f"E5: task {task['id']} ({task['title']}) has had {len(rounds)} review rounds. "
                                      f'Resolve to allow {SCOPE_REVIEW_ROUNDS} more; cancel to stop new review '
                                      'requests on it; or ask the coordinator to split it.',
                              'created': now, 'updated': now}
             items.append(item)
             task['scope_cap'] = {**cap, 'item': item['id']}
-            self.save(SYSTEM, task, f"Follow-up {item['id']} for user: {item['text']}")
-        raise RuleRefused(f"E5: task {task['id']} has had {len(rounds)} review rounds (limit {limit}). The user "
-                          f"decides in bell item {item['id']}: resolve for {SCOPE_REVIEW_ROUNDS} more rounds, or cancel "
+            self.save(SYSTEM, task, f"Follow-up {item['id']} for {item['assigned_to']}: {item['text']}")
+        decider = 'The user' if item['assigned_to'] == 'user' else f"The lead, @{item['assigned_to']},"
+        raise RuleRefused(f"E5: task {task['id']} has had {len(rounds)} review rounds (limit {limit}). {decider} "
+                          f"decides in item {item['id']}: resolve for {SCOPE_REVIEW_ROUNDS} more rounds, or cancel "
                           'to stop. Or ask the coordinator to split the work.', opened)
 
     @staticmethod
     def scope_answer(item, task):
-        """The user's answer to a scope-cap item (security S1: only actor user reaches here): resolve grants
+        """The answer to a scope-cap item, by its assignee (the lead) or the user (security S1): resolve grants
         SCOPE_REVIEW_ROUNDS more rounds and lifts a stop, cancel stops new review requests from agents."""
         from project_room import SCOPE_REVIEW_ROUNDS
         cap = {key: value for key, value in (task.get('scope_cap') or {}).items() if key != 'item'}
@@ -435,11 +443,12 @@ class CoordinationRecords:
         reviews = self.room.state.get('reviews', [])
         if action == 'request':
             task = self.task(task_id)
-            if actor != 'user' and actor != task['owner']:
-                raise ValueError('Only the task owner or user can request its review')
+            # Any agent may ask for a review of its own work on any task (task e14159ba): the requester is the
+            # author, its files are snapshotted, and the task's owner is told the verdict too.
+            author = task['owner'] if actor == 'user' else actor
             self.participant(reviewer)
-            if reviewer == task['owner']:
-                raise ValueError('Choose a peer; an owner cannot approve their own work')
+            if reviewer == author:
+                raise ValueError('Choose a peer; nobody approves their own work')
             revision, text = str(revision).strip(), bounded(text, 'request')
             if not revision or len(revision) > 240 or not text:
                 raise ValueError('Provide a revision reference (up to 240 characters) and a concrete review question or scope')
@@ -448,8 +457,8 @@ class CoordinationRecords:
                     return {'item': item, 'changed': False, 'notify': []}
             if actor != 'user':
                 self.scope_cap(task, revision)
-            snapshot, blobs = self.capture(task, files)
-            item = {'id': uuid.uuid4().hex[:8], 'task_id': task_id, 'requested_by': actor,
+            snapshot, blobs = self.capture(task, files, author)
+            item = {'id': uuid.uuid4().hex[:8], 'task_id': task_id, 'requested_by': actor, 'author': author,
                     'owner': task['owner'], 'reviewer': reviewer, 'revision': revision,
                     'request': text, 'status': 'pending', 'findings': '',
                     'created': time.time(), 'updated': time.time()}
@@ -469,7 +478,7 @@ class CoordinationRecords:
         elif action == 'respond':
             item = self.record('reviews', review_id)
             task = self.task(item['task_id'])
-            if actor != item['reviewer'] or actor == task['owner']:
+            if actor != item['reviewer'] or actor == (item.get('author') or task['owner']):
                 raise ValueError('Only the assigned reviewer can submit this review')
             if item['status'] in ('superseded', 'cancelled'):
                 raise ValueError('This request has been superseded; read the current review request')
@@ -481,7 +490,9 @@ class CoordinationRecords:
             critical, notes = severity(critical, notes, 'release-pipeline' in (task.get('labels') or []), verdict,
                                        human=actor == 'user')
             # The notes follow-up is built and bounded before the verdict changes anything (harness cd540632 C2).
-            note_text = notes_followup(item['id'], actor, notes) if notes and task['owner'] else ''
+            # Notes go to whoever wrote the work: the requesting agent, or the owner when the user asked.
+            note_to = item['requested_by'] if item['requested_by'] not in ('user', task['owner']) else task['owner']
+            note_text = notes_followup(item['id'], actor, notes) if notes and note_to else ''
             changed = self.changed_files(item)
             if verdict == 'approved' and changed:
                 raise ValueError(f'Reviewed files changed: {changed}; request a new review revision')
@@ -494,9 +505,11 @@ class CoordinationRecords:
                 item.update(critical=critical, notes=notes)
             summary = f"Review {item['id']} {verdict} by {actor} for {revision}: {text}"
             recipients = [task['owner'] or item['requested_by']]
+            if item['requested_by'] not in (recipients[0], 'user'):
+                recipients.append(item['requested_by'])  # the author waits on this verdict too
             if note_text:
                 # L2: notes ship and are followed up on the owner's task, not argued in chat.
-                self.followup(SYSTEM, 'create', assigned_to=task['owner'], task_id=task['id'], text=note_text)
+                self.followup(SYSTEM, 'create', assigned_to=note_to, task_id=task['id'], text=note_text)
         elif action == 'cancel':
             item = self.record('reviews', review_id)
             task = self.task(item['task_id'])
@@ -534,9 +547,14 @@ class CoordinationRecords:
             recipients = [assigned_to]
         elif action in ('resolve', 'cancel'):
             item = self.record('followups', followup_id)
-            if item.get('kind') == 'scope_cap' and actor != 'user':
-                raise ValueError(SCOPE_ANSWER)
-            allowed = ('user', item['assigned_to'], item['created_by']) if action == 'resolve' else ('user', item['created_by'])
+            if item.get('kind') == 'scope_cap':
+                if actor not in ('user', item['assigned_to']):
+                    raise ValueError(SCOPE_ANSWER)
+                allowed = ('user', item['assigned_to'])  # its decider may grant more rounds or stop them
+            elif action == 'resolve':
+                allowed = ('user', item['assigned_to'], item['created_by'])
+            else:
+                allowed = ('user', item['created_by'])
             if actor not in allowed:
                 raise ValueError('Only the assignee, requester or user can resolve; only requester/user can cancel')
             if not str(result).strip():
@@ -567,7 +585,7 @@ class CoordinationRecords:
             raise ValueError('Record the result or cancellation reason')
         result = bounded(result, 'result')
         items = [self.record('followups', identifier) for identifier in ids]
-        if actor != 'user' and any(i.get('kind') == 'scope_cap' for i in items):
+        if any(i.get('kind') == 'scope_cap' and actor not in ('user', i['assigned_to']) for i in items):
             raise ValueError(SCOPE_ANSWER)
         refused = [i['id'] for i in items if actor not in ('user', i['assigned_to'], i['created_by'])]
         if refused:

@@ -88,6 +88,10 @@ ROOM_SERVER = 'zerocollab_coordination'
 EVENT_LOG_LIMIT = 32 * 1024 * 1024  # runtime_events.jsonl starts a new file past this size (append_event)
 # One automatic retry for a turn that failed before producing any output (task 33f0aa98).
 STARTUP_RETRY_SECONDS = 5
+# An agent's follow-up result that nothing waits on (task e14159ba part 5): recorded, read at the next turn.
+RESULT_NOT_WOKEN = {'status': 'deferred', 'queued': False,
+                    'reason': 'Recorded; they see it in their next turn. A task whose wait_on names this follow-up '
+                              'wakes its owner when it is answered.'}
 # A subscription CLI's saved sign-in revoked or expired: Codex reports 'workspace routing discovery
 # unauthorized (401)' and logs refresh_token_invalidated; both CLIs ask to sign in again.
 SIGNED_OUT = re.compile(r'refresh[_ ]token[_ ](?:invalidated|was revoked|expired)|routing discovery unauthorized|'
@@ -2326,6 +2330,11 @@ class RoomRuntime:
         # A review verdict or a follow-up result is what its recipient is waiting on, so it always
         # wakes them (or joins their running turn); notify=False only quiets new requests.
         notify = arguments.pop('notify', True) or arguments.get('action') in ('respond', 'resolve')
+        if tool == 'room_review' and arguments.get('action') == 'request' and actor != 'user':
+            # Task e14159ba part 4 (harness d3f45553: 34 empty reviewer turns): an agent's request starts no turn
+            # now. C3 wakes the idle reviewer once it has waited ASK_GRACE and is still pending, so a re-request
+            # with a new revision replaces it first and only the newest request wakes.
+            notify = False
         if tool == 'room_followup' and arguments.get('followup_ids'):
             if arguments.get('action') != 'resolve' or arguments.get('followup_id'):
                 raise ValueError('followup_ids is for resolve only, without followup_id')
@@ -2364,11 +2373,25 @@ class RoomRuntime:
         deliveries = {}
         if notify:
             for recipient in dict.fromkeys(result['notify']):
-                if recipient != actor:
-                    deliveries[recipient] = self.deliver_record(recipient, [item], channel, chain, text, ref)
+                if recipient == actor:
+                    continue
+                if tool == 'room_followup' and arguments['action'] == 'resolve' and not self.result_wakes(actor, recipient, [item]):
+                    deliveries[recipient] = RESULT_NOT_WOKEN
+                    continue
+                deliveries[recipient] = self.deliver_record(recipient, [item], channel, chain, text, ref)
         self.ready_wakes.schedule()
         self.project_state_soon()
         return {'record': item, 'changed': True, 'deliveries': deliveries}
+
+    def result_wakes(self, actor, recipient, items):
+        """Task e14159ba part 5 (harness d3f45553: 44 empty turns): a follow-up result starts the other party's turn
+        only when the user gave it, or a task that party owns links it as its wait. Otherwise the result's chat line
+        reaches them in their next turn, and a task whose wait_on names the follow-up is woken by C6a."""
+        if actor == 'user':
+            return True
+        ids = {item['id'] for item in items}
+        return any(task.get('owner') == recipient and task['status'] != 'done'
+                   and (task.get('wait') or {}).get('record_id') in ids for task in self.project_room.state['tasks'])
 
     def deliver_record(self, recipient, items, channel, chain, text, ref):
         """Tell one waiting party about a changed review or follow-up. Shared by single and batch resolve so the
@@ -2414,6 +2437,9 @@ class RoomRuntime:
         deliveries = {}
         for recipient, items in outcome['notify'].items():
             if recipient == actor:
+                continue
+            if not self.result_wakes(actor, recipient, items):
+                deliveries[recipient] = RESULT_NOT_WOKEN
                 continue
             ref = next(r for r in refs if r['id'] == items[0]['id'])
             deliveries[recipient] = self.deliver_record(recipient, items, channel, chain, text, ref)

@@ -100,9 +100,9 @@ class ScopeCap(Rules):
             self.request('r8')
         item = refused.exception.record
         for actor, action in (('worker', 'resolve'), ('peer', 'cancel')):
-            with self.assertRaisesRegex(ValueError, 'only the user answers'):
+            with self.assertRaisesRegex(ValueError, 'or the user, answers a scope-cap item'):
                 self.room.records.followup(actor, action, followup_id=item['id'], result='go on')
-        with self.assertRaisesRegex(ValueError, 'only the user answers'):
+        with self.assertRaisesRegex(ValueError, 'or the user, answers a scope-cap item'):
             self.room.records.resolve_followups('worker', [item['id']], 'go on')
         result = self.room.records.followup('user', 'resolve', followup_id=item['id'], result='continue')
         self.assertEqual(result['notify'], ['system'])  # the runtime skips delivery to the room itself
@@ -117,7 +117,7 @@ class ScopeCap(Rules):
         with self.assertRaises(RuleRefused) as refused:
             self.request('r8')
         self.room.records.followup('user', 'cancel', followup_id=refused.exception.record['id'], result='stop')
-        with self.assertRaisesRegex(ValueError, 'E5: stopped by the user'):
+        with self.assertRaisesRegex(ValueError, 'E5: stopped by the lead or the user'):
             self.request('r9')
         self.assertEqual(len(self.bell()), 1)
         self.request('r9', actor='user')
@@ -155,6 +155,53 @@ class ScopeCap(Rules):
         self.request('next')  # round eight; it supersedes the answered review, which keeps its window
         with self.assertRaises(RuleRefused):
             self.request('same')  # the same string after a verdict is round nine
+
+
+class NoRelays(ScopeCap):
+    """Task e14159ba (Zero #17200): no relay through the owner for a review or a close, and E5 asks the lead."""
+
+    def test_any_agent_requests_a_review_of_its_own_work_on_any_task(self):
+        # media's page hook on frontend's task: 'other' asks the owner 'worker' to review its patch.
+        item = self.request('hook-r1', reviewer='worker', actor='other')['item']
+        self.assertEqual((item['requested_by'], item['author'], item['owner']), ('other', 'other', 'worker'))
+        with self.assertRaisesRegex(ValueError, 'nobody approves their own work'):
+            self.request('hook-r2', reviewer='other', actor='other')
+        result = self.room.records.review('worker', 'respond', review_id=item['id'], revision='hook-r1',
+                                          verdict='approved', text='ok', notes=['rename the hook'])
+        self.assertEqual(result['notify'], ['worker', 'other'])  # owner and author both hear the verdict
+        notes = [f for f in self.room.state['followups'] if f['text'].startswith(f"Review {item['id']} notes")]
+        self.assertEqual([f['assigned_to'] for f in notes], ['other'])  # the author follows up its notes
+
+    def test_the_lead_closes_any_task_and_nobody_else_does(self):
+        with self.assertRaisesRegex(ValueError, 'owned by worker'):
+            self.room.task('peer', 'update', self.first, close_reason='parked', close_pointer=self.second)
+        self.room.state['responders'] = {'lead': 'peer'}
+        with self.assertRaisesRegex(ValueError, 'owned by worker'):
+            self.room.task('peer', 'update', self.first, status='done')  # only a closure, not other edits
+        self.room.task('peer', 'update', self.first, close_reason='parked', close_pointer=self.second)
+        task = next(t for t in self.room.state['tasks'] if t['id'] == self.first)
+        self.assertEqual((task['status'], task['closure']['by']), ('done', 'peer'))
+        with self.assertRaisesRegex(ValueError, 'owned by worker'):
+            self.room.task('other', 'update', self.second, close_reason='parked', close_pointer=self.first)
+
+    def test_the_cap_asks_the_lead_who_can_grant_or_stop(self):
+        self.room.state['responders'] = {'lead': 'peer'}
+        self.fill()
+        with self.assertRaises(RuleRefused) as refused:
+            self.request('r8')
+        item = refused.exception.record
+        self.assertEqual(item['assigned_to'], 'peer')
+        self.assertIn('The lead, @peer, decides', str(refused.exception))
+        with self.assertRaisesRegex(ValueError, 'or the user, answers a scope-cap item'):
+            self.room.records.followup('worker', 'resolve', followup_id=item['id'], result='go on')
+        self.room.records.resolve_followups('peer', [item['id']], 'continue')
+        self.request('r8')  # the lead granted SCOPE_REVIEW_ROUNDS more
+        self.fill(self.second)
+        with self.assertRaises(RuleRefused) as second:
+            self.request('r8', task_id=self.second)
+        self.room.records.followup('peer', 'cancel', followup_id=second.exception.record['id'], result='enough')
+        with self.assertRaisesRegex(ValueError, 'E5: stopped by the lead or the user'):
+            self.request('r9', task_id=self.second)
 
 
 class InstallChecks(unittest.TestCase):
