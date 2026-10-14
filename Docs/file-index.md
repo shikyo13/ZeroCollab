@@ -59,7 +59,7 @@ Every source file, with its line count and the purpose its own header states. Th
 | `cli_homes.py` | 74 | Paths-only CLI home identity shared by web and desktop launchers. |
 | `config_loader.py` | 164 | Shared config loader - merges config.toml + config.local.toml. |
 | `coordination_queue.py` | 121 | Coalesce pending wake-ups; resolve record references immediately before delivery. |
-| `coordination_records.py` | 558 | Durable peer reviews and follow-ups shared by the board and agent tools. |
+| `coordination_records.py` | 626 | Durable peer reviews and follow-ups shared by the board and agent tools. |
 | `coordination_state.py` | 73 | Task execution facts. Waiting is derived from records, never from elapsed time. |
 | `decision_flow.py` | 1055 | Team decisions: a bounded, attributed discussion that ends in a user-recorded decision. |
 | `durable.py` | 24 | Atomic app-side text persistence; callers own transaction ordering and locks. |
@@ -87,10 +87,10 @@ Every source file, with its line count and the purpose its own header states. Th
 | `motion_studio.py` | 1147 | Motion studio: saved synthetic scenes, an in-app preview page and local video export. |
 | `motion_studio_jobs.py` | 53 | Caller tasks for MediaJobs. No queue or worker authority lives here. |
 | `native_adapters.py` | 892 | Official, locally authenticated CLI protocols. No credential handling. |
-| `process_enforcement.py` | 170 | E3, the release train as a room action (Docs/process-enforcement.md, task a7da2f10, Zero #16116). |
-| `profile_bell.py` | 183 | Role profile approvals in the user's bell (task b0eaf89e, Zero f14bfb67). |
+| `process_enforcement.py` | 431 | E3, the release train as a room action (Docs/process-enforcement.md, task a7da2f10, Zero #16116). |
+| `profile_bell.py` | 184 | Role profile approvals in the user's bell (task b0eaf89e, Zero f14bfb67). |
 | `project_registry.py` | 834 | Index of every project this room has worked in: board, team, goal, chats and repository. |
-| `project_room.py` | 1749 | Durable project coordination and bounded room context, without model calls. |
+| `project_room.py` | 1866 | Durable project coordination and bounded room context, without model calls. |
 | `provider_controls.py` | 200 | Room-local model/effort preferences and official, read-only provider catalogs. |
 | `provider_keys.py` | 480 | API keys for OpenAI-compatible servers (Docs/providers.md, slice S5a). |
 | `provider_prices.py` | 100 | Built-in API prices for Anthropic and OpenAI key connections (Docs/providers.md, S5b). |
@@ -100,21 +100,23 @@ Every source file, with its line count and the purpose its own header states. Th
 | `queue_file.py` | 75 | Coordinate JSONL queue producers, consumers and explicit clears across processes. |
 | `ready_wakes.py` | 251 | Ready-task wakes: wake an idle owner once for authorised, actionable work it already owns. |
 | `registry.py` | 824 | Runtime Registry - single source of truth for all live agent state. |
-| `release_agent.py` | 146 | Server-side release checks. These functions do not grant authority or queue deploys. |
+| `release_agent.py` | 149 | Server-side release checks. These functions do not grant authority or queue deploys. |
 | `release_completion.py` | 115 | Terminal receipt adapter to the runtime's existing durable release wake queue. |
 | `release_control.py` | 164 | Host-wide manual Stop state, independent of any project or rollback snapshot. |
-| `release_interface.py` | 60 | Strict public arguments for room_release; authorization stays in the host core. |
+| `release_intake.py` | 323 | E4 host-owned donor checks and handoff dispositions. |
+| `release_interface.py` | 85 | Strict public arguments for room_release; authorization stays in the host core. |
 | `release_maintenance.py` | 196 | App half of agent deployment drain; reuses the existing maintenance record. |
-| `release_manager.py` | 388 | Room release core: bounded reads and receipt-bound installation verification. |
+| `release_manager.py` | 445 | Room release core: bounded reads and receipt-bound installation verification. |
+| `release_metadata.py` | 83 | Bound stage metadata to the package fingerprint without changing the host packer. |
 | `release_pack.py` | 218 | Package a committed revision as a release the supervisor can deploy. |
 | `release_rehearse.py` | 186 | Fixed host rehearsal: exact package, empty room, private homes and loopback. |
-| `release_request.py` | 281 | Agent admission policy for the existing deployment queue, not a second engine. |
-| `release_stage.py` | 229 | Private, owned release_pack worker; callers never supply paths or commands. |
+| `release_request.py` | 295 | Agent admission policy for the existing deployment queue, not a second engine. |
+| `release_stage.py` | 253 | Private, owned release_pack worker; callers never supply paths or commands. |
 | `response_claims.py` | 220 | The lead answers untagged human messages (Zero #12950; first built for @all, Zero #12480). |
-| `room_deploy.py` | 415 | App side of the supervisor protocol. This module never stops or replaces the server. |
+| `room_deploy.py` | 439 | App side of the supervisor protocol. This module never stops or replaces the server. |
 | `room_goals.py` | 164 | Explicit shared goals. Event-driven continuation, never a background model poll. |
 | `room_markup.py` | 96 | Bounded raster markup shared by agent tools; no network or chat side effects. |
-| `room_mcp.py` | 410 | Run-scoped local coordination tools for official native CLIs. |
+| `room_mcp.py` | 439 | Run-scoped local coordination tools for official native CLIs. |
 | `room_runtime.py` | 3464 | Managed agents for the ZeroCollab persistent workspace. |
 | `room_writer.py` | 301 | Windows writer ownership shared by direct rooms and their supervisor. |
 | `router.py` | 121 | Message routing based on @mentions with per-channel loop guard. |
@@ -127,7 +129,7 @@ Every source file, with its line count and the purpose its own header states. Th
 | `ui_composing.py` | 122 | Whether any open room tab may be mid-edit, for the deployment typing guard (frontend 7cfd8ed6, Astra 26a91642, design 7712dc49). Tabs send booleans only: no text, drafts, ids or times. |
 | `ui_sessions.py` | 148 | Browser sign-in for the web room, so the page never carries the UI token (security c6e72a34, design Docs/security/ui-session-proposal.md r2, approved e1776689). |
 | `video_analysis.py` | 347 | Video analysis for agents (Zero #14935, task 53e691c7): measure a video so an agent can judge its own export against a reference instead of guessing from a few stills. |
-| `work_continuity.py` | 490 | Work continuity: the room keeps work moving itself (Docs/work-continuity.md r3, task c54e453b, Zero #16289). |
+| `work_continuity.py` | 638 | Work continuity: the room keeps work moving itself (Docs/work-continuity.md r3, task c54e453b, Zero #16289). |
 | `wrapper.py` | 836 | Agent wrapper - runs the real interactive CLI with auto-trigger on @mentions. |
 | `wrapper_api.py` | 350 | API agent wrapper - bridges the chat room to an OpenAI-compatible endpoint. |
 | `wrapper_unix.py` | 280 | Mac/Linux agent injection - pastes the prompt into the agent CLI via tmux. |
@@ -177,8 +179,8 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 | `components/BackendControls.tsx` | 121 | - |
 | `components/brand.ts` | 9 | - |
 | `components/ChatSearch.tsx` | 76 | Ctrl+K quick switcher: jump to any chat (open, closed or pre-project history), project or view by title. It searches titles, not message text. Opening a chat goes through channels.js. |
-| `components/deployments.css` | 42 | - |
-| `components/Deployments.tsx` | 256 | - |
+| `components/deployments.css` | 66 | - |
+| `components/Deployments.tsx` | 331 | - |
 | `components/ErrorBoundary.tsx` | 32 | - |
 | `components/HeaderBar.tsx` | 172 | The single header row: where you are (chat or view, then project) on the left; the team roster and the room's stop/resume on the right. |
 | `components/Help.tsx` | 25 | - |
@@ -342,7 +344,9 @@ Loaded by `static/index.html` in this order (see [dependency-map.md](dependency-
 - `tests/test_queue_file.py`
 - `tests/test_ready_wakes.py`
 - `tests/test_registry_persistence.py`
+- `tests/test_release_adapter.py`
 - `tests/test_release_block_wait.py`
+- `tests/test_release_checks.py`
 - `tests/test_release_completion_filter.py`
 - `tests/test_restored_chain.py`
 - `tests/test_review_hashing.py`

@@ -4,7 +4,7 @@ import { useRoomEvent } from '../lib/room';
 import './deployments.css'
 import { ReleaseGrantControl } from './ReleaseGrant';
 
-type Release = { id: string; commit: string; version?: string; title?: string; subject?: string; notes?: string; created: string | number; manifest_sha: string; files: { path: string; sha256: string }[]; deletions: string[]; rehearsal?: string; rehearsal_passed?: boolean; rollback?: string; relation?: 'newer' | 'older' | 'current'; reviews?: BoardReview[] };
+type Release = { id: string; commit: string; version?: string; title?: string; subject?: string; notes?: string; installed_at?: string; created: string | number; manifest_sha: string; files: { path: string; sha256: string }[]; deletions: string[]; rehearsal?: string; rehearsal_passed?: boolean; rollback?: string; relation?: 'newer' | 'older' | 'current'; reviews?: BoardReview[] };
 type BoardReview = { id: string; status: string; reviewer?: string; revision?: string; task_id?: string; task_title?: string };
 // The supervisor writes the outcome sentence (including a refusal's reason) to detail.
 type Receipt = { id: string; release_id: string; previous_release_id?: string; status: string; detail?: string; error?: string; started?: string; steps?: { time?: string; step?: string }[]; backup?: string };
@@ -19,6 +19,80 @@ function deploymentPhase(state: State | null): string {
   return label(state?.supervisor.step || state?.supervisor.state);
 }
 const releaseName = (r?: Partial<Release>) => r?.version || r?.id || 'this release';
+
+type NoteSection = { heading: string; text: string };
+/** Chat's heading/list/bold/code subset, rendered as React text nodes. No HTML,
+ * links or classic-script marked dependency enters this release surface. */
+function noteInline(text: string) {
+  return text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((part, i) =>
+    part.startsWith('`') && part.endsWith('`') ? <code key={i}>{part.slice(1, -1)}</code>
+      : part.startsWith('**') && part.endsWith('**') ? <strong key={i}>{part.slice(2, -2).split(/(`[^`\n]+`)/g).map((s, j) => s.startsWith('`') && s.endsWith('`') ? <code key={j}>{s.slice(1, -1)}</code> : s)}</strong>
+        : part);
+}
+function splitNotes(notes = ''): NoteSection[] | null {
+  const lines = notes.replace(/\r\n?/g, '\n').split('\n');
+  if (!lines.some(line => /^##\s+\S/.test(line))) return null;
+  const sections: NoteSection[] = [];
+  let section: NoteSection = { heading: '', text: '' };
+  for (const line of lines) {
+    const heading = /^##\s+(.+?)\s*#*\s*$/.exec(line);
+    if (heading) {
+      if (section.text.trim()) sections.push(section);
+      section = { heading: heading[1], text: '' };
+    } else section.text += line + '\n';
+  }
+  if (section.text.trim()) sections.push(section);
+  return sections;
+}
+function NoteBody({ text }: { text: string }) {
+  const blocks: { list: boolean; lines: string[] }[] = [];
+  for (const line of text.trim().split('\n')) {
+    if (!line.trim()) { blocks.push({ list: false, lines: [] }); continue; }
+    const bullet = /^\s*[-*+]\s+(.+)$/.exec(line);
+    let block = blocks.at(-1);
+    if (!block || block.list !== !!bullet) { block = { list: !!bullet, lines: [] }; blocks.push(block); }
+    block.lines.push(bullet ? bullet[1] : line);
+  }
+  return <>{blocks.filter(b => b.lines.length).map((b, i) => b.list
+    ? <ul key={i}>{b.lines.map((line, j) => <li key={j}>{noteInline(line)}</li>)}</ul>
+    : <p key={i}>{noteInline(b.lines.join('\n'))}</p>)}</>;
+}
+function ReleaseNotes({ notes, technical = false }: { notes?: string; technical?: boolean }) {
+  const sections = splitNotes(notes);
+  if (!sections) return technical ? null : <p className="deploy-notes">{notes?.trim() ? notes : 'No release notes were provided for this package.'}</p>;
+  return <>{sections.filter(s => (s.heading.toLowerCase() === 'technical') === technical).map((s, i) =>
+    <section key={i} className={`deploy-note-section${s.heading.toLowerCase() === 'needs you' ? ' deploy-needs-you' : ''}`}>
+      {s.heading && <h4>{s.heading}</h4>}<div><NoteBody text={s.text} /></div>
+    </section>)}</>;
+}
+function Changelog({ data }: { data: State }) {
+  // installed_at comes from the server's complete successful receipt history.
+  // "older" describes staging order, not proof that a package was installed.
+  const current = data.releases.find(r => r.id === data.current.id)
+    ?? (data.current.id ? data.current : undefined);
+  const past = data.releases.filter(r => r.id !== data.current.id && !!r.installed_at)
+    .sort((a, b) => b.installed_at!.localeCompare(a.installed_at!));
+  const ordered = current ? [current, ...past] : past;
+  return <section className="deploy-changelog" aria-labelledby="changelog-title">
+    <h3 id="changelog-title">Changelog</h3>
+    <p className="bd-muted">Release notes for the current and previously installed releases.</p>
+    {!ordered.length && <p className="bd-muted">No release notes are available yet.</p>}
+    {ordered.map(r => {
+      // Server-local YYYY-MM-DD HH:MM:SS; never substitute a build date.
+      const installed = r.installed_at;
+      const isCurrent = r.id === data.current.id;
+      return <details className="deploy-release-entry" key={`${r.id}:${isCurrent}`} open={isCurrent}>
+        <summary><span className="deploy-release-summary"><span><strong>{releaseName(r)}</strong>{isCurrent && <span className="bd-pill">Current</span>}</span>
+          <span className="deploy-installed-date bd-muted">{installed ? <>Installed <time>{installed}</time></> : 'Install date not recorded'}</span></span></summary>
+        <div className="deploy-release-body">
+          <h4 className="deploy-release-title">{r.title || r.subject || releaseName(r)}</h4>
+          <ReleaseNotes notes={r.notes} />
+          {splitNotes(r.notes)?.some(s => s.heading.toLowerCase() === 'technical') && <details className="deploy-technical"><summary>Technical details</summary><ReleaseNotes notes={r.notes} technical /></details>}
+        </div>
+      </details>;
+    })}
+  </section>;
+}
 
 /** Board reviews linked to the package, shown with their live board state. */
 function ReviewEvidence({ reviews }: { reviews?: BoardReview[] }) {
@@ -190,11 +264,11 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
         <p className="bd-muted">Release {releaseName(candidate)}</p>
         <h3>{candidate.title || candidate.subject || candidate.version || 'Prepared release'}</h3>
         <section className="deploy-changes" aria-label="Release notes">
-          <h4>What changes</h4>
-          <p className="deploy-notes">{candidate.notes?.trim() ? candidate.notes : 'No release notes were provided for this package.'}</p>
+          <ReleaseNotes notes={candidate.notes} />
         </section>
         <details key={candidate.id} className="deploy-technical">
           <summary>Technical details: review, rehearsal and recovery</summary>
+          <ReleaseNotes notes={candidate.notes} technical />
           <p className="bd-muted">Candidate <code>{candidate.commit?.slice(0, 12)}</code> · {candidate.files?.length ?? 0} files · {candidate.deletions?.length ?? 0} removals</p>
           <div className="deploy-evidence"><p><strong>Review</strong><br /><ReviewEvidence reviews={candidate.reviews} /></p><p><strong>Rehearsal</strong><br />{candidate.rehearsal || 'No rehearsal evidence recorded in this package.'}</p><p><strong>Recovery</strong><br />{candidate.rollback || 'The supervisor must verify recovery before reopening the room.'}</p></div>
           <h4>Exact release and changed files</h4>
@@ -210,6 +284,7 @@ export function Deployments({ feed }: { feed: DeploymentFeed }) {
         <p id="deployment-idle-help" className="bd-muted"><strong>Approve when idle:</strong> Waits up to 10 minutes without interrupting current turns. If they cannot finish in time, the install is cancelled.</p>
         <p className="bd-muted">Both choices apply only to this exact release. The room briefly goes offline during the install; unsent drafts stay in their tabs.</p>
       </article> : <p className="bd-muted">No newer release is staged. The team prepares and reviews a package before you can approve it.</p>}
+      <Changelog data={data} />
       {rollbackTarget && <details className="deploy-rollback">
         <summary>Earlier releases (rollback) · {earlier.length}</summary>
         {earlier.length > 1 && <label className="deploy-select">Earlier release<select value={rollbackTarget.id} onChange={e => { setRollbackId(e.target.value); setConfirmedKey(''); setActionError(''); }}>{earlier.map(r => <option key={r.id} value={r.id}>{r.title || r.version || r.id}</option>)}</select></label>}

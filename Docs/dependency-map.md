@@ -91,16 +91,18 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `queue_file` | - | - |
 | `ready_wakes` | - | - |
 | `registry` | durable | - |
-| `release_agent` | release_pack | - |
+| `release_agent` | release_metadata, release_pack | - |
 | `release_completion` | release_manager | - |
 | `release_control` | durable | - |
-| `release_interface` | - | - |
+| `release_intake` | project_registry, release_pack, release_request, release_stage, room_deploy | - |
+| `release_interface` | release_metadata | - |
 | `release_maintenance` | room_deploy | - |
-| `release_manager` | release_completion, release_interface, release_pack, release_rehearse, release_request, release_stage | - |
+| `release_manager` | release_completion, release_intake, release_interface, release_pack, release_rehearse, release_request, release_stage | - |
+| `release_metadata` | release_pack | - |
 | `release_pack` | - | - |
 | `release_rehearse` | release_agent, release_interface, release_pack, release_stage, room_deploy | httpx |
-| `release_request` | release_agent, release_interface, release_manager, release_pack, release_rehearse, release_stage, room_deploy | - |
-| `release_stage` | project_registry, release_agent, release_pack, room_deploy, shared_browser | - |
+| `release_request` | release_agent, release_interface, release_manager, release_metadata, release_pack, release_rehearse, release_stage, room_deploy | - |
+| `release_stage` | project_registry, release_agent, release_intake, release_metadata, release_pack, room_deploy, shared_browser | - |
 | `response_claims` | - | - |
 | `room_deploy` | durable, mcp_bridge, release_control, release_maintenance, release_manager | fastapi |
 | `room_goals` | coordination_records, durable | - |
@@ -169,7 +171,7 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `native_adapters` | login_gemini, provider_controls, provider_setup, room_runtime |
 | `process_enforcement` | profile_bell, room_runtime, work_continuity |
 | `profile_bell` | room_runtime |
-| `project_registry` | app, coordination_records, decision_flow, manager_wakes, project_room, release_stage, room_runtime, team_builder |
+| `project_registry` | app, coordination_records, decision_flow, manager_wakes, project_room, release_intake, release_stage, room_runtime, team_builder |
 | `project_room` | agent_profiles, coordination_records, decision_flow, process_enforcement, project_registry, provider_store, room_runtime, team_builder |
 | `provider_controls` | agent_profiles, room_runtime |
 | `provider_keys` | native_adapters, provider_controls, provider_relay, provider_setup, provider_store, room_runtime |
@@ -183,15 +185,17 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `release_agent` | release_rehearse, release_request, release_stage |
 | `release_completion` | release_manager |
 | `release_control` | room_deploy, room_runtime |
+| `release_intake` | release_manager, release_stage |
 | `release_interface` | release_manager, release_rehearse, release_request, room_runtime |
 | `release_maintenance` | host_handover, room_deploy |
 | `release_manager` | release_completion, release_request, room_deploy |
-| `release_pack` | release_agent, release_manager, release_rehearse, release_request, release_stage, supervisor |
+| `release_metadata` | release_agent, release_interface, release_request, release_stage |
+| `release_pack` | release_agent, release_intake, release_manager, release_metadata, release_rehearse, release_request, release_stage, supervisor |
 | `release_rehearse` | release_manager, release_request |
-| `release_request` | release_manager |
-| `release_stage` | release_manager, release_rehearse, release_request |
+| `release_request` | release_intake, release_manager |
+| `release_stage` | release_intake, release_manager, release_rehearse, release_request |
 | `response_claims` | room_runtime |
-| `room_deploy` | release_maintenance, release_rehearse, release_request, release_stage, room_runtime |
+| `room_deploy` | release_intake, release_maintenance, release_rehearse, release_request, release_stage, room_runtime |
 | `room_goals` | room_runtime |
 | `room_markup` | project_room |
 | `room_runtime` | file_preview, project_registry, provider_setup, provider_store, run |
