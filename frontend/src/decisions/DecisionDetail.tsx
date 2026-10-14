@@ -1,3 +1,4 @@
+import { DecisionText } from './DecisionText';
 import { useEffect, useId, useRef, useState } from 'react';
 import { api, errorMessage } from '../lib/api';
 import type { RunInfo } from '../lib/types';
@@ -9,9 +10,9 @@ import { DecisionRecommendation, DecisionChoices, DecisionMedia, decisionName } 
 function ContributionCard({c, label}: {c: Contribution; label: (name: string) => string}) {
   return <article className="decision-contribution"><h3>{label(c.author)} · {c.kind === 'missing' ? 'No response' : c.kind}</h3>
     <p className="decision-muted">Revision {c.revision} · {c.id}{c.context && ` · ${contextLabel(c.context)}`}{c.before_new_direction && ' · Before new direction'}</p>
-    <p className="decision-text">{c.text || c.reason || `No response from ${label(c.author)}`}</p>
+    <DecisionText text={c.text || c.reason || `No response from ${label(c.author)}`}/>
     <DecisionMedia c={c}/>
-    {!!c.evidence?.length && <div><strong>Evidence</strong><ul>{c.evidence.map((s,i)=><li key={i}>{s}</li>)}</ul></div>}
+    {!!c.evidence?.length && <div><strong>Evidence</strong><ul>{c.evidence.map((s,i)=><li key={i}><DecisionText text={s}/></li>)}</ul></div>}
     {!!c.responds_to?.length && <p className="decision-muted">Responds to {c.responds_to.join(', ')}</p>}
   </article>;
 }
@@ -68,7 +69,7 @@ export default function DecisionDetail({d, listing, active, agents, runs, receiv
     <div className="decision-banner" role="status"><strong>{status}</strong></div><p className="decision-sr-only" role="status">{announcement}</p>
     {error && <p className="decision-error" role="alert">{error}</p>}
     <DecisionRecommendation d={d} agents={agents} compact/><DecisionChoices key={d.id} d={d} receive={receive}/><details open className="decision-full-recommendation"><summary>Full recommendation and responses</summary><DecisionRecommendation d={d} agents={agents}/></details>
-    <details className="decision-card"><summary>Original question and criteria</summary><ul>{d.criteria.map((c,i)=><li key={i}>{c}</li>)}</ul><p className="decision-muted">Participants: {d.participants.map(label).join(', ')}.</p></details>
+    <details className="decision-card"><summary>Original question and criteria</summary><ul>{d.criteria.map((c,i)=><li key={i}><DecisionText text={c}/></li>)}</ul><p className="decision-muted">Participants: {d.participants.map(label).join(', ')}.</p></details>
     {allowed('start') && <section className="decision-card"><h3>Saved draft</h3><p>No participant work has started.</p>
       <p id={id + '-slots'}>Starting opens one dedicated discussion chat. {slots ? `${slots.used} of ${slots.limit} chat slots used.` : listing ? 'Chat capacity is unavailable. The server checks capacity when starting.' : 'Checking chat capacity...'}</p>
       {slotsFull && <p>All chat slots are used. Close a chat before starting; this draft stays saved.</p>}
@@ -86,25 +87,25 @@ export default function DecisionDetail({d, listing, active, agents, runs, receiv
     </section>}
     <details className="decision-card"><summary>Recommendation details and individual responses</summary><div className="decision-layout">
       <section className="decision-card"><h3>Team proposal{proposal && ` · revision ${d.revision}`}</h3>{proposal ? <>
-        <p className="decision-muted">{proposal.id} · by {label(proposal.author)}</p><p className="decision-text">{proposal.text}</p>
-        {!!proposal.agreed?.length && <><h4>Agreed points</h4><ul>{proposal.agreed.map((s,i)=><li key={i}>{s}</li>)}</ul></>}
-        {!!proposal.dissent?.length && <><h4>Remaining dissent</h4><ul>{proposal.dissent.map((s,i)=><li key={i}>{s.point} · {s.by.map(label).join(', ')}</li>)}</ul></>}
-        {!!proposal.unresolved?.length && <><h4>Unresolved questions</h4><ul>{proposal.unresolved.map((s,i)=><li key={i}>{s}</li>)}</ul></>}
-        {!!proposal.would_change?.length && <><h4>Evidence that could change the outcome</h4><ul>{proposal.would_change.map((s,i)=><li key={i}>{s}</li>)}</ul></>}
-        {!!proposal.answers?.length && <><h4>Lead’s challenge responses</h4><ul>{proposal.answers.map(a=><li key={a.challenge_id}>{a.challenge_id} · {a.status} · {a.note}</li>)}</ul></>}
+        <p className="decision-muted">{proposal.id} · by {label(proposal.author)}</p><DecisionText text={proposal.text}/>
+        {!!proposal.agreed?.length && <><h4>Agreed points</h4><ul>{proposal.agreed.map((s,i)=><li key={i}><DecisionText text={s}/></li>)}</ul></>}
+        {!!proposal.dissent?.length && <><h4>Remaining dissent</h4><ul>{proposal.dissent.map((s,i)=><li key={i}><DecisionText text={s.point}/><span> · {s.by.map(label).join(', ')}</span></li>)}</ul></>}
+        {!!proposal.unresolved?.length && <><h4>Unresolved questions</h4><ul>{proposal.unresolved.map((s,i)=><li key={i}><DecisionText text={s}/></li>)}</ul></>}
+        {!!proposal.would_change?.length && <><h4>Evidence that could change the outcome</h4><ul>{proposal.would_change.map((s,i)=><li key={i}><DecisionText text={s}/></li>)}</ul></>}
+        {!!proposal.answers?.length && <><h4>Lead’s challenge responses</h4><ul>{proposal.answers.map(a=><li key={a.challenge_id}>{a.challenge_id} · {a.status}<DecisionText text={a.note}/></li>)}</ul></>}
       </> : <p>No proposal has been submitted. Initial positions and challenges stay in the contribution trail.</p>}
-      {!!d.unanswered_challenges?.length && <div className="decision-warning"><h4>Not answered by the lead</h4>{d.unanswered_challenges.map(cid=>{const c=d.contributions.find(c=>c.id===cid); return <p key={cid}>{cid} · {c && `${label(c.author)}: ${c.text}`}</p>;})}</div>}
+      {!!d.unanswered_challenges?.length && <div className="decision-warning"><h4>Not answered by the lead</h4>{d.unanswered_challenges.map(cid=>{const c=d.contributions.find(c=>c.id===cid); return <div key={cid}>{cid} · {c && <><strong>{label(c.author)}</strong><DecisionText text={c.text}/></>}</div>;})}</div>}
       </section>
       <section className="decision-card"><h3>Responses to {proposal ? `proposal ${proposal.id}` : 'the proposal'}</h3>{d.participants.map(p => {
         const vote = votes[p], position = [...d.contributions].reverse().find(c=>c.author===p&&c.kind==='position'&&!c.before_new_direction);
         return <article className="decision-verdict" key={p}><h4>{label(p)} · <span>{vote ? vote.verdict === 'agree' ? 'Agrees' : 'Dissents' : 'No verdict'}</span></h4>
-          <p className="decision-muted">{position ? contextLabel(position.context) : 'No initial position'}{vote && ` · revision ${vote.revision} · ${vote.proposal_id}`}</p><p className="decision-text">{vote?.reason || (proposal ? 'No response to this proposal revision.' : 'Waiting for a proposal.')}</p>
+          <p className="decision-muted">{position ? contextLabel(position.context) : 'No initial position'}{vote && ` · revision ${vote.revision} · ${vote.proposal_id}`}</p><DecisionText text={vote?.reason || (proposal ? 'No response to this proposal revision.' : 'Waiting for a proposal.')}/>
           {d.contributions.some(c=>c.author===p&&c.kind==='missing') && <p className="decision-warning">Skipped stages: {[...new Set(d.contributions.filter(c=>c.author===p&&c.kind==='missing').map(c=>c.stage))].join(', ')}</p>}
         </article>;
       })}</section>
     </div></details>
     <details className="decision-card decision-record"><summary>{recorded ? 'Saved outcome and tasks' : 'Proposed follow-up tasks'}</summary>
-      {!tasks.length&&<p>No follow-up tasks.</p>}{tasks.map((task,i)=><article className="decision-task" key={i}><strong>{task.title}</strong><p className="decision-text">{task.details}</p>{task.id&&<button className="bd-btn" onClick={()=>onTask(task.id!)}>Open task</button>}{task.error&&<p role="alert">{task.error}</p>}</article>)}
+      {!tasks.length&&<p>No follow-up tasks.</p>}{tasks.map((task,i)=><article className="decision-task" key={i}><strong>{task.title}</strong><DecisionText text={task.details}/>{task.id&&<button className="bd-btn" onClick={()=>onTask(task.id!)}>Open task</button>}{task.error&&<p role="alert">{task.error}</p>}</article>)}
       <details><summary>Record text</summary><pre>{notePreview(d)}</pre></details>
     </details>
     <details className="decision-card decision-trail"><summary>See how the team got here · {d.contributions.length} contributions</summary>{d.contributions.map(c=>c.sealed?<p key={c.id}>{label(c.author)} submitted a hidden proposal.</p>:<ContributionCard key={c.id} c={c} label={label} />)}</details>

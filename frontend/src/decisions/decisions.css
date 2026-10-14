@@ -9,6 +9,11 @@
 .decision-card h4 { margin: 15px 0 8px; }
 .decision-muted { color: var(--text-dim); font-size: 13px; }
 .decision-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.decision-markdown { white-space: normal; min-width: 0; max-width: 100%; overflow-x: auto; line-height: 1.5; }
+.decision-markdown :is(strong,h1,h2,h3,h4,h5,h6) { color: inherit; }
+.decision-text.decision-markdown ul { list-style: disc; padding-left: 20px; }
+.decision-text.decision-markdown ol { list-style: decimal; padding-left: 20px; }
+.decision-dock .decision-markdown a { display: inline; }
 .decision-stages { display: flex; gap: 12px; list-style: none; padding: 0; margin: 18px 0; flex-wrap: wrap; }
 .decision-stages li { flex: 1; min-width: 135px; border-top: 2px solid var(--border-strong); padding-top: 9px; font-size: 13px; color: var(--text-dim); }
 .decision-stages li[aria-current] { color: var(--accent-text); border-color: var(--accent); }

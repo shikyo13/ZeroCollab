@@ -1,3 +1,4 @@
+import { DecisionText } from './DecisionText';
 import { memo, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { api, errorMessage } from '../lib/api';
@@ -87,21 +88,20 @@ export function DecisionRecommendation({d,agents,compact=false}:{d:Decision;agen
   const agrees=d.participants.filter(id=>votes[id]?.verdict==='agree'),dissent=d.participants.filter(id=>votes[id]?.verdict==='dissent');
   const missing=d.participants.filter(id=>!votes[id]),recorded=!!d.record?.note_id || d.stage==='recorded';
   const text=proposal?.text || '';
-  const preview=text.length>140 ? text.slice(0,140)+'…' : text;
   return <section className={`decision-recommendation${compact?' is-compact':''}`}>
     <h3>{recorded?'Recorded recommendation':'Team recommendation'}</h3>
-    {proposal ? <><p className="decision-text">{compact?preview:text}</p>
+    {proposal ? <><DecisionText text={text} compact={compact}/>
       <p className="decision-vote-count"><strong>{agrees.length} agree · {dissent.length} dissent · {missing.length} no verdict</strong></p>
       {!compact&&<><p className="decision-muted">Agree: {agrees.length?agrees.map(id=>nameFor(id,agents)).join(', '):'None yet'}.</p>
-        {dissent.map(id=><p key={id} className="decision-warning">{nameFor(id,agents)} disagrees: {votes[id].reason || 'No reason supplied.'}</p>)}
+        {dissent.map(id=><div key={id} className="decision-warning"><strong>{nameFor(id,agents)} disagrees:</strong><DecisionText text={votes[id].reason || 'No reason supplied.'}/></div>)}
         {!!missing.length&&<p className="decision-muted">No verdict: {missing.map(id=>nameFor(id,agents)).join(', ')}. Missing replies do not count as agreement.</p>}
-        {!!proposal.unresolved?.length&&<><h4>Still open</h4><ul>{proposal.unresolved.map((point,i)=><li key={i}>{point}</li>)}</ul></>}
-        {!!proposal.dissent?.length&&<><h4>Disagreements noted by the lead</h4><ul>{proposal.dissent.map((point,i)=><li key={i}>{point.point} · {point.by.map(id=>nameFor(id,agents)).join(', ')}</li>)}</ul></>}
+        {!!proposal.unresolved?.length&&<><h4>Still open</h4><ul>{proposal.unresolved.map((point,i)=><li key={i}><DecisionText text={point}/></li>)}</ul></>}
+        {!!proposal.dissent?.length&&<><h4>Disagreements noted by the lead</h4><ul>{proposal.dissent.map((point,i)=><li key={i}><DecisionText text={point.point}/><span> · {point.by.map(id=>nameFor(id,agents)).join(', ')}</span></li>)}</ul></>}
       </>}
-        {!compact&&!!proposal.agreed?.length&&<><h4>Agreed points</h4><ul>{proposal.agreed.map((point,i)=><li key={i}>{point}</li>)}</ul></>}
+        {!compact&&!!proposal.agreed?.length&&<><h4>Agreed points</h4><ul>{proposal.agreed.map((point,i)=><li key={i}><DecisionText text={point}/></li>)}</ul></>}
     </> : <p>{d.stage==='positions'||d.stage==='draft'?'The team is collecting proposals; no recommendation yet.':d.stage==='stopped'?'Discussion stopped without a current recommendation.':'No recommendation has been submitted. The discussion has not produced an answer yet.'}</p>}
     <p className="decision-human-status">{d.choice?`You ${d.choice.kind==='approve'?'approved':'rejected'} this proposal.`:recorded?'Outcome recorded.':d.stage==='review'?'Ready for your review.':d.stage==='stopped'?'Discussion ended.':'The team is discussing.'}</p>
-    {!compact&&d.choice&&<details><summary>Your saved feedback</summary><p>{d.choice.note}</p>{d.choice.comments?.map((c,i)=><blockquote key={i}><strong>{c.point || c.field}</strong><p>{c.text}</p></blockquote>)}<DecisionMedia c={{...proposal!,id:'human-choice',sealed:false,attachments:d.choice.attachments}}/></details>}
+    {!compact&&d.choice&&<details><summary>Your saved feedback</summary><DecisionText text={d.choice.note}/>{d.choice.comments?.map((c,i)=><blockquote key={i}><strong>{c.point || c.field}</strong><DecisionText text={c.text}/></blockquote>)}<DecisionMedia c={{...proposal!,id:'human-choice',sealed:false,attachments:d.choice.attachments}}/></details>}
   </section>;
 }
 
@@ -157,7 +157,7 @@ export function DecisionChoices({d,receive}:{d:Decision;receive:(d:Decision)=>vo
       {mode==='reject'&&<p>Rejection closes this proposal and creates no tasks. Use Request changes to ask the team to try again.</p>}
       {mode==='stop'?<p>Contributions stay saved.</p>:<label>{mode==='edit'?'Revised recommendation':mode==='return'?'What would you like changed?':'Your note (optional)'}<textarea aria-label={mode==='edit'?'Revised recommendation':mode==='return'?'What would you like changed?':'Your note (optional)'} maxLength={mode==='edit'?8000:2000} value={mode==='edit'?editText:draft} onChange={e=>mode==='edit'?setEditText(e.target.value):setDraft(e.target.value)}/></label>}
       {mode!=='stop'&&mode!=='edit'&&<><label>Comment on<select aria-label="Comment on" value={point} onChange={e=>setPoint(e.target.value)}>{points.map(p=><option value={p.value} key={p.value}>{p.label}</option>)}</select></label><label>Comment<textarea aria-label="Comment" maxLength={1000} value={comment} onChange={e=>setComment(e.target.value)}/></label><button className="bd-btn" disabled={!comment.trim()||comments.length>=12||busy||stale} onClick={addComment}>Add comment</button>
-        <ul className="decision-feedback-list">{comments.map((c,i)=><li key={i}><strong>{points.find(p=>p.value===c.field+(c.index!==undefined?':'+c.index:''))?.label || c.field}</strong><p>{c.text}</p><button className="bd-btn" disabled={busy} onClick={()=>setComments(old=>old.filter((_,n)=>n!==i))}>Remove comment</button></li>)}</ul>
+        <ul className="decision-feedback-list">{comments.map((c,i)=><li key={i}><strong>{points.find(p=>p.value===c.field+(c.index!==undefined?':'+c.index:''))?.label || c.field}</strong><DecisionText text={c.text}/><button className="bd-btn" disabled={busy} onClick={()=>setComments(old=>old.filter((_,n)=>n!==i))}>Remove comment</button></li>)}</ul>
         {!!attachments.length&&<div className="decision-feedback-images">{attachments.map((a,i)=><figure key={a.url}><img src={a.url} alt={a.name}/><figcaption>{a.name}<label>Image note (up to 300 characters)<textarea aria-label="Image note (up to 300 characters)" maxLength={300} value={a.note || ''} onChange={e=>setAttachments(old=>old.map((item,n)=>n===i?{...item,note:e.target.value}:item))}/></label><button className="bd-btn" disabled={busy} onClick={()=>setAttachments(old=>old.filter((_,n)=>n!==i))}>Remove image</button></figcaption></figure>)}</div>}
       </>}
       {stale&&<p className="decision-warning">This proposal changed. Your feedback still belongs to the earlier version.</p>}
@@ -217,16 +217,16 @@ export function DecisionPanel({id,project,active,close}:{id:string;project:strin
         <summary>{nameFor(c.author,agents)} · {c.kind}</summary><ContributionContent c={c}/>
       </details>)}
     </details>
-    {!!d.rounds?.length&&<details><summary>Earlier rounds</summary>{d.rounds.map(round=><div key={round.round}><h4>Round {round.round}</h4><p>{round.revealed?'Proposals revealed':'Proposals remain sealed'} · {round.concluded?`Recommendation: ${round.outcome}`:'No recommendation recorded'}</p><p>{round.reason}</p>
-      {round.revealed&&d.contributions.filter(c=>(c.round??1)===round.round&&!c.sealed).map(c=><p className="decision-text" key={c.id}>{nameFor(c.author,agents)}: {c.text || c.reason}</p>)}
+    {!!d.rounds?.length&&<details><summary>Earlier rounds</summary>{d.rounds.map(round=><div key={round.round}><h4>Round {round.round}</h4><p>{round.revealed?'Proposals revealed':'Proposals remain sealed'} · {round.concluded?`Recommendation: ${round.outcome}`:'No recommendation recorded'}</p><DecisionText text={round.reason}/>
+      {round.revealed&&d.contributions.filter(c=>(c.round??1)===round.round&&!c.sealed).map(c=><div key={c.id}><strong>{nameFor(c.author,agents)}</strong><DecisionText text={c.text || c.reason}/></div>)}
     </div>)}</details>}
     <footer className="decision-dock-footer"><span>Keep discussing in chat.</span><a href={decisionURL(d.id)} onClick={e=>{if(!e.ctrlKey&&!e.metaKey&&!e.shiftKey&&!e.altKey){e.preventDefault();openDecision(d.id);}}}>Full record on Board →</a></footer>
   </section>;
 }
 
 function ContributionContent({c}:{c:Contribution}) {
-  return <><p className="decision-text">{c.text || c.reason || 'Status recorded'}</p>
-    {!!c.evidence?.length&&<ul>{c.evidence.map((text,i)=><li key={i}>{text}</li>)}</ul>}
+  return <><DecisionText text={c.text || c.reason || 'Status recorded'}/>
+    {!!c.evidence?.length&&<ul>{c.evidence.map((text,i)=><li key={i}><DecisionText text={text}/></li>)}</ul>}
     <DecisionMedia c={c}/>
   </>;
 }
