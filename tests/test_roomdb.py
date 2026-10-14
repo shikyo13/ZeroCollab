@@ -147,6 +147,23 @@ class RoomDb(unittest.TestCase):
         self.assertEqual(roomdb.current_form(self.folder), 'db')
         self.assertEqual(roomdb.Store.open(self.folder)[1]['spec'], 'acknowledged after the refused block')
 
+    def test_a_retried_export_still_recognises_the_file_an_earlier_failure_left(self):
+        store, state = self.imported()  # systems 13f5dc08: two failures with saves in between
+        state['spec'] = 'A'
+        store.save(state)
+        with patch.object(roomdb, 'record_export', side_effect=sqlite3.OperationalError('disk I/O error')):
+            with self.assertRaises(sqlite3.OperationalError):
+                roomdb.export_for_deploy(self.folder)  # A is published, its recording fails
+        state['spec'] = 'B acknowledged'
+        store.save(state)
+        with patch.object(roomdb, 'durable_write_text', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                roomdb.export_for_deploy(self.folder)  # the retry fails before replacing A
+        state['spec'] = 'C acknowledged'
+        store.save(state)
+        self.assertEqual(roomdb.current_form(self.folder), 'db')
+        self.assertEqual(roomdb.Store.open(self.folder)[1]['spec'], 'C acknowledged')
+
     def test_an_export_that_fails_to_publish_changes_nothing_current(self):
         store, state = self.imported()
         with patch.object(roomdb, 'durable_write_text', side_effect=OSError('disk full')):

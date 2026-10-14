@@ -564,13 +564,17 @@ def export_for_deploy(folder):
     folder = Path(folder)
     if current_form(folder) == 'json':
         Store.open(folder)  # imports the newer JSON as room.db and retires it
-    db = folder / DB_NAME
+    db, target = folder / DB_NAME, folder / JSON_NAME
     with closing(connect(db)) as conn:
         state, _ = exportable(conn, db)
         text = as_json(state)
         digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
-        set_meta(conn, {PENDING_EXPORT_KEY: digest})
-        durable_write_text(folder / JSON_NAME, text)
+        # Whatever coordination.json is on disk now is a recognised copy (current_form said 'db'). Its digest stays
+        # recorded, as last_export, in the same commit that names the new file, so a retry after a failure never
+        # forgets the file it would leave behind (systems 13f5dc08).
+        on_disk = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
+        set_meta(conn, {PENDING_EXPORT_KEY: digest, **({LAST_EXPORT_KEY: on_disk} if on_disk else {})})
+        durable_write_text(target, text)
         record_export(conn, digest)
 
 
