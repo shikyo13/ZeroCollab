@@ -107,6 +107,23 @@ class Continue(Continuity):
         self.assertEqual(self.tick(wc.CONTINUE_GRACE_SECONDS), [])
         self.assertEqual(self.calls, [])  # K1: never a new budget
 
+    def test_a_lost_conversation_joins_the_current_one(self):
+        """ebc50020: a record lost at a restart before chain_records is neither paused nor spent."""
+        self.turn()
+        lost = self.chain
+        self.room.chains.pop(lost)
+        current = self.room.new_chain('general')
+        self.assertEqual(self.tick(wc.CONTINUE_GRACE_SECONDS), ['woke'])
+        self.assertEqual(self.calls[-1]['chain'], current)
+        self.assertNotIn(lost, self.room.chains)  # K1: no new budget under the lost id
+
+    def test_a_saved_paused_conversation_still_holds(self):
+        self.turn()
+        self.room.chains[self.chain]['paused'] = True
+        self.room.new_chain('general')
+        self.assertEqual(self.tick(wc.CONTINUE_GRACE_SECONDS), [])
+        self.assertEqual(self.calls, [])
+
 
 class Progress(Continuity):
     def test_only_changes_to_the_owners_task_count(self):

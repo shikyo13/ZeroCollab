@@ -178,6 +178,8 @@ def send(runtime, room, state, name, wake, now, actions):
     ceiling, fired = (ASK_CEILING, 'asked') if kind == 'ask' else (CONTINUE_CEILING, 'fired')
     if len(recent(state, fired, name, now)) >= ceiling:
         return hold(claim, now, f'{ceiling} automatic {"ask wakes" if kind == "ask" else "turns"} in the last hour')
+    if kind != 'ask':
+        chain = live_chain(room, chain, channel)
     if kind != 'ask' and not budget_open(room, chain):
         return hold(claim, now, 'its conversation is gone, paused or spent (no new budget is created)')
     claim.update(status='sent', at=now, sends=claim['sends'] + 1, reason='')
@@ -536,6 +538,16 @@ def task_hold(runtime, task, name):
 def ready_tasks(runtime, name):
     tasks = [t for t in runtime.project_room.state['tasks'] if t.get('owner') == name and not task_hold(runtime, t, name)]
     return sorted(tasks, key=lambda t: (t.get('priority', 3), -t.get('updated', 0)))
+
+
+def live_chain(room, chain, channel):
+    """The conversation a non-ask wake continues. A saved record stays, so a paused or spent one still holds. One
+    with no record (lost at a restart before chain_records existed, or pruned) is neither: the wake joins the
+    channel's current conversation, under the budget and pause the user sees now, and never a new budget (K1).
+    Otherwise an agent's last chain never changes while it is idle, so the hold would be permanent (task ebc50020)."""
+    if not chain or chain in room.chains:  # no chain at all: the agent has no conversation to continue
+        return chain
+    return room.current_chain.get(channel) or chain
 
 
 def budget_open(room, chain):
