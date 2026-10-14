@@ -5,7 +5,7 @@
 - C3, unanswered asks: an open follow-up or review request for an idle agent that arrived after its last turn
   started wakes it once, through the normal record delivery. notify=false means "not now", never "never".
 - C5, watchdog: an agent idle for IDLE_WAKE_SECONDS with ready working work is woken once per idle stretch, and
-  the lead is woken when the whole team is idle while ready work waits.
+  the lead is woken when the whole team is idle while ready work waits, once per state of that work.
 - C4, visible stall: a wake refused by a ceiling or a spent budget, retries exhausted with no turn starting, an
   agent spinning (continued SPIN_TURNS times with no status, evidence or file change) or still idle after its
   watchdog wake marks the task needs_attention and opens one `system` item for the lead (the user's bell when the
@@ -377,9 +377,16 @@ def fence(text, limit):
     return re.sub(r'<{3,}|>{3,}', lambda match: ' '.join(match.group()), str(text).strip()[:limit])
 
 
-def team_waits(runtime, room, state, lead, stretch, now, actions):
-    """C6d: the whole team is idle, nothing is ready, and open priority-1 work exists: wake the lead once per idle
-    stretch with those tasks and their recorded waits, ones whose named wait is already met first."""
+def board_key(prefix, parts):
+    """A team wake's claim key: a digest of the board state its prompt is about, so an unchanged board hits the done
+    claim and sends nothing. Keyed on the idle stretch, the lead's own reply started a new stretch and the same wake
+    re-fired every TEAM_IDLE_SECONDS up to CONTINUE_CEILING (opus f78ae41b, harness 2701c4fd)."""
+    return f'{prefix}:' + hashlib.sha256('|'.join(sorted(parts)).encode()).hexdigest()[:16]
+
+
+def team_waits(runtime, room, state, lead, now, actions):
+    """C6d: the whole team is idle, nothing is ready, and open priority-1 work exists: wake the lead once per board
+    state with those tasks and their recorded waits, ones whose named wait is already met first."""
     room_state = runtime.project_room.state
     board = {t['id']: t for t in room_state['tasks']}
     open_p1 = [t for t in room_state['tasks'] if t['status'] != 'done' and not t.get('closure')
@@ -404,7 +411,11 @@ def team_waits(runtime, room, state, lead, stretch, now, actions):
     prompt = (f'Work continuity: the whole team has been idle for at least {TEAM_IDLE_SECONDS // 60} minutes, nothing '
               f'is marked ready, and {len(open_p1)} priority-1 tasks are open. Check their waits and get the work '
               f'moving: resume what is unblocked, wake owners, or reassign.\n{listed}')
-    send(runtime, room, state, lead, (f'team-waits:{int(stretch)}', 'team', open_p1[0]['id'], prompt, last.get('chain'),
+    # The lead's own tasks are listed but not keyed: its wait_since moves whenever it edits its own note, so keying
+    # them would let the lead's reply to this wake re-arm it.
+    key = board_key('team-waits', [f"{t['id']},{t['status']},{t.get('wait_since', 0)},{int(met(t))}"
+                                   for t in open_p1 if t['owner'] != lead])
+    send(runtime, room, state, lead, (key, 'team', open_p1[0]['id'], prompt, last.get('chain'),
                                       last.get('channel') or runtime.default_channel(), None), now, actions)
 
 
@@ -416,15 +427,15 @@ def team_wake(runtime, room, state, idle, now, actions):
             or any(action[0] == 'woke' for action in actions)):
         return  # someone is already being woken this pass; the team isn't idle any more
     waiting = [t for n in names for t in ready_tasks(runtime, n)]
-    stretch = max([a.get('ended', 0) for a in state['agents'].values()] + [state['since']])
     if not waiting:
-        team_waits(runtime, room, state, lead, stretch, now, actions)
+        team_waits(runtime, room, state, lead, now, actions)
         return
     last = state['agents'].get(lead) or {}
     listed = ', '.join(f"{t['id']} ({t['owner']})" for t in waiting[:8])
     prompt = (f'Work continuity: the whole team has been idle for at least {TEAM_IDLE_SECONDS // 60} minutes while '
               f'ready work waits: {listed}. Get it moving: wake its owners, reassign it, or record what it waits for.')
-    send(runtime, room, state, lead, (f'team:{int(stretch)}', 'team', waiting[0]['id'], prompt, last.get('chain'),
+    key = board_key('team', [f"{t['id']},{t.get('work_rev', 0)}" for t in waiting])
+    send(runtime, room, state, lead, (key, 'team', waiting[0]['id'], prompt, last.get('chain'),
                                       last.get('channel') or runtime.default_channel(), None), now, actions)
 
 

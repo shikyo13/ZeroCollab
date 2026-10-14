@@ -426,6 +426,24 @@ class Waits(Continuity):
         self.drain('lead')
         self.assertEqual(self.tick(wc.TEAM_IDLE_SECONDS + 2), [])  # once per idle stretch
 
+    def test_the_lead_wake_fires_once_per_board_state_not_per_reply(self):
+        # opus f78ae41b, harness 2701c4fd: the lead's reply started a new idle stretch, so an unchanged board re-fired.
+        coordination = self.room.task('lead', 'create', title='Coordination', owner='lead', priority=1)['id']
+        self.room.task('worker', 'update', task_id=self.task_id, next_action_state='waiting',
+                       next_action='blocked on design', priority=1)
+        self.turn(name='lead', progress={})
+        self.turn(name='peer', progress={})
+        self.assertEqual(self.tick(wc.TEAM_IDLE_SECONDS + 1), ['woke'])
+        key = self.calls[-1]['key']
+        self.drain('lead')
+        # The lead answers and touches its own note, which moves its own wait_since; nobody else's wait changed.
+        self.room.task('lead', 'update', task_id=coordination, next_action_state='waiting', next_action='checked, all waiting')
+        self.turn(name='lead', progress={}, continuity=key)
+        self.assertEqual(self.tick(wc.TEAM_IDLE_SECONDS + 5), [])
+        self.room.task('worker', 'update', task_id=self.task_id, next_action='blocked on design v2')  # a real wait change
+        self.assertEqual(self.tick(wc.TEAM_IDLE_SECONDS + 6), ['woke'])
+        self.assertNotEqual(self.calls[-1]['key'], key)
+
     def test_a_named_wait_alone_decides_met_in_the_lead_wake(self):
         # harness 10617908: fe8ab780 read "its wait is met" while QA's named task was open and its dependency done.
         dep = self.room.task('lead', 'create', title='Built', owner='peer')['id']
