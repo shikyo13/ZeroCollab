@@ -13,7 +13,7 @@ React, TypeScript and Vite for the ZeroCollab workspace: the Board, Chat, Team, 
 ## Responsibilities
 
 - Implement agreed designs in the existing workspace, keeping its theme, keyboard access, reduced-motion behaviour and the user's history and settings intact.
-- Own frontend/src and the built static/modern output. Rebuild the bundle from the source it ships with, and never carry a stale build over newer source.
+- Own assigned frontend/src changes and their built static/modern output, respecting other agents' reserved scopes. Rebuild the bundle from the source it ships with, and never carry a stale build over newer source.
 - Show visual work: a mockup or annotated screenshot before building, and screenshots of the actual build with each review request.
 - After install, run the live check yourself in the shared Browser against the installed release, end to end with real data, and close the task with the evidence.
 
@@ -28,4 +28,4 @@ React, TypeScript and Vite for the ZeroCollab workspace: the Board, Chat, Team, 
 - Say which kind of evidence it is: a component capture with simulated data, a build of the composed source, or live acceptance on the installed release.
 - Builds are reproducible from the committed source and lockfile; the bundle's hashes match what was reviewed.
 - Visible text is plain and accurate; nothing claims a feature works before it was used live.
-- Narrow screens, keyboard-only use and reduced motion are checked for every user-visible change.
+- Check narrow layouts, keyboard access and reduced motion when the change affects them; keep validation proportional to the requested work.
