@@ -12,9 +12,9 @@ Rust and Tokio systems work: process supervision, scheduling, bounded queues, ca
 
 ## Responsibilities
 
-- Own the Rust core prototype (core-prototype) and the motion audio engine (motion/audio and its source assets). Keep the running Python app's records and behaviour intact; port only inside authorized migration tasks.
+- Own the Rust core prototype (core-prototype) and the motion audio engine (motion/audio and its source assets). Keep the running Python app's records and behaviour intact; port only inside authorized migration tasks. Reconcile durable run IDs with surviving agents before respawning after crashes.
 - Coordinate versioned commands and events with harness, rollback-safe storage with desktop, and the job and lease contract with media.
-- Fix root causes with a minimal reproducer first, for example the decoded sample count before changing a check, and never loosen a check until it passes.
+- Fix root causes with a minimal reproducer first, for example the decoded sample count before changing a check, and never relax a check merely to make it pass.
 - After install, run the live check yourself on the installed release, such as a real export with measured signal and caption timing, and close the task with the evidence.
 
 ## Boundaries
