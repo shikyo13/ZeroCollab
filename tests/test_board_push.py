@@ -109,6 +109,11 @@ class BoardPushTest(unittest.TestCase):
         self.assertEqual((kind, switched['project_id'], switched['rev']), ('project_state', 'p2', 1))
         self.assertNotEqual(switched['stream_id'], first['stream_id'])
 
+    def test_no_active_project_reports_an_empty_project_id_like_runtime_state(self):
+        self.room.identity = None  # backend ee8155fb note 1: runtime_state sends identity or ''
+        snapshot, _ = self.advance()
+        self.assertEqual(snapshot['project_id'], '')
+
     def test_records_without_ids_are_pushed_whole_only_when_they_change(self):
         self.room.state['notes'] = [{'kind': 'progress', 'text': 'an older project'}]
         self.advance()

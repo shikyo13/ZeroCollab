@@ -76,7 +76,7 @@ class BoardPush:
         snapshot = self.runtime.project_room.snapshot()
         for key in ENVELOPE:
             snapshot.pop(key, None)
-        project_id = self.runtime.identity
+        project_id = self.runtime.identity or ''  # as runtime_state reports it, so clients compare like with like
         records, values = self.texts(snapshot)
         same_stream = project_id == self.project_id and bool(self.stream_id)
         if records is None:
