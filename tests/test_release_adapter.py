@@ -3,6 +3,7 @@ strict interface name the same actions and fields, and every native turn names t
 import inspect
 import typing
 import unittest
+import unittest.mock
 
 import release_interface
 import room_mcp
@@ -26,6 +27,21 @@ class Parity(unittest.TestCase):
         self.assertEqual(set(self.mcp) - {'action'}, fields)
         self.assertEqual(set(self.local['properties']) - {'action'}, fields)
         self.assertEqual(self.local['properties']['disposition']['enum'], ['open', 'deferred', 'dropped'])
+
+    def test_stage_metadata_is_sent_only_when_given(self):
+        """b1acec5d (astra 40bc6f1b): an existing stage call carries no metadata; given fields pass unchanged."""
+        sent = []
+        tool = getattr(room_mcp.room_release, 'fn', room_mcp.room_release)
+        with unittest.mock.patch.object(room_mcp, 'call', lambda name, args, timeout: sent.append(args) or {}):
+            tool(action='stage', repository='r', commit='c' * 40, reviews=['0' * 8])
+            tool(action='stage', repository='r', commit='c' * 40, reviews=['0' * 8], title='T', notes='N',
+                 shipped_tasks=[{'task_id': '0' * 8, 'scope': 'S'}])
+        self.assertFalse({'title', 'notes', 'shipped_tasks'} & set(sent[0]))
+        self.assertEqual((sent[1]['title'], sent[1]['notes'], sent[1]['shipped_tasks']),
+                         ('T', 'N', [{'task_id': '0' * 8, 'scope': 'S'}]))
+        local = self.local['properties']
+        self.assertEqual((local['shipped_tasks']['maxItems'], local['title']['maxLength'], local['notes']['maxLength'],
+                          local['shipped_tasks']['items']['required']), (32, 120, 16000, ['task_id', 'scope']))
 
     def test_donor_reads_are_classified_as_reads(self):
         actions, default = room_runtime.ROOM_READS['room_release']

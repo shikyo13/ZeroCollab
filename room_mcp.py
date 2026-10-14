@@ -192,7 +192,8 @@ def room_release(action: Literal['list', 'stage', 'rehearse', 'request', 'status
                  repository: str = '', commit: str = '', reviews: list[str] | None = None, release_id: str = '',
                  manifest_sha: str = '', expected_manifest_sha: str = '', idempotency_key: str = '', id: str = '',
                  deployment_id: str = '', base: str = '', dependencies: list[str] | None = None, check_id: str = '',
-                 handoff_id: str = '', disposition: str = '', reason: str = '', target: str = '') -> dict:
+                 handoff_id: str = '', disposition: str = '', reason: str = '', target: str = '', title: str = '',
+                 notes: str = '', shipped_tasks: list[dict] | None = None) -> dict:
     """The room's release pipeline, without the browser (Zero #15583). The room takes who you are from this turn,
     never from arguments. Any managed agent may check its own donor and read status and intake; everything else
     belongs to the profile Zero granted release permission to. Rollback always goes to the release installed just
@@ -208,7 +209,11 @@ def room_release(action: Literal['list', 'stage', 'rehearse', 'request', 'status
     handoff check_id: offer a passed check for the next release. disposition handoff_id disposition (open,
     deferred or dropped) reason (1-1000 characters) target (optional, up to 160): decide an offered handoff.
     archive check_id: move a check out of the active history when it is full; it still answers status.
-    list: staged releases. stage repository commit reviews: package exactly that reviewed commit. rehearse
+    list: staged releases. stage repository commit reviews: package exactly that reviewed commit. Optional release
+    notes: title (up to 120 characters) and notes (markdown, up to 16000) go into its RELEASE.json; shipped_tasks
+    (up to 32 of {task_id: 8 hex, scope: what this release delivers for it, 1-1000 characters}; owners come from the
+    board, never from the caller) go into its stage receipt, and after install the room binds their live checks from it.
+    Omit all three to stage without them. rehearse
     release_id manifest_sha: an isolated rehearsal. request release_id manifest_sha expected_manifest_sha (the
     installed one) idempotency_key: ask to install it, under Zero's grant and his Stop. verify deployment_id: check
     an installed release. rollback expected_manifest_sha idempotency_key: return to the release installed before."""
@@ -216,13 +221,15 @@ def room_release(action: Literal['list', 'stage', 'rehearse', 'request', 'status
     for key, value in dict(repository=repository, commit=commit, release_id=release_id, manifest_sha=manifest_sha,
                            expected_manifest_sha=expected_manifest_sha, idempotency_key=idempotency_key, id=id,
                            deployment_id=deployment_id, base=base, check_id=check_id, handoff_id=handoff_id,
-                           disposition=disposition, reason=reason, target=target).items():
+                           disposition=disposition, reason=reason, target=target, title=title, notes=notes).items():
         if value:
-            args[key] = value  # omitted optional fields (dependencies, target) take the core's defaults
+            args[key] = value  # omitted optional fields (dependencies, target, stage metadata) take the core's defaults
     if reviews is not None:
         args['reviews'] = reviews
     if dependencies is not None:
         args['dependencies'] = dependencies
+    if shipped_tasks is not None:
+        args['shipped_tasks'] = shipped_tasks
     return call('room_release', args, timeout=60)
 
 
