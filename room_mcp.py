@@ -268,6 +268,8 @@ def room_decision(action: str = 'get', decision_id: str = '', stage: str = '', r
     """Take part in a team decision. get returns the question, criteria and the contributions you may
     see (other positions stay sealed until everyone has submitted). submit records your contribution
     for the exact stage, revision and epoch from your request; stale or unowed submissions are refused.
+    submit, open and reopen return a short receipt (stage, the ids recorded, who still owes, next step);
+    call get for the full record.
     Positions take payload {text, evidence, attachments: [{url: "/uploads/...", name}]} for mockups.
     open (the lead or backup answering a user message): start a decision in this chat on message_id,
     when a choice affects more than one owner or a shared interface, or the user asks to deliberate.

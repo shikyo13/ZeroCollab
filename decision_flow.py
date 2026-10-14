@@ -246,6 +246,26 @@ class DecisionFlow:
                                                if c['kind'] == 'challenge' and c['id'] not in answered | superseded]
         return result
 
+    def receipt(self, d, actor, recorded=()):
+        """What an agent's submit, open or reopen returns (task 8d40ba11, Zero #17800): the state it needs next,
+        never the contributions, so its size stays fixed as the record grows. The full record stays on get."""
+        stage, owed = d['stage'], self.owed(d)
+        if d.get('interrupted'):
+            step = 'The discussion is paused for new direction from the user; wait to be queued again.'
+        elif actor in owed:
+            step = f'You owe a submission for stage {stage}; your turn for it is queued.'
+        elif stage in OPEN:
+            step = f'Nothing more from you in stage {stage}. Waiting on: {", ".join(owed)}.'
+        elif stage == 'draft':
+            step = 'Opened; the user starts it from the decision card.'
+        else:
+            step = f'The discussion is at {stage}; the user records the outcome.'
+        return {'id': d['id'], 'stage': stage, 'phase': self.phase(d), 'round': d.get('round', 1),
+                'lead': d['lead'], 'participants': list(d['participants']), 'recorded': list(recorded),
+                'owed': owed, 'interrupted': d.get('interrupted', ''), 'deadline': d.get('deadline'),
+                **({'token': self.token(d)} if actor in d['participants'] else {}),
+                'next': step + f' room_decision(action="get", decision_id="{d["id"]}") returns the full record.'}
+
     def summary(self, d):
         return {k: d[k] for k in ('id', 'question', 'stage', 'channel', 'participants', 'lead', 'updated')} | \
                {'interrupted': d.get('interrupted', ''), 'outcome': self.outcome(d),
@@ -578,6 +598,7 @@ class DecisionFlow:
             raise ValueError('payload is too large; shorten it or cite files instead of quoting them')
         context = 'fresh' if fresh else 'prior'
         ids = lambda kind: {c['id'] for c in d['contributions'] if c['kind'] == kind}
+        before = len(d['contributions'])
         if stage == 'positions':
             self.contribute(d, actor, 'position', text=text(payload.get('text'), 'Position', 8000),
                             evidence=evidence(payload.get('evidence')),
@@ -637,9 +658,10 @@ class DecisionFlow:
             self.contribute(d, actor, 'verdict', proposal_id=current['id'], verdict=payload['verdict'],
                             reason=text(payload.get('reason'), 'Reason', 4000), context=context)
         d.setdefault('turns', {})[actor] = {'state': 'submitted', 'time': time.time()}
-        self.settle(d)
+        recorded = [c['id'] for c in d['contributions'][before:] if c['author'] == actor]
+        self.settle(d)  # may close the stage and add others' 'missing' entries after these
         self.save()
-        return self.view(d, reader=actor)
+        return self.receipt(d, actor, recorded)
 
     def turn_finished(self, name, entry):
         """A participant whose turn ended (or was never admitted) without submitting shows 'No response yet'."""

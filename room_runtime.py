@@ -1997,13 +1997,12 @@ class RoomRuntime:
             async with self.decisions.lock:
                 if action == 'open':
                     d, _ = self.decisions.open(run.name, {**arguments, 'channel': run.channel})
-                    # The flow token and the reader's own sealed text go to participants only.
-                    result = self.decisions.view(d, reader=run.name if run.name in d['participants'] else '')
-                    result.pop('actions', None)
+                    # A receipt, not the record (task 8d40ba11); the flow token goes to participants only.
+                    result = self.decisions.receipt(d, run.name)
                 elif action == 'reopen':
                     d = self.decisions.find(arguments.get('decision_id', ''))
                     self.decisions.reopen(run.name, d, arguments.get('reason'))
-                    result = self.decisions.view(d, reader=run.name)
+                    result = self.decisions.receipt(d, run.name)
                 else:
                     result = self.decisions.submit(run.name, arguments.get('decision_id', ''), arguments.get('stage'),
                         arguments.get('revision'), arguments.get('epoch'), arguments.get('payload'),
