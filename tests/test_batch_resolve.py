@@ -14,8 +14,10 @@ def followup(identifier, created_by, task_id='t1'):
 
 class BatchResolve(unittest.TestCase):
     def setUp(self):
-        self.state = {'tasks': [{'id': 't1', 'updates': [], 'updated': 0}],
-                      'followups': [followup('f1', 'backend'), followup('f2', 'harness'), followup('f3', 'backend')]}
+        # Each requester owns the open task its follow-up is on, so its result wakes it (task e14159ba part 5).
+        self.state = {'tasks': [{'id': 't1', 'owner': 'backend', 'status': 'working', 'updates': [], 'updated': 0},
+                                {'id': 't2', 'owner': 'harness', 'status': 'working', 'updates': [], 'updated': 0}],
+                      'followups': [followup('f1', 'backend'), followup('f2', 'harness', 't2'), followup('f3', 'backend')]}
         room = SimpleNamespace(state=self.state, save=lambda: None, bump_work=lambda *a: None)
         records = object.__new__(CoordinationRecords)
         records.room = room
@@ -63,6 +65,25 @@ class BatchResolve(unittest.TestCase):
         self.lines.clear()
         self.assertFalse(self.resolve(['f1', 'f2'])['changed'])
         self.assertEqual(self.lines, [])
+
+    def test_an_agents_cancel_wakes_nobody_and_the_users_still_does(self):
+        # task f530bd08: cancelling review 6459b3dd started an empty turn for a reviewer who was never woken.
+        self.state['tasks'][0]['owner'] = 'opus'
+        self.state['reviews'] = [{'id': 'r1', 'task_id': 't1', 'requested_by': 'backend', 'reviewer': 'harness',
+                                  'status': 'pending', 'updated': 1}]
+        self.runtime.profiles = SimpleNamespace(recipient_arguments=lambda arguments: arguments)
+
+        def cancel(actor, tool, **arguments):
+            return asyncio.run(self.runtime.coordination_record(actor, tool, dict(arguments, action='cancel'), 'chat', 'chain'))
+
+        out = cancel('backend', 'room_review', review_id='r1', text='probe')
+        self.assertEqual(out['deliveries']['harness']['status'], 'deferred')
+        out = cancel('backend', 'room_followup', followup_id='f1', result='not needed')
+        self.assertEqual(out['deliveries']['astra']['status'], 'deferred')
+        self.assertEqual(self.woken, [])
+        cancel('user', 'room_followup', followup_id='f2', result='not needed')
+        self.assertEqual(self.woken, ['astra'])
+        self.assertEqual(len(self.lines), 3)  # every cancel still posts its chat line
 
 
 if __name__ == '__main__':

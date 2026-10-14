@@ -92,6 +92,10 @@ STARTUP_RETRY_SECONDS = 5
 RESULT_NOT_WOKEN = {'status': 'deferred', 'queued': False,
                     'reason': 'Recorded; they see it in their next turn. A task whose wait_on names this follow-up '
                               'wakes its owner when it is answered.'}
+# An agent's cancel leaves the other party nothing to do (task f530bd08): it has left their inbox already.
+CANCEL_NOT_WOKEN = {'status': 'deferred', 'queued': False,
+                    'reason': 'Cancelled; it has left their inbox and they see the chat line in their next turn. '
+                              'A cancellation wakes nobody.'}
 # A subscription CLI's saved sign-in revoked or expired: Codex reports 'workspace routing discovery
 # unauthorized (401)' and logs refresh_token_invalidated; both CLIs ask to sign in again.
 SIGNED_OUT = re.compile(r'refresh[_ ]token[_ ](?:invalidated|was revoked|expired)|routing discovery unauthorized|'
@@ -2374,6 +2378,11 @@ class RoomRuntime:
         if notify:
             for recipient in dict.fromkeys(result['notify']):
                 if recipient == actor:
+                    continue
+                if arguments['action'] == 'cancel' and actor != 'user':
+                    # Task f530bd08 (backend, 0.12.57 live check of e14159ba): a review cancel woke a reviewer for a
+                    # request that never woke them. The user's cancels still wake, as their results do.
+                    deliveries[recipient] = CANCEL_NOT_WOKEN
                     continue
                 if tool == 'room_followup' and arguments['action'] == 'resolve' and not self.result_wakes(actor, recipient, [item]):
                     deliveries[recipient] = RESULT_NOT_WOKEN
