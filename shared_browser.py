@@ -1,9 +1,11 @@
 """Disposable project-scoped Chromium instances, independently controlled by each agent and viewable
-by the user. Pages are opened explicitly; viewing frames never holds the action lock."""
+by the user. Pages are opened by an action or by a shared page's own new tab or window; viewing frames
+never holds the action lock."""
 import asyncio
 import base64
 import contextlib
 import contextvars
+import ipaddress
 import json
 import os
 import shutil
@@ -24,7 +26,7 @@ from browser_recording import (DEFAULT_RECORD_FPS, DEFAULT_RECORD_SECONDS,
 
 WIDTH, HEIGHT = 1280, 800
 LEASE_SECONDS = 60
-# Explicitly opened pages per browser; each headless page costs a renderer process.
+# Pages per browser, including ones a page opened itself; each headless page costs a renderer process.
 MAX_PAGES = 4
 IDLE_SECONDS = 300
 RECORDING_CLOSE_GRACE_SECONDS = 10
@@ -122,16 +124,31 @@ def default_port(parsed):
     return parsed.port or (443 if parsed.scheme == 'https' else 80)
 
 
+def loopback(host):
+    """Names that reach this computer: localhost and its subdomains, 0.0.0.0 and any loopback address."""
+    if not host:
+        return False
+    if host == 'localhost' or host.endswith('.localhost') or host == '0.0.0.0':
+        return True
+    with contextlib.suppress(ValueError):
+        address = ipaddress.ip_address(host)
+        return address.is_loopback or getattr(address, 'ipv4_mapped', None) is not None and address.ipv4_mapped.is_loopback
+    return False
+
+
+def debug_endpoint(parsed, debug_ports):
+    return loopback(parsed.hostname) and default_port(parsed) in debug_ports
+
+
 def preview_url(value, debug_ports=()):
-    """A local page the shared browser may open, including the room itself. Only the browsers' own DevTools
+    """Any http(s) page: a local preview, the room itself or an outside site. Only the browsers' own DevTools
     ports are refused: a page that reached one would control that browser, not the app under test."""
     if not isinstance(value, str) or len(value) > 4096:
-        raise ValueError('Enter a local page URL')
+        raise ValueError('Enter a page URL')
     parsed = urlsplit(value)
-    if (parsed.scheme not in ('http', 'https') or parsed.hostname not in LOCAL_HOSTS
-            or parsed.username or parsed.password):
-        raise ValueError('This browser opens local pages: http(s)://localhost, 127.0.0.1, [::1] or ' + ROOM_HOST)
-    if default_port(parsed) in debug_ports:
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+        raise ValueError('This browser opens http(s) pages, for example http://localhost:5173 or https://example.com')
+    if debug_endpoint(parsed, debug_ports):
         raise ValueError("A shared browser's own DevTools port cannot be opened as a page")
     return value
 
@@ -242,7 +259,7 @@ class Browser:
                 raise ValueError('That browser page was closed; read status for the current pages')
             return self.pages[wanted]
         if self.active not in self.pages:
-            raise ValueError('Open a local preview first')
+            raise ValueError('Open a page first')
         return self.pages[self.active]
 
     def session_page(self, session):
@@ -314,8 +331,9 @@ class Browser:
                         self.adopting[target] = session
                         self.adopted.set()
                     else:
-                        # Auto-attach pauses new pages before their document can run or navigate.
-                        self.schedule(self.close_popup(target, session))
+                        # A page opened by one of ours (window.open, target=_blank). Auto-attach paused it
+                        # before its document could run or navigate; it becomes a tracked page.
+                        self.schedule(self.adopt_popup(target, session, p['targetInfo'].get('url', '')))
                     continue
                 if method == 'Target.targetCreated' and p.get('targetInfo', {}).get('type') == 'page':
                     # Tripwire behind auto-attach: a page target that is neither ours nor being adopted
@@ -371,7 +389,47 @@ class Browser:
                     waiter.set_exception(ValueError('Browser disconnected; stop and reopen it'))
             self.pending.clear()
 
-    async def close_popup(self, target, session):
+    async def adopt_popup(self, target, session, url=''):
+        """A new tab or window opened by a shared page becomes a tracked page and the active one, as a tab
+        would in a desktop browser. Past MAX_PAGES it is closed, and the note says how to open it instead."""
+        if len(self.pages) >= MAX_PAGES:
+            await self.close_popup(target, session, f'A link opened a new window, but the browser already has '
+                                                    f'{MAX_PAGES} pages; close one, then open the link with new_page')
+            return
+        with contextlib.suppress(ValueError):
+            if debug_endpoint(urlsplit(url), self.debug_ports()):
+                await self.close_popup(target, session, "Closed a new window aimed at a shared browser's DevTools port")
+                return
+        page = Page(target, session)
+        self.pages[page.id] = page  # registered before any await, so the tripwire and sweep leave it alone
+        await self.release_openers(skip=page)  # an opener is blocked in window.open until then
+        try:
+            # Resumed before its setup: a paused cross-site tab (target=_blank, noopener) answers no command
+            # until it runs (checked on headless Edge). Its first URL was checked above; setup then fences
+            # every later request like any page's.
+            await self.command('Runtime.runIfWaitingForDebugger', page=page)
+            await self.setup(page)
+            # Its first navigation can commit before Page.enable, so read where it is now; later ones are events.
+            info = (await self.command('Target.getTargetInfo', {'targetId': target}))['targetInfo']
+            if not page.url:
+                page.url, page.title = info.get('url', ''), info.get('title', '')[:300]
+        except (ValueError, websockets.ConnectionClosed):
+            self.drop(page)
+            await self.close_popup(target, session, 'A new window could not be set up as a shared page and was closed')
+            return
+        self.active = page.id
+        self.generation += 1
+        self.note('browser', 'A link opened a new page; it is now the active page', page)
+
+    async def release_openers(self, skip=None):
+        # An opener stays blocked in window.open until our own pages are resumed.
+        for page in list(self.pages.values()):
+            if page is skip:
+                continue
+            with contextlib.suppress(ValueError, websockets.ConnectionClosed):
+                await self.command('Runtime.runIfWaitingForDebugger', page=page)
+
+    async def close_popup(self, target, session, reason='Closed a new browser window; use new_page for another shared page'):
         # Block its network before anything else, then always try to close it, even if blocking failed.
         # The pop-up itself is never resumed. Our own pages are released afterwards either way: an opener
         # stays blocked in window.open until then, and resuming our own page cannot release the pop-up.
@@ -379,11 +437,9 @@ class Browser:
             await self.command('Network.enable', session=session)
             await self.command('Network.setBlockedURLs', {'urls': ['*']}, session=session)
         closed = await self.close_stray(target)
-        for page in list(self.pages.values()):
-            with contextlib.suppress(ValueError, websockets.ConnectionClosed):
-                await self.command('Runtime.runIfWaitingForDebugger', page=page)
+        await self.release_openers()
         if closed:
-            self.note('navigation', 'Blocked a new browser window; use new_page for another shared page')
+            self.note('navigation', reason)
 
     async def close_stray(self, target, tripwire=False):
         """Close a page target we did not create. True once it is gone, including when it already was."""
@@ -455,16 +511,12 @@ class Browser:
         try:
             url = params['request']['url']
             try:
-                parsed = urlsplit(url)
-                ports = self.debug_ports()
-                # A browser's DevTools port, for every resource, not only top-level pages.
-                if parsed.hostname in LOCAL_HOSTS and default_port(parsed) in ports:
+                # A browser's DevTools port, for every resource, not only top-level pages. Everything else loads.
+                if debug_endpoint(urlsplit(url), self.debug_ports()):
                     raise ValueError('Browser DevTools port')
-                if params.get('resourceType') == 'Document' and url != 'about:blank':
-                    preview_url(url, ports)
             except ValueError:
                 await self.command('Fetch.failRequest', {'requestId': params['requestId'], 'errorReason': 'BlockedByClient'}, session=session)
-                self.note('navigation', 'Blocked a DevTools port or a navigation outside local pages', self.session_page(session))
+                self.note('navigation', "Blocked a request to a shared browser's DevTools port", self.session_page(session))
             else:
                 await self.command('Fetch.continueRequest', {'requestId': params['requestId']}, session=session)
         except (ValueError, websockets.ConnectionClosed):
@@ -473,7 +525,7 @@ class Browser:
     async def command(self, method, params=None, page=None, session=None):
         session = session or (page.session if page else None)
         if not method.startswith(('Target.', 'Browser.')) and not session:
-            raise ValueError('Open a local preview first')
+            raise ValueError('Open a page first')
         self.serial += 1
         identifier = self.serial
         waiter = asyncio.get_running_loop().create_future()
@@ -539,8 +591,6 @@ class Browser:
             args = [binary, '--headless=new', '--disable-gpu', '--do-not-de-elevate',
                 '--no-first-run', '--no-default-browser-check', '--disable-sync', '--remote-debugging-port=0',
                 '--remote-debugging-address=127.0.0.1', '--disable-background-networking',
-                # Refuses window.open and target=_blank at the process level; explicit CDP pages still open.
-                '--block-new-web-contents',
                 '--user-data-dir=' + self.profile.name, 'about:blank']
             self.proc = (WindowsBrowserProcess(args) if os.name == 'nt' else
                          await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL,
@@ -580,7 +630,7 @@ class Browser:
             raise
 
     async def new_page(self):
-        """Create a page only on an explicit request; the page's own pop-ups stay blocked."""
+        """Create a page on request. Pages a shared page opens itself are adopted by adopt_popup."""
         if len(self.pages) >= MAX_PAGES:
             raise ValueError(f'The shared browser keeps at most {MAX_PAGES} pages; close one first')
         self.adopting, target, session, paused = {}, None, None, False
@@ -894,7 +944,7 @@ class Browser:
                 await self.close()
                 return self.status()
             if not self.status()['running']:
-                raise ValueError('Open a local preview first')
+                raise ValueError('Open a page first')
             page = self.page(arguments)
             if action == 'record_start':
                 return {**self.status(page), **await self.record_start(
@@ -1080,7 +1130,7 @@ class BrowserManager:
                 raise ValueError('That browser instance was closed')
             return self.instances[instance]
         if not create:
-            raise ValueError('Open a local preview first')
+            raise ValueError('Open a page first')
         browser = Browser(self.runtime)
         browser.agent, browser.label = ('user', 'Your browser') if actor == 'user' else (label, label)
         browser.protected_debug_ports = self.debug_ports
