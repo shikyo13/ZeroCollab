@@ -33,6 +33,10 @@ IDLE_SECONDS = 300
 ROOM_SIGN_IN_SECONDS = 8
 ROOM_SIGN_IN_POLL_SECONDS = .1
 RECORDING_CLOSE_GRACE_SECONDS = 10
+# DevTools echoes every WebSocket frame a page sends or receives. The reader uses none of them, and the room's
+# own page receives the whole board on each change (10 MB on the live board, 0.12.66), so they are dropped
+# before parsing. Chrome writes "method" first in an event.
+UNUSED_EVENT_PREFIX = '{"method":"Network.webSocketFrame'
 WINDOWS_CREATE_SUSPENDED = 4
 WINDOWS_JOB_LIMIT_PRIORITY_CLASS = 0x20
 WINDOWS_JOB_LIMIT_KILL_ON_CLOSE = 0x2000
@@ -313,6 +317,8 @@ class Browser:
     async def receive(self):
         try:
             async for raw in self.ws:
+                if raw.startswith(UNUSED_EVENT_PREFIX):
+                    continue
                 message = json.loads(raw)
                 if 'id' in message:
                     waiter = self.pending.pop(message['id'], None)
@@ -386,7 +392,7 @@ class Browser:
                 elif method == 'Fetch.requestPaused':
                     self.schedule(self.route_document(p, page.session))
         except Exception as exc:
-            self.note('browser', 'Browser connection closed')
+            self.note('browser', f'Browser connection closed ({type(exc).__name__}: {str(exc)[:200]})')
             for waiter in self.pending.values():
                 if not waiter.done():
                     waiter.set_exception(ValueError('Browser disconnected; stop and reopen it'))
@@ -623,7 +629,9 @@ class Browser:
                 pages = (await client.get(f'http://127.0.0.1:{port}/json/list')).json()
                 version = (await client.get(f'http://127.0.0.1:{port}/json/version')).json()
             self.anchor = next(p for p in pages if p['type'] == 'page' and p['url'] == 'about:blank')['id']
-            self.ws = await websockets.connect(version['webSocketDebuggerUrl'], max_size=8 * 1024 * 1024)
+            # No message cap: a message over it closes the socket and loses every page, and a page decides how
+            # large its events are (the room's board snapshot outgrew 8 MiB). This socket only reaches our own browser.
+            self.ws = await websockets.connect(version['webSocketDebuggerUrl'], max_size=None)
             self.reader = asyncio.create_task(self.receive())
             await self.command('Target.setAutoAttach', {'autoAttach': True, 'waitForDebuggerOnStart': True,
                 'flatten': True, 'filter': [{'type': 'page', 'exclude': False}, {'exclude': True}]})
