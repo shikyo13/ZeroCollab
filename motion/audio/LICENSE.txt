@@ -1,0 +1,11 @@
+ZeroCollab procedural starter audio
+
+To the extent possible under law, the authors have waived all copyright and
+related or neighboring rights to make-starters.py and its generated calm-bed.wav,
+soft-click.wav and confirm.wav under CC0 1.0 Universal.
+
+https://creativecommons.org/publicdomain/zero/1.0/
+
+These sounds are generated from mathematical waveforms. They contain no
+third-party samples or recordings. This dedication does not apply to voice
+models, voice runtimes, or their dependencies.
