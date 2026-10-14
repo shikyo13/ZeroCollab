@@ -17,17 +17,53 @@
 .lv-stage { position: absolute; inset: 0; }
 .lv-effects { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
 
-/* People: a badge, a name and what they are doing; no box. Position is set every frame by the stage. */
-.lv-person { position: absolute; left: 0; top: 0; z-index: 3; width: 96px; margin-left: -48px; margin-top: -26px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+/* People: a badge, a name and what they are doing; no box. Position is set every frame by the stage.
+   The width is the footprint the layout reserves (PERSON.w in liveLayout.ts): names and activity clip to it. */
+.lv-person { position: absolute; left: 0; top: 0; z-index: 3; width: 116px; margin-left: -58px; margin-top: -26px;
   background: none; border: 0; padding: 0; color: var(--text); font: inherit; cursor: pointer; will-change: transform; }
+.lv-float { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .lv-badge { position: relative; width: 44px; height: 44px; border-radius: 50%; background: var(--c); color: #0b0e10; display: grid; place-items: center; font-weight: 800; font-size: 14px; box-shadow: 0 0 22px color-mix(in srgb, var(--c) 35%, transparent); transition: transform .25s ease, filter .3s; }
 .lv-ring { position: absolute; inset: -6px; border-radius: 50%; border: 2.5px solid transparent; border-top-color: var(--c); border-right-color: var(--c); transform: rotate(var(--ring, 0deg)); transition: transform .45s cubic-bezier(.2, 0, 0, 1); opacity: 0; }
 .lv-working .lv-ring { opacity: 1; }
-.lv-waiting_on_user .lv-ring { opacity: 1; border-color: #f0c674; animation: lv-gold 1.8s ease-in-out infinite; }
+.lv-waiting_on_user .lv-ring { opacity: 1; border-color: #f0c674; }
 .lv-failed .lv-ring { opacity: 1; border-color: #ff7b72; }
-@keyframes lv-gold { 50% { box-shadow: 0 0 0 6px #f0c67433; } }
-.lv-name { font-weight: 600; font-size: 12.5px; text-shadow: 0 1px 3px #000; white-space: nowrap; }
-.lv-doing { max-width: 132px; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-name, .lv-doing { max-width: 116px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-name { font-weight: 600; font-size: 12.5px; text-shadow: 0 1px 3px #000; }
+.lv-doing { font-size: 11px; color: var(--text-dim); }
+
+/* Life at rest (task 4cbce498, Zero #18047). Zero's Edge paints with GPU compositing off (0bb2bdcf), so even
+   compositor-only animation costs CPU on every frame it changes. Ambient motion is therefore either stepped or
+   tied to real events, and the room is near zero cost when nothing happens (measured: 0.6% of a core for 13).
+   Bob: everyone, on their own rhythm (--bob-s/--bob-at from the stage), 2.5 px in four steps per swing, which
+   BADGE_CLEAR allows for. A smooth 60 fps bob cost about 15% of a core.
+   Orbit and glow: whoever is working, while their work actually moves (lv-stir: a tool step, reply text or a
+   state change in the last few seconds); between events the orbit pauses where it is, so it resumes without a jump.
+   Ripple: a gold ring widens from whoever waits on you (as 0.12.65's gold pulse did, but on the compositor).
+   Floor: a group's ground glows still under it. */
+.lv-float { animation: lv-bob var(--bob-s, 4s) steps(4, jump-none) var(--bob-at, 0s) infinite alternate; }
+.lv-quiet .lv-float { animation-duration: calc(var(--bob-s, 4s) * 1.5); }
+@keyframes lv-bob { from { transform: translateY(-2.5px); } to { transform: translateY(2.5px); } }
+.lv-orbit { position: absolute; inset: -9px; border-radius: 50%; opacity: 0; pointer-events: none; transition: opacity .5s ease;
+  animation: lv-orbit 2.8s linear var(--orbit-at, 0s) infinite paused; }
+.lv-orbit::before, .lv-orbit::after { content: ''; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); }
+.lv-orbit::before { left: calc(50% - 2.5px); top: -2.5px; }
+.lv-orbit::after { left: calc(50% - 2px); bottom: -2px; width: 4px; height: 4px; opacity: .6; }
+.lv-working .lv-orbit { opacity: .45; }
+.lv-working.lv-stir .lv-orbit { opacity: 1; animation-play-state: running; }
+@keyframes lv-orbit { to { transform: rotate(360deg); } }
+.lv-badge::before { content: ''; position: absolute; inset: -14px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--c) 45%, transparent) 0%, transparent 70%); opacity: 0; z-index: -1; pointer-events: none; transition: opacity .6s ease; }
+.lv-working .lv-badge::before { opacity: .4; }
+.lv-working.lv-stir .lv-badge::before { animation: lv-breathe 1.3s ease-in-out var(--bob-at, 0s) infinite alternate; }
+@keyframes lv-breathe { from { opacity: .4; } to { opacity: .85; } }
+.lv-badge::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid #f0c674; opacity: 0; pointer-events: none; }
+.lv-waiting_on_user .lv-badge::after { animation: lv-ripple 1.9s cubic-bezier(.2, .6, .3, 1) infinite; }
+@keyframes lv-ripple { from { transform: scale(1); opacity: .75; } to { transform: scale(1.75); opacity: 0; } }
+.lv-floor { position: absolute; z-index: 1; border-radius: 50%; pointer-events: none; background: radial-gradient(ellipse at 50% 55%, color-mix(in srgb, var(--c, #54d9ed) 22%, transparent) 0%, transparent 68%);
+  animation: lv-in .5s cubic-bezier(.2, 0, 0, 1); }
+.lv-thumb { animation: lv-pop .42s cubic-bezier(.2, 1.4, .4, 1); }
+@keyframes lv-pop { from { transform: scale(.6) rotate(-4deg); opacity: 0; } }
+/* Pause holds every ambient motion where it is. */
+.lv-stage.lv-paused .lv-person .lv-float, .lv-stage.lv-paused .lv-person .lv-orbit, .lv-stage.lv-paused .lv-person .lv-badge::before, .lv-stage.lv-paused .lv-person .lv-badge::after { animation-play-state: paused; }
 .lv-failed .lv-doing { color: #ff9b94; } .lv-waiting_on_user .lv-doing { color: #f0c674; }
 .lv-quiet .lv-badge { width: 32px; height: 32px; font-size: 11px; filter: saturate(.35) brightness(.8); box-shadow: none; }
 .lv-quiet .lv-name { color: var(--text-dim); font-weight: 500; }
@@ -48,6 +84,25 @@
   background: #171c20; border-color: #3a454b; color: var(--text-dim); animation: lv-in .4s cubic-bezier(.2, 0, 0, 1); }
 .lv-chip:hover, .lv-chip.lv-selected { color: var(--text); border-color: var(--accent); }
 .lv-chip span { color: var(--accent); }
+/* The title clips; why they are together and how many stay readable. */
+.lv-chip { display: flex; align-items: baseline; gap: 6px; }
+.lv-chip b { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lv-chip small { flex: none; }
+
+/* The Latest rail: what changed, newest first; a new line slides in once. Reserved space: nobody sits under it. */
+.lv-rail { position: absolute; z-index: 6; box-sizing: border-box; padding: 6px 10px 4px; border-radius: 12px; background: #13171bd9; border: 1px solid var(--border); overflow: hidden; }
+.lv-rail h2 { margin: 0 0 3px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); font-weight: 600; }
+.lv-rail p { margin: 0; color: var(--text-dim); font-size: var(--fs-xs); }
+.lv-rail ol { list-style: none; margin: 0; padding: 0; }
+.lv-rail li { height: 24px; animation: lv-rail-in .45s cubic-bezier(.2, 0, 0, 1); }
+.lv-rail button { all: unset; box-sizing: border-box; width: 100%; height: 22px; display: flex; align-items: center; gap: 7px; cursor: pointer; border-radius: 6px; padding: 0 4px; font-size: 12px; white-space: nowrap; overflow: hidden; }
+.lv-rail button:hover { background: #ffffff0d; } .lv-rail button:focus-visible { outline: 2px solid var(--accent); }
+.lv-rail i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.lv-rail span { flex: none; color: var(--text); }
+.lv-rail small { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font-size: 11px; }
+.lv-rail-fresh button { animation: lv-rail-glow 2.4s ease-out; }
+@keyframes lv-rail-in { from { opacity: 0; transform: translateX(-14px); } }
+@keyframes lv-rail-glow { from { background: color-mix(in srgb, var(--c) 28%, transparent); } }
 
 /* The You area: questions for you rise here. */
 .lv-you { position: absolute; z-index: 6; box-sizing: border-box; border-radius: 12px; padding: 7px 12px; background: #15191cdd; border: 1px solid var(--border); font-size: var(--fs-sm); }
@@ -106,10 +161,18 @@
   .lv-with-session .lv-body { grid-template-columns: 1fr; grid-template-rows: 300px auto; }
   .lv-session { margin: 10px 0 0; }
 }
+/* Reduced motion: nothing moves at rest. State stays readable without motion: the ring, a static glow for working,
+   a static gold ring for waiting on you, a still floor under a group. */
 .lv-reduced .lv-bubble-slot { transition: none; }
+.lv-reduced .lv-float, .lv-reduced .lv-orbit, .lv-reduced .lv-floor, .lv-reduced .lv-thumb, .lv-reduced .lv-rail li, .lv-reduced .lv-rail-fresh button { animation: none; }
+.lv-reduced .lv-working .lv-badge::before, .lv-reduced .lv-working.lv-stir .lv-badge::before { animation: none; opacity: .55; }
+.lv-reduced .lv-waiting_on_user .lv-badge::after { animation: none; opacity: .7; transform: scale(1.25); }
+.lv-reduced .lv-orbit { display: none; }
 @media (prefers-reduced-motion: reduce) {
-  .lv-chip, .lv-session { animation: none; }
+  .lv-chip, .lv-session, .lv-float, .lv-orbit, .lv-floor, .lv-thumb, .lv-rail li, .lv-rail-fresh button { animation: none; }
   .lv-bubble-slot { transition: none; }
   .lv-ring, .lv-badge { transition: none; }
-  .lv-waiting_on_user .lv-ring { animation: none; }
+  .lv-working .lv-badge::before, .lv-working.lv-stir .lv-badge::before { animation: none; opacity: .55; }
+  .lv-waiting_on_user .lv-badge::after { animation: none; opacity: .7; transform: scale(1.25); }
+  .lv-orbit { display: none; }
 }

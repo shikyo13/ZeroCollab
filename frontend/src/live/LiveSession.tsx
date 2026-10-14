@@ -39,15 +39,19 @@ export function LiveSession({ feed, focus, paused, navigate, onClose, onFocus }:
   const name = (id: string) => id === 'user' ? 'You' : id === 'team' ? 'everyone' : id === 'room' ? 'the room' : id === 'unassigned' ? 'nobody' : feed.agents.find(a => a.id === id)?.short || id;
   const people: LiveAgent[] = !focus ? [] : focus.kind === 'person'
     ? feed.agents.filter(a => a.id === focus.agent)
-    : feed.agents.filter(a => a.task_id === focus.task);
-  // Work: anything tied to the task, plus anything said between the people on it right now.
+    // The work's people: whoever is on the task, plus both sides of a pending review or open follow-up about it.
+    : feed.agents.filter(a => a.task_id === focus.task || feed.links.some(l => l.task_id === focus.task && (l.from === a.id || l.to === a.id)));
+  // Work: anything tied to the task, plus anything untied said between the people on it right now. A reviewer
+  // or follow-up partner may be busy elsewhere, so their exchanges about another task stay out (design 14b0b5b1).
   const members = new Set(people.map(p => p.id));
   const talk = !focus ? [] : feed.interactions.filter(i => focus.kind === 'work'
-    ? i.task_id === focus.task || (members.has(i.from) && members.has(i.to))
+    ? i.task_id === focus.task || (!i.task_id && members.has(i.from) && members.has(i.to))
     : i.from === focus.agent || i.to === focus.agent).slice(0, 30);
   // Evidence: pinned, else held while reading, else the newest among the people in focus. When nobody is on the
   // work any more (a handoff, a finished turn), the last picture shown stays rather than vanishing.
-  const candidates = people.filter(p => p.artifact).sort((p, q) => q.artifact!.at - p.artifact!.at);
+  // On work, a reviewer or follow-up partner may be busy with other work: only pictures from this task count.
+  const onWork = (p: LiveAgent) => !focus || focus.kind === 'person' || (p.artifact?.task_id ? p.artifact.task_id === focus.task : p.task_id === focus.task);
+  const candidates = people.filter(p => p.artifact && onWork(p)).sort((p, q) => q.artifact!.at - p.artifact!.at);
   const newest: Shown | null = candidates[0] ? { owner: candidates[0].id, artifact: candidates[0].artifact! } : null;
   const shown = pinned ?? held ?? newest ?? last.current;
   if (shown) last.current = shown;
@@ -57,7 +61,9 @@ export function LiveSession({ feed, focus, paused, navigate, onClose, onFocus }:
   // Browser frames are bound to the chosen artifact's own page (F2); a pinned browser pane freezes its frame.
   const browser = useLiveBrowser(!!shown && isBrowser && !paused && !pinned, isBrowser ? shown!.artifact.url : undefined);
   const title = !focus ? '' : focus.kind === 'person' ? name(focus.agent)
-    : people.find(p => p.task_title)?.task_title || talk.find(i => i.task_title)?.task_title || 'This work';
+    // The title is the focused task's own, never a member's other current work (design 14b0b5b1).
+    : feed.agents.find(a => a.task_id === focus.task && a.task_title)?.task_title || feed.links.find(l => l.task_id === focus.task && l.task_title)?.task_title
+      || talk.find(i => i.task_id === focus.task && i.task_title)?.task_title || 'This work';
   const openTask = (task: string) => { navigate('board'); window.dispatchEvent(new CustomEvent(EVENTS.openTask, { detail: { task } })); };
 
   if (!focus) return <aside className="lv-session lv-session-empty" aria-label="Watch session">
@@ -116,7 +122,7 @@ export function LiveSession({ feed, focus, paused, navigate, onClose, onFocus }:
 
     <section className="lv-talk" aria-label="Conversation">
       <h3>Conversation</h3>
-      {people.filter(p => p.speech).map(p => <p key={p.id} className="lv-speech" style={{ '--c': p.color } as CSSProperties}><b>{p.short}</b> {p.speech}</p>)}
+      {people.filter(p => p.speech && (focus.kind === 'person' || p.task_id === focus.task)).map(p => <p key={p.id} className="lv-speech" style={{ '--c': p.color } as CSSProperties}><b>{p.short}</b> {p.speech}</p>)}
       <ol>
         {talk.map(i => <li key={i.id}>
           <small>{clock(i.at)}</small> <b>{name(i.from)}</b> {WORDS[i.kind]} <b>{name(i.kind === 'handoff' ? i.to_owner || i.to : i.to)}</b>

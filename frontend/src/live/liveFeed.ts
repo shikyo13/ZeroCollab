@@ -76,9 +76,22 @@ export interface LiveApproval {
   text: string;
 }
 
+/** An open request between two people right now (task 4cbce498): a pending review or an open follow-up. The
+ * stage gathers the pair while one of them is active; nothing here says they are working on it this minute. */
+export interface LiveLink {
+  id: string;
+  kind: 'review' | 'followup';
+  from: string;
+  to: string;
+  task_id?: string;
+  task_title?: string;
+  at: number;
+}
+
 export interface LiveFeed {
   agents: LiveAgent[];
   interactions: LiveInteraction[];
+  links: LiveLink[];
   approvals: LiveApproval[];
   project: string;
   source: 'server' | 'derived';
@@ -126,7 +139,7 @@ export function shortName(label: string, handle: string): string {
   return words.length ? words.map(w => w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)).join(' ') : label.split(/\s+/)[0];
 }
 
-const empty = (): LiveFeed => ({ agents: [], interactions: [], approvals: [], project: '', source: 'derived', ready: false, connected: false, error: '' });
+const empty = (): LiveFeed => ({ agents: [], interactions: [], links: [], approvals: [], project: '', source: 'derived', ready: false, connected: false, error: '' });
 
 interface RuntimeData { run: string; agent: string; channel?: string; text?: string; message?: string; tool?: string; label?: string;
   task_id?: string; status?: string; outcome?: string; sealed?: boolean }
@@ -159,6 +172,10 @@ export function useLiveFeed(active: boolean): LiveFeed {
         setFeed({
           agents: [...agents.values()].sort((a, b) => a.order - b.order).map(a => ({ ...a, artifact: a.artifact && { ...a.artifact } })),
           interactions: interactions.slice(),
+          links: [
+            ...[...reviews.values()].filter(r => r.status === 'pending').map(r => ({ id: `review:${r.id}`, kind: 'review' as const, from: r.requested_by, to: r.reviewer, task_id: r.task_id || undefined, task_title: taskTitle(r.task_id), at: r.updated || r.created })),
+            ...[...followups.values()].filter(f => f.status === 'open').map(f => ({ id: `followup:${f.id}`, kind: 'followup' as const, from: f.created_by, to: f.assigned_to, task_id: f.task_id || undefined, task_title: taskTitle(f.task_id), at: f.updated || f.created })),
+          ],
           approvals: approvals.slice(),
           project, source, ready, error,
           connected: window.ws?.readyState === WebSocket.OPEN,
@@ -322,13 +339,17 @@ export function useLiveFeed(active: boolean): LiveFeed {
       publish();
     }
 
-    // ---------- chat: @mentions and shared images (derived mode) ----------
+    // ---------- chat: what an agent posts is their speech (both modes); @mentions and shared images (derived mode) ----------
     function onMessage(event: RoomEvent) {
-      if (source === 'server') return;
       const m = event.data as { id?: string | number; sender?: string; text?: string; channel?: string; project_id?: string; timestamp?: number; attachments?: { url: string; note?: string; source?: string }[] };
       if (!m?.sender || m.sender === 'system' || (m.project_id && project && m.project_id !== project)) return;
       const from = m.sender === 'user' ? 'user' : idFor(m.sender) || m.sender;
       if (from !== 'user' && !agents.has(from)) return;
+      // A posted message (a reply, a review receipt, a screenshot note) shows as speech, so work that never
+      // streamed still speaks (Zero #18047). A running turn's own stream is newer and wins.
+      const speaker = agentFor(from);
+      if (speaker && ready && m.text && ![...runs.values()].includes(from)) { speaker.speech = speechWindow(m.text); speaker.speechAt = now(); publish(); }
+      if (source === 'server') return;
       const at = m.timestamp || now();
       const targets = new Set<string>();
       for (const match of (m.text || '').matchAll(MENTION)) { const to = idFor(match[2]); if (to && to !== from) targets.add(to); }

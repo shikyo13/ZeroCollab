@@ -99,8 +99,8 @@ export default function LiveTeam({ active, navigate }: { active: boolean; naviga
         <button type="button" aria-expanded={legend} onClick={() => setLegend(v => !v)} aria-label="What the motion means">?</button>
       </div>
       {legend && <div className="lv-legend" role="dialog" aria-label="What the motion means">
-        <p><b>Gathering</b> people working on the same task · <b>Comet</b> an @mention or review request · <b>Baton</b> a task handed over · <b>Gold rise</b> a question for you · <b>Ring step</b> a tool ran · <b>Shake</b> a turn failed.</p>
-        <p>Choose a task chip to follow that work through handoffs, or a person to follow them. The Board keeps every task and its status.</p>
+        <p><b>Gathering</b> people working together: the same task, a pending review, an open follow-up, or an exchange in the last two minutes · <b>Orbit</b> working · <b>Gold ripple</b> waiting on you · <b>Comet</b> an @mention or review request · <b>Baton</b> a task handed over · <b>Gold rise</b> a question for you · <b>Ring step</b> a tool ran · <b>Shake</b> a turn failed.</p>
+        <p>Choose a task chip to follow that work through handoffs, a person to follow them, or a line in Latest to open what changed. The Board keeps every task and its status.</p>
       </div>}
     </header>
     <div className="lv-body">

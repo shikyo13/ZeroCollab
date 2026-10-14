@@ -20,10 +20,15 @@ export interface SeatInput {
 }
 
 export interface Formation { group: string; members: string[]; box: Rect }
-export interface StageLayout { seats: Map<string, Point>; formations: Formation[]; reserved: Rect[] }
+/** thumbs: false when home rows are too tight for pictures under people; the stage then leaves them out (they
+ * stay in Latest and the watch session) rather than letting a picture cover the row below. */
+export interface StageLayout { seats: Map<string, Point>; formations: Formation[]; reserved: Rect[]; thumbs: boolean }
 
-export const PERSON = { w: 96, h: 74, thumbH: 46, quietScale: 0.72 };
-const SEAT_W = 120, SEAT_H = 104, GAP = 26;
+// w is the widest line a person draws (name or activity, both clipped to it in live.css), so nothing placed
+// beside a person can cover their words (4cbce498: bubbles covered activity lines 36 px past the old 96 px box).
+// h: badge 44 + name 16 + activity 14 + gaps. A quiet person's badge is 32 px; their words keep full size (quietH).
+export const PERSON = { w: 116, h: 78, quietH: 66, thumbH: 46 };
+const SEAT_W = 128, SEAT_H = 106, GAP = 26;
 /** Top band of a formation that holds its task chip, so the chip is part of the reserved box. */
 export const LABEL_H = 34;
 
@@ -34,51 +39,70 @@ export const overlap = (a: Rect, b: Rect) =>
  * rounded up. Speech keeps clear of it, so a bubble never touches a working ring (installed 0.12.43 capture). */
 export const BADGE_CLEAR = 10;
 
-/** A person's footprint for speech placement: personRect raised to include the ring and bob. */
+/** A person's footprint for speech placement: personRect raised to include the ring and bob, and the bob below. */
 export function speechBlocker(p: Point, quiet: boolean, hasThumb: boolean): Rect {
   const r = personRect(p, quiet, hasThumb);
-  return { ...r, y: r.y - BADGE_CLEAR, h: r.h + BADGE_CLEAR };
+  return { ...r, y: r.y - BADGE_CLEAR, h: r.h + BADGE_CLEAR + 3 };
 }
 
-/** The footprint a person reserves: badge, name and their latest picture. */
+/** The footprint a person reserves: badge, name and their latest picture. The person's box starts 26 px above
+ * their point (live.css margin-top) whatever their size; a quiet person is shorter, never narrower. */
 export function personRect(p: Point, quiet: boolean, hasThumb: boolean): Rect {
-  const s = quiet ? PERSON.quietScale : 1;
-  const w = PERSON.w * s, h = PERSON.h * s + (hasThumb && !quiet ? PERSON.thumbH : 0);
-  return { x: p.x - w / 2, y: p.y - 26 * s, w, h };
+  const w = PERSON.w, h = (quiet ? PERSON.quietH : PERSON.h) + (hasThumb && !quiet ? PERSON.thumbH : 0);
+  return { x: p.x - w / 2, y: p.y - 26, w, h };
 }
 
-/** Home seats: a calm honeycomb grid filling the stage, row-major by roster order. */
-function homeSeats(people: SeatInput[], area: Rect): Map<string, Point> {
+/** Home seats: a calm honeycomb grid filling the stage, row-major by roster order. Cells under a reserved area
+ * (the You area, the Latest rail) are skipped and the grid grows until everyone has a free cell, so a seat is
+ * never pushed out from under a panel onto a neighbour (4cbce498). */
+function homeSeats(people: SeatInput[], area: Rect, reserved: Rect[]): { seats: Map<string, Point>; rowH: number } {
   const n = Math.max(1, people.length);
   const aspect = area.w / Math.max(1, area.h);
-  const cols = Math.max(1, Math.min(n, Math.round(Math.sqrt(n * aspect))));
-  const rows = Math.ceil(n / cols);
-  const cw = area.w / cols, ch = area.h / rows;
+  const sorted = [...people].sort((a, b) => a.order - b.order);
+  const free = (p: Point) => reserved.every(r => overlap(personRect(p, false, false), { x: r.x - 10, y: r.y - 10, w: r.w + 20, h: r.h + 20 }) === 0);
+  let cells: Point[] = [], rowH = area.h;
+  for (let extra = 0; extra <= n; extra++) {
+    const cols = Math.max(1, Math.min(n + extra, Math.round(Math.sqrt((n + extra) * aspect))));
+    const rows = Math.ceil((n + extra) / cols);
+    const cw = area.w / cols, ch = area.h / rows;
+    rowH = ch;
+    const all: Point[] = [];
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const shift = cols > 1 ? (r % 2 ? cw / 4 : -cw / 4) : 0;
+      all.push({ x: area.x + cw * (c + 0.5) + shift, y: area.y + ch * (r + 0.5) });
+    }
+    cells = all.filter(free);
+    if (cells.length >= n) break;
+    if (extra === n) cells = all;   // a stage too small to clear: fill every cell; the overlap check reports it
+  }
   const seats = new Map<string, Point>();
-  [...people].sort((a, b) => a.order - b.order).forEach((p, i) => {
-    const r = Math.floor(i / cols), c = i % cols;
-    const shift = r % 2 ? cw / 4 : -cw / 4;
-    seats.set(p.id, { x: area.x + cw * (c + 0.5) + (cols > 1 ? shift : 0), y: area.y + ch * (r + 0.5) });
-  });
-  return seats;
+  sorted.forEach((p, i) => seats.set(p.id, cells[i] ?? cells[cells.length - 1]));
+  return { seats, rowH };
 }
 
-/** Place everyone. `reserved` areas (the You area, open panels) are never used for seats. */
-export function layoutStage(people: SeatInput[], stage: Rect, reserved: Rect[] = [], previous?: Map<string, Rect>): StageLayout {
+/** Place everyone. `reserved` areas (the You area, open panels) are never used for seats. `fixed` reserved areas
+ * (the Latest rail) shape the home grid itself; the others can change size (the You area grows while you answer),
+ * so a home seat under one steps aside instead, and the rest of the room keeps its seats. */
+export function layoutStage(input: SeatInput[], stage: Rect, reserved: Rect[] = [], previous?: Map<string, Rect>, fixed: Rect[] = []): StageLayout {
   const area = { x: stage.x + 60, y: stage.y + 70, w: Math.max(120, stage.w - 120), h: Math.max(120, stage.h - 130) };
-  const home = homeSeats(people, area);
-  // A home seat under a reserved area (the You area while you answer a question) steps just below it,
-  // then right if that would leave the stage; nobody sits under something you are using.
+  const { seats: home, rowH: homeRowH } = homeSeats(input, area, fixed);
+  // A cramped stage (a narrow window, the watch session open) keeps every person clear by leaving pictures out.
+  const roomy = homeRowH >= PERSON.h + PERSON.thumbH + 16;
+  const people = roomy ? input : input.map(p => ({ ...p, hasThumb: false }));
+  // A home seat under a resizable reserved area steps below it, else beside it, to the first spot that covers
+  // nobody else's seat; nobody sits under something you are using.
   for (const p of people) {
     const seat = home.get(p.id)!;
     for (const r of reserved) {
       if (overlap(personRect(seat, p.quiet, p.hasThumb), r) === 0) continue;
-      const below = { x: seat.x, y: r.y + r.h + 26 + 10 };
-      const rect = personRect(below, p.quiet, p.hasThumb);
-      home.set(p.id, rect.y + rect.h <= stage.y + stage.h - 10 ? below : { x: r.x + r.w + PERSON.w / 2 + 10, y: seat.y });
+      const others = people.filter(q => q.id !== p.id).map(q => personRect(home.get(q.id)!, q.quiet, q.hasThumb));
+      const options = [{ x: seat.x, y: r.y + r.h + 36 }, { x: r.x + r.w + PERSON.w / 2 + 10, y: seat.y }, { x: r.x - PERSON.w / 2 - 10, y: seat.y }];
+      const fits = (q: Point) => { const rect = personRect(q, p.quiet, p.hasThumb);
+        return rect.x >= stage.x && rect.x + rect.w <= stage.x + stage.w && rect.y + rect.h <= stage.y + stage.h - 10
+          && reserved.every(x => overlap(rect, x) === 0) && others.every(o => overlap(rect, o) === 0); };
+      home.set(p.id, options.find(fits) ?? options[0]);
     }
   }
-  const seats = new Map(home);
   const byGroup = new Map<string, SeatInput[]>();
   for (const p of people) if (p.group && !p.quiet) (byGroup.get(p.group) ?? byGroup.set(p.group, []).get(p.group)!).push(p);
 
@@ -89,61 +113,96 @@ export function layoutStage(people: SeatInput[], stage: Rect, reserved: Rect[] =
     members.sort((a, b) => (a.joinedAt ?? 0) - (b.joinedAt ?? 0) || a.order - b.order);
     return { group, members, since: members[0].joinedAt ?? 0, label: members.find(m => m.label)?.label };
   }).sort((a, b) => a.since - b.since || (a.group < b.group ? -1 : 1));
-  const members = new Set(groups.flatMap(g => g.members.map(m => m.id)));
-  // People staying home are fixed obstacles; members' own homes are free, since they have left them.
-  const taken: Rect[] = [...reserved, ...people.filter(p => !members.has(p.id)).map(p => personRect(home.get(p.id)!, p.quiet, p.hasThumb))];
-  const clear = (r: Rect) => r.x >= area.x - 40 && r.y >= area.y - 50 && r.x + r.w <= area.x + area.w + 40 && r.y + r.h <= area.y + area.h + 40
-    && taken.every(t => overlap({ x: r.x - GAP, y: r.y - GAP, w: r.w + 2 * GAP, h: r.h + 2 * GAP }, t) === 0);
+  // A group with no room keeps its members at home, which makes their homes obstacles for every other group,
+  // so placement runs again without it until nothing new fails (at most once per group).
+  const failed = new Set<string>();
+  for (;;) {
+    const placed = placeGroups(groups.filter(g => !failed.has(g.group)));
+    if (placed.failed.every(g => failed.has(g))) return { ...placed, reserved, thumbs: roomy };
+    placed.failed.forEach(g => failed.add(g));
+  }
 
-  const formations: Formation[] = [];
-  for (const g of groups) {
-    const homes = g.members.map(m => home.get(m.id)!);
-    const cx = homes.reduce((s, h) => s + h.x, 0) / homes.length, cy = homes.reduce((s, h) => s + h.y, 0) / homes.length;
-    const cols = g.members.length <= 3 ? g.members.length : Math.ceil(g.members.length / 2);
-    const rows = Math.ceil(g.members.length / cols);
-    const chipW = Math.min(320, 7 * (g.label?.length ?? 24) + 64);
-    let placed: { r: Rect; seatW: number; rowH: number } | null = null;
-    // A group that already has a spot keeps it while it is still clear (nothing reshuffles needlessly).
-    const before = previous?.get(g.group);
-    if (before) {
+  function placeGroups(active: typeof groups): { seats: Map<string, Point>; formations: Formation[]; failed: string[] } {
+    const seats = new Map(home);
+    const members = new Set(active.flatMap(g => g.members.map(m => m.id)));
+    const staying = people.filter(p => !members.has(p.id));
+    // Obstacles: busy people at home and anyone showing a picture are hard. Quiet people are soft: a full room has
+    // no gap between home rows wide enough for a group (4cbce498: a pair needs ~190 px, rows sit ~186 px apart),
+    // so a group may take quiet people's spots, and they move into the homes its members just left.
+    const hard: Rect[] = [...reserved, ...staying.filter(p => !p.quiet || p.hasThumb).map(p => personRect(home.get(p.id)!, p.quiet, p.hasThumb))];
+    const soft = staying.filter(p => p.quiet && !p.hasThumb);
+    const quietRect = (q: Point) => personRect(q, true, false);
+    const boxes: Rect[] = [], vacated: Point[] = [];
+    const inArea = (r: Rect) => r.x >= area.x - 40 && r.y >= area.y - 50 && r.x + r.w <= area.x + area.w + 40 && r.y + r.h <= area.y + area.h + 40;
+    const near = (r: Rect, t: Rect, gap: number) => overlap({ x: r.x - gap, y: r.y - gap, w: r.w + 2 * gap, h: r.h + 2 * gap }, t) > 0;
+    const formations: Formation[] = [], fails: string[] = [];
+    for (const g of active) {
+      const homes = g.members.map(m => home.get(m.id)!);
+      const cx = homes.reduce((s, h) => s + h.x, 0) / homes.length, cy = homes.reduce((s, h) => s + h.y, 0) / homes.length;
+      const cols = g.members.length <= 3 ? g.members.length : Math.ceil(g.members.length / 2);
+      const rows = Math.ceil(g.members.length / cols);
+      // The chip clips its title, so a long task name never widens the group past its seats by much.
+      const chipW = Math.min(260, 7 * (g.label?.length ?? 24) + 64);
       const rowH = SEAT_H + (g.members.some(m => m.hasThumb) ? PERSON.thumbH : 0);
       const w = Math.max(cols * SEAT_W, chipW), h = rows * rowH + LABEL_H;
-      const r = { x: before.x + before.w / 2 - w / 2, y: before.y, w, h };
-      if (clear(r)) placed = { r, seatW: SEAT_W, rowH };
-    }
-    // Nearest free spot to the members' homes, spiralling out; tighten the seats before giving up.
-    for (const scale of placed ? [] : [1, 0.86, 0.74]) {
-      const seatW = SEAT_W * scale, rowH = (SEAT_H + (g.members.some(m => m.hasThumb) ? PERSON.thumbH : 0)) * scale;
-      const w = Math.max(cols * seatW, chipW), h = rows * rowH + LABEL_H;
-      for (let radius = 0; radius <= 520 && !placed; radius += 20) {
-        const steps = radius === 0 ? 1 : Math.ceil((2 * Math.PI * radius) / 20);
-        for (let k = 0; k < steps; k++) {
-          const ang = (k / steps) * 2 * Math.PI;
-          const r = { x: cx + radius * Math.cos(ang) - w / 2, y: cy + radius * Math.sin(ang) - h / 2, w, h };
-          if (clear(r)) { placed = { r, seatW, rowH }; break; }
+      const free = [...vacated, ...homes];
+      // A spot works if nothing hard is near it and every quiet person it covers has a free home to move to.
+      const tryAt = (r: Rect, displace: boolean): Map<string, Point> | null => {
+        if (!inArea(r) || [...hard, ...boxes].some(t => near(r, t, GAP))) return null;
+        const covered = soft.filter(p => near(r, quietRect(seats.get(p.id)!), GAP));
+        if (!covered.length) return new Map();
+        if (!displace) return null;
+        const blocked = [...hard, ...boxes, r];
+        const settled = soft.filter(p => !covered.includes(p)).map(p => quietRect(seats.get(p.id)!));
+        const open = free.filter(c => !blocked.some(t => near(quietRect(c), t, 8)) && !settled.some(t => near(quietRect(c), t, 4)));
+        if (open.length < covered.length) return null;
+        const moves = new Map<string, Point>();
+        for (const p of covered) {
+          const at = seats.get(p.id)!;
+          const best = open.sort((a, b) => Math.hypot(a.x - at.x, a.y - at.y) - Math.hypot(b.x - at.x, b.y - at.y)).shift()!;
+          moves.set(p.id, best);
         }
+        return moves;
+      };
+      let spot: { r: Rect; moves: Map<string, Point> } | null = null;
+      // A group that already has a spot keeps it while it still works (nothing reshuffles needlessly).
+      const before = previous?.get(g.group);
+      if (before) { const r = { x: before.x + before.w / 2 - w / 2, y: before.y, w, h }, moves = tryAt(r, true); if (moves) spot = { r, moves }; }
+      // Nearest spot to the members' homes, spiralling out: one that displaces nobody, else one
+      // whose quiet people can move into the members' empty homes.
+      for (const displace of spot ? [] : [false, true]) {
+        for (let radius = 0; radius <= 620 && !spot; radius += 20) {
+          const steps = radius === 0 ? 1 : Math.ceil((2 * Math.PI * radius) / 20);
+          for (let k = 0; k < steps; k++) {
+            const ang = (k / steps) * 2 * Math.PI;
+            const r = { x: cx + radius * Math.cos(ang) - w / 2, y: cy + radius * Math.sin(ang) - h / 2, w, h };
+            const moves = tryAt(r, displace);
+            if (moves) { spot = { r, moves }; break; }
+          }
+        }
+        if (spot) break;
       }
-      if (placed) break;
+      if (!spot) { fails.push(g.group); continue; }
+      const { r, moves } = spot, mid = r.x + r.w / 2;
+      g.members.forEach((m, i) => {
+        const row = Math.floor(i / cols), inRow = Math.min(cols, g.members.length - row * cols), c = i % cols;
+        seats.set(m.id, { x: mid - inRow * SEAT_W / 2 + SEAT_W * (c + 0.5), y: r.y + LABEL_H + rowH * row + 34 });
+      });
+      for (const [id, q] of moves) seats.set(id, q);
+      vacated.splice(0, vacated.length, ...free.filter(c => ![...moves.values()].includes(c)));
+      boxes.push(r);
+      formations.push({ group: g.group, members: g.members.map(m => m.id), box: r });
     }
-    // No free space at all (a very small stage): sit at the centroid; the overlap check will report it.
-    if (!placed) { const w = Math.max(cols * SEAT_W, chipW), rowH = SEAT_H; placed = { r: { x: cx - w / 2, y: cy - (rows * rowH + LABEL_H) / 2, w, h: rows * rowH + LABEL_H }, seatW: SEAT_W, rowH }; }
-    const { r, seatW, rowH } = placed;
-    const mid = r.x + r.w / 2;
-    g.members.forEach((m, i) => {
-      const row = Math.floor(i / cols), inRow = Math.min(cols, g.members.length - row * cols), c = i % cols;
-      seats.set(m.id, { x: mid - inRow * seatW / 2 + seatW * (c + 0.5), y: r.y + LABEL_H + rowH * row + 34 });
-    });
-    taken.push(r);
-    formations.push({ group: g.group, members: g.members.map(m => m.id), box: r });
+    return { seats, formations, failed: fails };
   }
-  return { seats, formations, reserved };
 }
 
 export type BubbleSide = 'right' | 'left' | 'above' | 'below' | 'upRight' | 'upLeft' | 'downRight' | 'downLeft';
 
-/** A clear spot for one speech bubble next to its person, or null when every spot covers something:
- * the caller then shows a small cue by the person instead (text is never dropped, only moved). */
-export function placeBubble(p: Point, size: { w: number; h: number }, blockers: Rect[], bounds: Rect, prefer?: BubbleSide): { side: BubbleSide; rect: Rect } | null {
+/** A clear spot for one speech bubble next to its person, else (reach > 0) the nearest clear spot within reach
+ * px, or null when every spot covers something: the caller then shows a small cue by the person instead (text
+ * is never dropped, only moved). */
+export function placeBubble(p: Point, size: { w: number; h: number }, blockers: Rect[], bounds: Rect, prefer?: BubbleSide, reach = 0): { side: BubbleSide; rect: Rect } | null {
   const o = PERSON.w / 2 + 8;
   const c: Record<BubbleSide, Point> = {
     right: { x: p.x + o, y: p.y - size.h / 2 }, left: { x: p.x - o - size.w, y: p.y - size.h / 2 },
@@ -153,10 +212,23 @@ export function placeBubble(p: Point, size: { w: number; h: number }, blockers: 
   };
   const order: BubbleSide[] = ['right', 'left', 'upRight', 'upLeft', 'above', 'below', 'downRight', 'downLeft'];
   if (prefer) order.unshift(prefer);
+  // A few pixels of air on every side, so a bubble never sits flush against a chip, a panel or a name.
+  const clear = (rect: Rect) => rect.x >= bounds.x && rect.y >= bounds.y && rect.x + rect.w <= bounds.x + bounds.w && rect.y + rect.h <= bounds.y + bounds.h
+    && blockers.every(b => overlap({ x: rect.x - 4, y: rect.y - 4, w: rect.w + 8, h: rect.h + 8 }, b) === 0);
   for (const side of order) {
     const rect = { ...c[side], ...size };
-    if (rect.x < bounds.x || rect.y < bounds.y || rect.x + rect.w > bounds.x + bounds.w || rect.y + rect.h > bounds.y + bounds.h) continue;
-    if (blockers.every(b => overlap(rect, b) === 0)) return { side, rect };
+    if (clear(rect)) return { side, rect };
+  }
+  // Farther out (4cbce498: in a full room the eight spots touching a person are usually taken, and most speakers
+  // fell back to a cue): the nearest clear spot within reach, nearest first. The bubble names its speaker, so it
+  // still reads as theirs. One above the person grows upward, away from them; one below grows down.
+  for (let radius = 40; radius <= reach; radius += 20) {
+    const steps = Math.ceil((2 * Math.PI * radius) / 24);
+    for (let k = 0; k < steps; k++) {
+      const ang = (k / steps) * 2 * Math.PI;
+      const rect = { x: p.x + radius * Math.cos(ang) - size.w / 2, y: p.y + radius * Math.sin(ang) - size.h / 2, ...size };
+      if (clear(rect)) return { side: rect.y + rect.h / 2 < p.y ? 'above' : 'below', rect };
+    }
   }
   return null;
 }
@@ -167,4 +239,56 @@ export function springStep(x: number, v: number, target: number, dt: number, ome
   const d = x - target, e = Math.exp(-omega * dt);
   const a = (v + omega * d) * dt;
   return [target + (d + a) * e, (v - omega * a) * e];
+}
+
+/* ---------- Who is working with whom (task 4cbce498, Zero #18047) ----------
+ * One shared task is rare (each task has one owner), so the stage also gathers people joined by a real, current
+ * relation: a pending review (reviewer with the owner), an open follow-up, or an exchange in the last two
+ * minutes ('recent': an @mention, a verdict, a follow-up answer or a handoff between them). A pair gathers
+ * only while at least one of them is active, and an idle person joins someone busy
+ * only when the relation is about that person's current work (or names no task), so a stale request never
+ * pulls anyone away from what they are actually doing. Pure and deterministic for a given input. */
+export interface CollabPerson { id: string; active: boolean; task_id?: string; task_title?: string }
+export interface CollabLink { kind: 'review' | 'followup' | 'recent'; from: string; to: string; task_id?: string; task_title?: string; at: number }
+export interface CollabGroup { key: string; why: 'task' | CollabLink['kind']; title?: string; anchor?: string }
+
+/** How long each relation keeps a pair together after it last changed (s). An active person's own task keeps it longer. */
+export const LINK_HOLD_S: Record<CollabLink['kind'], number> = { review: 45 * 60, followup: 45 * 60, recent: 120 };
+const PRIORITY: Record<CollabLink['kind'], number> = { review: 0, followup: 1, recent: 2 };
+export const MAX_GROUP = 6;
+
+export function collabGroups(people: CollabPerson[], links: CollabLink[], now: number): Map<string, CollabGroup> {
+  const byId = new Map(people.map(p => [p.id, p]));
+  const out = new Map<string, CollabGroup>();
+  const size = new Map<string, number>();
+  const join = (id: string, g: CollabGroup) => { out.set(id, g); size.set(g.key, (size.get(g.key) ?? 0) + 1); };
+  for (const p of people) if (p.active && p.task_id) join(p.id, { key: p.task_id, why: 'task', title: p.task_title });
+  const live = links.filter(l => l.from !== l.to && byId.has(l.from) && byId.has(l.to))
+    .filter(l => now - l.at <= LINK_HOLD_S[l.kind] || [l.from, l.to].some(id => byId.get(id)!.active && l.task_id && byId.get(id)!.task_id === l.task_id))
+    .sort((a, b) => PRIORITY[a.kind] - PRIORITY[b.kind] || b.at - a.at);
+  for (const l of live) {
+    const a = byId.get(l.from)!, b = byId.get(l.to)!;
+    if (!a.active && !b.active) continue;
+    const ga = out.get(a.id), gb = out.get(b.id);
+    if (ga && gb) continue;                                   // both already placed: no merging
+    if (ga || gb) {
+      // One is placed: the other joins that group if the relation is about that work or names no task.
+      const [g, other] = ga ? [ga, b] : [gb!, a];
+      if (l.task_id && g.why === 'task' && g.key !== l.task_id) continue;
+      if ((size.get(g.key) ?? 0) >= MAX_GROUP) continue;
+      join(other.id, g);
+      continue;
+    }
+    // Neither placed: the pair forms its group around the relation's task, else around the active one.
+    const anchor = a.active ? a : b;
+    const g: CollabGroup = l.task_id ? { key: l.task_id, why: l.kind, title: l.task_title } : { key: `with:${anchor.id}`, why: l.kind, anchor: anchor.id };
+    if ((size.get(g.key) ?? 0) + 2 > MAX_GROUP) continue;
+    join(a.id, g); join(b.id, g);
+  }
+  return out;
+}
+
+/** When the next relation in `links` stops holding a pair together (s since epoch), or Infinity. */
+export function nextLinkExpiry(links: CollabLink[], now: number): number {
+  return links.reduce((m, l) => { const end = l.at + LINK_HOLD_S[l.kind]; return end > now ? Math.min(m, end) : m; }, Infinity);
 }
