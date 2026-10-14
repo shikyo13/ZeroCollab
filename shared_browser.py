@@ -37,6 +37,9 @@ RECORDING_CLOSE_GRACE_SECONDS = 10
 # own page receives the whole board on each change (10 MB on the live board, 0.12.66), so they are dropped
 # before parsing. Chrome writes "method" first in an event.
 UNUSED_EVENT_PREFIX = '{"method":"Network.webSocketFrame'
+# One DevTools message is buffered whole in the room process. Above this only the browser connection closes, and
+# its note names why. About 25 times the live board snapshot (10 MB, 0.12.66), and above any screenshot.
+DEVTOOLS_MESSAGE_MAX_BYTES = 256 * 1024 * 1024
 WINDOWS_CREATE_SUSPENDED = 4
 WINDOWS_JOB_LIMIT_PRIORITY_CLASS = 0x20
 WINDOWS_JOB_LIMIT_KILL_ON_CLOSE = 0x2000
@@ -629,9 +632,9 @@ class Browser:
                 pages = (await client.get(f'http://127.0.0.1:{port}/json/list')).json()
                 version = (await client.get(f'http://127.0.0.1:{port}/json/version')).json()
             self.anchor = next(p for p in pages if p['type'] == 'page' and p['url'] == 'about:blank')['id']
-            # No message cap: a message over it closes the socket and loses every page, and a page decides how
-            # large its events are (the room's board snapshot outgrew 8 MiB). This socket only reaches our own browser.
-            self.ws = await websockets.connect(version['webSocketDebuggerUrl'], max_size=None)
+            # A message over the cap closes the socket and loses every page, and a page decides how large its events
+            # are (the room's board snapshot outgrew the old 8 MiB), so the cap sits far above any expected message.
+            self.ws = await websockets.connect(version['webSocketDebuggerUrl'], max_size=DEVTOOLS_MESSAGE_MAX_BYTES)
             self.reader = asyncio.create_task(self.receive())
             await self.command('Target.setAutoAttach', {'autoAttach': True, 'waitForDebuggerOnStart': True,
                 'flatten': True, 'filter': [{'type': 'page', 'exclude': False}, {'exclude': True}]})
