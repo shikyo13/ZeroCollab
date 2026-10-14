@@ -12,8 +12,10 @@ writable, never routed to agents."""
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -21,7 +23,10 @@ from pathlib import Path
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+import roomdb
 from project_room import write_json
+
+LOGGER = logging.getLogger(__name__)
 
 STATUSES = ('open', 'working', 'blocked', 'review', 'done')
 PRIVATE = ('sessions', 'cursors', 'receipts')
@@ -61,6 +66,16 @@ def _read(path, fallback):
         return fallback
 
 
+def _coordination(folder):
+    """An inactive project's coordination records, from room.db or coordination.json (roomdb.read_state). Unreadable
+    records list as empty, as an unreadable coordination.json always did, and the reason goes to the log."""
+    try:
+        return roomdb.read_state(folder)
+    except (roomdb.RoomDbError, sqlite3.Error, OSError, ValueError) as exc:
+        LOGGER.warning('Coordination records in %s are unreadable: %s', folder, exc)
+        return {}
+
+
 def _same_path(a, b):
     return bool(a) and bool(b) and os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
 
@@ -80,7 +95,7 @@ def _root(runtime):
 def _folders(runtime):
     root = _root(runtime)
     return [f for f in root.iterdir() if f.is_dir() and IDENTITY.match(f.name)
-            and ((f / 'coordination.json').exists() or (f / 'agents.json').exists())] if root.is_dir() else []
+            and (roomdb.has_state(f) or (f / 'agents.json').exists())] if root.is_dir() else []
 
 
 def active_folder(runtime):
@@ -161,7 +176,7 @@ def _is_active(runtime, folder):
 
 
 def _state(runtime, folder):
-    return runtime.project_room.state if _is_active(runtime, folder) else _read(folder / 'coordination.json', {})
+    return runtime.project_room.state if _is_active(runtime, folder) else _coordination(folder)
 
 
 def _goal(runtime, folder):
@@ -238,7 +253,7 @@ def migrate_sessions(runtime):
     folders = _folders(runtime)
     owners = {}
     for folder in folders:
-        for channel in _used_channels(_read(folder / 'coordination.json', {}), _read(folder / 'goal.json', None)):
+        for channel in _used_channels(_coordination(folder), _read(folder / 'goal.json', None)):
             owners.setdefault(channel, set()).add(folder.name)
     now = time.time()
     assigned = {}
@@ -581,7 +596,7 @@ def create_project(runtime, name, team='current', path=''):
         check_unowned(runtime, repository)
     identity = _new_identity(runtime)
     folder = _root(runtime) / identity
-    write_json(folder / 'coordination.json', {'spec': '', 'tasks': [], 'notes': []})
+    roomdb.Store.open(folder)[0].close()  # a new project starts as room.db (task d6139872)
     if team == 'current':
         # Same people, fresh start: no pause state, no archived members.
         profiles = {k: {**{f: v for f, v in p.items() if f != 'paused'}, 'archived': False}

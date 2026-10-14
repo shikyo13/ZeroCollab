@@ -8,6 +8,7 @@ import uuid
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+import roomdb
 from project_room import write_json
 
 # A proposal file larger than this is treated as corrupt rather than read (security d4cdc9a4).
@@ -207,7 +208,7 @@ class TeamBuilder:
     def target_folder(self, project_id):
         root = (self.runtime.data / 'projects').resolve()
         folder = (root / project_id).resolve()
-        if not folder.is_relative_to(root) or not (folder / 'coordination.json').is_file():
+        if not folder.is_relative_to(root) or not roomdb.has_state(folder):
             raise ValueError('Choose a listed project')
         return folder
 
