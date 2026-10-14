@@ -61,7 +61,7 @@ The default easing is `ease-in-out`. With reduced motion, `slide`, `wipe` and `z
 | `video` `speed` | retimes the picture only (see "Recorded footage"); the schema requires `muted: true` with it |
 | `cursor` | the recorded pointer, drawn in its source video's box (see "Recorded footage") |
 | `redact` | an opaque box over a secret in footage: the transform's box filled with `color` (default `#1b2023`, any alpha dropped). Its own `opacity` and `blur` are never applied, its corners are square, and it sits above its siblings within its own group. Put it in the footage's group so it moves and zooms with it; effects on that group or the camera act on footage that is already covered. |
-| `ui` | `ZCMotionUI.mount(host, layer, context)` once at build, then `handle.seek(context)` every frame (awaited like a video seek), `handle.dispose()` on pagehide. `context` is `{frameContext, composition, clip: {id, from, duration, frame, contentFrame}, values}`; a seek must be a pure function of it. |
+| `ui` | `ZCMotionUI.mount(host, layer, context)` once at build, then `handle.seek(context)` every frame (awaited like a video seek), `handle.dispose()` on pagehide. `context` is `{frameContext, composition, clip: {id, from, duration, frame, contentFrame}, values, reduced}` (`reduced` is the page's reduced-motion option); a seek must be a pure function of it. |
 
 ## Brand kit
 

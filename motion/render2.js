@@ -218,6 +218,9 @@
       composition: { id: comp.id, width: W, height: H, fps, duration: comp.duration },
       clip: { id: clip.id, from: clip.from, duration: clip.duration, frame: frameNumber - clip.from, contentFrame },
       values,
+      // The page's reduced-motion request (zm-options.reduced), so a ui layer can draw the product's reduced variant
+      // (frontend 3a78adb5).
+      reduced,
     });
     addEventListener('pagehide', () => { for (const h of uiHandles.splice(0)) try { h.dispose(); } catch (e) { /* teardown only */ } });
 

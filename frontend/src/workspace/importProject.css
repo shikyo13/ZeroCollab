@@ -1,0 +1,23 @@
+.ip-root { min-width: 0; }
+.ip-steps { display: flex; flex-wrap: wrap; gap: 12px 28px; list-style: none; padding: 0; margin: 24px 0; color: var(--text-muted); }
+.ip-steps [aria-current] { color: var(--accent); font-weight: 600; }
+.ip-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, 300px); gap: 20px; align-items: start; }
+.ip-sources { display: flex; gap: 12px; border: 0; margin: 0 0 20px; padding: 0; }
+.ip-sources legend { margin-bottom: 12px; font-weight: 600; }
+.ip-sources label { flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 16px; cursor: pointer; }
+.ip-sources label:has(:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.ip-sources strong { margin-left: 8px; }
+.ip-sources small { display: block; margin-top: 8px; }
+.ip-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.ip-fields input, .ip-fields select, .ip-root input[type=file] { display: block; width: 100%; margin: 8px 0 16px; }
+.ip-facts { margin: 24px 0; }
+.ip-facts > div { display: grid; grid-template-columns: 135px minmax(0, 1fr); gap: 16px; border-bottom: 1px solid var(--border); padding: 12px 0; }
+.ip-facts dd { margin: 0; overflow-wrap: anywhere; }
+.ip-facts dt, .ip-samples small { color: var(--text-muted); }
+.ip-samples { list-style: none; padding: 0; }
+.ip-samples li { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.ip-samples small { display: block; }
+.ip-samples p { white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 0; }
+.ip-root aside p, .ip-root code, .ip-open { overflow-wrap: anywhere; }
+.ip-open { margin-top: 24px; }
+@media(max-width: 760px) { .ip-layout, .ip-fields { grid-template-columns: 1fr; } .ip-sources { flex-direction: column; } .ip-facts > div { grid-template-columns: 1fr; gap: 4px; } }

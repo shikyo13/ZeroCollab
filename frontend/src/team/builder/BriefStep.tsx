@@ -7,19 +7,23 @@ import { SOURCE_LABELS } from './labels';
 export function BriefStep({
   context,
   previous,
+  initialBrief,
+  targetProject,
   onCreated,
   onCancel,
 }: {
   context: BuilderContext;
   previous: Proposal | null;
+  initialBrief?: string;
+  targetProject?: string;
   onCreated: (proposal: Proposal) => void;
   onCancel: () => void;
 }) {
   const agents = agentList(context.agents).filter(a => a.available);
-  const initialSource: BriefSource = previous?.source === 'suggestion' ? 'text' : previous?.source ?? (context.spec.trim() ? 'spec' : context.goal.trim() ? 'goal' : 'text');
+  const initialSource: BriefSource = previous?.source === 'suggestion' ? 'text' : previous?.source ?? (initialBrief !== undefined ? 'text' : context.spec.trim() ? 'spec' : context.goal.trim() ? 'goal' : 'text');
   const textFor = (source: BriefSource) => (source === 'spec' ? context.spec : source === 'goal' ? context.goal : '');
   const [source, setSource] = useState<BriefSource>(initialSource);
-  const [brief, setBrief] = useState(previous?.brief ?? textFor(initialSource));
+  const [brief, setBrief] = useState(previous?.brief ?? initialBrief ?? textFor(initialSource));
   const [drafter, setDrafter] = useState(previous?.drafter || agents[0]?.handle || '');
   const [challenger, setChallenger] = useState(previous?.challenger || agents.find(a => a.handle !== (previous?.drafter || agents[0]?.handle))?.handle || '');
   const create = useAction();
@@ -34,7 +38,8 @@ export function BriefStep({
     e.preventDefault();
     let created: Proposal | null = null;
     const ok = await create.run(async () => {
-      created = await createProposal({ source, brief: brief.trim(), drafter, challenger, channel: window.activeChannel });
+      created = await createProposal({ source, brief: brief.trim(), drafter, challenger, channel: window.activeChannel,
+        ...(targetProject ? { target_project: targetProject } : {}) });
     });
     if (ok && created) onCreated(created);
   };

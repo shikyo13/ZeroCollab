@@ -333,6 +333,41 @@ def _block(block_id, value):
     return f'<script type="application/json" id="{block_id}">{data}</script>'
 
 
+def ui_bundle(composition):
+    """Load the shipped Board/task-card bundle only for the selected UI composition."""
+    def layers(items):
+        for layer in items:
+            if layer.get('hidden'):
+                continue
+            if layer['type'] == 'ui':
+                yield layer
+            elif layer['type'] == 'group':
+                yield from layers(layer.get('layers', []))
+
+    used = [layer for track in composition['tracks'] if not track.get('hidden') and track['kind'] == 'visual'
+            for clip in track['clips']
+            for layer in layers(clip['layers'])]
+    if not used:
+        return None
+    if any(layer.get('component') not in ('board', 'task-card') for layer in used):
+        raise ValueError('Motion UI supports only board and task-card components')
+    bundle = []
+    for name, closing in (('ui.js', '</script'), ('ui.css', '</style')):
+        try:
+            with (KIT / name).open('rb') as stream:
+                raw = stream.read(1024 * 1024 + 1)
+        except OSError as exc:
+            raise ValueError(f'Motion UI needs the installed {name} bundle') from exc
+        if len(raw) > 1024 * 1024:
+            raise ValueError(f'Motion UI {name} exceeds the 1 MiB inline limit')
+        # Match read_text's newline normalization before hashing inline scripts.
+        code = raw.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
+        if closing in code.lower():
+            raise ValueError(f'Motion UI {name} cannot be inlined')
+        bundle.append(code)
+    return bundle
+
+
 def view_html(scene, options, runtime=None):
     """A hash-pinned, network-free page. Legacy keeps boot.js and exact seek-ms behavior;
     v2 uses core/motion/render2 and a resolved FrameInput for the selected (default first) composition.
@@ -342,15 +377,20 @@ def view_html(scene, options, runtime=None):
     if scene['version'] == 1:
         options.pop('transparent', None)
     names = SCRIPTS
+    ui = None
     media_csp = ''
     if scene['version'] == 2:
         plan = render_plan(scene, options.get('composition'))
         options['frame_input'] = resolved_frame_input(scene, plan['composition'], runtime)
         names = V2_SCRIPTS
+        comp = next(c for c in scene['compositions'] if c['id'] == plan['composition'])
+        ui = ui_bundle(comp)
         if any(a['kind'] == 'video' for a in options['frame_input']['assets']):
             media_csp = 'media-src data:; '
     scripts = [(KIT / name).read_text('utf-8') for name in names
                if name not in OPTIONAL_SCRIPTS or (KIT / name).is_file()]
+    if ui is not None:
+        scripts.insert(-1, ui[0])  # core, motion, UI, render2; included in the CSP hashes below
     if any('</script' in code.lower() for code in scripts):
         raise RuntimeError('motion scripts cannot be inlined')
     hashes = ' '.join("'sha256-" + base64.b64encode(hashlib.sha256(code.encode()).digest()).decode() + "'"
@@ -358,6 +398,8 @@ def view_html(scene, options, runtime=None):
     csp = (f"default-src 'none'; script-src {hashes}; style-src 'unsafe-inline'; img-src data:; "
            f"{media_csp}base-uri 'none'; form-action 'none'")
     page = (KIT / 'scene.html').read_text('utf-8')
+    if ui is not None:
+        page = page.replace('</head>', f'<style>{ui[1]}</style></head>', 1)
     if scene['version'] == 2 and options.get('transparent'):
         # Preserve an explicitly authored background. Otherwise alpha profiles
         # must not acquire the legacy page's opaque canvas/stage defaults.

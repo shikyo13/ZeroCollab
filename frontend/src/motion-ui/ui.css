@@ -1,0 +1,10 @@
+/* Render host policy, not a second product skin. Product CSS is bundled unchanged
+ * except that its body token selector is scoped to this composition-local host. */
+.ui-product { position: relative; overflow: hidden; pointer-events: none; color: var(--text); background: var(--bg); }
+.ui-product, .ui-product * { box-sizing: border-box; }
+.ui-product .bd-root { height: 100%; overflow: hidden; }
+.ui-product .bd-columns { min-width: 0; }
+.ui-product, .ui-product *, .ui-product *::before, .ui-product *::after { animation: none !important; transition: none !important; }
+.ui-product .bd-active-dot, .ui-product .bd-exec-run .bd-exec-dot { opacity: var(--ui-pulse-opacity, 1); }
+.ui-product .bd-count-roll { opacity: var(--ui-count-opacity, 1); transform: translateY(var(--ui-count-y, 0)); }
+.ui-product .bd-card-flight { position: absolute !important; }

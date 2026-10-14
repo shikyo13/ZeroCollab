@@ -3134,6 +3134,8 @@ def install(host):
     project_registry.install(host, runtime)
     import team_builder
     team_builder.install(host, runtime)
+    import session_import
+    session_import.install(host, runtime)
     import decision_flow
     decision_flow.install(host, runtime)
     import shared_browser

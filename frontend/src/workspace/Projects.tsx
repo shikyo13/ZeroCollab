@@ -14,6 +14,7 @@ import { openChannel, PROJECT_REFRESH_MS, projectLabel, roomIsBusy, switchProjec
 import { EVENTS, LIMITS } from '../lib/constants';
 import ProjectHistory from './ProjectHistory';
 import { ProjectActions } from './ProjectActions';
+import { ImportProject } from './ImportProject';
 
 export type ProjectNav = (view: 'chat' | 'board' | 'team') => void;
 
@@ -207,9 +208,18 @@ export default function Projects({ projects, error, refresh, focus, setFocus, na
 }) {
   const now = useNow();
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   useEffect(() => { const open = () => setCreating(true); window.addEventListener(EVENTS.newProject, open); return () => window.removeEventListener(EVENTS.newProject, open); }, []);
   const selected = projects.find(p => p.id === focus) ?? projects.find(p => p.active) ?? projects[0];
+  if (importing) return <div className="bd-root pj-root"><ImportProject projects={projects} onClose={() => setImporting(false)} onImported={refresh}
+    renderOpen={id => {
+      const project = projects.find(p => p.id === id);
+      return project ? project.active
+        ? <button className="bd-btn" onClick={() => { setImporting(false); setFocus(id); }}>Open project</button>
+        : <SwitchButton project={project} label="Open project" onSwitched={() => { setImporting(false); setFocus(id); void refresh(); navigate('board'); }} />
+        : <button className="bd-btn" onClick={() => void refresh()}>Refresh project list</button>;
+    }} /></div>;
   if (historySession) return <ProjectHistory key={`${focus}:${historySession}`} project={focus} session={historySession}
     summary={projects.find(p => p.id === focus)}
     runningName={projects.find(p => p.active)?.name ?? ''} onReturn={() => navigate('chat')} onDetails={() => setFocus(focus)} />;
@@ -220,7 +230,7 @@ export default function Projects({ projects, error, refresh, focus, setFocus, na
         <h1>Projects</h1>
         <p>Each project keeps its own conversations, board, team and goal. Start without a repository and add one when you need it.</p>
       </div>
-      <button className="bd-btn bd-btn-primary" onClick={() => setCreating(true)}>New project</button>
+      <div className="bd-actions"><button className="bd-btn" onClick={() => setImporting(true)}>Import project or chat</button><button className="bd-btn bd-btn-primary" onClick={() => setCreating(true)}>New project</button></div>
     </header>
     <ErrorText message={error} />
     {creating && <NewProject onCancel={() => setCreating(false)} onCreated={id => { setCreating(false); setFocus(id); void refresh(); }} />}

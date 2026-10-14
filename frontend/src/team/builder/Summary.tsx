@@ -51,7 +51,7 @@ export function Summary({
       </div>}
       {added.length > 0 && (
         <div>
-          <b>{plural(added.length, 'member')} added{proposal.source === 'suggestion' ? ` to ${projectName || project}` : ''}</b>
+          <b>{plural(added.length, 'member')} added{proposal.source === 'suggestion' || proposal.target_project ? ` to ${projectName || project}` : ''}</b>
           <small>{names(added)}</small>
           {proposal.source === 'suggestion' && <small>Added idle. No work was started by Add.</small>}
         </div>
@@ -101,11 +101,11 @@ export function Summary({
       </button>}
       {approved.length > 0 && !readOnly && (
         <small className="bd-muted">
-          Adds {names(approved)} to this project without starting work.{waiting.length ? ` ${names(waiting)} ${waiting.length === 1 ? 'stays' : 'stay'} in this saved proposal.` : ''}
+          Adds {names(approved)} to {proposal.target_project ? projectName || proposal.target_name : 'this project'} without starting work.{waiting.length ? ` ${names(waiting)} ${waiting.length === 1 ? 'stays' : 'stay'} in this saved proposal.` : ''}
         </small>
       )}
       <small className="bd-muted">
-        Adding rechecks handles, connections and model choices. If one member fails, the others are still added and the failed one stays approved with the reason. Retrying adds only the missing members.
+        {proposal.target_project ? 'Adds the approved profiles to the destination project without starting them. Retrying skips members already added.' : 'Adding rechecks handles, connections and model choices. If one member fails, the others are still added and the failed one stays approved with the reason. Retrying adds only the missing members.'}
       </small>
     </aside>
   );

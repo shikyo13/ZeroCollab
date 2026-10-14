@@ -1,8 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 
+import { BOARD_MOTION_EASE as EASE, BOARD_FLIGHT_MS, BOARD_REFLOW_MS, BOARD_CUE_MS, BOARD_REDUCED_MS, BOARD_FLIGHT_OPACITY, BOARD_DONE_MIN_SCALE, BOARD_REDUCED_OPACITY } from './boardMotion';
+
 type Position = {rect:DOMRect; status:string; node:HTMLElement};
 type Flight = {id:string; from:Position};
-const EASE = 'cubic-bezier(.2,0,0,1)';
+
 
 /** Decorative copies travel; real cards always reflect the server and remain usable. */
 export function useBoardMotion(root:RefObject<HTMLElement|null>, paused:boolean, project:string, enabled:boolean) {
@@ -18,7 +20,7 @@ export function useBoardMotion(root:RefObject<HTMLElement|null>, paused:boolean,
     for(const animation of held.current)animation.cancel();held.current.clear();nextStart.current=0;
   };
   const cue=(node:HTMLElement)=>{
-    node.classList.add('bd-motion-cue');setTimeout(()=>node.classList.remove('bd-motion-cue'),1400);
+    node.classList.add('bd-motion-cue');setTimeout(()=>node.classList.remove('bd-motion-cue'),BOARD_CUE_MS);
     if(node.dataset.taskStatus==='blocked'&&!matchMedia('(prefers-reduced-motion: reduce)').matches)
       node.animate([{transform:'translateX(0)'},{transform:'translateX(-7px)'},{transform:'translateX(6px)'},{transform:'translateX(-3px)'},{transform:'translateX(0)'}],{duration:480,easing:EASE});
   };
@@ -43,8 +45,8 @@ export function useBoardMotion(root:RefObject<HTMLElement|null>, paused:boolean,
       ghost.removeAttribute('data-task-id');ghost.removeAttribute('id');ghost.setAttribute('aria-hidden','true');ghost.inert=true;
       ghost.querySelectorAll('[id]').forEach(el=>el.removeAttribute('id'));
       ghost.classList.add('bd-card-flight');Object.assign(ghost.style,{left:from.left+'px',top:from.top+'px',width:from.width+'px',height:from.height+'px'});document.body.append(ghost);
-      const x=to.left-from.left,y=to.top-from.top,sx=to.width/from.width,sy=node.dataset.taskStatus==='done'?Math.max(.15,to.height/from.height):1;
-      const animation=ghost.animate([{transform:'translate(0,0) scale(1)',opacity:.9},{transform:`translate(${x}px,${y}px) scale(${sx},${sy})`,opacity:.08}],{duration:560,easing:EASE,fill:'forwards'});
+      const x=to.left-from.left,y=to.top-from.top,sx=to.width/from.width,sy=node.dataset.taskStatus==='done'?Math.max(BOARD_DONE_MIN_SCALE,to.height/from.height):1;
+      const animation=ghost.animate([{transform:'translate(0,0) scale(1)',opacity:BOARD_FLIGHT_OPACITY.from},{transform:`translate(${x}px,${y}px) scale(${sx},${sy})`,opacity:BOARD_FLIGHT_OPACITY.to}],{duration:BOARD_FLIGHT_MS,easing:EASE,fill:'forwards'});
       const flight={ghost,animation},epoch=generation.current;active.current.set(job.id,flight);
       animation.finished.catch(()=>undefined).then(()=>{
         ghost.remove();if(epoch!==generation.current||active.current.get(job.id)!==flight)return;
@@ -69,13 +71,13 @@ export function useBoardMotion(root:RefObject<HTMLElement|null>, paused:boolean,
       for(const [id,p] of changed){
         queue.current=queue.current.filter(job=>job.id!==id);
         const old=active.current.get(id);if(old){active.current.delete(id);held.current.delete(old.animation);old.animation.cancel();old.ghost.remove();}
-        if(reduced){p.node.animate([{opacity:.6},{opacity:1}],{duration:160});continue;}
+        if(reduced){p.node.animate([{opacity:BOARD_REDUCED_OPACITY},{opacity:1}],{duration:BOARD_REDUCED_MS});continue;}
         queue.current.push({id,from:previous.current.get(id)!});p.node.classList.add('bd-motion-cue');
       }
       if(!reduced)for(const [id,p] of next){
         const before=previous.current.get(id);if(!before||before.status!==p.status||active.current.has(id)||p.node.matches(':hover, :focus-within'))continue;
         const x=before.rect.left-p.rect.left,y=before.rect.top-p.rect.top;
-        if(Math.abs(x)+Math.abs(y)>1)p.node.animate([{transform:`translate(${x}px,${y}px)`},{transform:'translate(0,0)'}],{duration:320,easing:EASE});
+        if(Math.abs(x)+Math.abs(y)>1)p.node.animate([{transform:`translate(${x}px,${y}px)`},{transform:'translate(0,0)'}],{duration:BOARD_REFLOW_MS,easing:EASE});
       }
     }
     previous.current=next;pump();

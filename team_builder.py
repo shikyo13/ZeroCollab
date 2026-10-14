@@ -139,7 +139,11 @@ class TeamBuilder:
             'selected model/effort defaults. Choose effort by role: a coordinator, integrator or anyone on the '
             "owner's critical path gets at least the default effort, never low; keep low effort for narrow, "
             'low-risk lookups, and say why in the rationale. '
-            'Account for active current members; never invent peer agreement. '
+            + (f'This team is for another project, {inert(p["target_name"])}, which has no agents yet: the '
+               'current members do not join it, so propose the complete team it needs and leave them out of '
+               'coverage. ' if p.get('target_project') else
+               'Account for active current members; ')
+            + 'never invent peer agreement. '
             'Submit with room_team_builder(action="submit", proposal_id, revision, payload). '
             'Payload: {members:[{name,id,template,model,effort,background,rationale}], '
             'coverage:[{need,detail,lead:[handle],support:[handle]}],summary}. '
@@ -179,12 +183,60 @@ class TeamBuilder:
             raise ValueError('Choose a chat in the current project')
         if self.runtime.paused:
             raise ValueError('Resume the room before drafting a team')
+        target = self.target(body.get('target_project'))
         self.proposal = dict(id=uuid.uuid4().hex[:16], revision=1, source=source, brief=brief,
             channel=channel, chain=self.runtime.project_room.new_chain(channel),
             drafter=drafter, challenger=challenger, status='drafting', members=[], coverage=[],
-            summary='', history=[], error='', revision_member='', feedback='')
+            summary='', history=[], error='', revision_member='', feedback='', **target)
         self.save()
         self.queue()
+        return self.get()
+
+    def target(self, project_id):
+        """A team for another project (an import, task 1379953e): this room's agents draft it, but they never
+        join that project, and Add writes the approved members into its agent list without starting anyone."""
+        if not project_id or project_id == self.runtime.identity:
+            return {}
+        import project_registry
+        if not isinstance(project_id, str) or not project_registry.IDENTITY.fullmatch(project_id):
+            raise ValueError('Choose a listed project')
+        folder = self.target_folder(project_id)
+        name = project_registry.record(folder).get('name') or project_id
+        return {'target_project': project_id, 'target_name': name}
+
+    def target_folder(self, project_id):
+        root = (self.runtime.data / 'projects').resolve()
+        folder = (root / project_id).resolve()
+        if not folder.is_relative_to(root) or not (folder / 'coordination.json').is_file():
+            raise ValueError('Choose a listed project')
+        return folder
+
+    def add_to_target(self, p):
+        """Approved members become profiles in the target project's agents.json, exactly as create_project writes
+        a team. That project isn't running here, so nothing is activated; its agents start when it is opened."""
+        folder = self.target_folder(p['target_project'])
+        path = folder / 'agents.json'
+        items = json.loads(path.read_text('utf-8')) if path.exists() else {}
+        templates = self.runtime.profiles.templates
+        for member in p['members']:
+            if member['status'] != 'approved':
+                continue
+            key = p['id'] + ':' + member['member_id']
+            existing = next((i for i, v in items.items() if v.get('team_builder_key') == key), None)
+            if existing:
+                member.update(status='added', id=existing, error='')
+                continue
+            taken = {h for i, v in items.items() for h in (i, v.get('handle', i), *v.get('previous_handles', []))}
+            if member['id'] in taken or member['template'] not in templates:
+                member['error'] = ('That handle is already used in ' + p['target_name'] if member['id'] in taken
+                                   else 'Choose a configured provider connection')
+                continue
+            items[member['id']] = {'id': member['id'], 'template': member['template'], 'name': member['name'],
+                'color': templates[member['template']].get('color', '#8b5cf6'), 'background': member['background'],
+                'archived': False, 'model': member['model'], 'effort': member['effort'], 'team_builder_key': key}
+            member.update(status='added', error='')
+        write_json(path, items)
+        self.save()
         return self.get()
 
     def normalize_member(self, raw, member_id=None):
@@ -511,6 +563,8 @@ class TeamBuilder:
         p, path, identity = self.proposal, self.path, self.runtime.identity
         if p['status'] != 'ready':
             raise ValueError('Wait for the draft and challenge to finish')
+        if p.get('target_project'):
+            return self.add_to_target(p)
         for member in p['members']:
             if member['status'] != 'approved':
                 continue

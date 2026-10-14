@@ -43,6 +43,8 @@ export interface Proposal {
   source?: BriefSource | 'suggestion';
   suggested_by?: string;
   project_id?: string;
+  target_project?: string;
+  target_name?: string;
   read_only?: boolean;
   brief: string;
   members: ProposedMember[];
@@ -88,6 +90,7 @@ export interface MemberChanges {
 const BASE = '/team-builder';
 
 export interface SuggestionTarget { project: string; proposal: string }
+export interface ImportBrief { projectId: string; projectName: string; brief: string }
 
 export function suggestionTarget(): SuggestionTarget | null {
   const params = new URL(location.href).searchParams;
@@ -107,7 +110,7 @@ export function leaveSuggestion(project?: string): void {
 
 export const loadContext = () => runtime<BuilderContext>(BASE);
 
-export const createProposal = (body: { source: BriefSource; brief: string; drafter?: string; challenger?: string; channel?: string }) =>
+export const createProposal = (body: { source: BriefSource; brief: string; drafter?: string; challenger?: string; channel?: string; target_project?: string }) =>
   runtime<Proposal>(`${BASE}/proposals`, body);
 
 export const loadProposal = (id: string, project?: string) => runtime<Proposal>(project

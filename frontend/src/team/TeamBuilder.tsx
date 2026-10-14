@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, errorMessage } from '../lib/api';
 import { useRoomEvent, useRuntimeState } from '../lib/room';
 import { useProjects } from '../workspace/projectData';
-import { leaveSuggestion, loadContext, loadProposal, retryProposal, type BuilderContext, type Proposal, type SuggestionTarget } from '../lib/teamBuilder';
+import { leaveSuggestion, loadContext, loadProposal, retryProposal, type BuilderContext, type Proposal, type SuggestionTarget, type ImportBrief } from '../lib/teamBuilder';
 import { ErrorText, useAction } from '../board/shared';
 import { BriefStep } from './builder/BriefStep';
 import { Coverage } from './builder/Coverage';
@@ -19,7 +19,7 @@ import './teamBuilder.css';
 const POLL_MS = 2500;
 const WORKING: Proposal['status'][] = ['drafting', 'challenging'];
 
-export function TeamBuilder({ onClose, onAdded, target }: { onClose: () => void; onAdded: () => void | Promise<void>; target?: SuggestionTarget }) {
+export function TeamBuilder({ onClose, onAdded, target, importBrief }: { onClose: () => void; onAdded: () => void | Promise<void>; target?: SuggestionTarget; importBrief?: ImportBrief }) {
   const [context, setContext] = useState<BuilderContext | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [step, setStep] = useState<'brief' | 'review'>('brief');
@@ -31,7 +31,10 @@ export function TeamBuilder({ onClose, onAdded, target }: { onClose: () => void;
   const { data: running } = useRuntimeState();
   const [activeProject, setActiveProject] = useState(window.activeProjectId || '');
   const runningProject = activeProject || running?.project_id || running?.project || '';
-  const { projects } = useProjects();
+  const { projects, refresh: refreshProjects } = useProjects();
+  const destinationId = proposal?.target_project || importBrief?.projectId;
+  const destination = projects.find(p => p.id === destinationId);
+  const destinationName = proposal?.target_name || importBrief?.projectName || destination?.name || destinationId;
   const targetProject = target?.project;
   const targetProposal = target?.proposal;
   const readOnly = !!target && (proposal?.read_only !== false || runningProject !== target.project);
@@ -60,7 +63,7 @@ export function TeamBuilder({ onClose, onAdded, target }: { onClose: () => void;
 
   useEffect(() => {
     void reload().then(next => {
-      if (!target && mounted.current && next?.proposal) {
+      if (!target && !importBrief && mounted.current && next?.proposal) {
         setProposal(next.proposal);
         setStep('review');
       }
@@ -97,14 +100,17 @@ export function TeamBuilder({ onClose, onAdded, target }: { onClose: () => void;
     generation.current++;
     const newlyAdded = next.members.some(m => m.status === 'added' && proposal?.members.find(p => p.member_id === m.member_id)?.status !== 'added');
     setProposal(target ? { ...next, project_id: target.project, read_only: proposal?.read_only } : next);
-    if (newlyAdded) void Promise.resolve(onAdded()).then(() => reload());
+    if (newlyAdded) void Promise.resolve(onAdded()).then(() => { void refreshProjects(); return reload(); });
   };
 
   // Members this proposal added are shown as additions, not as part of the team they joined.
   const current = useMemo(() => {
     const addedHere = new Set((proposal?.members ?? []).filter(m => m.status === 'added').map(m => m.id));
-    return (context?.profiles ?? []).filter(p => !p.archived && !addedHere.has(p.id));
-  }, [context, proposal]);
+    const profiles = destinationId && destinationId !== runningProject
+      ? (destination?.team ?? []).map(p => ({ ...p, background: '', model: '', effort: '' }))
+      : context?.profiles ?? [];
+    return profiles.filter(p => !p.archived && !addedHere.has(p.id));
+  }, [context, proposal, destination, destinationId, runningProject]);
 
   const targetedHeader = target && <header className="bd-header">
     <div><h1 ref={heading} className="bd-title" tabIndex={-1}>Team suggestion</h1>
@@ -145,11 +151,15 @@ export function TeamBuilder({ onClose, onAdded, target }: { onClose: () => void;
         </div>
         <div className="bd-actions">
           <button type="button" className="bd-btn" onClick={onClose}>
-            Back to team
+            {importBrief ? 'Back to import' : 'Back to team'}
           </button>
         </div>
       </header>}
       <ErrorText message={error} />
+      {destinationId && <section className="bd-banner" aria-label="Team destination">
+        <b>Team for {destinationName}</b>
+        <span>Agents connected here draft and challenge the brief. They do not join the destination. Only members you approve and add go to {destinationName}; no work starts.</span>
+      </section>}
       {readOnly && <section className="bd-banner bd-banner-warn" aria-label="Read-only suggestion">
         <b>Read-only. Open this project to edit, approve or add its suggested member.</b>
         <span>Reading this suggestion does not switch or stop {runningName}.</span>
@@ -160,6 +170,8 @@ export function TeamBuilder({ onClose, onAdded, target }: { onClose: () => void;
         <BriefStep
           context={context}
           previous={proposal}
+          initialBrief={importBrief?.brief}
+          targetProject={destinationId}
           onCreated={next => {
             setProposal(next);
             setStep('review');
@@ -219,7 +231,7 @@ export function TeamBuilder({ onClose, onAdded, target }: { onClose: () => void;
                     <p className="bd-empty">The agents found no gap worth a new member. Edit the brief to ask for a different team.</p>
                   )}
                 </section>
-                <Summary context={context} proposal={proposal} current={current} readOnly={readOnly} project={target?.project || running?.project_id} projectName={viewedName || runningName} onRefusal={() => { if (target) void reload(); }} onChange={change} />
+                <Summary context={context} proposal={proposal} current={current} readOnly={readOnly} project={target?.project || running?.project_id} projectName={destinationName || viewedName || runningName} onRefusal={() => { if (target) void reload(); }} onChange={change} />
               </div>
             </>
           )}

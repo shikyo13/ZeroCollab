@@ -1,6 +1,7 @@
 """Team-builder consent and recovery checks; no providers or live services."""
 import asyncio
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -150,6 +151,28 @@ class TeamBuilderTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.r.change_profile(p['members'][0], creation_key='key', expected_project='different')
         self.assertEqual(self.created, [])
+
+    async def test_a_team_for_an_imported_project_is_written_there_and_nobody_starts(self):
+        # Import (task 1379953e): this room's agents draft for another project, which gets the approved members
+        # in its own agents.json; nothing is activated here, and Add twice adds once.
+        target = Path(self.tmp.name) / 'projects' / 'abcd1234'
+        target.mkdir(parents=True)
+        (target / 'coordination.json').write_text('{}', 'utf-8')
+        (target / 'project.json').write_text('{"name": "Atlas Notes"}', 'utf-8')
+        p = self.b.start({'source': 'text', 'brief': 'Imported notes app', 'target_project': 'abcd1234'})
+        self.assertEqual((p['target_project'], p['target_name']), ('abcd1234', 'Atlas Notes'))
+        self.assertIn('another project, Atlas Notes', self.calls[0][1]['prompt'])
+        self.b.submit('astra', p['id'], p['revision'], self.payload())
+        p = self.b.submit('opus', p['id'], p['revision'], self.payload())
+        self.action(p['members'][0], 'approve')
+        await self.b.add(p['id'])
+        result = await self.b.add(p['id'])
+        self.assertEqual([m['status'] for m in result['members']], ['added', 'proposed'])
+        written = json.loads((target / 'agents.json').read_text('utf-8'))
+        self.assertEqual(list(written), ['researcher'])
+        self.assertEqual(self.created, [], 'Nothing is activated in this room')
+        with self.assertRaises(ValueError):
+            self.b.start({'source': 'text', 'brief': 'x', 'target_project': '../escape'})
 
     async def test_parallel_capacity_does_not_cap_roster_and_context_is_explicit(self):
         p = self.b.start({'brief': 'Project needing several specialists'})
