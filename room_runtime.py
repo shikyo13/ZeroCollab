@@ -2413,7 +2413,24 @@ class RoomRuntime:
             return {'status': 'deferred', 'queued': False,
                     'reason': 'Automatic planning result recorded; bounded manager check-in observes the changed work.'}
         return self.notify_participant(recipient, channel, chain,
-            text + '\nRead room_read(section="inbox") for the full request/findings and coordinate with the team.', ref)
+            text + '\nRead room_read(section="inbox") for the full request/findings and coordinate with the team.'
+            + self.skill_hint(recipient, items, ref), ref)
+
+    def skill_hint(self, recipient, items, ref):
+        """One line naming the skill this delivery matches, only when the recipient's approved profile pins it
+        (harness d69d12c5, agent-profiles pilot b8bc48b6): a review ask or verdict matches room-review, an L1 live
+        check matches room-release. Profiled agents answered 23 reviews without ever loading room-review."""
+        if ref.get('collection') == 'reviews':
+            name = 'room-review'
+        elif any(str(item.get('text', '')).startswith(process_enforcement.L1_PREFIX) for item in items):
+            name = 'room-release'
+        else:
+            return ''
+        profile = self.profiles.items.get(recipient, {})
+        if not agent_skills.active(profile) or name not in {skill.name for skill in agent_skills.approved(profile)[0]}:
+            return ''
+        return (f'\nMatching skill: {name}. Load it with your native skill tool or '
+                f'room_skill(action="load", name="{name}") if it isn\'t in this session.')
 
     def announce_system_record(self, item, channel):
         """A follow-up the room opened for the user (E5's continue-or-stop item): one system line in the chat and a

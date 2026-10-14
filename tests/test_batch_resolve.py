@@ -85,6 +85,22 @@ class BatchResolve(unittest.TestCase):
         self.assertEqual(self.woken, ['astra'])
         self.assertEqual(len(self.lines), 3)  # every cancel still posts its chat line
 
+    def test_a_delivery_names_its_skill_only_when_the_profile_pins_it(self):
+        # harness d69d12c5: profiled agents answered 23 reviews and never loaded room-review.
+        import agent_skills
+        pinned = {'name': 'room-review', 'sha256': agent_skills.read_skill('room-review').sha256}
+        self.runtime.profiles = SimpleNamespace(items={'harness': {'core': 'role', 'approved_by': 'user',
+                                                                   'approved_at': 1, 'skills': [pinned]}})
+        texts = []
+        self.runtime.notify_participant = lambda name, channel, chain, text, ref: texts.append((name, text)) or {}
+        l1 = {'id': 'f9', 'text': 'L1 live check: release 0.12.61 (1ac7fb4be38c) is installed.'}
+        for name, item, collection in (('harness', {'id': 'r1'}, 'reviews'), ('harness', l1, 'followups'),
+                                       ('harness', followup('f1', 'backend'), 'followups'), ('opus', {'id': 'r1'}, 'reviews')):
+            self.runtime.deliver_record(name, [item], 'chat', 'chain', 'news', {'collection': collection})
+        self.assertIn('Matching skill: room-review.', texts[0][1])
+        for name, text in texts[1:]:  # room-release isn't pinned, a plain follow-up matches nothing, opus has no profile
+            self.assertNotIn('Matching skill', text)
+
 
 if __name__ == '__main__':
     unittest.main()
