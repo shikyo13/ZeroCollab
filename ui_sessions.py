@@ -92,6 +92,11 @@ class BrowserSessions:
         created = self.sessions.get(digest(secret))
         return created is not None and self.clock() - created < SESSION_SECONDS
 
+    def end(self, secret):
+        """Sign one session out, e.g. when the shared browser that held it closes."""
+        if isinstance(secret, str):
+            self.sessions.pop(digest(secret), None)
+
     def hand_over(self):
         """Session hashes and creation times for the next room process. Never a secret."""
         self.purge()

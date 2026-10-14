@@ -1678,8 +1678,9 @@ class ProjectRoom:
                          'do not report the action as done.')
             if native:
                 # MCP tools load deferred; a tool the prompt never names is effectively invisible.
-                lines.append("- room_browser is the user's Browser panel: claim it, open a local preview, inspect or "
-                             'screenshot what the user sees, then release. A screenshot returns an /uploads URL for '
+                lines.append("- room_browser is the user's Browser panel: claim it, open a local preview or the room "
+                             'itself (it opens signed in), inspect or screenshot what the user sees, then release. '
+                             'A screenshot returns an /uploads URL for '
                              'room_markup and task attachments. Prefer it to a private headless browser for UI work. '
                              'record_start, record_stop and record_status record real product footage from your own '
                              'browser as a fileref for room_motion, kept where it was recorded.')

@@ -299,11 +299,13 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
     to room_markup or task attachments. status/inspect/screenshot observe the page.
     claim control before open/click/type/key/scroll/reload/dialog/stop; release when finished.
     Another agent or the user may own it; never steal control. Agent control expires after 60s.
-    open accepts local http(s) previews, excluding room and control ports. Pop-ups are blocked.
+    open accepts local http(s) pages, including the room itself: http://127.0.0.1:<room port>/?view=board
+    opens the live room signed in, the same page the user sees. Pop-ups are blocked; use new_page.
     inspect writes data-room-ref attributes on page elements and returns visible text and refs;
     use ref with click/type, or viewport x/y coordinates. type inserts text into the focused field.
     select chooses an option by ref and text (option value). key accepts Enter, Tab, Backspace, Delete,
-    Escape, arrows, Home/End, PageUp/Down or a (modifiers: Ctrl=2, Shift=8).
+    Escape, arrows, Home/End, PageUp/Down or any single character (modifiers: Alt=1, Ctrl=2, Meta=4,
+    Shift=8; with Alt, Ctrl or Meta a character is a shortcut such as Ctrl+K, otherwise it types).
     screenshot returns the same page pixels the user sees. The page uses a temporary profile.
     Pages: actions apply to the active page unless page names one from status pages[]; a closed page
     is refused, never redirected. new_page (optional url) opens another page and makes it active;

@@ -1,7 +1,7 @@
 ---
 name: room-release
 description: Use when deciding which release a change goes in, or when preparing, staging, deploying or live-checking a release.
-version: 2
+version: 3
 ---
 
 # Releases
@@ -42,5 +42,6 @@ The room drains: no new turns start and current turns finish. If you are woken u
 ## Live checks
 
 - Each owner checks their own change on the installed release and closes the task in the same turn it passes.
-- Say how the check ran (the user's tab, an exact-package throwaway room, or a simulated gesture) and what it didn't cover.
+- UI checks run on the live room in the shared Browser: room_browser open http://127.0.0.1:8300/?view=board lands signed in on the page the user sees.
+- Say how the check ran (the shared Browser on the live room, an exact-package throwaway room, or a simulated gesture) and what it didn't cover.
 - Release notes are honest. A schema-only field is labelled schema only until its renderer ships.

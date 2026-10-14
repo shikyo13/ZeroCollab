@@ -113,19 +113,26 @@ class WindowsBrowserProcess:
 
 
 # The web room's browser host name (ui_sessions.ROOM_HOST), repeated here so the desktop app, which ships
-# this file without ui_sessions.py, needs no extra module. Agents' browser never reaches it on any port.
+# this file without ui_sessions.py, needs no extra module. The shared browser opens the room there, signed in.
 ROOM_HOST = 'zerocollab.localhost'
+LOCAL_HOSTS = ('localhost', '127.0.0.1', '::1', ROOM_HOST)
 
 
-def preview_url(value, blocked_ports=()):
+def default_port(parsed):
+    return parsed.port or (443 if parsed.scheme == 'https' else 80)
+
+
+def preview_url(value, debug_ports=()):
+    """A local page the shared browser may open, including the room itself. Only the browsers' own DevTools
+    ports are refused: a page that reached one would control that browser, not the app under test."""
     if not isinstance(value, str) or len(value) > 4096:
-        raise ValueError('Enter a local preview URL')
+        raise ValueError('Enter a local page URL')
     parsed = urlsplit(value)
-    if (parsed.scheme not in ('http', 'https') or parsed.hostname not in ('localhost', '127.0.0.1', '::1')
+    if (parsed.scheme not in ('http', 'https') or parsed.hostname not in LOCAL_HOSTS
             or parsed.username or parsed.password):
-        raise ValueError('This browser opens local previews: http(s)://localhost, 127.0.0.1 or [::1]')
-    if (parsed.port or (443 if parsed.scheme == 'https' else 80)) in blocked_ports:
-        raise ValueError('The room, MCP and browser-control ports cannot be opened in the shared browser')
+        raise ValueError('This browser opens local pages: http(s)://localhost, 127.0.0.1, [::1] or ' + ROOM_HOST)
+    if default_port(parsed) in debug_ports:
+        raise ValueError("A shared browser's own DevTools port cannot be opened as a page")
     return value
 
 
@@ -204,9 +211,9 @@ class Browser:
         self.ref_serial = 0
         self.background = set()
         cfg = getattr(runtime, 'cfg', {})
-        self.blocked_ports = {int(cfg.get('server', {}).get('port', 8300)),
-                              int(cfg.get('mcp', {}).get('http_port', 8200)),
-                              int(cfg.get('mcp', {}).get('sse_port', 8201)), 8301}
+        self.room_port = int(cfg.get('server', {}).get('port', 8300))
+        # This browser's own room sign-in (ui_sessions cookie secret), ended when the browser closes.
+        self.room_secret = None
         self.protected_debug_ports = set()
         self.debug_port = None
         self.activity = None
@@ -396,23 +403,68 @@ class Browser:
             self.note('navigation', 'Closed an unexpected browser page')
         return True
 
+    def debug_ports(self):
+        return {p for p in self.protected_debug_ports | {self.debug_port} if p}
+
+    def room_sessions(self):
+        """The web room's browser sign-in (ui_sessions.BrowserSessions); None in the desktop app."""
+        return getattr(getattr(self.runtime, 'host', None), 'browser', None)
+
+    def room_page(self, url):
+        """The room-host address for a URL naming this room, else None. The web room's signed-in pages live
+        at the room host, so 127.0.0.1 and localhost on the room port open there with path and query kept."""
+        parsed = urlsplit(url)
+        if (self.room_sessions() is None or parsed.scheme != 'http' or parsed.hostname not in LOCAL_HOSTS
+                or default_port(parsed) != self.room_port):
+            return None
+        return (f'http://{ROOM_HOST}:{self.room_port}{parsed.path or "/"}'
+                + (f'?{parsed.query}' if parsed.query else '') + (f'#{parsed.fragment}' if parsed.fragment else ''))
+
+    async def navigate(self, page, url):
+        result = await self.command('Page.navigate', {'url': url}, page=page)
+        if result.get('errorText'):
+            raise ValueError('Navigation failed: ' + result['errorText'])
+
+    async def room_signed_in(self, page, sessions):
+        import ui_sessions  # web room only, like room_sessions()
+        cookies = (await self.command('Network.getCookies', {'urls': [sessions.origin + '/']}, page=page)).get('cookies', [])
+        secret = next((c.get('value') for c in cookies if c.get('name') == ui_sessions.COOKIE), None)
+        if not sessions.valid(secret):
+            return False
+        if self.room_secret and self.room_secret != secret:
+            sessions.end(self.room_secret)
+        self.room_secret = secret
+        return True
+
+    async def open_room(self, page, url):
+        """Open a room page signed in, through the room's own launch-code exchange (ui_sessions): a code minted
+        in-process is redeemed by the launch page for this browser's cookie, then the page asked for opens."""
+        sessions = self.room_sessions()
+        if not await self.room_signed_in(page, sessions):
+            if urlsplit(page.url).hostname == ROOM_HOST:
+                await self.navigate(page, 'about:blank')  # a fragment-only change would not rerun the launch page
+            await self.navigate(page, f'{sessions.origin}/launch#code={sessions.mint()}')
+            deadline = time.monotonic() + 8
+            while not await self.room_signed_in(page, sessions):
+                if time.monotonic() >= deadline:
+                    raise ValueError('The room did not sign this browser in within 8 seconds; open the room again')
+                await asyncio.sleep(.1)
+        await self.navigate(page, url)
+
     async def route_document(self, params, session):
         try:
             url = params['request']['url']
             try:
                 parsed = urlsplit(url)
-                ports = self.blocked_ports | self.protected_debug_ports | {self.debug_port}
-                # Block admin/control origins for every resource, not only top-level pages.
-                if parsed.hostname in ('localhost', '127.0.0.1', '::1') and (parsed.port or (443 if parsed.scheme == 'https' else 80)) in ports:
-                    raise ValueError('Protected room endpoint')
-                # The web room's own host name, on every port: the browser room signs in there.
-                if parsed.hostname and (parsed.hostname == ROOM_HOST or parsed.hostname.endswith('.' + ROOM_HOST)):
-                    raise ValueError('Protected room endpoint')
+                ports = self.debug_ports()
+                # A browser's DevTools port, for every resource, not only top-level pages.
+                if parsed.hostname in LOCAL_HOSTS and default_port(parsed) in ports:
+                    raise ValueError('Browser DevTools port')
                 if params.get('resourceType') == 'Document' and url != 'about:blank':
                     preview_url(url, ports)
             except ValueError:
                 await self.command('Fetch.failRequest', {'requestId': params['requestId'], 'errorReason': 'BlockedByClient'}, session=session)
-                self.note('navigation', 'Blocked protected endpoint or navigation outside local previews', self.session_page(session))
+                self.note('navigation', 'Blocked a DevTools port or a navigation outside local pages', self.session_page(session))
             else:
                 await self.command('Fetch.continueRequest', {'requestId': params['requestId']}, session=session)
         except (ValueError, websockets.ConnectionClosed):
@@ -467,8 +519,7 @@ class Browser:
             await self.command(domain + '.enable', page=page)
         await self.command('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]}, page=page)
         await self.command('Network.setBlockedURLs', {'urls': [f'*://{host}:{p}/*'
-            for host in ('localhost', '127.0.0.1', '[::1]') for p in self.blocked_ports | self.protected_debug_ports | {self.debug_port}]
-            + [f'*://{ROOM_HOST}*', f'*://*.{ROOM_HOST}*']}, page=page)
+            for host in ('localhost', '127.0.0.1', '[::1]', ROOM_HOST) for p in self.debug_ports()]}, page=page)
         await self.command('Emulation.setDeviceMetricsOverride', {'width': page.width, 'height': page.height, 'deviceScaleFactor': 1, 'mobile': False}, page=page)
         await self.command('Page.setInterceptFileChooserDialog', {'enabled': True}, page=page)
 
@@ -608,6 +659,9 @@ class Browser:
                 await self.proc.wait()
         if isinstance(self.proc, WindowsBrowserProcess):
             self.proc.close_handles()
+        if self.room_secret and self.room_sessions() is not None:
+            self.room_sessions().end(self.room_secret)
+        self.room_secret = None
         if self.profile:
             with contextlib.suppress(OSError):
                 self.profile.cleanup()
@@ -812,7 +866,7 @@ class Browser:
             if action in ('open', 'new_page'):
                 url = arguments.get('url', '')
                 if action == 'open' or url:
-                    url = preview_url(url, self.blocked_ports | {self.debug_port})
+                    url = preview_url(url, self.debug_ports())
                 if not self.status()['running']:
                     if arguments.get('page'):
                         raise ValueError('That browser page was closed; read status for the current pages')
@@ -828,10 +882,12 @@ class Browser:
                 else:
                     page = self.page(arguments)
                 if url:
-                    result = await self.command('Page.navigate', {'url': url}, page=page)
-                    if result.get('errorText'):
-                        raise ValueError('Navigation failed: ' + result['errorText'])
-                    self.note('action', label + ' opened ' + url, page)
+                    room = self.room_page(url)
+                    if room:
+                        await self.open_room(page, room)
+                    else:
+                        await self.navigate(page, url)
+                    self.note('action', label + ' opened ' + (room or url), page)
                 page.frame_at = 0
                 return self.status(page)
             if action == 'stop':
@@ -908,12 +964,18 @@ class Browser:
                 await self.command('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': y, 'deltaX': 0, 'deltaY': delta}, page=page)
             elif action == 'key':
                 key = arguments.get('key', '')
-                keys = {'Enter':13,'Tab':9,'Backspace':8,'Delete':46,'Escape':27,'ArrowLeft':37,'ArrowUp':38,'ArrowRight':39,'ArrowDown':40,'Home':36,'End':35,'PageUp':33,'PageDown':34,'a':65}
-                if key not in keys:
-                    raise ValueError('Unsupported key')
+                keys = {'Enter':13,'Tab':9,'Backspace':8,'Delete':46,'Escape':27,'ArrowLeft':37,'ArrowUp':38,'ArrowRight':39,'ArrowDown':40,'Home':36,'End':35,'PageUp':33,'PageDown':34}
+                character = isinstance(key, str) and len(key) == 1 and key.isprintable()
+                if key not in keys and not character:
+                    raise ValueError('Use a named key or a single character')
+                code = keys.get(key) or (ord(key.upper()) if key.isascii() and key.isalnum() else 0)
                 modifiers = int(arguments.get('modifiers', 0)) & 15
                 for phase in ('keyDown', 'keyUp'):
-                    await self.command('Input.dispatchKeyEvent', {'type': phase, 'key': key, 'windowsVirtualKeyCode': keys[key], 'modifiers': modifiers}, page=page)
+                    event = {'type': phase, 'key': key, 'windowsVirtualKeyCode': code, 'modifiers': modifiers}
+                    # A plain or Shift character types; with Alt, Ctrl or Meta it is a shortcut only (e.g. Ctrl+K).
+                    if phase == 'keyDown' and character and not modifiers & 7:
+                        event['text'] = key
+                    await self.command('Input.dispatchKeyEvent', event, page=page)
             elif action == 'select':
                 reference = arguments.get('ref')
                 if not isinstance(reference, int) or reference < 1:
