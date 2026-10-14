@@ -16,6 +16,7 @@ from coordination_records import CoordinationRecords, bounded, review_rounds
 from coordination_queue import receipt_key
 from durable import atomic_write
 from coordination_state import update_execution, execution_state, pending_human_wait
+import roomdb
 
 DEFAULT_LIMITS = {'input_chars': 16000, 'agent_turns': 0,
                   'turn_seconds': 0, 'turn_max_seconds': 0, 'parallel_agents': 0, 'local_tool_rounds': 3,
@@ -288,6 +289,7 @@ class ProjectRoom:
             stored = json.loads(self.limits_path.read_text('utf-8'))
             self.change_limits(stored, save=False)
         self.path = None
+        self.store = None  # roomdb.Store for the active project
         self.state = {'spec': '', 'tasks': [], 'notes': []}
         self.chains = {}
         self.current_chain = {}
@@ -339,8 +341,11 @@ class ProjectRoom:
         return found
 
     def use_project(self, identity):
-        self.path = self.runtime.data / 'projects' / identity / 'coordination.json'
-        self.state = json.loads(self.path.read_text('utf-8')) if self.path.exists() else {'spec': '', 'tasks': [], 'notes': []}
+        folder = self.runtime.data / 'projects' / identity
+        # The records live in room.db (roomdb.py; a coordination.json is imported on first open). path keeps naming
+        # coordination.json: it is the project's identity for its folder and in saved claims (manager_wakes).
+        self.store, self.state = roomdb.Store.open(folder)
+        self.path = folder / roomdb.JSON_NAME
         # Legacy bare reservations keep their original repository after a primary change.
         self.state.setdefault('scope_repository', self.primary_repository_key())
         for note in self.state.get('notes', []):
@@ -423,11 +428,16 @@ class ProjectRoom:
                 summary['last_check_in'] = {'by': latest['by'], 'time': latest['time'], 'text': clipped(latest['text'], 400)}
         return summary
 
-    def save(self):
+    def save(self, touched=None):
         """Writes the board and, under chain_records, the conversation records (task 70f48e0a). Their counters move
         in memory between saves, so a crash undercounts a budget by at most what was spent since the last save
-        (harness 4b5bbefe 3). chain_records lives only on disk, never in self.state or the snapshot."""
-        write_json(self.path, {**self.state, 'chain_records': self.chain_records()})
+        (harness 4b5bbefe 3). chain_records lives only on disk, never in self.state or the snapshot.
+        With no argument every record is compared with room.db and the changed ones written. touched names
+        everything the caller mutated since the last save, as (section, id) or a section name (roomdb.plan_touched);
+        chain_records is always compared, because counters move between saves."""
+        if touched is not None:
+            touched = [*touched, 'chain_records']
+        self.store.save({**self.state, 'chain_records': self.chain_records()}, touched)
 
     def chain_records(self):
         """The conversation records worth keeping across a restart: those in use plus the newest CHAINS_KEPT. The

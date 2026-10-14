@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import project_room
+import roomdb
 import work_continuity as wc
 from project_room import ProjectRoom
 from ready_wakes import ReadyWakes
@@ -35,7 +36,7 @@ class Continuity(unittest.TestCase):
         self.queued_ok = True
 
         def enqueue(name, channel, prompt='', chain=None, routing=None, **_):
-            saved = json.loads(r.project_room.path.read_text('utf-8'))
+            saved = roomdb.read_state(r.project_room.path.parent)
             self.calls.append({'name': name, 'chain': chain, 'prompt': prompt, 'key': routing['continuity'],
                                'durable': saved['continuity']['claims'].get(routing['continuity'], {}).get('status') == 'sent'})
             if self.queued_ok:
@@ -240,14 +241,16 @@ class Restart(Continuity):
         self.room.save()
         other = self.restart('q')
         self.assertEqual(other.chains, {})
-        saved = json.loads(other.path.read_text('utf-8'))
+        saved = roomdb.read_state(other.path.parent)
         self.assertEqual(saved['chain_records'], [])
         self.assertIn(self.chain, self.restart('p').chains)
 
     def test_bad_records_are_skipped_and_the_room_still_loads(self):
-        saved = json.loads(self.room.path.read_text('utf-8'))
+        saved = roomdb.read_state(self.room.path.parent)
         saved['chain_records'] = [None, {'id': 5}, {'id': ''}, 'x',
                                   {'id': 'ok', 'turns': -3, 'handoffs': 'many', 'reported_tokens': float('inf'), 'paused': 1}]
+        # An older coordination.json carrying them: the next load imports it into room.db.
+        (self.room.path.parent / roomdb.DB_NAME).unlink()
         self.room.path.write_text(json.dumps(saved), 'utf-8')
         chains = self.restart().chains
         self.assertEqual(list(chains), ['ok'])

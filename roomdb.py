@@ -34,6 +34,7 @@ import sqlite3
 import sys
 import threading
 import time
+import traceback
 import uuid
 from contextlib import closing
 from pathlib import Path
@@ -46,6 +47,11 @@ RETIRED_SUFFIX = '.exported'
 SCHEMA_VERSION = 1           # PRAGMA user_version; a reader refuses a file newer than it knows
 BUSY_TIMEOUT_MS = 5000       # a reader in this process waits this long for a writer's lock
 DIGEST_BYTES = 16
+# A touched save is a full comparison when this long has passed since the last one, so a record a caller forgot
+# to name is written within this window (harness 4b789e62). The room's shutdown save is always full.
+FULL_DIFF_SECONDS = 30
+# Tests set ROOM_DB_VERIFY=1: every touched save is checked against a full comparison and fails loudly if it missed.
+VERIFY = os.environ.get('ROOM_DB_VERIFY') == '1'
 EMPTY_STATE = {'spec': '', 'tasks': [], 'notes': []}
 LIST, VALUE = 'list', 'value'
 
@@ -158,6 +164,7 @@ class Store:
         self.path = self.folder / DB_NAME
         self.cache = {}
         self.lock = threading.Lock()
+        self.last_full = time.monotonic()  # open() reads the whole file, which counts as the first comparison
 
     @classmethod
     def open(cls, folder):
@@ -217,11 +224,20 @@ class Store:
         if source.exists():
             os.replace(source, self.folder / PRE_ROOMDB_NAME)
 
-    def save(self, state):
-        """Write every section and record that differs from the last commit, in one transaction. Returns the
-        number of rows written; 0 means nothing changed and nothing was committed."""
+    def save(self, state, touched=None):
+        """Write what differs from the last commit, in one transaction, and return the number of statements; 0 means
+        nothing changed and nothing was committed. touched=None compares everything (always correct, about 45 ms on
+        the live room). touched names everything the caller mutated since the last save (plan_touched), and is
+        still a full comparison once FULL_DIFF_SECONDS have passed since the last one."""
         with self.lock:
-            ops, cache = plan_full(state, self.cache)
+            now = time.monotonic()
+            if touched is None or now - self.last_full >= FULL_DIFF_SECONDS:
+                ops, cache = plan_full(state, self.cache)
+                self.last_full = now
+            else:
+                ops, cache = plan_touched(state, self.cache, touched)
+                if VERIFY:
+                    self.verify(state, cache, touched)
             if not ops:
                 return 0
             with closing(connect(self.path)) as conn:
@@ -237,6 +253,18 @@ class Store:
                     raise
             self.cache = cache  # only after the commit: a failed save is retried in full by the next one
             return len(ops)
+
+    @staticmethod
+    def verify(state, cache, touched):
+        """ROOM_DB_VERIFY: a touched save must leave nothing for a full comparison to find. Names what was missed and
+        where the save came from, so the call site can name it."""
+        missed, _ = plan_full(state, cache)
+        if missed:
+            rows = sorted({f'{params[0]}/{params[1]}' if statement == UPSERT_REC else str(params[0])
+                           for statement, params in missed})
+            caller = traceback.extract_stack(limit=4)[0]
+            raise RoomDbError(f'save(touched={sorted(map(str, touched))[:8]}) from {caller.filename}:{caller.lineno} '
+                              f'missed {rows[:12]}: name them in touched, or call save() with no argument')
 
     def generation(self):
         """(room_generation, commit_seq) as committed."""
@@ -265,39 +293,90 @@ DELETE_REC = 'DELETE FROM rec WHERE section = ? AND id = ?'
 DELETE_SECTION = 'DELETE FROM section WHERE name = ?'
 
 
+def plan_section(name, ord_, value, old, ops):
+    """Append the statements that make one section equal value, given its last committed entry (or None).
+    Returns the section's new cache entry."""
+    if is_record_list(value):
+        rows = old[2] if old and old[0] == LIST else {}
+        if old is None or old[0] != LIST or old[1] != ord_:
+            if old is not None and old[0] != LIST:
+                ops.append((DELETE_SECTION_RECS, (name,)))
+            ops.append((UPSERT_SECTION, (name, LIST, ord_)))
+        new_rows = {}
+        for index, record in enumerate(value):
+            doc = dump(record)
+            entry = (index, digest(doc))
+            if rows.get(record['id']) != entry:
+                ops.append((UPSERT_REC, (name, record['id'], index, doc)))
+            new_rows[record['id']] = entry
+        ops.extend((DELETE_REC, (name, rid)) for rid in rows.keys() - new_rows.keys())
+        return LIST, ord_, new_rows
+    doc = dump(value)
+    entry = (VALUE, ord_, digest(doc))
+    if old != entry:
+        if old is None or old[0] != VALUE or old[1] != ord_:
+            if old is not None and old[0] != VALUE:
+                ops.append((DELETE_SECTION_RECS, (name,)))
+            ops.append((UPSERT_SECTION, (name, VALUE, ord_)))
+        ops.append((UPSERT_REC, (name, '', 0, doc)))
+    return entry
+
+
+def plan_removed(state, cache, ops):
+    for name in cache.keys() - state.keys():
+        ops.append((DELETE_SECTION_RECS, (name,)))
+        ops.append((DELETE_SECTION, (name,)))
+
+
 def plan_full(state, cache):
     """(ops, new cache): every statement needed to make room.db equal state, given what was last committed."""
     ops, fresh = [], {}
     for ord_, (name, value) in enumerate(state.items()):
-        old = cache.get(name)
-        if is_record_list(value):
-            rows = old[2] if old and old[0] == LIST else {}
-            if old is None or old[0] != LIST or old[1] != ord_:
-                if old is not None and old[0] != LIST:
-                    ops.append((DELETE_SECTION_RECS, (name,)))
-                ops.append((UPSERT_SECTION, (name, LIST, ord_)))
-            new_rows = {}
-            for index, record in enumerate(value):
-                doc = dump(record)
-                entry = (index, digest(doc))
-                if rows.get(record['id']) != entry:
-                    ops.append((UPSERT_REC, (name, record['id'], index, doc)))
-                new_rows[record['id']] = entry
-            ops.extend((DELETE_REC, (name, rid)) for rid in rows.keys() - new_rows.keys())
-            fresh[name] = (LIST, ord_, new_rows)
-        else:
-            doc = dump(value)
-            entry = (VALUE, ord_, digest(doc))
-            if old != entry:
-                if old is None or old[0] != VALUE:
-                    ops.append((DELETE_SECTION_RECS, (name,)))
-                ops.append((UPSERT_SECTION, (name, VALUE, ord_)))
-                ops.append((UPSERT_REC, (name, '', 0, doc)))
-            fresh[name] = entry
-    for name in cache.keys() - state.keys():
-        ops.append((DELETE_SECTION_RECS, (name,)))
-        ops.append((DELETE_SECTION, (name,)))
+        fresh[name] = plan_section(name, ord_, value, cache.get(name), ops)
+    plan_removed(state, cache, ops)
     return ops, fresh
+
+
+def plan_touched(state, cache, touched):
+    """(ops, new cache) when the caller names the list records it mutated since the last save: (section, id) for
+    a record, or a section name for a whole section. Value sections (cursors, sessions, receipts, continuity and
+    the rest, about 350 KB on the live room) are always compared, because today any save flushes every pending
+    mutation and code relies on that. Only existing records in list sections that nobody named are skipped: an
+    append writes only the new records, any other change to a section's ids rewrites that section in full. A
+    missed name is caught by ROOM_DB_VERIFY in tests and by the next full diff (FULL_DIFF_SECONDS) in production."""
+    whole, records = set(), {}
+    for item in touched:
+        if isinstance(item, str):
+            whole.add(item)
+        else:
+            records.setdefault(item[0], set()).add(item[1])
+    ops, fresh = [], {}
+    for ord_, (name, value) in enumerate(state.items()):
+        old = cache.get(name)
+        if name in whole or old is None or old[0] == VALUE or old[1] != ord_ or not isinstance(value, list):
+            fresh[name] = plan_section(name, ord_, value, old, ops)
+        else:
+            fresh[name] = plan_list_touched(name, ord_, value, old, records.get(name, set()), ops)
+    plan_removed(state, cache, ops)
+    return ops, fresh
+
+
+def plan_list_touched(name, ord_, value, old, named, ops):
+    rows = old[2]
+    ids = [record.get('id') if isinstance(record, dict) else None for record in value]
+    known = len(rows)
+    if ids[:known] != list(rows) or not is_record_list(value):
+        return plan_section(name, ord_, value, old, ops)  # removed, reordered or reshaped: the whole section
+    new_rows = dict(rows)
+    positions = {rid: rows[rid][0] for rid in named if rid in rows}
+    positions.update((rid, index) for index, rid in enumerate(ids[known:], known))  # appended records
+    for rid, index in positions.items():
+        doc = dump(value[index])
+        entry = (index, digest(doc))
+        if rows.get(rid) != entry:
+            ops.append((UPSERT_REC, (name, rid, index, doc)))
+        new_rows[rid] = entry
+    return LIST, ord_, new_rows
 
 
 def export_json(folder):

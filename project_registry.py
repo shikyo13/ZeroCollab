@@ -596,7 +596,7 @@ def create_project(runtime, name, team='current', path=''):
         check_unowned(runtime, repository)
     identity = _new_identity(runtime)
     folder = _root(runtime) / identity
-    roomdb.Store.open(folder)[0].close()  # a new project starts as room.db (task d6139872)
+    roomdb.Store.open(folder)  # a new project starts as room.db (task d6139872); a Store keeps no handle open
     if team == 'current':
         # Same people, fresh start: no pause state, no archived members.
         profiles = {k: {**{f: v for f, v in p.items() if f != 'paused'}, 'archived': False}

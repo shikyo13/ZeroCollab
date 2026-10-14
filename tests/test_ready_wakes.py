@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import roomdb
 from project_room import ProjectRoom
 from ready_wakes import ReadyWakes
 
@@ -31,7 +32,7 @@ class ReadyWakeTests(unittest.TestCase):
 
         def enqueue(name, channel, prompt='', chain=None, routing=None, **_):
             # The claim must already be durable when the wake is queued (r2.2 atomicity).
-            saved = json.loads(r.project_room.path.read_text('utf-8'))
+            saved = roomdb.read_state(r.project_room.path.parent)
             self.calls.append({'name': name, 'chain': chain, 'routing': routing, 'prompt': prompt,
                                'durable': routing['ready_wake'] in saved['ready_wakes']['claims']})
             if self.queued_ok:

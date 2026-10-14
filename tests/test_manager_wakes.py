@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import roomdb
 from manager_wakes import ManagerWakes, TURN_CREDITS
 from ready_wakes import ReadyWakes
 
@@ -318,7 +319,7 @@ class RealProjectAdmissionChecks(SchedulerChecks):
         original_save = room.save
         def save():
             original_save()
-            self.saved.append(json.loads(room.path.read_text('utf-8')))
+            self.saved.append(roomdb.read_state(room.path.parent))
         room.save = save
         self.r.manager_wakes = self.m
 
@@ -336,7 +337,7 @@ class RealProjectAdmissionChecks(SchedulerChecks):
         self.assertFalse(room.permit(chain, audit_reserved=request['manager_audit']))
         self.assertTrue(room.permit(chain))
         self.assertEqual(room.chains[chain]['turns'], 2)
-        self.assertEqual(json.loads(room.path.read_text('utf-8'))['manager_audit']['chain']['turns'], 2)
+        self.assertEqual(roomdb.read_state(room.path.parent)['manager_audit']['chain']['turns'], 2)
         room.use_project('test')
         self.m.loaded = None
         self.m.restore()
