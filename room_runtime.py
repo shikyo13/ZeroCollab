@@ -1535,6 +1535,14 @@ class RoomRuntime:
             await self.host._broadcast(json.dumps({'type': 'delete', 'ids': [msg_id]}))
 
     @staticmethod
+    def failure_notice(name, detail, transient=''):
+        """The chat sentence for a failed turn. A busy provider that ended a turn the agent carries on from asks
+        nothing of anyone (harness ae809bdf): only a real block names an action."""
+        if transient == 'resume':
+            return f"{name}'s turn ended early because the provider was busy; it carries on automatically."
+        return RoomRuntime.plain_failure(name, detail)
+
+    @staticmethod
     def plain_failure(name, detail):
         """The one chat sentence for an agent that can't start or finish; the raw error stays in Activity and the roster."""
         if 'active writer' in detail:
@@ -1846,7 +1854,8 @@ class RoomRuntime:
                     await self.clear_notice(name)  # one current line per agent
                     self.wake_notices[name] = key
                     self.notice_lines[name] = self.host.store.add(
-                        "system", self.plain_failure(name, detail), channel=run.channel, metadata={'no_route': True})['id']
+                        "system", self.failure_notice(name, detail, transient), channel=run.channel,
+                        metadata={'no_route': True})['id']
             await run.finish_message(partial=True)
         finally:
             # A cancel landing here (an install's interrupt or Stop while a finished CLI exits within EXIT_GRACE)

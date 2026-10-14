@@ -51,6 +51,14 @@ class TransientFailure(unittest.TestCase):
                             (RuntimeError('x'), 'MCP handshake closed'), (RuntimeError('x'), 'changed 500 lines')):
             self.assertEqual(self.rt.transient_failure(self.run_for(), exc, detail), '')
 
+    def test_only_a_real_block_asks_for_refresh_connections(self):
+        # harness ae809bdf: 'resume' leaves the agent ready, so its chat line must not ask anyone to act.
+        resumed = RoomRuntime.failure_notice('astra', CODEX_429, 'resume')
+        self.assertNotIn('Refresh', resumed)
+        self.assertIn('carries on automatically', resumed)
+        for transient in ('exhausted', ''):
+            self.assertIn('Refresh connections', RoomRuntime.failure_notice('astra', CODEX_429, transient))
+
     def test_pattern_matches_provider_wordings(self):
         for detail in (CODEX_429, 'API Error: 529 Overloaded', 'rate_limit_error', 'API Error: 500 Internal server error',
                        '503 Service Unavailable', 'status: 502 Bad Gateway'):
