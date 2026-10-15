@@ -108,10 +108,8 @@ class AgentProfiles:
         template = body.get('template', old['template'] if old else '')
         if template not in self.templates:
             raise ValueError('Choose a configured provider connection')
-        if old and template != old['template']:
-            raise ValueError('Duplicate the agent to choose a different provider and keep its history intact')
-        if not old and not self.store.offered(template):
-            raise ValueError('API provider turned off. Turn it on in Team > Providers to add agents on it')
+        if (not old or template != old['template']) and not self.store.offered(template):
+            raise ValueError('API provider turned off. Turn it on in Team > Providers before choosing it')
         label = body.get('name', old['name'] if old else '').strip()
         if not label or len(label) > 60:
             raise ValueError('Give the agent a name between 1 and 60 characters')
@@ -147,20 +145,21 @@ class AgentProfiles:
         model = body.get('model', old['model'] if old else '')
         effort = body.get('effort', old['effort'] if old else '')
         # Cosmetic/personality edits remain possible while a provider is offline.
-        if not old or (model, effort) != (old['model'], old['effort']):
-            source = next((n for n, p in self.items.items() if p['template'] == template
-                           and self.runtime.controls.catalogs.get(n, {}).get('models')), None)
-            if source is not None:
-                self.runtime.controls.validate(source, model, effort)
-            elif self.template_catalogs.get(template, {}).get('models'):
-                # The first agent on a connection: check against the connection's own model list.
-                ProviderControls.check(self.template_catalogs[template], model, effort)
-            else:
+        if not old or template != old['template'] or (model, effort) != (old['model'], old['effort']):
+            catalog = self.catalog(template)
+            if not catalog.get('models'):
                 raise ValueError('Refresh provider choices before choosing a model')
+            ProviderControls.check(catalog, model, effort)
         return {'id': identifier, 'handle': handle, 'previous_handles': previous_handles,
                 'template': template, 'name': label, 'color': color.lower(),
                 'background': background.strip(), 'model': model, 'effort': effort,
                 'archived': old.get('archived', False) if old else False}
+
+    def catalog(self, template):
+        """The destination connection's catalog, also used when an existing member moves onto it."""
+        source = next((n for n, p in self.items.items() if p['template'] == template
+                       and self.runtime.controls.catalogs.get(n, {}).get('models')), None)
+        return self.runtime.controls.catalogs[source] if source is not None else self.template_catalogs.get(template, {})
 
     def core_draft(self, name, library=CORE_LIBRARY, skills_library=agent_skills.LIBRARY):
         """agent-profiles/<name>/core.md parsed for the user's review: the body, its version and each listed

@@ -1388,6 +1388,17 @@ class RoomRuntime:
                         self.host.registry.deactivate_managed(name)
                     raise
             else:
+                old = self.profiles.items[name]
+                switching = old['template'] != profile['template']
+                if switching:
+                    if name in self.running:
+                        raise ValueError('Wait for this agent\'s current turn to finish before switching provider')
+                    # No await through persistence and mutation: admission cannot start a Run in between.
+                    # Save first so a failed reset cannot leave the new connection using an old session.
+                    self.project_room.forget_provider_sessions(name)
+                    catalog = dict(self.profiles.catalog(profile['template']))
+                    # The previous connection may now have no members. Keep its catalog for a switch back.
+                    self.profiles.template_catalogs[old['template']] = dict(self.controls.catalogs[name])
                 if self.profiles.grant_identity_changed(self.profiles.items[name], profile):
                     self.profiles.lapse_release_grant(name)
                 self.profiles.items[name] = {**self.profiles.items[name], **profile}
@@ -1395,6 +1406,12 @@ class RoomRuntime:
                 self.cfg['agents'][name] = cfg
                 self.states[name].update(label=profile['name'], handle=profile.get('handle', name), color=profile['color'])
                 self.controls.values[name] = {'model': profile['model'], 'effort': profile['effort']}
+                if switching:
+                    self.states[name].update(provider=cfg.get('provider', profile['template']),
+                                             template=profile['template'], state='ready', detail='')
+                    # prepare already validated this exact destination catalog; no background lookup can
+                    # overwrite it with an old connection's response after the switch.
+                    self.controls.catalogs[name] = catalog
                 if not profile.get('archived'):
                     self.host.registry.register_managed(name, cfg)
             self.save_project()

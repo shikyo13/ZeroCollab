@@ -569,11 +569,21 @@ class ProjectRoom:
 
     def previous_session(self, run):
         saved = self.state.get('sessions', {}).get(run.session_key, {})
+        template = self.runtime.states[run.name].get('template')
         if (saved.get('settings') == run.settings
                 and saved.get('provider') == self.runtime.states[run.name]['provider']
+                and saved.get('template', template) == template
                 and saved.get('instruction_hash') == run.instruction_hash):
             return saved
         return {}
+
+    def forget_provider_sessions(self, name):
+        """Persist the reset before switching connections, including legacy sessions without a template."""
+        sessions = self.state.get('sessions', {})
+        for key in list(sessions):
+            if key.startswith(name + ':'):
+                del sessions[key]
+        self.save(touched=())
 
     def complete(self, run):
         # Every turn ends here. It changes only value sections (cursors, receipts, sessions), which a touched save
@@ -592,6 +602,7 @@ class ProjectRoom:
         if run.provider_session:
             self.state.setdefault('sessions', {})[run.session_key] = {'id': run.provider_session,
                 'settings': run.settings, 'provider': self.runtime.states[run.name]['provider'],
+                'template': self.runtime.states[run.name].get('template'),
                 'instruction_hash': run.instruction_hash,
                 'context': delivery, 'usage_total': getattr(run, 'provider_usage_total', 0)}
         self.save(touched=())
