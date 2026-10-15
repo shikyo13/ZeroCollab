@@ -16,6 +16,7 @@ from room_runtime import Run, SPEECH_TAIL_CHARS  # noqa: E402
 class FakeRun(SimpleNamespace):
     """Run's own speech(), delta-free finish_message() and properties, on stubbed collaborators."""
     speech = Run.speech
+    delta = Run.delta
     finish_message = Run.finish_message
     begin_message = Run.begin_message
     sealed = property(lambda self: self.sealing)
@@ -24,11 +25,17 @@ class FakeRun(SimpleNamespace):
     def answers_human(self):
         return False
 
+    def touch(self):
+        pass
+
 
 def fake_run():
     async def note(*args, **kwargs):
         return None
-    manager = SimpleNamespace(activity_note=note, emit=note)
+    events = []
+    async def emit(kind, data):
+        events.append((kind, data))
+    manager = SimpleNamespace(activity_note=note, emit=emit, events=events)
     return FakeRun(id='r1', name='backend', channel='c', focus='t1', sealing=False, manager=manager, text='',
                    message_id=None, message_phase=None, completed_messages=set(), last_commentary='',
                    last_speech=None)
@@ -62,6 +69,22 @@ class RunSpeechTest(unittest.TestCase):
         write(run, 'm1', 'x' * SPEECH_TAIL_CHARS + 'END')
         self.assertEqual(len(run.speech()['text']), SPEECH_TAIL_CHARS)
         self.assertTrue(run.speech()['text'].endswith('END'))
+
+    def test_end_tells_which_chunks_a_reply_already_covers(self):
+        # frontend 3fa5cffa: a reply 'ha' and a later chunk 'ha' are told apart by end, not by text overlap.
+        run = fake_run()
+        asyncio.run(run.delta('ha'))
+        reply = run.speech()
+        asyncio.run(run.delta('ha'))
+        asyncio.run(run.delta('!'))
+        drafts = [data for kind, data in run.manager.events if kind == 'runtime_draft']
+        self.assertEqual([d['end'] for d in drafts], [2, 4, 5])
+        self.assertEqual((reply['text'], reply['end']), ('ha', 2))
+        rebuilt = reply['text'] + ''.join(d['text'] for d in drafts
+                                          if d['message'] == reply['message'] and d['end'] > reply['end'])
+        self.assertEqual(rebuilt, run.text)  # 'haha!': nothing duplicated, nothing lost
+        asyncio.run(run.finish_message())
+        self.assertEqual((run.speech()['end'], run.speech()['draft']), (5, False))  # the finished message keeps its end
 
     def test_a_sealed_position_returns_no_text_now_or_after_it_finished(self):
         run = fake_run()

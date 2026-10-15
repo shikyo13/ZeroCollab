@@ -744,10 +744,12 @@ class Run:
         self.text += text
         # The chat shows finished messages only, so nothing that appeared there is taken back (QA c0950fb6,
         # Zero #12950/#12974). Text being written goes to the Live and Follow views as runtime_draft; a sealed
-        # decision position sends no text at all.
+        # decision position sends no text at all. end is the message's length after this chunk, taken with no await
+        # since the append: a page that fetched GET /api/runtime/speech appends exactly the chunks whose end is past
+        # that reply's end (frontend 3fa5cffa).
         await self.manager.emit("runtime_draft", {"run": self.id, "message": self.message_id,
             "phase": self.message_phase, "agent": self.name, "channel": self.channel, "task_id": self.task_id,
-            **({'text': '', 'sealed': True} if self.sealed else {'text': text})})
+            "end": len(self.text), **({'text': '', 'sealed': True} if self.sealed else {'text': text})})
 
     @property
     def task_id(self):
@@ -764,18 +766,20 @@ class Run:
         """This run's latest speech for a page that connects mid-turn (GET /api/runtime/speech, task 3d4f7209;
         contract agreed with frontend in e96b10f2). The message being written (draft) if it has text, else the
         last finished one; the raw tail, up to SPEECH_TAIL_CHARS. message is the id of the message the text
-        belongs to. A sealed position, now or when that message was written, returns no text."""
+        belongs to. A sealed position, now or when that message was written, returns no text. end is that message's
+        full length (before the tail), on the same scale as runtime_draft's end: the reply covers exactly the
+        message's chunks whose end <= this end (frontend 3fa5cffa)."""
         sealed = self.sealed
         if self.message_id and self.text:
-            message, phase, text, draft = self.message_id, self.message_phase, self.text, True
+            message, phase, text, draft, end = self.message_id, self.message_phase, self.text, True, len(self.text)
         elif self.last_speech:
-            message, phase, text, draft = (self.last_speech['message'], self.last_speech['phase'],
-                                           self.last_speech['text'], False)
+            message, phase, text, draft, end = (self.last_speech['message'], self.last_speech['phase'],
+                                                self.last_speech['text'], False, self.last_speech['end'])
             sealed = sealed or self.last_speech['sealed']
         else:
-            message, phase, text, draft = None, None, '', False
+            message, phase, text, draft, end = None, None, '', False, 0
         return {'run': self.id, 'agent': self.name, 'channel': self.channel, 'task_id': self.task_id,
-                'message': message, 'phase': phase, 'draft': draft, 'sealed': sealed,
+                'message': message, 'phase': phase, 'draft': draft, 'sealed': sealed, 'end': end,
                 'text': '' if sealed else text[-SPEECH_TAIL_CHARS:]}
 
     async def begin_message(self, identifier, phase=None):
@@ -821,7 +825,7 @@ class Run:
         self.completed_messages.add(identifier)
         if self.text:
             self.last_speech = {'message': identifier, 'phase': self.message_phase,
-                                'text': self.text[-SPEECH_TAIL_CHARS:], 'sealed': self.sealed}
+                                'text': self.text[-SPEECH_TAIL_CHARS:], 'sealed': self.sealed, 'end': len(self.text)}
         self.text = ''
         self.message_id = self.message_phase = None
         # kept_in tells the live views where the draft went: posted to chat, or kept in Activity.
