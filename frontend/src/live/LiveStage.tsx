@@ -32,9 +32,11 @@ const bubbleCap = (w: number, h: number) => Math.max(2, Math.min(7, Math.floor(w
 // overlap avoidance uses the real size, then resized with a soft ease as the text grows or a shorter
 // message replaces a longer one.
 const BUBBLE_FONT = '12.5px Inter, "Segoe UI", system-ui, sans-serif', BUBBLE_NAME_FONT = '600 ' + BUBBLE_FONT;
-const BUBBLE_LINE = 17, BUBBLE_PAD_X = 23, BUBBLE_PAD_Y = 12, BUBBLE_MIN = 120, BUBBLE_MAX = 280, BUBBLE_LINES = 5;
-// A crowded spot gets a narrower bubble (its page wraps to more lines), then one a little farther out.
-const BUBBLE_NARROW = 190, BUBBLE_REACH = 230, BUBBLE_NARROW_LINES = 8;
+// A bubble grows with its words up to BUBBLE_LINES lines (Zero #20226: larger blocks, not cut off), then keeps the
+// newest lines in view with the top faded. A crowded spot gets a narrower bubble, then one farther out, then a
+// shorter one (SHORT_LINES) that still scrolls at reading pace, and only then a cue.
+const BUBBLE_LINE = 17, BUBBLE_PAD_X = 23, BUBBLE_PAD_Y = 12, BUBBLE_MIN = 120, BUBBLE_MAX = 280, BUBBLE_LINES = 8;
+const BUBBLE_NARROW = 190, BUBBLE_REACH = 340, SHORT_LINES = [5, 3];
 let measureCtx: CanvasRenderingContext2D | null = null;
 /** Lays out a bubble's words as the bubble wraps them (name first, in bold), one word at a time. */
 function wordWrap(name: string, max: number) {
@@ -63,68 +65,60 @@ function wordWrap(name: string, max: number) {
   };
   return {
     add(word: string) { place(word, Infinity); return lines; },
-    /** The longest start of `word` that keeps the layout within `maxLines`, in characters. */
-    fit(word: string, maxLines: number) { return place(word, maxLines); },
+    /** A line break (a new message in the same talk): the next word starts a line of its own. */
+    brk() { if (x > 0) newLine(); },
     get lines() { return lines; },
     get widest() { return Math.max(widest, x - space); },
   };
 }
 export function bubbleSize(name: string, text: string, max = BUBBLE_MAX, maxLines = BUBBLE_LINES): { w: number; h: number; lines: number } {
   const wrap = wordWrap(name, max);
-  for (const word of plainSpeech(text).split(/\s+/).filter(Boolean)) wrap.add(word);
+  // Past the cap the box is full width and full height, so the rest of a long talk needs no measuring.
+  for (const [i, para] of plainSpeech(text).split('\n').entries()) {
+    if (i) wrap.brk();
+    for (const word of para.split(/\s+/)) if (word && wrap.add(word) > maxLines) break;
+    if (wrap.lines > maxLines) break;
+  }
   return { w: Math.ceil(Math.min(max, Math.max(BUBBLE_MIN, wrap.widest + BUBBLE_PAD_X + 2))), h: Math.min(wrap.lines, maxLines) * BUBBLE_LINE + BUBBLE_PAD_Y, lines: wrap.lines };
 }
 
-// Reading pace (Zero #18710: bubbles cut text off because they scrolled as fast as it streamed). A closed bubble
-// shows one page: whole sentences that fit a full-width bubble, so nothing is cut or scrolled away. Each page
-// stays up for its reading time. While a reply streams, its page fills word by word and the next page waits its
-// turn. Someone who talks faster than people read skips ahead to their newest sentences, and opening a bubble
-// shows the whole reply.
-const READ_WPM = 230, PAGE_MIN_S = 2.4, PAGE_EXTRA_S = 1;
-const PAGE_BACKLOG_CHARS = 700;   // more unread than this, and the next page starts at the newest sentences
-const STREAM_S = 2;               // words this fresh may still be mid-word: the last one waits for the next
-const PAGE_WAIT_S = 20;           // a page never yet on show waits this long for room beside its person, then lapses
-const wordsReadS = (words: string) => words.split(/\s+/).filter(Boolean).length / READ_WPM * 60;
-const SENTENCE_END = /[.!?…:]["')\]]*$/;
-/** One person's place in what they are saying: the text read so far, the page on show, when that page opened
- * (`at`), when a reader who started then finishes the words on it so far (`readBy`), and whether it has been on
- * show yet (`seen`): a page still waiting for room has not been read. */
-interface Reading { text: string; start: number; end: number; at: number; readBy: number; streaming: boolean; seen: boolean }
-/** The page grew from `r.end` to `end` at `now`: the reader reads the new words after the ones before, and not
- * before they arrived, so words that land late on a page get their own reading time (design 9980f446). */
-const grown = (r: Reading, text: string, end: number, now: number) =>
-  end > r.end ? Math.max(r.readBy, now) + wordsReadS(text.slice(r.end, end)) : r.readBy;
-/** When a page may turn: once its words are read, plus a beat, and never sooner than PAGE_MIN_S after it opened. */
-const pageTurnAt = (r: Reading) => Math.max(r.at + PAGE_MIN_S, r.readBy + PAGE_EXTRA_S);
-/** Where the page that starts at `start` ends: as many words as fit, never fewer than the `shown` end (what is
- * already on screen stays), and, when the page is full, after its last whole sentence if one ends past `shown`. */
-function pageEnd(name: string, text: string, start: number, shown: number, streaming: boolean): number {
-  const wrap = wordWrap(name, BUBBLE_MAX), word = /\S+/g;
-  word.lastIndex = start;
-  let end = Math.max(start, shown), sentence = -1, full = false;
-  for (let m = word.exec(text); m; m = word.exec(text)) {
-    const e = m.index + m[0].length;
-    if (streaming && e === text.length) break;   // possibly half a word
-    // A page already on its last lines ends with its sentence rather than start one it can't finish.
-    if (e > end && sentence === end && end > start && wrap.lines >= BUBBLE_LINES - 1) { full = true; break; }
-    if (wrap.add(m[0]) > BUBBLE_LINES) {
-      // A page's first word longer than the whole page (a long link) is cut where the page fills; the rest of it
-      // starts the next page, so reading never stalls and nothing is clipped (design 9980f446).
-      if (end === start) end = m.index + Math.max(1, wordWrap(name, BUBBLE_MAX).fit(m[0], BUBBLE_LINES));
-      full = true; break;
-    }
-    if (e > end) end = e;
-    if (SENTENCE_END.test(m[0])) sentence = e;
-  }
-  return full && sentence > shown ? sentence : end;
-}
-/** Where reading resumes after a skip: the first sentence start in the newest PAGE_BACKLOG_CHARS. */
+// Speech (Zero #20226; the 0.12.79 live trace, live-v3/scratch/live79-trace-1.txt, task 39620499). On a busy stage the
+// paged bubbles of a4339a66 mostly failed: a working speaker reserved a full page and found no spot (664 person-seconds
+// of cues in 110 s), each new message restarted the reading and lost its hold, so a waiting neighbour took the spot,
+// and a reply replaced by the next one before it found room was never drawn.
+// So a bubble now belongs to its person for as long as they keep talking (a talk): each new message joins it on a new
+// line instead of replacing it, and the bubble keeps its spot throughout. The words come in at reading pace whatever
+// the delivery burst (a Claude reply arrives in one burst, Codex in half-second chunks), the bubble grows with them up
+// to BUBBLE_LINES and then keeps the newest lines in view, so nothing scrolls away faster than it can be read. Someone
+// who talks faster than that skips ahead to their newest sentences.
+const REVEAL_WPS = 4.2;            // words a second (about 250 wpm): a calm reading pace
+const REVEAL_TICK_MS = 240;        // how often a bubble that is still revealing takes its next words
+const REVEAL_BACKLOG = 600;        // more unread characters than this, and the bubble skips to the newest sentences
+const REVEAL_FIRST = 3;            // words shown at once when a bubble first comes on show
+const WORD_SETTLE_S = 0.6;         // the last word of a reply still arriving waits this long, in case it is half a word
+const LINGER_S = 5;                // a talk stays this long after its last words came on show
+const TALK_WAIT_S = 20;            // a talk never yet on show waits this long for room, then lapses
+const TALK_KEEP = 4000;
+const GROW_HOLD_S = 1.5;           // a bubble on show tries for more lines at most this often            // characters a talk keeps (older ones have long scrolled away)
+/** One person's stretch of talk: everything they said in it (messages joined by line breaks), where the current
+ * message starts in it, how much is on show (`shown`, from `start`), and since when. */
+/** Each message of a talk starts on its own line (the text inherits this from the bubble). */
+const TALK_STYLE: CSSProperties = { whiteSpace: 'pre-line' };
+interface Talk { id: number; text: string; msg: string; start: number; shown: number; since: number; step: number; doneAt: number; drawn: boolean }
+/** Where the bubble picks up after a skip: the first sentence start among the newest REVEAL_BACKLOG / 2 characters. */
 function catchUp(text: string): number {
-  const from = text.length - PAGE_BACKLOG_CHARS, tail = text.slice(from);
+  const from = Math.max(0, text.length - REVEAL_BACKLOG / 2), tail = text.slice(from);
   const s = tail.search(/[.!?…]\s+\S/);
   if (s >= 0) return from + s + tail.slice(s).search(/\s\S/) + 1;
-  const space = tail.indexOf(' ');
+  const space = tail.search(/\s/);
   return space >= 0 ? from + space + 1 : from;
+}
+/** The end of the `n`th whole word after `from`, at most `limit`. */
+function wordsAfter(text: string, from: number, n: number, limit: number): number {
+  const word = /\S+/g; word.lastIndex = from;
+  let end = from;
+  for (let m = word.exec(text); m && n > 0; m = word.exec(text), n--) { const e = m.index + m[0].length; if (e > limit) break; end = e; }
+  return end;
 }
 const ACTIVE: LiveAgent['state'][] = ['working', 'waiting_on_user'];
 
@@ -191,7 +185,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   const heldSpot = useRef(new Map<string, { rect: Rect; side: BubbleSide; dir?: 'down' | 'up' }>());
   /** Bubbles drawn last render: the page each showed, since when it has been on show, on which side and, for one
    * placed farther out, its centre's offset from the person. */
-  const onScreen = useRef(new Map<string, { page: string; since: number; side?: BubbleSide; ring?: Point }>());
+  const onScreen = useRef(new Map<string, { talk: number; since: number; side?: BubbleSide; ring?: Point; rect?: Rect; lines?: number; linesAt?: number }>());
   /** When each person's bubble was last on show (wall seconds), so neighbours take turns. */
   const lastShown = useRef(new Map<string, number>());
   const [, setBubbleTick] = useState(0);
@@ -399,78 +393,82 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   }
   function land(e: Effect, t: number) { const b = bodies.current.get(e.to); if (b) b.hopAt = t; }
 
-  // Speech: the newest speakers the stage has room for, each in a clear spot or as a cue by the person.
+  // Speech: the talks the stage has room for, each in a clear spot or as a cue by the person.
   const now = wallNow();
   const blockers: Rect[] = [youArea, ...(rail ? [rail] : []), ...layout.formations.map(f => ({ ...f.box, h: 22 })),
     ...people.map(p => { const s = layout.seats.get(p.id); return s ? speechBlocker(s, p.quiet, p.hasThumb && layout.thumbs) : null; }).filter((r): r is Rect => !!r)];
   const isOpen = (id: string) => !!bubbleBox.current.get(id)?.open;
   const shownFor = (a: LiveAgent) => ACTIVE.includes(a.state) ? SPEECH_SHOWN_S : SPEECH_AFTER_S;
-  // Each person's page: it turns once its reading time is up and more has been said, one page per turn of the timer.
-  const readings = useRef(new Map<string, Reading>());
-  const pages = new Map<string, { page: string; more: boolean; turnAt: number }>();
+  // Each person's talk, and how much of it is on show: it advances at reading pace while the bubble is drawn, and
+  // waits (unread) while it is not.
+  const talks = useRef(new Map<string, Talk & { limit: number; ended?: boolean }>()), talkSeq = useRef(0);
   for (const a of feed.agents) {
-    if (!a.speech) { readings.current.delete(a.id); continue; }
-    const text = plainSpeech(a.speech), streaming = a.state === 'working' && now - a.speechAt < STREAM_S;
-    let r = readings.current.get(a.id);
-    // A different message (not the one on show, grown) starts reading from its beginning.
-    if (!r || !text.startsWith(r.text.slice(0, r.end))) r = { text, start: 0, end: 0, at: now, readBy: now, streaming, seen: false };
-    if (r.text !== text || r.streaming !== streaming || r.end === 0) {
-      const end = pageEnd(a.short, text, r.start, r.end, streaming);
-      r = { ...r, text, streaming, end, readBy: grown(r, text, end, now) };
+    let t = talks.current.get(a.id);
+    if (!a.speech || a.state === 'stopped') { talks.current.delete(a.id); continue; }
+    const msg = plainSpeech(a.speech);
+    if (!t || t.ended && msg !== t.msg) {
+      // A message that grew after its talk ended starts the new talk at its new words.
+      const from = t && msg.startsWith(t.msg) ? msg.length - msg.slice(t.msg.length).trimStart().length : 0;
+      t = { id: ++talkSeq.current, text: msg, msg, start: from, shown: from, since: now, step: now, doneAt: 0, drawn: false, limit: 0 };
+      talks.current.set(a.id, t);
+    } else if (msg !== t.msg) {
+      // The message grew, or a new one joins the talk on a line of its own (the same words posted again add nothing).
+      if (msg.startsWith(t.msg) && t.text.endsWith(t.msg)) t.text = t.text.slice(0, t.text.length - t.msg.length) + msg;
+      else if (!t.text.endsWith(msg)) t.text += '\n' + msg;
+      t.msg = msg;
+      if (t.text.length > TALK_KEEP) {
+        const cut = t.text.indexOf(' ', t.text.length - TALK_KEEP) + 1 || t.text.length - TALK_KEEP;
+        t.text = t.text.slice(cut); t.start = Math.max(0, t.start - cut); t.shown = Math.max(t.start, t.shown - cut);
+      }
     }
-    const after = (t: string, i: number) => i + (t.slice(i).length - t.slice(i).trimStart().length);
-    const next = after(text, r.end);
-    // A page turns only while it is on show: one waiting for room is not read, so it must not advance unseen.
-    if (next < text.length && now >= pageTurnAt(r) && onScreen.current.has(a.id)) {
-      const start = text.length - next > PAGE_BACKLOG_CHARS ? catchUp(text) : next;
-      const end = pageEnd(a.short, text, start, start, streaming);
-      // Only turn to a page with words on it: what is left may be one word still streaming, held until it settles.
-      if (end > start) r = { text, streaming, start, end, at: now, readBy: now + wordsReadS(text.slice(start, end)), seen: false };
+    if (t.ended) continue;
+    // A reply still arriving may end in half a word: that word waits until the words settle or the turn ends.
+    const half = a.state === 'working' && now - a.speechAt < WORD_SETTLE_S ? (/\S+$/.exec(t.text)?.[0].length ?? 0) : 0;
+    t.limit = t.text.slice(0, t.text.length - half).trimEnd().length;
+    if (onScreen.current.get(a.id)?.talk === t.id) {
+      if (reduced) t.shown = Math.max(t.shown, t.limit);
+      else if (t.limit - t.shown > REVEAL_BACKLOG) {
+        // Talking faster than anyone reads: skip to the newest sentences rather than fall ever further behind.
+        t.start = catchUp(t.text.slice(0, t.limit)); t.shown = wordsAfter(t.text, t.start, REVEAL_FIRST, t.limit); t.step = now;
+      } else {
+        const n = Math.floor((now - t.step) * REVEAL_WPS);
+        if (n > 0) { t.shown = wordsAfter(t.text, t.shown, n, t.limit); t.step += n / REVEAL_WPS; }
+      }
+      if (t.shown >= t.limit) { t.step = now; if (!t.doneAt && t.limit === t.text.length) t.doneAt = now; } else t.doneAt = 0;
     }
-    readings.current.set(a.id, r);
-    pages.set(a.id, { page: text.slice(r.start, r.end), more: after(text, r.end) < text.length, turnAt: pageTurnAt(r) });
   }
-  // A new page remounts the closed bubble, so it enters with the bubble's fade-in. An open bubble keeps its key:
-  // remounting it would drop the reader's hover, focus or pin.
-  const bubbleKeys = useRef(new Map<string, string>());
-  /** The page a person's closed bubble shows now: where it starts and when it opened. */
-  const pageOf = (id: string) => { const r = readings.current.get(id); return r ? `${r.start}:${r.at}` : ''; };
-  const pageKey = (id: string) => {
-    if (!isOpen(id) && readings.current.has(id)) bubbleKeys.current.set(id, pageOf(id));
-    return bubbleKeys.current.get(id) ?? id;
-  };
-  // A bubble stays while its person speaks, and until its last page has been read.
+  /** The words a talk has left to show, and whether its time on stage is up. */
+  const revealing = (t: Talk & { limit: number }) => t.shown < t.limit;
   const speaking = (a: LiveAgent) => {
-    const p = pages.get(a.id);
-    const r = readings.current.get(a.id);
-    return !!p?.page && a.state !== 'stopped' && (now - a.speechAt < shownFor(a) || p.more || now < p.turnAt || (!!r && !r.seen && now - r.at < PAGE_WAIT_S));
+    const t = talks.current.get(a.id);
+    if (!t || t.ended || t.limit <= t.start) return false;
+    if (revealing(t)) return t.drawn || now - t.since < TALK_WAIT_S || now - a.speechAt < shownFor(a);
+    return now < Math.max(a.speechAt + shownFor(a), t.doneAt + LINGER_S);
   };
-  // Neighbours who talk at once take turns by page (a4339a66). Placing newest speech first handed a shared spot to
-  // whoever last added a word, so two bubbles swapped on every delta and one vanished mid-page. Open bubbles come
-  // first, then any bubble on screen keeps its place until its page turns, then whoever has waited longest since they
-  // were last on show, then the newest speech. Placement follows that order and stops once the cap's worth of bubbles
-  // are drawn, so a page on show is never cut for a newer speaker, and one that fits nowhere (a cue) takes no slot.
-  // Bubbles on show are placed in the order they came on show, each in the spot it already has while that stays
-  // clear, so the layout they made is rebuilt as it was and none is pushed off.
-  const holding = (id: string) => onScreen.current.get(id)?.page === pageOf(id);
+  // A talk whose time is up ends; the next words start a new one (a fresh bubble), never the old words again.
+  for (const a of feed.agents) { const t = talks.current.get(a.id); if (t && !t.ended && t.limit > t.start && !speaking(a) && !isOpen(a.id)) t.ended = true; }
+  // Neighbours who talk at once take turns (a4339a66): open bubbles come first, then every bubble on show keeps its
+  // place for as long as its talk goes on (new messages included), in the order they came on show, then whoever has
+  // waited longest since they were last on show, then the newest speech. Placement stops once the cap's worth of
+  // bubbles are drawn, so a bubble on show is never cut for a newer speaker, and one that fits nowhere takes no slot.
+  const holding = (id: string) => { const o = onScreen.current.get(id); return !!o && o.talk === talks.current.get(id)?.id; };
   const shownLast = (id: string) => lastShown.current.get(id) ?? -Infinity;
   const onSince = (id: string) => onScreen.current.get(id)?.since ?? Infinity;
-  const speakers = feed.agents.filter(a => pages.get(a.id)?.page && (isOpen(a.id) || speaking(a)))
+  const speakers = feed.agents.filter(a => isOpen(a.id) || speaking(a))
     .sort((p, q) => Number(isOpen(q.id)) - Number(isOpen(p.id)) || Number(holding(q.id)) - Number(holding(p.id))
       || (holding(p.id) ? onSince(p.id) - onSince(q.id) : 0) || shownLast(p.id) - shownLast(q.id) || q.speechAt - p.speechAt);
-  // A bubble leaves, or turns its page, when its time is up even if nothing else happens in the room: one timer, no loop.
+  // One timer, no loop: the next words to reveal, a half word settling, a waiting talk lapsing or a talk's time ending.
   const [, setSpeechTick] = useState(0);
-  // A word held back while it may still be streaming is released STREAM_S after the speech last changed, whether or
-  // not a page is on show yet (a reply that so far is one word, "Done", has none): that release needs its own wake.
-  const pendingWord = (a: LiveAgent) => !!readings.current.get(a.id)?.streaming;
   const nextSpeechEnd = Math.min(Infinity, ...feed.agents.flatMap(a => {
-    const shown = speaking(a) && !isOpen(a.id), p = pages.get(a.id), r = readings.current.get(a.id);
-    return [...(shown && p ? [a.speechAt + shownFor(a), p.turnAt] : []), ...(shown || pendingWord(a) ? [a.speechAt + STREAM_S] : []),
-      ...(shown && r && !r.seen ? [r.at + PAGE_WAIT_S] : [])].filter(t => t > now);
+    const t = talks.current.get(a.id);
+    if (!t || t.ended) return [];
+    const drawn = onScreen.current.get(a.id)?.talk === t.id;
+    return [...(drawn && revealing(t) && !reduced ? [now + REVEAL_TICK_MS / 1000] : []), ...(t.limit < t.text.length ? [a.speechAt + WORD_SETTLE_S] : []),
+      ...(!t.drawn ? [t.since + TALK_WAIT_S] : []), a.speechAt + shownFor(a), ...(t.doneAt ? [t.doneAt + LINGER_S] : [])].filter(x => x > now);
   }));
   useEffect(() => {
     if (paused || !Number.isFinite(nextSpeechEnd)) return;
-    const t = window.setTimeout(() => setSpeechTick(n => n + 1), Math.max(100, (nextSpeechEnd - Date.now() / 1000) * 1000 + 50));
+    const t = window.setTimeout(() => setSpeechTick(n => n + 1), Math.max(100, (nextSpeechEnd - Date.now() / 1000) * 1000 + 30));
     return () => window.clearTimeout(t);
   }, [nextSpeechEnd, paused]);
   // Stir: a working person's orbit and glow run while their work moves (a state change, a tool step, new reply
@@ -491,7 +489,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     const t = window.setTimeout(() => setStirTick(n => n + 1), Math.max(100, (nextStirEnd - Date.now() / 1000) * 1000 + 50));
     return () => window.clearTimeout(t);
   }, [nextStirEnd, paused]);
-  const bubbles: { agent: LiveAgent; rect: Rect | null; side?: BubbleSide; ring?: Point }[] = [];
+  const bubbles: { agent: LiveAgent; rect: Rect | null; side?: BubbleSide; ring?: Point; lines: number }[] = [];
   for (const id of [...heldSpot.current.keys()]) if (!isOpen(id) || !speakers.some(a => a.id === id)) heldSpot.current.delete(id);
   const cap = bubbleCap(size.w, size.h);
   for (const agent of speakers) {
@@ -511,53 +509,89 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
       const room = Math.max(held.rect.h, held.dir === 'down' ? roomDown : roomUp);
       openRoom.current.set(agent.id, room);
       const h = Math.min(box.h, room);
-      bubbles.push({ agent, rect: held.dir === 'down' ? { x: x0, y: top, w: box.w, h } : { x: x0, y: bottom - h, w: box.w, h }, side: held.dir === 'up' ? 'above' : 'below' });
+      bubbles.push({ agent, rect: held.dir === 'down' ? { x: x0, y: top, w: box.w, h } : { x: x0, y: bottom - h, w: box.w, h }, side: held.dir === 'up' ? 'above' : 'below', lines: BUBBLE_LINES });
       continue;
     }
-    const seat = layout.seats.get(agent.id); if (!seat) continue;
-    // Full width beside the person, else narrower beside them, else the nearest clear spot a little farther out.
-    const taken = [...blockers, ...bubbles.flatMap(b => b.rect ? [b.rect] : [])];
-    // While its speaker works, a page may still fill (a word held back as possibly half-streamed counts as text past
-    // it, so `more` doesn't mean the page is closed). It is placed at its full page height where that fits, so the
-    // lines still to come never push it into a neighbour's spot (a4339a66); the bubble itself grows from its anchored
-    // edge. On a crowded stage where the full height doesn't fit, a bubble already on show, or one whose words have
-    // stopped arriving, is placed at the page's height now, each spot tried at both heights before the next spot out.
-    // One still streaming waits for its full height: let in short, its next line would fit nowhere and it would vanish.
-    const filling = agent.state === 'working', mayShrink = holding(agent.id) || !readings.current.get(agent.id)?.streaming;
-    const sizes = (max: number) => {
-      const e = bubbleSize(agent.short, pages.get(agent.id)!.page, max, BUBBLE_NARROW_LINES), s = box && box.w === e.w ? { w: box.w, h: box.h } : e;
-      const full = { ...s, h: Math.max(s.h, (max === BUBBLE_NARROW ? BUBBLE_NARROW_LINES : BUBBLE_LINES) * BUBBLE_LINE + BUBBLE_PAD_Y) };
-      return filling && full.h > s.h ? (mayShrink ? [full, s] : [full]) : [s];
+    const seat = layout.seats.get(agent.id), t = talks.current.get(agent.id);
+    if (!seat || !t) continue;
+    // Bubbles on show never push each other: one that grows takes only space no other bubble on show holds (those
+    // placed later in this pass keep their last spot), else it keeps fewer lines in view where it is.
+    const shownAt = (id: string) => onScreen.current.get(id)?.rect;
+    const others = speakers.filter(o => o.id !== agent.id && holding(o.id) && !bubbles.some(b => b.agent.id === o.id)).flatMap(o => shownAt(o.id) ? [shownAt(o.id)!] : []);
+    const taken = [...blockers, ...bubbles.flatMap(b => b.rect ? [b.rect] : []), ...others];
+    // The spot is sized for everything said so far (shown or still to come, up to the line cap), so words revealed
+    // later grow the bubble inside a spot that is already clear and never push it into a neighbour. The bubble
+    // itself grows from its anchored edge (a bubble beside its person is centred in its spot).
+    // Someone still working keeps a few lines of headroom, so the next words grow the bubble in place, not elsewhere.
+    const words = t.text.slice(t.start), headroom = agent.state === 'working' ? SHORT_LINES[SHORT_LINES.length - 1] : 1;
+    const sized = (w: number, lines: number) => {
+      const e = bubbleSize(agent.short, words, w, lines), real = box && !box.open && box.w === e.w ? Math.min(box.h, lines * BUBBLE_LINE + BUBBLE_PAD_Y) : 0;
+      return { w: e.w, h: Math.max(e.h, real, Math.min(lines, headroom) * BUBBLE_LINE + BUBBLE_PAD_Y) };
     };
-    const first = <T,>(sz: { w: number; h: number }[], at: (s: { w: number; h: number }) => T | null) => sz.reduce<T | null>((hit, s) => hit ?? at(s), null);
-    // The narrow bubble only when the page still fits its lines there; otherwise it would clip the page's start.
-    const narrow = bubbleSize(agent.short, pages.get(agent.id)!.page, BUBBLE_NARROW, BUBBLE_NARROW_LINES).lines <= BUBBLE_NARROW_LINES;
-    // A page on show keeps its spot while that stays clear: its side beside the person, or, for one farther out, the
-    // same offset from them (a fresh search could find a different spot first and make it hop or lose its place).
+    // A bubble on show keeps its spot while that stays clear: its side beside the person, or, for one farther out,
+    // the same offset from them (a fresh search could find a different spot first and make it hop or lose its place).
     const was = holding(agent.id) ? onScreen.current.get(agent.id) : undefined, ring = was?.ring;
     const keep = (s: { w: number; h: number }) => {
       const rect = ring ? { x: seat.x + ring.x - s.w / 2, y: seat.y + ring.y - s.h / 2, ...s } : null;
       return rect && bubbleClear(rect, taken, stage) ? { side: was!.side!, rect, ring: true as const } : null;
     };
-    const spot = first(sizes(BUBBLE_MAX), keep)
-      ?? first(sizes(BUBBLE_MAX), s => placeBubble(seat, s, taken, stage, was?.side))
-      ?? (narrow ? first(sizes(BUBBLE_NARROW), s => placeBubble(seat, s, taken, stage, was?.side)) : null)
-      ?? first(sizes(BUBBLE_MAX), s => placeBubble(seat, s, taken, stage, undefined, BUBBLE_REACH));
+    const stay = (s: { w: number; h: number }) => {
+      if (ring) return keep(s);
+      const r = was?.side ? placeBubble(seat, s, taken, stage, was.side) : null;
+      return r && r.side === was!.side ? r : null;
+    };
+    // A bubble on show stays where it is, with fewer lines if it must, rather than move as it grows. Otherwise: full
+    // height beside the person (wide, then narrow), then farther out; then the same with fewer lines (the words still
+    // come in at reading pace and the newest stay in view); a cue only when even three lines fit nowhere.
+    let spot: { side: BubbleSide; rect: Rect; ring?: true } | null = null, lines = BUBBLE_LINES;
+    const ladder = [BUBBLE_LINES, ...SHORT_LINES];
+    // It keeps the lines it shows while they still fit (fewer if it must); it tries for more at most once every
+    // GROW_HOLD_S, so two growing neighbours never trade space back and forth.
+    const cur = was?.lines ?? BUBBLE_LINES, growing = !!was && now - (was.linesAt ?? 0) >= GROW_HOLD_S;
+    if (was) for (const n of ladder.filter(n => n <= cur)) { spot = stay(sized(BUBBLE_MAX, n)); if (spot) { lines = n; break; } }
+    // Kept shorter than its words need, it grows in place, else moves to a spot beside the person where more of them fit.
+    const needs = Math.min(BUBBLE_LINES, bubbleSize(agent.short, words, BUBBLE_MAX, BUBBLE_LINES + 1).lines);
+    for (const n of spot && growing && lines < needs ? ladder.filter(n => n > lines) : []) {
+      const better = stay(sized(BUBBLE_MAX, n)) ?? placeBubble(seat, sized(BUBBLE_MAX, n), taken, stage, was?.side);
+      if (better) { spot = better; lines = n; break; }
+    }
+    const tried = new Set<string>();
+    for (const n of spot ? [] : ladder) {
+      const wide = sized(BUBBLE_MAX, n), narrow = sized(BUBBLE_NARROW, n), key = `${wide.h}:${narrow.h}`;
+      if (tried.has(key)) continue;
+      tried.add(key);
+      spot = placeBubble(seat, wide, taken, stage, was?.side) ?? placeBubble(seat, narrow, taken, stage, was?.side)
+        ?? placeBubble(seat, wide, taken, stage, undefined, BUBBLE_REACH);
+      if (spot) { lines = n; break; }
+    }
     if (spot) heldSpot.current.set(agent.id, { side: spot.side, rect: spot.rect });
-    bubbles.push({ agent, rect: spot?.rect ?? null, side: spot?.side,
+    bubbles.push({ agent, rect: spot?.rect ?? null, side: spot?.side, lines,
       ring: spot?.ring ? { x: spot.rect.x + spot.rect.w / 2 - seat.x, y: spot.rect.y + spot.rect.h / 2 - seat.y } : undefined });
   }
-  // A page is seen only once it is actually drawn: a new page, or one coming back on show after waiting, starts its
-  // reading time now. A page that turned but lost its spot stays unseen, keeps its PAGE_WAIT_S allowance and waits.
+  // A talk coming on show for the first time opens with its first few words; from then on it reveals at reading pace.
   for (const b of bubbles) {
-    const r = b.rect && !isOpen(b.agent.id) ? readings.current.get(b.agent.id) : undefined;
-    if (r && (!r.seen || !onScreen.current.has(b.agent.id))) readings.current.set(b.agent.id, { ...r, at: now, readBy: now + wordsReadS(r.text.slice(r.start, r.end)), seen: true });
+    const t = b.rect ? talks.current.get(b.agent.id) : undefined;
+    if (t && !t.drawn) { t.drawn = true; t.shown = Math.max(t.shown, reduced ? t.limit : wordsAfter(t.text, t.start, REVEAL_FIRST, t.limit)); t.step = now; }
   }
-  // Who is on screen now, with the page they show (an open bubble always is; it is placed first anyway).
+  // Who is on screen now, with the talk they show (an open bubble always is; it is placed first anyway).
   onScreen.current = new Map(bubbles.filter(b => b.rect).map(b => [b.agent.id,
-    { page: pageOf(b.agent.id), since: holding(b.agent.id) ? onSince(b.agent.id) : now, side: b.side, ring: b.ring }]));
+    { talk: talks.current.get(b.agent.id)?.id ?? -1, since: holding(b.agent.id) ? onSince(b.agent.id) : now, side: b.side, ring: b.ring, rect: b.rect!, lines: b.lines,
+      linesAt: holding(b.agent.id) && onScreen.current.get(b.agent.id)?.lines === b.lines ? onScreen.current.get(b.agent.id)?.linesAt : now }]));
   for (const id of onScreen.current.keys()) lastShown.current.set(id, now);
   for (const id of [...lastShown.current.keys()]) if (!feed.agents.some(a => a.id === id)) lastShown.current.delete(id);
+  // A new talk remounts the bubble, so it enters with the bubble's fade-in. An open bubble keeps its key: remounting
+  // it would drop the reader's hover, focus or pin.
+  const bubbleKeys = useRef(new Map<string, string>());
+  const talkKey = (id: string) => {
+    const t = talks.current.get(id);
+    if (t && !isOpen(id)) bubbleKeys.current.set(id, `${id}:${t.id}`);
+    return bubbleKeys.current.get(id) ?? id;
+  };
+  /** What a bubble shows: the talk so far (from where it picked up, marked … after a skip), or all of it when open. */
+  const talkText = (id: string) => {
+    const t = talks.current.get(id); if (!t) return '';
+    return (t.start > 0 ? '… ' : '') + (isOpen(id) ? t.text.slice(t.start) : t.text.slice(t.start, t.shown));
+  };
 
   const groupOf = new Map<string, CollabGroup>([...groups.values()].map(g => [g.key, g]));
   const short = (id: string) => id === 'user' ? 'You' : id === 'team' ? 'everyone' : feed.agents.find(a => a.id === id)?.short || id;
@@ -614,8 +648,8 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
       const slot: CSSProperties = up ? { left: b.rect!.x, bottom: size.h - (b.rect!.y + b.rect!.h) }
         : { left: b.rect!.x, top: b.rect!.y + (beside ? Math.max(0, (b.rect!.h - shownH) / 2) : 0) };
       return <div key={b.agent.id} className="lv-bubble-slot" style={slot}>
-        <SpeechBubble key={pageKey(b.agent.id)} name={b.agent.short} color={b.agent.color} text={isOpen(b.agent.id) ? b.agent.speech : pages.get(b.agent.id)!.page}
-          width={b.rect!.w} maxLines={BUBBLE_NARROW_LINES} reduced={reduced} openMaxHeight={openRoom.current.get(b.agent.id)}
+        <SpeechBubble key={talkKey(b.agent.id)} name={b.agent.short} color={b.agent.color} text={talkText(b.agent.id)}
+          width={b.rect!.w} maxLines={b.lines} reduced={reduced} openMaxHeight={openRoom.current.get(b.agent.id)} style={TALK_STYLE}
           onSize={box => {
             const prev = bubbleBox.current.get(b.agent.id);
             if (prev && prev.w === box.w && Math.abs(prev.h - box.h) <= 1 && prev.open === box.open) return;
