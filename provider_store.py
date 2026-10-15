@@ -62,6 +62,13 @@ LOCAL_CODEX_MIN_CONTEXT = 24_576
 LOCAL_PREFIX = 'local-'
 LOCAL_COLOR = '#64748b'
 LOCAL_MIGRATION = 'local-providers-1'  # api connections at a local default address became built-ins
+# How each built-in server is made to report a model's context window (provider_setup.server_context reads them).
+LOCAL_CONTEXT_HINTS = {
+    'ollama': ('Update Ollama, or give the model a context length: a Modelfile with "FROM {model}" and '
+               '"PARAMETER num_ctx 16384", then `ollama create {model}-16k -f Modelfile`, and choose {model}-16k'),
+    'llamacpp': 'Restart llama-server with `-c <tokens>`',
+    'lmstudio': 'Load the model in LM Studio with a context length set',
+}
 MODEL_SETTINGS = ('max_tokens', 'request_options', 'context_tokens', 'context_source', 'tool_check')
 
 
@@ -147,12 +154,11 @@ class ProviderStore:
         self.runtime = runtime
         self.path = runtime.data / 'providers.json'
         self.base = {name: copy.deepcopy(cfg) for name, cfg in runtime.cfg['agents'].items() if cfg.get('managed')}
-        self.error = ''
-        self.migrations = []
+        self.migrations = []  # set by read(); AgentProfiles runs migrate_local() right after this
         self.migration_notes = []  # posted once by the runtime after start
+        # The desktop shell's overlay patches the next lines by exact text: keep them as released.
+        self.error = ''
         self.entries = self.read()
-        if not self.error:
-            self.migrate_local()
 
     def read(self):
         """A file that cannot be read is reported and never overwritten: writes stay refused until it is fixed."""
@@ -187,16 +193,10 @@ class ProviderStore:
                 'label': info['label'], 'start_command': info['start_command']}
 
     def templates(self):
-        merged = {}
-        for name, cfg in self.base.items():
-            entry = self.entries.get(name, {})
-            if not entry.get('removed'):
-                merged[name] = {**copy.deepcopy(cfg), **copy.deepcopy(entry), 'managed': True}
+        # A built-in's saved entry holds its settings, not a connection of its own; one this computer can't run is left out.
+        merged = {name: cfg for name, cfg in self.configured_templates().items() if not name.startswith(LOCAL_PREFIX)}
         for name, info in self.local_servers().items():
             merged[name] = self.local_template(name, info)
-        for name, entry in self.entries.items():
-            if name not in self.base and not name.startswith(LOCAL_PREFIX) and not entry.get('removed'):
-                merged[name] = {**copy.deepcopy(entry), 'managed': True}
         return merged
 
     def builtin(self, name):
@@ -278,6 +278,18 @@ class ProviderStore:
                 changed.append((path, items))
         for path, items in changed:
             write_json(path, items)
+
+    def configured_templates(self):
+        # The desktop shell's overlay patches this body by exact text: keep it as released.
+        merged = {}
+        for name, cfg in self.base.items():
+            entry = self.entries.get(name, {})
+            if not entry.get('removed'):
+                merged[name] = {**copy.deepcopy(cfg), **copy.deepcopy(entry), 'managed': True}
+        for name, entry in self.entries.items():
+            if name not in self.base and not entry.get('removed'):
+                merged[name] = {**copy.deepcopy(entry), 'managed': True}
+        return merged
 
     def source(self, name):
         if name not in self.base:
@@ -623,7 +635,15 @@ class ProviderStore:
             return
         probe = {'base_url': info['base_url'], 'model': model, 'max_tokens': DEFAULT_OUTPUT_TOKENS,
                  **{k: v for k, v in settings.items() if k != 'tool_check'}}
-        await self.checked(probe)  # refuses a failed tool call or an unknown context window
+        try:
+            await self.checked(probe)  # refuses a failed tool call or an unknown context window
+        except FieldError as exc:
+            if exc.field != 'context_tokens':
+                raise
+            # A built-in has no form to enter the window in, so the fix is on the server: make it report one.
+            hint = LOCAL_CONTEXT_HINTS.get(info['server'], 'Start the server with a context length set').format(model=model)
+            raise FieldError(f'{info["label"]} did not report the context window for {model}, and the room needs it '
+                             f'to keep prompts inside it. {hint}, then use Refresh connections.', 'model') from None
         self.gate()  # a deployment check may have started during the probe
         entry = self.entries.setdefault(name, {})
         entry.setdefault('models', {})[model] = {k: probe[k] for k in MODEL_SETTINGS if k in probe}

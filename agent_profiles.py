@@ -35,13 +35,17 @@ class AgentProfiles:
         self.runtime = runtime
         # config.toml templates with Team > Providers additions and edits layered over them.
         self.store = ProviderStore(runtime)
+        if not self.store.error:
+            self.store.migrate_local()  # once (6b673b03): Bonsai and the like become a built-in's model
         self.templates = self.store.templates()
         # Model lists for connections no agent uses yet, so Add agent can offer them.
         self.template_catalogs = {}
         # Each built-in local provider's last probe (provider_setup.annotate_local): {template: status entry}.
         self.local_status = {}
-        # Each built-in's (status, advertised models) at that probe; None until the first. A change makes
-        # GET /providers/status run the full refresh, so catalogs and blocked agents follow the server.
+        # Each built-in's (status, advertised models): local_probed at the last probe, local_signature at the
+        # probe the last refresh applied (None before the first). When they differ, GET /providers/status runs
+        # the full refresh, so catalogs and blocked agents follow the server.
+        self.local_probed = None
         self.local_signature = None
         self.items = {}
         self.path = None

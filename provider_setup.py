@@ -421,7 +421,7 @@ def annotate_local(rows, runtime):
                                'base_url': row['base_url'], 'checked_at': checked}
             signature[template] = (state, tuple(sorted(row.get('models') or [])))
     runtime.profiles.local_status = cache
-    runtime.profiles.local_signature = signature
+    runtime.profiles.local_probed = signature
     return cache
 
 
@@ -549,9 +549,11 @@ def run_sign_in(provider):
 async def checked_status(runtime):
     """status(), and when a local server started, stopped or changed its models since the last probe, the full
     refresh, which loads its catalog and blocks or unblocks its agents, so /profiles matches this answer."""
-    before = runtime.profiles.local_signature
     result = await status(runtime)
-    if before is not None and runtime.profiles.local_signature != before:
+    # Compared with the probe the last refresh applied, not the last probe: a save-time probe (require_local)
+    # updates local_probed without refreshing, and must not hide the change from this check.
+    applied = runtime.profiles.local_signature
+    if applied is not None and runtime.profiles.local_probed != applied:
         async with runtime.profile_lock:
             await runtime.refresh()
     return result

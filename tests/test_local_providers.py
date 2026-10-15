@@ -36,6 +36,14 @@ def profile(pid, template, model=''):
             'model': model, 'effort': ''}
 
 
+def migrated(runtime):
+    """The store as AgentProfiles builds it: read, then the one-time migration."""
+    store = ProviderStore(runtime)
+    if not store.error:
+        store.migrate_local()
+    return store
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -50,7 +58,7 @@ class MigrationTests(Base):
     def test_bonsai_becomes_a_llamacpp_model_in_every_project(self):
         runtime = room(self.folder, {'p1': {'bonsai': profile('bonsai', 'bonsai'), 'codex': profile('codex', 'codex')},
                                      'p2': {'tiny': profile('tiny', 'bonsai', 'other.gguf')}})
-        store = ProviderStore(runtime)
+        store = migrated(runtime)
         p1 = json.loads((runtime.data / 'projects/p1/agents.json').read_text('utf-8'))
         p2 = json.loads((runtime.data / 'projects/p2/agents.json').read_text('utf-8'))
         self.assertEqual((p1['bonsai']['template'], p1['bonsai']['model']), ('local-llamacpp', 'Bonsai-2-27B'))
@@ -68,7 +76,7 @@ class MigrationTests(Base):
 
     def test_entry_is_a_complete_api_connection_for_the_previous_release(self):
         runtime = room(self.folder, {'p1': {'bonsai': profile('bonsai', 'bonsai')}})
-        ProviderStore(runtime)
+        migrated(runtime)
         saved = json.loads((runtime.data / 'providers.json').read_text('utf-8'))
         entry = saved['providers']['local-llamacpp']
         for key, value in (('provider', 'api'), ('base_url', BONSAI['base_url']), ('model', 'Bonsai-2-27B'),
@@ -78,8 +86,8 @@ class MigrationTests(Base):
 
     def test_runs_once(self):
         runtime = room(self.folder, {'p1': {'bonsai': profile('bonsai', 'bonsai')}})
-        ProviderStore(runtime)
-        again = ProviderStore(runtime)
+        migrated(runtime)
+        again = migrated(runtime)
         self.assertEqual(again.migration_notes, [])
         self.assertEqual(again.entries['bonsai'], {'removed': True})
 
@@ -87,7 +95,7 @@ class MigrationTests(Base):
         runtime = room(self.folder, {'p1': {'bonsai': profile('bonsai', 'bonsai')}})
         (runtime.data / 'projects/p2').mkdir()
         (runtime.data / 'projects/p2/agents.json').write_text('{broken', encoding='utf-8')
-        store = ProviderStore(runtime)
+        store = migrated(runtime)
         self.assertIn('bonsai', store.templates())
         self.assertNotIn(provider_store.LOCAL_MIGRATION, store.migrations)
         p1 = json.loads((runtime.data / 'projects/p1/agents.json').read_text('utf-8'))
@@ -172,26 +180,46 @@ class StatusTests(Base):
         self.assertEqual(caught.exception.field, 'model')
 
     def test_status_refreshes_only_when_a_local_server_changes(self):
-        runtime = SimpleNamespace(profiles=SimpleNamespace(items={}, local_status={}, local_signature=None),
-                                  profile_lock=asyncio.Lock(), refresh=mock.AsyncMock())
+        runtime = SimpleNamespace(profiles=SimpleNamespace(items={}, local_status={}, local_probed=None, local_signature=None),
+                                  profile_lock=asyncio.Lock())
         rows = [{'id': 'ollama', 'base_url': SERVERS[0][2], 'reachable': False, 'installed': True, 'models': []}]
 
-        async def status(runtime):
+        async def status(runtime):  # every probe (status, require_local, refresh) goes through annotate_local
             provider_setup.annotate_local(copy.deepcopy(rows), runtime)
             return {}
 
+        async def refresh():  # RoomRuntime.probe_local records the probe the refresh applies
+            await status(runtime)
+            runtime.profiles.local_signature = runtime.profiles.local_probed
+        runtime.refresh = mock.AsyncMock(side_effect=refresh)
+
         async def run():
             with mock.patch.object(provider_setup, 'status', status):
-                await provider_setup.checked_status(runtime)  # first probe: nothing to compare with
-                await provider_setup.checked_status(runtime)  # unchanged
+                await provider_setup.checked_status(runtime)  # before the first refresh: nothing applied yet
                 self.assertEqual(runtime.refresh.await_count, 0)
-                rows[0].update(reachable=True, models=['qwen3:8b'])  # Ollama started after the room
-                await provider_setup.checked_status(runtime)
+                await runtime.refresh()  # the room's start
+                await provider_setup.checked_status(runtime)  # unchanged
                 self.assertEqual(runtime.refresh.await_count, 1)
-                rows[0]['models'] = ['qwen3:8b', 'gemma3:4b']  # a model pulled while running
+                rows[0].update(reachable=True, models=['qwen3:8b'])  # Ollama started after the room
+                await status(runtime)  # a save-time probe (require_local) sees it first and doesn't refresh
                 await provider_setup.checked_status(runtime)
                 self.assertEqual(runtime.refresh.await_count, 2)
+                rows[0]['models'] = ['qwen3:8b', 'gemma3:4b']  # a model pulled while running
+                await provider_setup.checked_status(runtime)
+                self.assertEqual(runtime.refresh.await_count, 3)
         asyncio.run(run())
+
+    def test_unreported_context_window_names_the_server_fix(self):
+        runtime = room(self.folder)
+        store = ProviderStore(runtime)
+        runtime.profiles = SimpleNamespace(templates=store.templates())
+        info = store.local_servers()['local-ollama']
+        unknown = FieldError('This server did not report its context window. Enter it in the form', 'context_tokens')
+        with mock.patch.object(store, 'checked', mock.AsyncMock(side_effect=unknown)):
+            with self.assertRaises(FieldError) as caught:
+                asyncio.run(store.check_local_model('local-ollama', info, 'qwen3:8b'))
+        self.assertEqual(caught.exception.field, 'model')  # the agent editor has no context field
+        self.assertIn('PARAMETER num_ctx', str(caught.exception))
 
 
 if __name__ == '__main__':

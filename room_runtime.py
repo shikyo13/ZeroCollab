@@ -69,6 +69,7 @@ def room_tools_fingerprint():
 # Interim text that is only status narration ("I'm checking the board.") may stay in Activity. Anything
 # longer, on several lines, or not opening like narration posts: losing an answer is worse than one extra
 # line in chat (QA c0950fb6, Zero #12974).
+LOCAL_PROBE_REUSE = 30  # seconds one refresh reuses its local-server probe (RoomRuntime.probe_local)
 NARRATION_MAX = 160
 NARRATION_START = re.compile(r"(i'm|i am|i'll|i will|let me|now i|next,? i|first,? i|checking|looking|reading|"
                              r"searching|running|opening|starting|loading|fetching|waiting)\b", re.IGNORECASE)
@@ -1510,22 +1511,19 @@ class RoomRuntime:
                 state.update(state='ready', detail='Rehearsal: provider checks and agent turns disabled' if self.deployment.rehearsal else 'Deployment verification: agent turns are held')
             await self.publish_status()
             return
-        try:
-            local = await provider_setup.local_status(self)
-        except Exception:
-            LOGGER.exception('Local provider status could not be probed')
-            local = {}
-        builtins = self.profiles.store.local_servers()
         for name, state in list(self.states.items()):
             if name in self.running:
                 continue
             provider = state["provider"]
+            # The desktop shell's overlay patches the lines above by exact text, so the built-in local providers
+            # are probed here, once per refresh, by the first agent on one (task 6b673b03).
+            builtin = self.profiles.store.local_servers().get(state['template']) if provider == "api" else None
             try:
-                if provider == "api" and state['template'] in builtins:
-                    row = local.get(state['template'], {})
+                if builtin:
+                    row = (await self.probe_local()).get(state['template'], {})
                     if row.get('status') != 'running':
                         # The agent keeps its provider and model; its wakes wait until the server is back.
-                        state.update(state="blocked", detail=provider_setup.local_unavailable(builtins[state['template']], row))
+                        state.update(state="blocked", detail=provider_setup.local_unavailable(builtin, row))
                         continue
                 if provider == "api":
                     cfg = self.cfg["agents"][name]
@@ -1567,6 +1565,8 @@ class RoomRuntime:
                     state.update(state="ready", detail="Ready to start")
             except Exception as exc:
                 state.update(state="blocked", detail=str(exc)[:600])
+        await self.probe_local()  # also with no agent on a built-in: the agent editor shows each one's status
+        self.local_probe = None  # the next refresh probes again
         # One catalog lookup per configured provider connection, shared by its profiles. Agents
         # mid-turn are included: setup_project() resets every catalog to loading, and a lookup only
         # runs the CLI's model list (no turn or session). An idle member does the lookup when one exists.
@@ -1597,6 +1597,24 @@ class RoomRuntime:
         # Notify open editors after automatic refresh too; their draft stays mounted.
         await self.host.broadcast_agents()
         await self.publish_status()
+
+    async def probe_local(self):
+        """Each built-in local provider's status, probed once per refresh() and reused for the rest of it. It records
+        the probe the refresh applies, so a later GET /providers/status that sees a different one refreshes again
+        (provider_setup.checked_status). A refresh cancelled mid-loop leaves at most LOCAL_PROBE_REUSE seconds of
+        reuse for the next one."""
+        cached = getattr(self, 'local_probe', None)
+        if cached is not None and time.monotonic() - cached[0] < LOCAL_PROBE_REUSE:
+            return cached[1]
+        try:
+            local = await provider_setup.local_status(self)
+            self.profiles.local_signature = self.profiles.local_probed
+        except Exception:
+            LOGGER.exception('Local provider status could not be probed')
+            local = {}
+            self.profiles.local_signature = {}  # the next successful probe differs, so its status check refreshes
+        self.local_probe = (time.monotonic(), local)
+        return local
 
     async def resume_deploy_checks(self):
         if not self.deployment or not self.deployment.admission_open():
