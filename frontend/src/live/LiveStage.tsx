@@ -1,7 +1,7 @@
 /* The Live stage (task b42437b9): the team as boxless people. Each motion means one thing:
  * gathering = working together (a shared task, a review, a follow-up or a recent exchange), comet = @mention,
  * baton = handoff, gold rise = a question for you, ring step = a tool ran, one head shake = a failed turn.
- * At rest (task 4cbce498, Zero #18047) people breathe: a slow stepped bob for everyone, an orbit for whoever is
+ * At rest (task 4cbce498, Zero #18047) people breathe: a small bob for everyone (Zero #18710), an orbit for whoever is
  * working while their work moves, a gold ripple for whoever waits on you. That ambient motion is CSS (see live.css
  * for its cost), so the script loop below still stops when nothing travels (Zero 0bb2bdcf).
  * People are buttons (keyboard reachable); effects are drawn on an aria-hidden canvas and always have a
@@ -33,10 +33,11 @@ const bubbleCap = (w: number, h: number) => Math.max(2, Math.min(7, Math.floor(w
 // message replaces a longer one.
 const BUBBLE_FONT = '12.5px Inter, "Segoe UI", system-ui, sans-serif', BUBBLE_NAME_FONT = '600 ' + BUBBLE_FONT;
 const BUBBLE_LINE = 17, BUBBLE_PAD_X = 23, BUBBLE_PAD_Y = 12, BUBBLE_MIN = 120, BUBBLE_MAX = 280, BUBBLE_LINES = 5;
-// A crowded spot gets a narrower bubble (it shows fewer of the newest words), then one a little farther out.
-const BUBBLE_NARROW = 190, BUBBLE_REACH = 230;
+// A crowded spot gets a narrower bubble (its page wraps to more lines), then one a little farther out.
+const BUBBLE_NARROW = 190, BUBBLE_REACH = 230, BUBBLE_NARROW_LINES = 8;
 let measureCtx: CanvasRenderingContext2D | null = null;
-export function bubbleSize(name: string, text: string, max = BUBBLE_MAX): { w: number; h: number } {
+/** Lays out a bubble's words as the bubble wraps them (name first, in bold), one word at a time. */
+function wordWrap(name: string, max: number) {
   measureCtx = measureCtx || document.createElement('canvas').getContext('2d');
   const ctx = measureCtx!;
   const inner = max - BUBBLE_PAD_X;
@@ -44,13 +45,59 @@ export function bubbleSize(name: string, text: string, max = BUBBLE_MAX): { w: n
   ctx.font = BUBBLE_FONT;
   const space = ctx.measureText(' ').width;
   let lines = 1, widest = x;
-  for (const word of plainSpeech(text).split(/\s+/).filter(Boolean)) {
-    const w = ctx.measureText(word).width;
-    if (x > 0 && x + w > inner) { lines++; widest = Math.max(widest, x - space); x = 0; }
-    x += Math.min(w, inner) + space;
+  return {
+    add(word: string) {
+      const w = ctx.measureText(word).width;
+      if (x > 0 && x + w > inner) { lines++; widest = Math.max(widest, x - space); x = 0; }
+      x += Math.min(w, inner) + space;
+      return lines;
+    },
+    get lines() { return lines; },
+    get widest() { return Math.max(widest, x - space); },
+  };
+}
+export function bubbleSize(name: string, text: string, max = BUBBLE_MAX, maxLines = BUBBLE_LINES): { w: number; h: number } {
+  const wrap = wordWrap(name, max);
+  for (const word of plainSpeech(text).split(/\s+/).filter(Boolean)) wrap.add(word);
+  return { w: Math.ceil(Math.min(max, Math.max(BUBBLE_MIN, wrap.widest + BUBBLE_PAD_X + 2))), h: Math.min(wrap.lines, maxLines) * BUBBLE_LINE + BUBBLE_PAD_Y };
+}
+
+// Reading pace (Zero #18710: bubbles cut text off because they scrolled as fast as it streamed). A closed bubble
+// shows one page: whole sentences that fit a full-width bubble, so nothing is cut or scrolled away. Each page
+// stays up for its reading time. While a reply streams, its page fills word by word and the next page waits its
+// turn. Someone who talks faster than people read skips ahead to their newest sentences, and opening a bubble
+// shows the whole reply.
+const READ_WPM = 230, PAGE_MIN_S = 2.4, PAGE_EXTRA_S = 1;
+const PAGE_BACKLOG_CHARS = 700;   // more unread than this, and the next page starts at the newest sentences
+const STREAM_S = 2;               // words this fresh may still be mid-word: the last one waits for the next
+const pageReadS = (page: string) => Math.max(PAGE_MIN_S, page.split(/\s+/).filter(Boolean).length / READ_WPM * 60 + PAGE_EXTRA_S);
+const SENTENCE_END = /[.!?…:]["')\]]*$/;
+/** One person's place in what they are saying: the text read so far and the page on show. */
+interface Reading { text: string; start: number; end: number; at: number; streaming: boolean }
+/** Where the page that starts at `start` ends: as many words as fit, never fewer than the `shown` end (what is
+ * already on screen stays), and, when the page is full, after its last whole sentence if one ends past `shown`. */
+function pageEnd(name: string, text: string, start: number, shown: number, streaming: boolean): number {
+  const wrap = wordWrap(name, BUBBLE_MAX), word = /\S+/g;
+  word.lastIndex = start;
+  let end = Math.max(start, shown), sentence = -1, full = false;
+  for (let m = word.exec(text); m; m = word.exec(text)) {
+    const e = m.index + m[0].length;
+    if (streaming && e === text.length) break;   // possibly half a word
+    // A page already on its last lines ends with its sentence rather than start one it can't finish.
+    if (e > end && sentence === end && end > start && wrap.lines >= BUBBLE_LINES - 1) { full = true; break; }
+    if (wrap.add(m[0]) > BUBBLE_LINES) { full = true; break; }
+    if (e > end) end = e;
+    if (SENTENCE_END.test(m[0])) sentence = e;
   }
-  widest = Math.max(widest, x - space);
-  return { w: Math.ceil(Math.min(max, Math.max(BUBBLE_MIN, widest + BUBBLE_PAD_X + 2))), h:Math.min(lines, BUBBLE_LINES) * BUBBLE_LINE + BUBBLE_PAD_Y };
+  return full && sentence > shown ? sentence : end;
+}
+/** Where reading resumes after a skip: the first sentence start in the newest PAGE_BACKLOG_CHARS. */
+function catchUp(text: string): number {
+  const from = text.length - PAGE_BACKLOG_CHARS, tail = text.slice(from);
+  const s = tail.search(/[.!?…]\s+\S/);
+  if (s >= 0) return from + s + tail.slice(s).search(/\s\S/) + 1;
+  const space = tail.indexOf(' ');
+  return space >= 0 ? from + space + 1 : from;
 }
 const ACTIVE: LiveAgent['state'][] = ['working', 'waiting_on_user'];
 
@@ -69,11 +116,28 @@ export interface StageProps {
 interface Body { x: number; y: number; vx: number; vy: number; tx: number; ty: number; waitingSince: number; shakeAt: number; hopAt: number; ring: number }
 interface Effect { kind: 'comet' | 'baton' | 'gold' | 'answer' | 'broadcast'; from: string; to: string; label: string; color: string; start: number; dur: number; landed?: boolean; queuedAt?: number }
 
-/** Each person's own breathing rhythm, stable for their id, so the room never bobs in step. */
+/** The bob's shared step grid (live.css lv-bob): every bob changes on the same 1/15 s frames, so 13 people cost
+ * one 15 fps redraw rather than thirteen interleaved ones (Zero #18710). */
+const BOB_STEP_MS = 1000 / 15, BOB_STEPS = 60;   // a 4 s loop is 60 steps
+/** Each person's own place on the bob loop, stable for their id and a whole number of grid steps, so the room
+ * never bobs in step and still changes on the shared frames. */
 function rhythm(id: string): CSSProperties {
   let h = 2166136261; for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
-  const u = (h >>> 0) / 4294967296, v = ((h >>> 12) & 1023) / 1024;
-  return { '--bob-s': `${(3.4 + u * 1.6).toFixed(2)}s`, '--bob-at': `${(-v * 5).toFixed(2)}s`, '--orbit-at': `${(-u * 3).toFixed(2)}s` } as CSSProperties;
+  const u = (h >>> 0) / 4294967296, step = (h >>> 12) % BOB_STEPS;
+  return { '--bob-at': `${(-step * BOB_STEP_MS / 1000).toFixed(6)}s`, '--orbit-at': `${(-u * 3).toFixed(2)}s` } as CSSProperties;
+}
+/** Moves each running bob's start onto the shared grid. A CSS animation starts on whatever frame its style
+ * applied, so people who appear later (or after a view switch) would otherwise step on frames of their own. */
+function alignBobs(root: HTMLElement) {
+  for (const anim of root.getAnimations({ subtree: true })) {
+    if ((anim as CSSAnimation).animationName !== 'lv-bob') continue;
+    void anim.ready.then(() => {
+      // Only a running bob: setting a paused animation's start time would resume it against the CSS pause.
+      if (anim.playState !== 'running' || anim.startTime === null) return;
+      const start = Number(anim.startTime), snapped = Math.round(start / BOB_STEP_MS) * BOB_STEP_MS;
+      if (Math.abs(start - snapped) > 0.5) anim.startTime = snapped;
+    }, () => undefined);
+  }
 }
 // The Latest rail: what changed, newest first, each line opening its work.
 const RAIL = { w: 330, row: 24, head: 26, pad: 10 };
@@ -184,6 +248,9 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
 
   // Pausing freezes the clock and lets the loop rest; resuming or switching reduced motion restarts it.
   useEffect(() => { kick.current(); }, [paused, reduced]);
+  // Bobs restart when someone joins, on resume and when motion comes back: put them on the shared grid again.
+  const memberKey = feed.agents.map(a => a.id).join(' ');
+  useEffect(() => { if (root.current && !paused && !reduced) alignBobs(root.current); }, [memberKey, paused, reduced]);
 
   // Animation loop: springs toward seats (three movers at most), shake, hop and effects on canvas. It runs
   // only while one of those is in motion and rests otherwise; kick() restarts it on the event that creates
@@ -301,12 +368,47 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     ...people.map(p => { const s = layout.seats.get(p.id); return s ? speechBlocker(s, p.quiet, p.hasThumb && layout.thumbs) : null; }).filter((r): r is Rect => !!r)];
   const isOpen = (id: string) => !!bubbleBox.current.get(id)?.open;
   const shownFor = (a: LiveAgent) => ACTIVE.includes(a.state) ? SPEECH_SHOWN_S : SPEECH_AFTER_S;
-  const speaking = (a: LiveAgent) => !!a.speech && a.state !== 'stopped' && now - a.speechAt < shownFor(a);
-  const speakers = feed.agents.filter(a => a.speech && (isOpen(a.id) || speaking(a)))
+  // Each person's page: it turns once its reading time is up and more has been said, one page per turn of the timer.
+  const readings = useRef(new Map<string, Reading>());
+  const pages = new Map<string, { page: string; more: boolean; turnAt: number }>();
+  for (const a of feed.agents) {
+    if (!a.speech) { readings.current.delete(a.id); continue; }
+    const text = plainSpeech(a.speech), streaming = a.state === 'working' && now - a.speechAt < STREAM_S;
+    let r = readings.current.get(a.id);
+    // A different message (not the one on show, grown) starts reading from its beginning.
+    if (!r || !text.startsWith(r.text.slice(0, r.end))) r = { text, start: 0, end: 0, at: now, streaming };
+    if (r.text !== text || r.streaming !== streaming || r.end === 0) r = { ...r, text, streaming, end: pageEnd(a.short, text, r.start, r.end, streaming) };
+    const after = (t: string, i: number) => i + (t.slice(i).length - t.slice(i).trimStart().length);
+    const next = after(text, r.end);
+    if (next < text.length && now - r.at >= pageReadS(text.slice(r.start, r.end))) {
+      const start = text.length - next > PAGE_BACKLOG_CHARS ? catchUp(text) : next;
+      r = { text, streaming, start, end: pageEnd(a.short, text, start, start, streaming), at: now };
+    }
+    readings.current.set(a.id, r);
+    const page = text.slice(r.start, r.end);
+    pages.set(a.id, { page, more: after(text, r.end) < text.length, turnAt: r.at + pageReadS(page) });
+  }
+  // A new page remounts the closed bubble, so it enters with the bubble's fade-in. An open bubble keeps its key:
+  // remounting it would drop the reader's hover, focus or pin.
+  const bubbleKeys = useRef(new Map<string, string>());
+  const pageKey = (id: string) => {
+    const r = readings.current.get(id);
+    if (!isOpen(id) && r) bubbleKeys.current.set(id, `${r.start}:${r.at}`);
+    return bubbleKeys.current.get(id) ?? id;
+  };
+  // A bubble stays while its person speaks, and until its last page has been read.
+  const speaking = (a: LiveAgent) => {
+    const p = pages.get(a.id);
+    return !!p?.page && a.state !== 'stopped' && (now - a.speechAt < shownFor(a) || p.more || now < p.turnAt);
+  };
+  const speakers = feed.agents.filter(a => pages.get(a.id)?.page && (isOpen(a.id) || speaking(a)))
     .sort((p, q) => Number(isOpen(q.id)) - Number(isOpen(p.id)) || q.speechAt - p.speechAt).slice(0, bubbleCap(size.w, size.h));
-  // A bubble leaves when its time is up even if nothing else happens in the room: one timer, no loop.
+  // A bubble leaves, or turns its page, when its time is up even if nothing else happens in the room: one timer, no loop.
   const [, setSpeechTick] = useState(0);
-  const nextSpeechEnd = Math.min(Infinity, ...feed.agents.filter(a => speaking(a) && !isOpen(a.id)).map(a => a.speechAt + shownFor(a)));
+  const nextSpeechEnd = Math.min(Infinity, ...feed.agents.filter(a => speaking(a) && !isOpen(a.id)).flatMap(a => {
+    const p = pages.get(a.id)!;
+    return [a.speechAt + shownFor(a), p.turnAt, a.speechAt + STREAM_S].filter(t => t > now);
+  }));
   useEffect(() => {
     if (paused || !Number.isFinite(nextSpeechEnd)) return;
     const t = window.setTimeout(() => setSpeechTick(n => n + 1), Math.max(100, (nextSpeechEnd - Date.now() / 1000) * 1000 + 50));
@@ -351,7 +453,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     const seat = layout.seats.get(agent.id); if (!seat) continue;
     // Full width beside the person, else narrower beside them, else the nearest clear spot a little farther out.
     const taken = [...blockers, ...bubbles.flatMap(b => b.rect ? [b.rect] : [])];
-    const sized = (max: number) => { const e = bubbleSize(agent.short, agent.speech, max); return box && box.w === e.w ? { w: box.w, h: box.h } : e; };
+    const sized = (max: number) => { const e = bubbleSize(agent.short, pages.get(agent.id)!.page, max, BUBBLE_NARROW_LINES); return box && box.w === e.w ? { w: box.w, h: box.h } : e; };
     const spot = placeBubble(seat, sized(BUBBLE_MAX), taken, stage) ?? placeBubble(seat, sized(BUBBLE_NARROW), taken, stage)
       ?? placeBubble(seat, sized(BUBBLE_MAX), taken, stage, undefined, BUBBLE_REACH);
     if (spot) heldSpot.current.set(agent.id, { ...spot });
@@ -410,7 +512,8 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
       const up = b.side === 'above' || b.side === 'upLeft' || b.side === 'upRight';
       const slot: CSSProperties = up ? { left: b.rect!.x, bottom: size.h - (b.rect!.y + b.rect!.h) } : { left: b.rect!.x, top: b.rect!.y };
       return <div key={b.agent.id} className="lv-bubble-slot" style={slot}>
-        <SpeechBubble name={b.agent.short} color={b.agent.color} text={b.agent.speech} width={b.rect!.w} reduced={reduced} openMaxHeight={openRoom.current.get(b.agent.id)}
+        <SpeechBubble key={pageKey(b.agent.id)} name={b.agent.short} color={b.agent.color} text={isOpen(b.agent.id) ? b.agent.speech : pages.get(b.agent.id)!.page}
+          width={b.rect!.w} maxLines={BUBBLE_NARROW_LINES} reduced={reduced} openMaxHeight={openRoom.current.get(b.agent.id)}
           onSize={box => {
             const prev = bubbleBox.current.get(b.agent.id);
             if (prev && prev.w === box.w && Math.abs(prev.h - box.h) <= 1 && prev.open === box.open) return;

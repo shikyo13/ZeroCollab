@@ -34,15 +34,32 @@
 /* Life at rest (task 4cbce498, Zero #18047). Zero's Edge paints with GPU compositing off (0bb2bdcf), so even
    compositor-only animation costs CPU on every frame it changes. Ambient motion is therefore either stepped or
    tied to real events, and the room is near zero cost when nothing happens (measured: 0.6% of a core for 13).
-   Bob: everyone, on their own rhythm (--bob-s/--bob-at from the stage), 2.5 px in four steps per swing, which
-   BADGE_CLEAR allows for. A smooth 60 fps bob cost about 15% of a core.
+   Bob (Zero #18710: the four-step bob read as slow and jittery): everyone drifts round a small loop, 3 px up and
+   down and 1.5 px sideways, once every 4 s (6 s at rest), within BADGE_CLEAR. Smooth, that is a 60 fps redraw
+   (22-25% of a core for 13 people with GPU compositing off); unsynchronized steps cost the same. So every bob
+   moves on one shared 15 fps grid: whole 1/15 s steps (each 0.4 s segment in 6 steps, 9 at rest), phases in
+   whole steps (--bob-at), and the stage snaps each bob's start onto that grid (BOB_STEP_MS). All 13 then change
+   on the same frames: 7-10% of a core (the four-step bob was 2-3%), and each step moves under half a pixel, so
+   the eye reads it as smooth. A slower grid saves little (7.5 fps: 6%) until it is stepped again (2.5 fps: 2%).
    Orbit and glow: whoever is working, while their work actually moves (lv-stir: a tool step, reply text or a
    state change in the last few seconds); between events the orbit pauses where it is, so it resumes without a jump.
    Ripple: a gold ring widens from whoever waits on you (as 0.12.65's gold pulse did, but on the compositor).
    Floor: a group's ground glows still under it. */
-.lv-float { animation: lv-bob var(--bob-s, 4s) steps(4, jump-none) var(--bob-at, 0s) infinite alternate; }
-.lv-quiet .lv-float { animation-duration: calc(var(--bob-s, 4s) * 1.5); }
-@keyframes lv-bob { from { transform: translateY(-2.5px); } to { transform: translateY(2.5px); } }
+.lv-float { animation: lv-bob 4s steps(6, jump-end) var(--bob-at, 0s) infinite; }
+.lv-quiet .lv-float { animation-duration: 6s; animation-timing-function: steps(9, jump-end); }
+/* Ten points on the loop x = 1.5 sin t, y = 3 cos t: even steps along it give the sine ease of a bob. */
+@keyframes lv-bob {
+  0%, 100% { transform: translate(0, 3px); }
+  10% { transform: translate(.88px, 2.43px); }
+  20% { transform: translate(1.43px, .93px); }
+  30% { transform: translate(1.43px, -.93px); }
+  40% { transform: translate(.88px, -2.43px); }
+  50% { transform: translate(0, -3px); }
+  60% { transform: translate(-.88px, -2.43px); }
+  70% { transform: translate(-1.43px, -.93px); }
+  80% { transform: translate(-1.43px, .93px); }
+  90% { transform: translate(-.88px, 2.43px); }
+}
 .lv-orbit { position: absolute; inset: -9px; border-radius: 50%; opacity: 0; pointer-events: none; transition: opacity .5s ease;
   animation: lv-orbit 2.8s linear var(--orbit-at, 0s) infinite paused; }
 .lv-orbit::before, .lv-orbit::after { content: ''; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); }
@@ -78,6 +95,10 @@
    The slot glides when a bubble changes spot. */
 .lv-bubble-slot { position: absolute; z-index: 4; transition: left .38s cubic-bezier(.2, .8, .2, 1), top .38s cubic-bezier(.2, .8, .2, 1), bottom .38s cubic-bezier(.2, .8, .2, 1); }
 .lv-bubble-slot:has(.sb-open) { z-index: 9; }
+/* A closed bubble shows one page that always fits (LiveStage reading pace, Zero #18710), so its box follows the
+   text at once: easing it while words stream in kept the box a step behind and sliced off a line. A new page
+   enters with the bubble's own fade-in (sb-in), which reads as the page turning. Opening still eases. */
+.lv-bubble-slot .speech-bubble:not(.sb-open) { transition: box-shadow .2s ease-out; }
 @keyframes lv-in { from { opacity: 0; transform: translateY(6px); } }
 
 .lv-chip { position: absolute; z-index: 2; transform: translate(-50%, -100%); max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 999px; padding: 3px 12px; font-size: 12px;

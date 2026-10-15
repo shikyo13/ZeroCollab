@@ -35,14 +35,16 @@ export const LABEL_H = 34;
 export const overlap = (a: Rect, b: Rect) =>
   Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
 
-/** How far a person's drawing reaches above the badge: the activity ring (6 px) plus the idle bob (2.5 px),
+/** How far a person's drawing reaches above the badge: the activity ring (6 px) plus the idle bob (3 px),
  * rounded up. Speech keeps clear of it, so a bubble never touches a working ring (installed 0.12.43 capture). */
 export const BADGE_CLEAR = 10;
+/** The bob's reach below and to each side (live.css lv-bob: 3 px down, 1.5 px sideways), rounded up. */
+const BOB_DOWN = 3, BOB_SIDE = 2;
 
-/** A person's footprint for speech placement: personRect raised to include the ring and bob, and the bob below. */
+/** A person's footprint for speech placement: personRect raised to include the ring and bob, and the bob below and beside. */
 export function speechBlocker(p: Point, quiet: boolean, hasThumb: boolean): Rect {
   const r = personRect(p, quiet, hasThumb);
-  return { ...r, y: r.y - BADGE_CLEAR, h: r.h + BADGE_CLEAR + 3 };
+  return { x: r.x - BOB_SIDE, y: r.y - BADGE_CLEAR, w: r.w + 2 * BOB_SIDE, h: r.h + BADGE_CLEAR + BOB_DOWN };
 }
 
 /** The footprint a person reserves: badge, name and their latest picture. The person's box starts 26 px above
