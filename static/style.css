@@ -934,6 +934,12 @@ main#timeline {
     border-bottom-style: solid;
 }
 
+.msg-reference-status.file-open-status {
+    display: inline;
+    margin-inline-start: var(--space-sm);
+    color: var(--text);
+}
+
 /* --- Channel bar --- */
 
 #channel-bar {
