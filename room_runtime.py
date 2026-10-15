@@ -87,6 +87,9 @@ READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "We
                    "read_file", "file_glob_search", "grep_search", "get_info"}
 ROOM_SERVER = 'zerocollab_coordination'
 EVENT_LOG_LIMIT = 32 * 1024 * 1024  # runtime_events.jsonl starts a new file past this size (append_event)
+# GET /api/runtime/speech returns at most this much of each run's latest message, the same tail the board's Follow
+# view keeps (followStore TEXT_TAIL), so a page that connects mid-turn shows what the others show (task 3d4f7209).
+SPEECH_TAIL_CHARS = 50000
 # One automatic retry for a turn that failed before producing any output (task 33f0aa98).
 STARTUP_RETRY_SECONDS = 5
 # A provider that is rate-limited, overloaded or failing server-side recovers on its own (task f5dbe565: a Codex 429
@@ -598,6 +601,9 @@ class Run:
         self.completed_messages = set()
         self.published_messages = []
         self.last_commentary = ''
+        # The last finished message, as the live views last showed it: {message, phase, text, sealed}. Kept until
+        # the next message has text, so a page that connects between messages still shows it (speech()).
+        self.last_speech = None
         self.withheld = False  # its answer to a human @all was held because it no longer owned the claim
         self.process = self.stderr_task = None
         self.provider_session = None
@@ -754,6 +760,24 @@ class Run:
         Activity until the reveal (security 365efc14 D1). The position itself is in the decision record."""
         return self.manager.decisions.sealing(self) is not None
 
+    def speech(self):
+        """This run's latest speech for a page that connects mid-turn (GET /api/runtime/speech, task 3d4f7209;
+        contract agreed with frontend in e96b10f2). The message being written (draft) if it has text, else the
+        last finished one; the raw tail, up to SPEECH_TAIL_CHARS. message is the id of the message the text
+        belongs to. A sealed position, now or when that message was written, returns no text."""
+        sealed = self.sealed
+        if self.message_id and self.text:
+            message, phase, text, draft = self.message_id, self.message_phase, self.text, True
+        elif self.last_speech:
+            message, phase, text, draft = (self.last_speech['message'], self.last_speech['phase'],
+                                           self.last_speech['text'], False)
+            sealed = sealed or self.last_speech['sealed']
+        else:
+            message, phase, text, draft = None, None, '', False
+        return {'run': self.id, 'agent': self.name, 'channel': self.channel, 'task_id': self.task_id,
+                'message': message, 'phase': phase, 'draft': draft, 'sealed': sealed,
+                'text': '' if sealed else text[-SPEECH_TAIL_CHARS:]}
+
     async def begin_message(self, identifier, phase=None):
         if identifier in self.completed_messages:
             return False
@@ -795,6 +819,9 @@ class Run:
             else:
                 kept_in = 'chat' if await self.publish(content, identifier, final, partial) else 'activity'
         self.completed_messages.add(identifier)
+        if self.text:
+            self.last_speech = {'message': identifier, 'phase': self.message_phase,
+                                'text': self.text[-SPEECH_TAIL_CHARS:], 'sealed': self.sealed}
         self.text = ''
         self.message_id = self.message_phase = None
         # kept_in tells the live views where the draft went: posted to chat, or kept in Activity.
@@ -3372,6 +3399,11 @@ def install(host):
     provider_setup.install(host, runtime)
     import mcp_bridge
     mcp_bridge.channel_guard = runtime.owns_channel
+
+    @host.app.get("/api/runtime/speech")
+    async def speech():
+        # Fetched by a page on load and reconnect, never broadcast: runtime_state stays small (task 3d4f7209).
+        return {'runs': [run.speech() for run in runtime.running.values()]}
 
     @host.app.get("/api/runtime")
     async def status():
