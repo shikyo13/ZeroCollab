@@ -1951,6 +1951,12 @@ class RoomRuntime:
         try:
             # First, so nothing below (shutdown grace, a failing close) leaves the relay usable after the turn.
             run.relay_token = None
+            if outcome != 'completed' and getattr(run, 'compacted', False):
+                # complete() did not run, so drop the fingerprints a compacted summary may no longer hold (437f53ee).
+                try:
+                    self.project_room.forget_context(run)
+                except Exception:
+                    LOGGER.exception('Could not reset %s\'s saved context after a compaction', name)
             await run.steering.close(outcome)
             # Completed and stopped (already interrupted) CLIs are idle and may exit on their own;
             # a failed run can still be mid-turn, so it is killed at once to enforce its limits.

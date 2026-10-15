@@ -99,6 +99,13 @@ def write_json(path, value):
     atomic_write(path, lambda stream: stream.write(content))
 
 
+def cursor_only(delivery):
+    """A session's saved context after its provider compacted it: the summary may lack the blocks the fingerprints
+    vouch for, so keep only the message cursor; the next turn sends every block in full, and no chat is replayed
+    (task 437f53ee)."""
+    return {key: value for key, value in delivery.items() if key == 'message_id'}
+
+
 def clipped(text, limit):
     text = str(text)
     return text if len(text) <= limit else text[:max(0, limit - 90)] + '\n[Excerpt limited. Use room_read for the next section.]'
@@ -576,9 +583,7 @@ class ProjectRoom:
             return  # Timer sessions never replace the ordinary conversation continuation.
         delivery = run.context_delivery
         if getattr(run, 'compacted', False):
-            # The session was compacted, so its summary may lack the blocks these fingerprints vouch for: keep only
-            # the message cursor, and the next turn sends every block in full instead of 'Unchanged' (task 437f53ee).
-            delivery = {key: value for key, value in delivery.items() if key == 'message_id'}
+            delivery = cursor_only(delivery)
         self.state.setdefault('cursors', {})[run.session_key] = delivery
         receipts = self.state.setdefault('receipts', {}).get(run.session_key, [])
         delivered = run.receipts
@@ -590,6 +595,20 @@ class ProjectRoom:
                 'instruction_hash': run.instruction_hash,
                 'context': delivery, 'usage_total': getattr(run, 'provider_usage_total', 0)}
         self.save(touched=())
+
+    def forget_context(self, run):
+        """A turn whose session compacted but that did not complete (cancelled, timed out, failed): complete() never
+        ran, so the fingerprints saved by the last completed turn still vouch for blocks the compacted summary may
+        have dropped. Cut them to the message cursor, as complete() does (harness 0a48a156)."""
+        if getattr(run, 'manager_audit', None):
+            return
+        cursors = self.state.get('cursors', {})
+        if isinstance(cursors.get(run.session_key), dict):
+            cursors[run.session_key] = cursor_only(cursors[run.session_key])
+        session = self.state.get('sessions', {}).get(run.session_key)
+        if isinstance(session, dict) and isinstance(session.get('context'), dict):
+            session['context'] = cursor_only(session['context'])
+        self.save(touched=())  # cursors and sessions are value sections: a touched save compares them
 
     def task(self, actor, action, task_id='', title='', details='', paths=None, owner='', status='', update='', depends_on=None, labels=None, attachments=None,
              next_action=None, priority=None, wait=None, evidence=None, next_action_state=None,
@@ -1450,6 +1469,11 @@ class ProjectRoom:
                 history = (f"[Also addressed to you and not shown here: {', '.join(missed[-12:])}. Read them with "
                            f'room_read(section="messages", after_id={cursor}) before acting on older work.]\n' + history)
             history = f'[Older unread messages remain available via room_read(section="messages", after_id={cursor}).]\n' + history
+        if run.previous_session and previous and set(previous) <= {'message_id'}:
+            # Saved as cursor_only: the session was compacted since its last turn, and its summary may have dropped
+            # earlier chat as well as the blocks (harness 0a48a156 note).
+            history = ('[Your session was compacted since your last turn; earlier messages remain available via '
+                       'room_read(section="messages").]\n' + history)
         peer_limit = int(maximum * .12)
         changes = changes if changes is not None else {}
         # Every changed worktree is summarised; full hunks are kept only for files that overlap this

@@ -118,7 +118,20 @@ class ExecutionContextTests(TurnContextTests):
         after = self.turn('@opus third')  # task 437f53ee: the session's summary may have dropped the blocks
         self.assertNotIn('[Unchanged;', after)
         self.assertNotIn('@opus second', after)  # the message cursor is kept: no chat replay
-        self.assertIn('Execution context: [Unchanged;', self.turn('@opus fourth'))  # and delivery resumes
+        self.assertIn('[Your session was compacted since your last turn', after)  # and it says where older chat is
+        fourth = self.turn('@opus fourth')
+        self.assertIn('Execution context: [Unchanged;', fourth)  # delivery resumes
+        self.assertNotIn('session was compacted', fourth)
+
+    def test_a_compacted_turn_that_did_not_complete_also_resets_delivery(self):
+        self.turn('@opus first look')
+        run = self.run_for(self.store.add('user', '@opus long job', channel='general'))
+        run.session_key, run.settings, run.instruction_hash, run.provider_session = 'opus:general', {}, 'h', 'sess'
+        run.previous_session = self.room.previous_session(run)
+        self.room.context(run)
+        run.compacted = True  # compacted mid-turn, then stopped or timed out: complete() never runs (harness 0a48a156)
+        self.room.forget_context(run)
+        self.assertNotIn('[Unchanged;', self.turn('@opus after the stop'))
 
     def test_repository_project_names_worktree_and_branch(self):
         self.r.project = 'D:/dune'
