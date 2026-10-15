@@ -46,7 +46,7 @@ Recommendation: A for every provider. B as an explicit per-provider opt-in with 
 
 ## Local model plan
 
-- Detection: probe `127.0.0.1:11434` (Ollama `/api/tags`, `/v1/models`), `:1234` (LM Studio `/v1/models`), `:8080` (llama.cpp `/v1/models`, `/props`). Offer "Add local provider" with the found models; show "not running" with the start command when installed but stopped (`ollama serve`, `lms server start`).
+- Detection: probe `127.0.0.1:11434` (Ollama `/api/tags`, `/v1/models`), `:1234` (LM Studio `/v1/models`), `:8080` (llama.cpp `/v1/models`, `/props`). Each server kind is a built-in provider with the found models, with no Add step (see "Local servers as providers"); show "not running" with the start command when installed but stopped (`ollama serve`, `lms server start`).
 - MLX (macOS on Apple silicon only; other platforms do not list these rows), as built in `provider_setup.LOCAL_SERVERS`:
   - MLX LM (`pip install mlx-lm`, `mlx_lm.server --model <mlx-community/...>`) listens on `127.0.0.1:8080`, the same default as llama.cpp. Its `/v1/models` lists the local Hugging Face cache, and each entry is only `id`/`object`/`created`. Chat completions accept `tools` and return structured `tool_calls` for models whose chat template supports them. Its `--max-tokens` default is 512, but `local_turn` always sends `max_tokens`.
   - mlx-serve (`brew install mlx-serve`, `mlx-serve serve`, needs macOS 26.2+) listens on `127.0.0.1:11234` and serves `/v1/models` and `/v1/chat/completions`.
@@ -102,6 +102,13 @@ S4 as built (`provider_setup.tool_call_check` and `server_context`, `provider_st
   - When almost nothing is left, results are replaced with a short "window is full" note so the model can still answer. When nothing at all is left, the turn stops with a clear message.
   - With today's instructions and tools, 8k-token windows are too small, and about 12k tokens or more are needed.
   - Characters per token is an estimate, so the budget is approximate, not a hard bound.
+
+Local servers as providers (task 6b673b03, contract `local-providers/contract.md` r1; `provider_store`, `provider_setup.local_status`, `AgentProfiles.describe`):
+- **Built-ins.** Each `LOCAL_SERVERS` kind this computer can run is a provider with a fixed id: `local-ollama`, `local-llamacpp`, `local-lmstudio`, and on Apple silicon `local-mlx` and `local-mlxserve`. The same id is `profile.template`, `/profiles` `providers[].id` and `/providers/status` `local_servers[].template`. Named connections can't take a `local-` id, and Edit, Remove and Reset refuse built-ins.
+- **Status.** `running`, `stopped`, `not_installed`, `port_taken` or `unidentified` (the shared :8080 answer names neither llama.cpp nor MLX LM), and `unknown` until the first probe after start. Only `running` is offered. Status comes from the last `GET /providers/status`; there is no polling loop.
+- **Models.** The catalog is what the server advertises on `/v1/models`. The first time a (provider, model) pair is chosen, the S4 tool-call check and context read run for that model, and the result is cached per model in providers.json. A new choice on a provider that isn't running is refused with `{error, field}`. Unchanged provider and model never re-check, so a stopped agent stays editable.
+- **Stopped provider.** Its agents keep their provider and model and show blocked, with the start command. They are never moved to another provider.
+- **Migration.** Once, recorded as `migrations: ["local-providers-1"]` in providers.json: a no-key `api` connection at a local default address (today `bonsai` at :8080) becomes that built-in. Agents in every project keep their id and history and get the built-in plus the old model (`Bonsai-2-27B`). The connection's settings become per-model settings, the old connection is hidden with `{removed: true}`, and one chat note announces it. If any project's agents.json can't be read, the whole migration waits for the next start. The built-in entry is written as a complete `api` connection, so the previous release still runs those agents.
 | S5 | API-key mode (option B) with the OS credential store | Yes: enable paid API keys at all |
 
 S5 design (user answer d14490f5: yes, as an option; not shown anywhere until a valid key is entered; an on/off switch per API provider; a cost tracker). Security pre-build review 44578130 applies. Mockup: `/uploads/2dfb0c33.png` on task 0a5de055.

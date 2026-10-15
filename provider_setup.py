@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -366,6 +367,65 @@ def local_rows(listed, probes, configured_bases):
     return rows
 
 
+def local_state(row):
+    """One local_rows row as a built-in provider's status (task 6b673b03)."""
+    if row.get('identity_unconfirmed'):
+        return 'unidentified'
+    if row.get('reachable'):
+        return 'running'
+    if row.get('port_taken_by'):
+        return 'port_taken'
+    return 'stopped' if row.get('installed') else 'not_installed'
+
+
+def local_unavailable(info, row):
+    """Why an agent cannot take this built-in provider now, and what the user does about it."""
+    state = row.get('status')
+    if state == 'unidentified':
+        return (f'Something answers at {info["base_url"]} but did not say which server it is. Start {info["label"]} there, '
+                'or add it in Team > Providers as a named server.')
+    if state == 'port_taken':
+        return f'{row.get("detail") or "Another server is using this port"}. Stop it or start {info["label"]} on another port.'
+    if state == 'not_installed':
+        # local_installed() only looks on PATH and in the usual app folders, so it cannot prove an absence.
+        return (f'{info["label"]} isn\'t running, and it wasn\'t found on this computer. Install or start it with '
+                f'`{info["start_command"]}`, then Refresh connections.')
+    return f'{info["label"]} isn\'t running. Start it with `{info["start_command"]}`, then Refresh connections.'
+
+
+def annotate_local(rows, runtime):
+    """Give each local_servers row its built-in template, status and agents, and cache them for the agent editor
+    (AgentProfiles.describe reads runtime.profiles.local_status). Returns {template: status entry}."""
+    import provider_store
+    agents = {}
+    for pid, profile in runtime.profiles.items.items():
+        agents.setdefault(profile.get('template'), []).append(pid)
+    checked, cache = time.time(), {}
+    for row in rows:
+        state = local_state(row)
+        templates = [provider_store.LOCAL_PREFIX + key for key, _, base, _ in listed_servers() if base == row['base_url']]
+        own = provider_store.LOCAL_PREFIX + row['id'] if not row['id'].startswith('shared:') else None
+        row.update(status=state, template=own, configured=True,
+                   agents=sorted(a for t in (templates if own is None else [own]) for a in agents.get(t, [])))
+        if own is None:
+            row['templates'] = templates
+        for template in templates if own is None else [own]:
+            cache[template] = {'server': template.removeprefix(provider_store.LOCAL_PREFIX), 'status': state,
+                               'detail': row.get('detail', ''), 'start_command': row.get('start_command', ''),
+                               'base_url': row['base_url'], 'checked_at': checked}
+    runtime.profiles.local_status = cache
+    return cache
+
+
+async def local_status(runtime):
+    """Probe the local servers this computer can run and return each built-in provider's status."""
+    listed = listed_servers()
+    bases = list(dict.fromkeys(base for _, _, base, _ in listed))
+    async with httpx.AsyncClient(timeout=httpx.Timeout(2, connect=1), trust_env=False) as client:
+        results = await asyncio.gather(*(probe_server(client, base) for base in bases))
+    return annotate_local(local_rows(listed, dict(zip(bases, results)), set()), runtime)
+
+
 async def probe_configured(client, cfg):
     """A configured server's model list; a keyed one uses its own client carrying its key, after the
     key's origin check, and reports a missing, switched-off or misplaced key instead of probing."""
@@ -390,7 +450,8 @@ async def probe_vendor(cfg):
 
 
 async def status(runtime):
-    templates = runtime.profiles.templates
+    # Built-in local providers report through local_servers, one row each, not as configured connections.
+    templates = {name: cfg for name, cfg in runtime.profiles.templates.items() if not cfg.get('local_server')}
     # Key connections for Claude or Codex (S5b) report their key, not the CLI's sign-in.
     vendors = {name: cfg for name, cfg in templates.items() if cfg.get('key_target') and cfg.get('provider') in provider_keys.VENDORS}
     # A local model through Codex reports its server, like an OpenAI-compatible connection, not a CLI sign-in.
@@ -417,8 +478,8 @@ async def status(runtime):
         else:
             row['cli'] = by_provider[provider]
         rows.append(row)
-    configured_bases = {cfg['base_url'].rstrip('/') for cfg in configured.values()}
-    local = local_rows(listed, dict(zip(bases, local_results)), configured_bases)
+    local = local_rows(listed, dict(zip(bases, local_results)), set())
+    annotate_local(local, runtime)
     return {'platform': sys.platform, 'providers': rows, 'local_servers': local}
 
 

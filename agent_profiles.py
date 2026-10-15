@@ -8,7 +8,7 @@ from pathlib import Path
 import agent_skills
 from project_room import write_json
 from provider_controls import ProviderControls
-from provider_store import ProviderStore
+from provider_store import DEFAULT_OUTPUT_TOKENS, LOCAL_PREFIX, SUBSCRIPTIONS, ProviderStore
 
 # Role cores (Docs/agent-profiles.md, task b8bc48b6): drafted as agent-profiles/<agent>/core.md, reviewed, then
 # imported into the profile record only by the user's approve action. The record is what delivery reads.
@@ -38,6 +38,8 @@ class AgentProfiles:
         self.templates = self.store.templates()
         # Model lists for connections no agent uses yet, so Add agent can offer them.
         self.template_catalogs = {}
+        # Each built-in local provider's last probe (provider_setup.annotate_local): {template: status entry}.
+        self.local_status = {}
         self.items = {}
         self.path = None
 
@@ -48,6 +50,8 @@ class AgentProfiles:
         else:
             self.items = {}
             for name, cfg in self.templates.items():
+                if cfg.get('local_server'):
+                    continue  # a built-in local provider is chosen for an agent, never an agent of its own
                 selected = self.runtime.controls.saved.get(name, {})
                 self.items[name] = {'id': name, 'template': name, 'name': cfg.get('label', name),
                     'color': cfg.get('color', '#8b5cf6'), 'background': '', 'archived': False,
@@ -79,6 +83,11 @@ class AgentProfiles:
 
     def config(self, profile):
         cfg = copy.deepcopy(self.templates[profile['template']])
+        models = cfg.pop('models', None)
+        if cfg.get('local_server'):
+            # A built-in local provider serves many models; each carries its own checked settings.
+            cfg['max_tokens'] = DEFAULT_OUTPUT_TOKENS
+            cfg.update(copy.deepcopy((models or {}).get(profile['model'], {})))
         cfg.update(label=profile['name'], color=profile['color'], model=profile['model'],
                    effort=profile['effort'], background=profile['background'], profile=True,
                    handle=profile.get('handle', profile['id']),
@@ -93,9 +102,19 @@ class AgentProfiles:
                         {'models': [], 'selected': {'model': '', 'effort': ''}, 'error': 'Refresh connections to load models'})
             catalog = next((self.runtime.controls.describe(name) for name, profile in self.items.items()
                             if profile['template'] == template and name in self.runtime.controls.catalogs), fallback)
+            local = None
+            if cfg.get('local_server'):
+                local = self.local_status.get(template) or {
+                    'server': cfg['local_server'], 'status': 'unknown', 'detail': 'Refresh connections to check this server',
+                    'start_command': cfg.get('start_command', ''), 'base_url': cfg['base_url'], 'checked_at': None}
+            kind = 'local' if local else ('subscription' if cfg.get('provider') in SUBSCRIPTIONS
+                                          and not cfg.get('key_target') and not cfg.get('local') else 'connection')
+            offered = local['status'] == 'running' if local else self.store.offered(template)
             providers.append({'id': template, 'provider': cfg.get('provider', template),
                               'label': cfg.get('label', template), 'color': cfg.get('color', '#8b5cf6'),
-                              'controls': catalog, 'offered': self.store.offered(template)})
+                              'controls': catalog, 'offered': offered, 'kind': kind, 'local': local})
+        order = {'subscription': 0, 'local': 1, 'connection': 2}
+        providers.sort(key=lambda row: order[row['kind']])  # stable: config and table order within each kind
         return {'project': str(self.runtime.project or ''), 'profiles': [
                     {**p, 'handle': p.get('handle', p['id']), 'previous_handles': list(p.get('previous_handles', []))}
                     for p in self.items.values()], 'providers': providers,
@@ -154,6 +173,20 @@ class AgentProfiles:
                 'template': template, 'name': label, 'color': color.lower(),
                 'background': background.strip(), 'model': model, 'effort': effort,
                 'archived': old.get('archived', False) if old else False}
+
+    def local_choice(self, body, identifier=''):
+        """(template, model) when this save puts an agent on a built-in local provider or a new model on it, which
+        needs the server running and the model checked (ProviderStore.require_local); otherwise None."""
+        old = self.items.get(identifier) if identifier else None
+        if not isinstance(body, dict):
+            return None
+        template = body.get('template', old['template'] if old else '')
+        model = body.get('model', old['model'] if old else '')
+        if not (isinstance(template, str) and template.startswith(LOCAL_PREFIX) and template in self.templates):
+            return None
+        if old and (template, model) == (old['template'], old['model']):
+            return None  # cosmetic edits never need the server
+        return template, model
 
     def catalog(self, template):
         """The destination connection's catalog, also used when an existing member moves onto it."""

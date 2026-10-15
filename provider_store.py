@@ -10,6 +10,7 @@ Profiles copy their template when activated (AgentProfiles.config), so a change 
 only when it is reapplied here. Changes are refused while an agent on that connection is mid-turn,
 so an in-flight turn's config is never touched. Ids never change; renaming edits only the label."""
 import copy
+import logging
 import os
 import json
 import re
@@ -23,6 +24,8 @@ from fastapi.responses import JSONResponse
 import provider_keys
 import provider_prices
 from project_room import write_json
+
+LOGGER = logging.getLogger(__name__)
 
 # Official CLIs a connection can use; each signs in with its own login (Team > Providers, S2).
 SUBSCRIPTIONS = {
@@ -53,6 +56,13 @@ MAX_PRICED_MODELS = 50
 # request (codex-cli 0.160, llama.cpp, 2026-10-10), so a smaller window leaves no room for work.
 CODEX_OVERHEAD_TOKENS = 16_000
 LOCAL_CODEX_MIN_CONTEXT = 24_576
+# Built-in local providers (task 6b673b03): each local server kind (provider_setup.LOCAL_SERVERS) is a provider
+# with the models it advertises, without an Add step. Its id is reserved; providers.json holds its per-model
+# settings under 'models' and, for the previous release, a complete api connection at the top level.
+LOCAL_PREFIX = 'local-'
+LOCAL_COLOR = '#64748b'
+LOCAL_MIGRATION = 'local-providers-1'  # api connections at a local default address became built-ins
+MODEL_SETTINGS = ('max_tokens', 'request_options', 'context_tokens', 'context_source', 'tool_check')
 
 
 def local_codex_limits():
@@ -138,7 +148,11 @@ class ProviderStore:
         self.path = runtime.data / 'providers.json'
         self.base = {name: copy.deepcopy(cfg) for name, cfg in runtime.cfg['agents'].items() if cfg.get('managed')}
         self.error = ''
+        self.migrations = []
+        self.migration_notes = []  # posted once by the runtime after start
         self.entries = self.read()
+        if not self.error:
+            self.migrate_local()
 
     def read(self):
         """A file that cannot be read is reported and never overwritten: writes stay refused until it is fixed."""
@@ -152,7 +166,25 @@ class ProviderStore:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.error = f'{self.path.name} could not be read ({exc}); fix or move it, then restart. Changes are disabled until then.'
             return {}
+        migrations = data.get('migrations')
+        self.migrations = [m for m in migrations if isinstance(m, str)] if isinstance(migrations, list) else []
         return {name: entry for name, entry in entries.items() if ID.fullmatch(name) and isinstance(entry, dict)}
+
+    @staticmethod
+    def local_servers():
+        """{template id: {server, label, base_url, start_command}} for the local servers this computer can run."""
+        import provider_setup
+        return {LOCAL_PREFIX + key: {'server': key, 'label': label, 'base_url': base, 'start_command': start}
+                for key, label, base, start in provider_setup.listed_servers()}
+
+    def local_template(self, name, info):
+        """A built-in local provider. Its saved entry contributes server-level settings and the per-model ones;
+        the entry's top-level copy of one model's settings exists only for the previous release, so it is dropped."""
+        entry = {k: v for k, v in copy.deepcopy(self.entries.get(name, {})).items()
+                 if k not in (*MODEL_SETTINGS, 'model', 'removed')}
+        return {'type': 'api', 'provider': 'api', 'model': '', 'max_tokens': DEFAULT_OUTPUT_TOKENS, 'color': LOCAL_COLOR,
+                **entry, 'managed': True, 'local_server': info['server'], 'base_url': info['base_url'],
+                'label': info['label'], 'start_command': info['start_command']}
 
     def templates(self):
         merged = {}
@@ -160,10 +192,92 @@ class ProviderStore:
             entry = self.entries.get(name, {})
             if not entry.get('removed'):
                 merged[name] = {**copy.deepcopy(cfg), **copy.deepcopy(entry), 'managed': True}
+        for name, info in self.local_servers().items():
+            merged[name] = self.local_template(name, info)
         for name, entry in self.entries.items():
-            if name not in self.base and not entry.get('removed'):
+            if name not in self.base and not name.startswith(LOCAL_PREFIX) and not entry.get('removed'):
                 merged[name] = {**copy.deepcopy(entry), 'managed': True}
         return merged
+
+    def builtin(self, name):
+        """Refuse an edit that only a configured connection can take."""
+        if name.startswith(LOCAL_PREFIX):
+            label = self.local_servers().get(name, {}).get('label', name)
+            raise ValueError(f'{label} is a built-in local provider: start or stop its server, and choose its models in the agent editor')
+
+    @staticmethod
+    def local_rollback(info, model, settings):
+        """The top-level fields that let a release without built-ins run this provider as a plain api connection."""
+        return {'type': 'api', 'provider': 'api', 'base_url': info['base_url'], 'model': model, 'label': info['label'],
+                'color': LOCAL_COLOR, 'max_tokens': settings.get('max_tokens', DEFAULT_OUTPUT_TOKENS),
+                **{k: copy.deepcopy(settings[k]) for k in MODEL_SETTINGS if k in settings and k != 'max_tokens'}}
+
+    def migrate_local(self):
+        """Once (LOCAL_MIGRATION): a plain api connection at a local server's default address (Bonsai at :8080 today)
+        becomes that built-in provider with its model. Agents in every project move to it first and keep their ids
+        and history; then its settings become that model's and the connection is hidden, in one providers.json
+        write. Rerunning after a crash between the two writes repeats the same result."""
+        if LOCAL_MIGRATION in self.migrations:
+            return
+        import provider_setup
+        builtins = self.local_servers()
+        by_base = {}
+        for name, info in builtins.items():
+            # One port can serve two kinds (llama.cpp and MLX LM on :8080): the cross-platform one gets it.
+            current = by_base.get(info['base_url'])
+            if current is None or builtins[current]['server'] in provider_setup.MAC_ONLY:
+                by_base[info['base_url']] = name
+        moved = {}
+        for name, cfg in self.templates().items():
+            if (name in builtins or cfg.get('provider') != 'api' or cfg.get('key_target') or cfg.get('local')
+                    or str(cfg.get('base_url', '')).rstrip('/') not in {b.rstrip('/') for b in by_base}):
+                continue
+            target = by_base[next(b for b in by_base if b.rstrip('/') == cfg['base_url'].rstrip('/'))]
+            model = cfg.get('model', '')
+            settings = {k: copy.deepcopy(cfg[k]) for k in MODEL_SETTINGS if k in cfg}
+            entry = self.entries.setdefault(target, {})
+            if model:
+                entry.setdefault('models', {}).setdefault(model, settings)
+            if cfg.get('tool_schema_url'):
+                entry.setdefault('tool_schema_url', cfg['tool_schema_url'])
+            for key, value in self.local_rollback(builtins[target], model, settings).items():
+                entry.setdefault(key, value)
+            moved[name] = (target, model, cfg.get('label', name), builtins[target]['label'])
+        if moved:
+            try:
+                self.move_profiles({name: (target, model) for name, (target, model, _, _) in moved.items()})
+            except (OSError, ValueError) as exc:
+                # Hiding the connection while an agent still names it would strand that agent: try again next start.
+                self.entries = self.read()
+                LOGGER.warning('Local provider migration postponed: an agents.json could not be updated (%s)', exc)
+                return
+            for name in moved:
+                if name in self.base:
+                    self.entries[name] = {'removed': True}
+                else:
+                    self.entries.pop(name, None)
+            self.migration_notes = [f'{label} is now a model of {new}' + (f' ({model})' if model else '')
+                                    + '. Agents on it keep their identity and history.'
+                                    for target, model, label, new in moved.values()]
+        self.migrations.append(LOCAL_MIGRATION)
+        self.save()
+
+    def move_profiles(self, moved):
+        """Point every project's agents on a migrated connection at its built-in provider, keeping the model. Every
+        file is read before any is written, so one unreadable project leaves all of them as they were."""
+        changed = []
+        for path in sorted((self.runtime.data / 'projects').glob('*/agents.json')):
+            items = json.loads(path.read_text('utf-8'))
+            hit = False
+            for profile in items.values():
+                if isinstance(profile, dict) and profile.get('template') in moved:
+                    target, model = moved[profile['template']]
+                    profile.update(template=target, model=profile.get('model') or model)
+                    hit = True
+            if hit:
+                changed.append((path, items))
+        for path, items in changed:
+            write_json(path, items)
 
     def source(self, name):
         if name not in self.base:
@@ -174,6 +288,8 @@ class ProviderStore:
         templates = self.runtime.profiles.templates
         rows = []
         for name, cfg in templates.items():
+            if cfg.get('local_server'):
+                continue  # a built-in local provider is a local_servers row in providers/status
             rows.append({'id': name, 'provider': cfg.get('provider', name), 'label': cfg.get('label', name),
                          'color': cfg.get('color', '#8b5cf6'), 'source': self.source(name),
                          'base_url': cfg.get('base_url', ''), 'model': cfg.get('model', ''),
@@ -236,6 +352,10 @@ class ProviderStore:
                 out.update({k: current[k] for k in ('base_url', *KEY_FIELDS) if k in current})
             return out
         base_url = server_address(body.get('base_url', (current or {}).get('base_url', '')))
+        builtin = next((info for info in self.local_servers().values()
+                        if info['base_url'].rstrip('/') == base_url.rstrip('/')), None)
+        if builtin and not current:
+            raise FieldError(f'{builtin["label"]} is already a provider: choose it in the agent editor', 'base_url')
         model = body.get('model', (current or {}).get('model', ''))
         if not isinstance(model, str) or not 1 <= len(model) <= 200:
             raise ValueError('Choose a model the server serves')
@@ -341,11 +461,12 @@ class ProviderStore:
     def new_id(self, label, requested=None):
         taken = set(self.base) | set(self.entries) | RESERVED
         if requested is not None:
-            if not isinstance(requested, str) or not ID.fullmatch(requested) or requested in taken:
-                raise ValueError('Choose an unused id: a lowercase letter, then letters, digits or hyphens')
+            if (not isinstance(requested, str) or not ID.fullmatch(requested) or requested in taken
+                    or requested.startswith(LOCAL_PREFIX)):
+                raise ValueError('Choose an unused id: a lowercase letter, then letters, digits or hyphens, not starting with local-')
             return requested
         stem = re.sub(r'[^a-z0-9]+', '-', label.lower()).strip('-')[:32] or 'provider'
-        if not stem[0].isalpha():
+        if not stem[0].isalpha() or stem.startswith(LOCAL_PREFIX):
             stem = 'provider-' + stem
         candidate, n = stem, 2
         while candidate in taken:
@@ -396,7 +517,7 @@ class ProviderStore:
             raise ValueError(f'Could not list models from this connection: {str(exc) or type(exc).__name__}'[:400]) from exc
 
     def save(self):
-        write_json(self.path, {'providers': self.entries})
+        write_json(self.path, {'providers': self.entries, 'migrations': self.migrations})
 
     async def apply(self, name, catalog=None):
         """Load the merged templates, reapply them to idle active agents and publish."""
@@ -470,6 +591,43 @@ class ProviderStore:
                              'LM Studio context length).', 'context_tokens')
         return self.budget_note(entry)
 
+    async def require_local(self, name, model):
+        """Before an agent takes a built-in local provider, or a new model on it: the server answers as this kind,
+        it serves the model, and the model passed the tool-call and context checks (once per model and address).
+        Returns the server's catalog for the agent editor's model check."""
+        import provider_setup
+        info = self.local_servers().get(name)
+        if info is None:
+            raise FieldError('That local provider is not available on this computer', 'template')
+        row = (await provider_setup.local_status(self.runtime)).get(name, {})
+        if row.get('status') != 'running':
+            raise FieldError(provider_setup.local_unavailable(info, row), 'template')
+        catalog = await self.catalog(self.runtime.profiles.templates[name])
+        if model not in [m['value'] for m in catalog['models']]:
+            raise FieldError(f'{info["label"]} does not serve {model}. Choose one of the models it lists.', 'model')
+        await self.check_local_model(name, info, model)
+        return catalog
+
+    async def check_local_model(self, name, info, model):
+        """The S4 check for one model of a built-in provider, recorded under its 'models' so later agents on the same
+        model and address skip it. The entry also keeps a complete api connection for the previous release."""
+        entry = self.entries.get(name, {})
+        settings = copy.deepcopy(entry.get('models', {}).get(model, {}))
+        check = settings.get('tool_check') or {}
+        if (check.get('ok') and check.get('base_url') == info['base_url'] and check.get('model') == model
+                and settings.get('context_tokens')):
+            return
+        probe = {'base_url': info['base_url'], 'model': model, 'max_tokens': DEFAULT_OUTPUT_TOKENS,
+                 **{k: v for k, v in settings.items() if k != 'tool_check'}}
+        await self.checked(probe)  # refuses a failed tool call or an unknown context window
+        self.gate()  # a deployment check may have started during the probe
+        entry = self.entries.setdefault(name, {})
+        entry.setdefault('models', {})[model] = {k: probe[k] for k in MODEL_SETTINGS if k in probe}
+        for key, value in self.local_rollback(info, model, entry['models'][model]).items():
+            entry.setdefault(key, value)
+        self.save()
+        self.runtime.profiles.templates = self.templates()
+
     def ready_to_commit(self, name):
         """Checked again after the last await, right before saving: turns are admitted without
         profile_lock, so an agent on this connection can start while a model list is loading.
@@ -479,6 +637,7 @@ class ProviderStore:
         self.idle(name)
 
     async def edit(self, name, body):
+        self.builtin(name)
         async with self.runtime.profile_lock:
             self.gate()
             current = self.runtime.profiles.templates.get(name)
@@ -682,6 +841,7 @@ class ProviderStore:
     async def key_update(self, name, body):
         """Replace the key, turn the connection on or off, or set its prices. A replacement key is checked
         first; if it fails, the previous key and the switch stay exactly as they were."""
+        self.builtin(name)
         async with self.runtime.profile_lock:
             self.gate()
             body = body if isinstance(body, dict) else {}
@@ -724,6 +884,7 @@ class ProviderStore:
             return {'id': name, **self.key_view(name, entry)}
 
     async def remove(self, name):
+        self.builtin(name)
         async with self.runtime.profile_lock:
             self.gate()
             if name not in self.runtime.profiles.templates:
@@ -746,6 +907,7 @@ class ProviderStore:
             return {'id': name, 'removed': True}
 
     async def reset(self, name):
+        self.builtin(name)
         async with self.runtime.profile_lock:
             self.gate()
             if name not in self.base or name not in self.entries:

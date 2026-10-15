@@ -1364,6 +1364,11 @@ class RoomRuntime:
                     # Creation may have succeeded before the proposal result was saved.
                     self.save_project()
                     return existing
+            choice = self.profiles.local_choice(body, name)
+            if choice:
+                # A built-in local provider must be running and serve a checked model before an agent takes it.
+                # Everything after this await is synchronous, as the provider-switch running check requires.
+                self.profiles.template_catalogs[choice[0]] = await self.profiles.store.require_local(*choice)
             profile = self.profiles.prepare(body, name)
             if creation_key:
                 profile['team_builder_key'] = creation_key
@@ -1490,6 +1495,9 @@ class RoomRuntime:
         if self.start_stopped:
             # Before the heartbeat exists, so no queued entry, ready wake, goal step or manager check-in runs first.
             await self.stop(notice=self.start_stopped)
+        for note in self.profiles.store.migration_notes:  # once, from the local-provider migration (6b673b03)
+            self.host.store.add("system", note, channel=self.default_channel())
+        self.profiles.store.migration_notes = []
         self.consume_release_completions()  # after setup, the checkpoint and any start_stopped Stop
         self.restore_release_wakes()  # after the checkpoint, which may already hold some of them; none while stopped
         self.heartbeat = asyncio.create_task(self.beat())
@@ -1502,11 +1510,23 @@ class RoomRuntime:
                 state.update(state='ready', detail='Rehearsal: provider checks and agent turns disabled' if self.deployment.rehearsal else 'Deployment verification: agent turns are held')
             await self.publish_status()
             return
+        try:
+            local = await provider_setup.local_status(self)
+        except Exception:
+            LOGGER.exception('Local provider status could not be probed')
+            local = {}
+        builtins = self.profiles.store.local_servers()
         for name, state in list(self.states.items()):
             if name in self.running:
                 continue
             provider = state["provider"]
             try:
+                if provider == "api" and state['template'] in builtins:
+                    row = local.get(state['template'], {})
+                    if row.get('status') != 'running':
+                        # The agent keeps its provider and model; its wakes wait until the server is back.
+                        state.update(state="blocked", detail=provider_setup.local_unavailable(builtins[state['template']], row))
+                        continue
                 if provider == "api":
                     cfg = self.cfg["agents"][name]
                     url = cfg["base_url"].rstrip("/") + "/models"
@@ -3527,14 +3547,16 @@ def install(host):
         try:
             return await runtime.change_profile(await request.json())
         except (ValueError, KeyError, TypeError) as exc:
-            return JSONResponse({'error': str(exc)}, 400)
+            field = getattr(exc, 'field', None)  # provider_store.FieldError
+            return JSONResponse({'error': str(exc), **({'field': field} if field else {})}, 400)
 
     @host.app.post('/api/runtime/profiles/{name}')
     async def edit_profile(name: str, request: Request):
         try:
             return await runtime.change_profile(await request.json(), name)
         except (ValueError, KeyError, TypeError) as exc:
-            return JSONResponse({'error': str(exc)}, 400)
+            field = getattr(exc, 'field', None)  # provider_store.FieldError
+            return JSONResponse({'error': str(exc), **({'field': field} if field else {})}, 400)
 
     @host.app.get('/api/runtime/profiles/{name}/core')
     async def profile_core(name: str):
