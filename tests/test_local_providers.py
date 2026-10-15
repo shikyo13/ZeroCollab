@@ -221,6 +221,23 @@ class StatusTests(Base):
         self.assertEqual(caught.exception.field, 'model')  # the agent editor has no context field
         self.assertIn('PARAMETER num_ctx', str(caught.exception))
 
+    def test_reported_but_too_small_context_keeps_its_size(self):
+        runtime = room(self.folder)
+        store = ProviderStore(runtime)
+        runtime.profiles = SimpleNamespace(templates=store.templates())
+        info = store.local_servers()['local-lmstudio']
+
+        async def small(probe, headers=None):  # what checked() does: record the read size, then budget_note refuses
+            probe['context_tokens'] = 4096
+            raise FieldError('A context window of about 4,096 tokens leaves too little room', 'context_tokens')
+        with mock.patch.object(store, 'checked', small):
+            with self.assertRaises(FieldError) as caught:
+                asyncio.run(store.check_local_model('local-lmstudio', info, 'qwen3-8b'))
+        self.assertEqual(caught.exception.field, 'model')
+        self.assertIn('about 4,096 tokens', str(caught.exception))
+        self.assertNotIn('did not report', str(caught.exception))
+        self.assertIn('16384 or more', str(caught.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -65,16 +65,18 @@ LOCAL_MIGRATION = 'local-providers-1'  # api connections at a local default addr
 # How each built-in server is made to report a model's context window (provider_setup.server_context reads them).
 # A refused save leaves the edit unsaved, and Team holds Refresh connections until it is saved or cancelled
 # (design 0c4595dd): the same model is retried by saving again; a new one needs Cancel, Refresh, then choosing it.
+# The same recovery serves a window the server didn't report and one too small for the room, so it names a target:
+# about 12k tokens is the room's minimum with today's instructions and tools (Docs/providers.md S4).
 LOCAL_CONTEXT_RETRY = 'Then try saving this agent again.'
 LOCAL_CONTEXT_HINTS = {
     'ollama': (f'Update Ollama. {LOCAL_CONTEXT_RETRY} Or give the model a context length: a Modelfile with '
                '"FROM {model}" and "PARAMETER num_ctx 16384", then `ollama create {model}-16k -f Modelfile`. Then '
                'cancel this unsaved edit (Cancel discards its changes), use Refresh connections, choose {model}-16k '
                'in the agent editor, and save again.'),
-    'llamacpp': f'Restart llama-server with `-c <tokens>`. {LOCAL_CONTEXT_RETRY}',
-    'lmstudio': f'Load the model in LM Studio with a context length set. {LOCAL_CONTEXT_RETRY}',
+    'llamacpp': f'Restart llama-server with `-c 16384` or more. {LOCAL_CONTEXT_RETRY}',
+    'lmstudio': f'Load the model in LM Studio with a context length of 16384 or more. {LOCAL_CONTEXT_RETRY}',
 }
-LOCAL_CONTEXT_DEFAULT = f'Start the server with a context length set. {LOCAL_CONTEXT_RETRY}'
+LOCAL_CONTEXT_DEFAULT = f'Start the server with a context length of 16384 or more. {LOCAL_CONTEXT_RETRY}'
 MODEL_SETTINGS = ('max_tokens', 'request_options', 'context_tokens', 'context_source', 'tool_check')
 
 
@@ -648,6 +650,12 @@ class ProviderStore:
                 raise
             # A built-in has no form to enter the window in, so the fix is on the server: make it report one.
             hint = LOCAL_CONTEXT_HINTS.get(info['server'], LOCAL_CONTEXT_DEFAULT).replace('{model}', model)
+            if probe.get('context_tokens'):
+                # Reported but too small (budget_note): keep the size, and point at the server, not a form field.
+                raise FieldError(f'{info["label"]} runs {model} with a context window of about '
+                                 f'{probe["context_tokens"]:,} tokens. That leaves too little room once the response '
+                                 f'({probe["max_tokens"]:,} tokens), the room instructions and tool definitions are '
+                                 f'reserved. {hint}', 'model') from None
             raise FieldError(f'{info["label"]} did not report the context window for {model}. ZeroCollab needs that '
                              f'limit to size its prompts. {hint}', 'model') from None
         self.gate()  # a deployment check may have started during the probe
