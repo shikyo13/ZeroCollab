@@ -1498,28 +1498,36 @@ class ProjectRoom:
         board = [(t['id'], t['updated'], t['stale'], t['execution_state']) for t in mine] + [brief(t) for t in others]
         fingerprints['tasks'] = hashlib.sha256(json.dumps(board).encode('utf-8')).hexdigest()
         run.context_delivery = {**fingerprints, 'message_id': latest_id}
+        unchanged = []
         def delivery(name, limit):
             if run.previous_session and previous.get(name) == fingerprints[name]:
+                unchanged.append(name)
                 return '[Unchanged; already in your native session. Pull details with room_read if needed.]'
             return clipped(values[name], limit)
         participants = ', '.join('@' + state.get('handle', name) + ' (' + state.get('label', name) + ')'
                                  for name, state in self.runtime.states.items() if not state.get('archived'))
-        prompt = f"Participants: {participants}\n"
         workspace = delivery('workspace', 2400)
-        prompt += (workspace if workspace.startswith('Execution context') else 'Execution context: ' + workspace) + '\n'
-        prompt += self.live_context(run) + '\n'
         title =getattr(self.runtime, 'channel_title', lambda channel: '#' + channel)(run.channel)
-        prompt += f"Current conversation in {title}:\n{history or '[No new room messages]'}\n"
+        # Named blocks, so runtime_end can record each block's share of the prompt (task 844f5663).
+        blocks = {'participants': f"Participants: {participants}\n",
+                  'workspace': (workspace if workspace.startswith('Execution context') else 'Execution context: ' + workspace) + '\n',
+                  'live': self.live_context(run) + '\n',
+                  'conversation': f"Current conversation in {title}:\n{history or '[No new room messages]'}\n"}
         if self.state['spec']:
-            prompt += f"Optional shared spec ({len(self.state['spec'])} characters):\n{delivery('spec', spec_limit)}\n"
+            blocks['spec'] = f"Optional shared spec ({len(self.state['spec'])} characters):\n{delivery('spec', spec_limit)}\n"
         if ledger:
-            prompt += f"Board:\n{delivery('tasks', task_limit)}\n"
+            blocks['board'] = f"Board:\n{delivery('tasks', task_limit)}\n"
         if decisions:
-            prompt += f"Group notes and decisions:\n{delivery('memory', memory_limit)}\n"
+            blocks['notes'] = f"Group notes and decisions:\n{delivery('memory', memory_limit)}\n"
         if patches:
-            prompt += f"Peer patches:\n{delivery('patches', peer_limit)}\n"
+            blocks['patches'] = f"Peer patches:\n{delivery('patches', peer_limit)}\n"
+        prompt = ''.join(blocks.values())
         # Reserve the request at the end so the current user instruction cannot be lost behind history.
-        prompt = clipped(prompt, maximum - len(request) - 60) + '\nCurrent message or task:\n' + request
+        room = maximum - len(request) - 60
+        tail = '\nCurrent message or task:\n' + request
+        run.input_blocks = {**{name: len(text) for name, text in blocks.items()}, 'request': len(tail)}
+        run.input_clipped, run.input_unchanged = len(prompt) > room, unchanged
+        prompt = clipped(prompt, room) + tail
         chain = self.chains.get(run.entry.get('chain'))
         if chain:
             chain['input_chars'] += len(prompt)

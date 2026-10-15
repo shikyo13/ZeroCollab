@@ -847,6 +847,13 @@ async def claude(run, prompt):
         elif kind == "assistant":
             # Per-message fallback: never replay the full text after streamed deltas.
             content = msg.get('message', {})
+            for block in content.get('content', []):
+                # The stream announced this call with input {}; the whole message carries its real arguments.
+                # One 'input' event per call: it moves no counter, and the log can compare calls (task 844f5663).
+                call_id = str(block.get('id', '')) if isinstance(block, dict) and block.get('type') == 'tool_use' else ''
+                if call_id and call_id in run.native_tool_ids and call_id not in run.tool_inputs:
+                    run.tool_inputs.add(call_id)
+                    await run.tool_event(block.get('name', 'Claude tool'), block, 'input')
             identifier = content.get('id') or msg.get('uuid') or message_id
             if identifier not in streamed_messages and identifier not in run.completed_messages:
                 text = "\n\n".join(c.get("text", "") for c in content.get("content", []) if c.get("type") == "text")
