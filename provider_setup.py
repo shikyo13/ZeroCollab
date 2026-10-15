@@ -22,8 +22,10 @@ import time
 from pathlib import Path
 
 import httpx
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
+import local_start
 import native_adapters as native
 import provider_keys
 
@@ -132,6 +134,15 @@ async def cli_status(provider):
         result['sign_in'] = {'state': 'unknown', 'detail': f'{type(exc).__name__}: {exc}'[:300], 'command': SIGN_IN.get(provider, ''),
                              'reports': provider in REPORTS_SIGN_IN}
     return result
+
+
+def antigravity_signed_in(cli, models):
+    """Antigravity has no sign-in status command, and its model list only loads when signed in (S2), so a loaded
+    list is the sign-in. Billing stays unstated: the list does not show it (edd41ff3)."""
+    sign = cli.get('sign_in') or {}
+    if not cli.get('installed') or sign.get('state') != 'unknown' or not models.get('count') or models.get('error'):
+        return cli
+    return {**cli, 'sign_in': {**sign, 'state': 'signed_in', 'method': 'Model list answered', 'billing': None}}
 
 
 def local_installed(key):
@@ -394,6 +405,8 @@ def local_unavailable(info, row):
         return (f'{label} was not found in the usual locations, and no server answered at {base}. If it is installed '
                 f'elsewhere, start it there. Otherwise, install it first. Once installed, start it with '
                 f'`{info["start_command"]}`, then use Refresh connections.')
+    if state == 'stopped' and row.get('can_start'):
+        return f'{label} isn\'t running. Use Start on its row in Team > Providers; its models load when it answers.'
     if state == 'stopped':
         return f'{label} isn\'t running. Start it with `{info["start_command"]}`, then use Refresh connections.'
     return f'{label} could not be checked. Use Refresh connections to try again.'  # the probe failed or hasn't run
@@ -407,10 +420,17 @@ def annotate_local(rows, runtime):
     for pid, profile in runtime.profiles.items.items():
         agents.setdefault(profile.get('template'), []).append(pid)
     checked, cache, signature = time.time(), {}, {}
+    entries = getattr(getattr(runtime.profiles, 'store', None), 'entries', {})
     for row in rows:
-        state = local_state(row)
         templates = [provider_store.LOCAL_PREFIX + key for key, _, base, _ in listed_servers() if base == row['base_url']]
         own = provider_store.LOCAL_PREFIX + row['id'] if not row['id'].startswith('shared:') else None
+        if own:
+            # What Start would run (edd41ff3). A saved llama.cpp command proves it is installed even off PATH.
+            start = local_start.spec(row['id'], entries.get(own, {}).get('local_start', ''))
+            row['start'] = local_start.public(start)
+            if start['saved'] and start['available']:
+                row['installed'] = True
+        state = local_state(row)
         row.update(status=state, template=own, configured=True,
                    agents=sorted(a for t in (templates if own is None else [own]) for a in agents.get(t, [])))
         if own is None:
@@ -418,6 +438,7 @@ def annotate_local(rows, runtime):
         for template in templates if own is None else [own]:
             cache[template] = {'server': template.removeprefix(provider_store.LOCAL_PREFIX), 'status': state,
                                'detail': row.get('detail', ''), 'start_command': row.get('start_command', ''),
+                               'can_start': bool((row.get('start') or {}).get('available')),
                                'base_url': row['base_url'], 'checked_at': checked}
             signature[template] = (state, tuple(sorted(row.get('models') or [])))
     runtime.profiles.local_status = cache
@@ -484,7 +505,8 @@ async def status(runtime):
         if provider == 'api' or name in vendors or cfg.get('local'):
             row['server'] = {'base_url': cfg['base_url'], **by_template.get(name, {'reachable': False, 'detail': 'No base_url'})}
         else:
-            row['cli'] = by_provider[provider]
+            row['cli'] = antigravity_signed_in(by_provider[provider], row['models']) if provider == 'antigravity' \
+                else by_provider[provider]
         rows.append(row)
     local = local_rows(listed, dict(zip(bases, local_results)), set())
     annotate_local(local, runtime)
@@ -566,6 +588,24 @@ def install(host, runtime):
             return await checked_status(runtime)
         except Exception as exc:  # the Setup page shows the reason instead of a blank panel
             return JSONResponse({'error': f'{type(exc).__name__}: {exc}'[:400]}, 500)
+
+    @host.app.post('/api/runtime/providers/local/{template}/start')
+    async def local_server_start(template: str):
+        # Starts the server hidden and waits until it answers (local_start.START_WAIT_S), then refreshes (edd41ff3).
+        status_code, body = await local_start.start(runtime, template)
+        return body if status_code == 200 else JSONResponse(body, status_code)
+
+    @host.app.post('/api/runtime/providers/local/{template}/start-command')
+    async def local_server_start_command(template: str, request: Request):
+        import provider_store
+        try:
+            body = await request.json()
+            command = body.get('command', '') if isinstance(body, dict) else None
+            return {'ok': True, 'start': await runtime.profiles.store.save_start_command(template, command)}
+        except provider_store.FieldError as exc:
+            return JSONResponse({'error': str(exc), 'field': exc.field}, 400)
+        except ValueError as exc:
+            return JSONResponse({'error': str(exc)}, 400)
 
     @host.app.post('/api/runtime/providers/{provider}/sign-in')
     async def providers_sign_in(provider: str):

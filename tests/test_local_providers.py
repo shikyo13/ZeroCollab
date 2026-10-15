@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import local_start
 import provider_setup
 import provider_store
 from agent_profiles import AgentProfiles
@@ -237,6 +238,44 @@ class StatusTests(Base):
         self.assertIn('about 4,096 tokens', str(caught.exception))
         self.assertNotIn('did not report', str(caught.exception))
         self.assertIn('16384 or more', str(caught.exception))
+
+
+class StartTests(Base):
+    """Start buttons and the Antigravity sign-in (task edd41ff3)."""
+
+    def test_antigravity_with_models_is_signed_in(self):
+        cli = {'installed': True, 'sign_in': {'state': 'unknown', 'command': 'agy'}}
+        loaded = provider_setup.antigravity_signed_in(cli, {'count': 3, 'error': ''})
+        self.assertEqual((loaded['sign_in']['state'], loaded['sign_in']['billing']), ('signed_in', None))
+        failed = provider_setup.antigravity_signed_in(cli, {'count': 0, 'error': 'not signed in'})
+        self.assertEqual(failed['sign_in']['state'], 'unknown')
+
+    def test_llamacpp_needs_a_saved_command_that_exists(self):
+        self.assertFalse(local_start.spec('llamacpp', '')['available'])
+        with self.assertRaises(ValueError):
+            local_start.parse_command(str(Path(self.folder) / 'missing-server.exe'))
+        program = Path(self.folder) / 'llama-server.exe'
+        program.write_bytes(b'')
+        with self.assertRaises(ValueError):  # the model must exist too
+            local_start.parse_command(f'"{program}" -m "{Path(self.folder) / "gone.gguf"}"')
+        self.assertTrue(local_start.spec('llamacpp', f'"{program}" --port 8080')['available'])
+
+    def test_saved_command_makes_llamacpp_startable_off_path(self):
+        runtime = room(self.folder)
+        runtime.cfg['agents'].pop('bonsai')
+        program = Path(self.folder) / 'llama-server.exe'
+        program.write_bytes(b'')
+        runtime.profile_lock, runtime.deployment, runtime.repository_transition = asyncio.Lock(), None, None
+        store = ProviderStore(runtime)
+        runtime.profiles = SimpleNamespace(store=store, items={}, local_status={}, templates={})
+        start = asyncio.run(store.save_start_command('local-llamacpp', f'"{program}" --port 8080'))
+        self.assertTrue(start['available'] and start['saved'])
+        rows = [{'id': 'llamacpp', 'base_url': SERVERS[2][2], 'reachable': False, 'installed': False}]
+        with mock.patch.object(provider_setup, 'local_installed', return_value=False):
+            provider_setup.annotate_local(rows, runtime)
+        self.assertEqual((rows[0]['status'], rows[0]['start']['available']), ('stopped', True))
+        with self.assertRaises(FieldError):  # Ollama starts with its own app
+            asyncio.run(store.save_start_command('local-ollama', 'ollama serve'))
 
 
 if __name__ == '__main__':

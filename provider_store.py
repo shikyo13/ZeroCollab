@@ -498,6 +498,35 @@ class ProviderStore:
         return candidate
 
     # ----- guards -----
+    async def save_start_command(self, name, command):
+        """The command Start runs for a built-in that needs a model (llama.cpp, MLX LM), saved on its entry as
+        local_start; '' clears it. Returns what Start would now run (local_start.spec, edd41ff3)."""
+        import local_start
+        info = self.local_servers().get(name)
+        if info is None or info['server'] not in local_start.SAVED:
+            raise FieldError('Only llama.cpp and MLX LM take a saved start command; the others start with their own app',
+                             'command')
+        if not isinstance(command, str):
+            raise FieldError('Send the start command as text', 'command')
+        command = command.strip()
+        if command:
+            try:
+                local_start.parse_command(command)
+            except ValueError as exc:
+                raise FieldError(str(exc), 'command') from None
+        async with self.runtime.profile_lock:
+            self.gate()
+            entry = self.entries.setdefault(name, {})
+            if command:
+                entry['local_start'] = command
+            else:
+                entry.pop('local_start', None)
+                if not entry:
+                    self.entries.pop(name)
+            self.save()
+            self.runtime.profiles.templates = self.templates()
+        return local_start.public(local_start.spec(info['server'], command))
+
     def gate(self):
         runtime = self.runtime
         if self.error:
