@@ -63,12 +63,18 @@ LOCAL_PREFIX = 'local-'
 LOCAL_COLOR = '#64748b'
 LOCAL_MIGRATION = 'local-providers-1'  # api connections at a local default address became built-ins
 # How each built-in server is made to report a model's context window (provider_setup.server_context reads them).
+# A refused save leaves the edit unsaved, and Team holds Refresh connections until it is saved or cancelled
+# (design 0c4595dd): the same model is retried by saving again; a new one needs Cancel, Refresh, then choosing it.
+LOCAL_CONTEXT_RETRY = 'Then try saving this agent again.'
 LOCAL_CONTEXT_HINTS = {
-    'ollama': ('Update Ollama, or give the model a context length: a Modelfile with "FROM {model}" and '
-               '"PARAMETER num_ctx 16384", then `ollama create {model}-16k -f Modelfile`, and choose {model}-16k'),
-    'llamacpp': 'Restart llama-server with `-c <tokens>`',
-    'lmstudio': 'Load the model in LM Studio with a context length set',
+    'ollama': (f'Update Ollama. {LOCAL_CONTEXT_RETRY} Or give the model a context length: a Modelfile with '
+               '"FROM {model}" and "PARAMETER num_ctx 16384", then `ollama create {model}-16k -f Modelfile`. Then '
+               'cancel this unsaved edit (Cancel discards its changes), use Refresh connections, choose {model}-16k '
+               'in the agent editor, and save again.'),
+    'llamacpp': f'Restart llama-server with `-c <tokens>`. {LOCAL_CONTEXT_RETRY}',
+    'lmstudio': f'Load the model in LM Studio with a context length set. {LOCAL_CONTEXT_RETRY}',
 }
+LOCAL_CONTEXT_DEFAULT = f'Start the server with a context length set. {LOCAL_CONTEXT_RETRY}'
 MODEL_SETTINGS = ('max_tokens', 'request_options', 'context_tokens', 'context_source', 'tool_check')
 
 
@@ -641,9 +647,9 @@ class ProviderStore:
             if exc.field != 'context_tokens':
                 raise
             # A built-in has no form to enter the window in, so the fix is on the server: make it report one.
-            hint = LOCAL_CONTEXT_HINTS.get(info['server'], 'Start the server with a context length set').format(model=model)
-            raise FieldError(f'{info["label"]} did not report the context window for {model}, and the room needs it '
-                             f'to keep prompts inside it. {hint}, then use Refresh connections.', 'model') from None
+            hint = LOCAL_CONTEXT_HINTS.get(info['server'], LOCAL_CONTEXT_DEFAULT).replace('{model}', model)
+            raise FieldError(f'{info["label"]} did not report the context window for {model}. ZeroCollab needs that '
+                             f'limit to size its prompts. {hint}', 'model') from None
         self.gate()  # a deployment check may have started during the probe
         entry = self.entries.setdefault(name, {})
         entry.setdefault('models', {})[model] = {k: probe[k] for k in MODEL_SETTINGS if k in probe}
