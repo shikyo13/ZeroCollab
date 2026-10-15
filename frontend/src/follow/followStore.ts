@@ -256,7 +256,7 @@ function onDelta(event: RoomEvent) {
 function onTool(event: RoomEvent) {
   const d = event.data as RuntimeData;
   const entry = eventEntry(d);
-  entry.tool = { name: d.tool ?? 'tool', label: d.label, status: d.status ?? '', time: now() };
+  entry.tool = { name: d.tool ?? 'tool', label: d.label, status: d.status === 'input' ? (entry.tool?.status ?? 'started') : (d.status ?? ''), time: now() };
   entry.updated = now();
   publish();
 }
