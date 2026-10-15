@@ -71,6 +71,9 @@ def room_tools_fingerprint():
 # longer, on several lines, or not opening like narration posts: losing an answer is worse than one extra
 # line in chat (QA c0950fb6, Zero #12974).
 LOCAL_PROBE_REUSE = 30  # seconds one refresh reuses its local-server probe (RoomRuntime.probe_local)
+# The desktop behaviour the shell used to patch in at startup (desktop-overlay.json, 21 hunks) is room source from
+# here on, with desktop_policy.py owned by the room. Packaging asserts this; the launcher never checks it (69024bbd).
+DESKTOP_NATIVE_SEAMS = 1
 NARRATION_MAX = 160
 NARRATION_START = re.compile(r"(i'm|i am|i'll|i will|let me|now i|next,? i|first,? i|checking|looking|reading|"
                              r"searching|running|opening|starting|loading|fetching|waiting)\b", re.IGNORECASE)
@@ -967,6 +970,7 @@ class RoomRuntime:
         # Set by the launcher before start() when the other app (web or desktop) used this room's data last:
         # the room then opens Stopped, so nothing queued over there runs here until the user clicks Resume.
         self.start_stopped = None
+        self.desktop_saved_worktrees = {}
         self.project = None
         self.identity = None
         self.audit = self.data / "runtime_events.jsonl"
@@ -1141,14 +1145,15 @@ class RoomRuntime:
 
     def save_project(self):
         for name, state in self.states.items():
-            if name in self.profiles.items:
+            if name in self.profiles.items and not state.get('desktop_unavailable'):
                 self.profiles.items[name]['paused'] = state.get('paused', False)
         if self.profiles.path:
             self.profiles.save()
         save_workspace(self.data / "workspace.json", {"project": str(self.project) if self.project else None,
               "project_id": self.identity, "paused": self.paused,
               "paused_agents": [n for n, s in self.states.items() if s.get("paused")],
-              "worktrees": {n: s["worktree"] for n, s in self.states.items()},
+              "worktrees": {n: self.desktop_saved_worktrees.get(n, s["worktree"]) if s.get('desktop_unavailable')
+                            else s["worktree"] for n, s in self.states.items()},
               **({"manual_stop_applied": self.manual_stop_applied} if self.manual_stop_applied else {})})
 
     def setup_project(self, project, identity=None):
@@ -1179,6 +1184,23 @@ class RoomRuntime:
         self.team_builder.load()
         self.decisions.load()
         for profile in self.profiles.items.values():
+            cfg = self.profiles.templates.get(profile['template'], {})
+            reason = cfg.get('_desktop_unavailable')
+            if not cfg and self.cfg.get('runtime', {}).get('desktop_existing_room'):
+                from desktop_policy import UNAVAILABLE
+                reason = UNAVAILABLE
+            if reason:
+                self.host.registry.deactivate_managed(profile['id'])
+                self.states[profile['id']] = {'provider': cfg.get('provider', profile['template']),
+                    'template': profile['template'], 'label': profile['name'],
+                    'handle': profile.get('handle', profile['id']), 'color': profile['color'],
+                    'archived': profile.get('archived', False), 'state': 'blocked', 'detail': reason,
+                    'paused': profile.get('paused', False), 'worktree': '', 'branch': '', 'workspace_kind': 'unavailable',
+                    'desktop_unavailable': True}
+                self.queues[profile['id']] = WakeQueue(maxsize=4)
+                self.controls.register(profile['id'], cfg, restore_saved=True)
+                self.controls.catalogs[profile['id']].update(error=reason, loading=False)
+                continue
             workspace = self.workspace_for(profile['id'])
             self.activate_profile(profile, workspace)
         self.save_project()
@@ -1335,6 +1357,10 @@ class RoomRuntime:
     def activate_profile(self, profile, workspace):
         name = profile['id']
         cfg = self.profiles.config(profile)
+        if cfg.get('_desktop_unavailable'):
+            raise ValueError(cfg['_desktop_unavailable'])
+        if not self.profiles.store.allowed(cfg.get('provider', profile['template'])):
+            raise ValueError('This desktop build cannot activate that CLI adapter.')
         cfg['avatar_base'] = profile['template']
         self.cfg['agents'][name] = cfg
         self.states[name] = {'provider': cfg.get('provider', profile['template']), 'template': profile['template'],
@@ -1357,6 +1383,9 @@ class RoomRuntime:
         async with self.profile_lock:
             if getattr(self, 'repository_transition', None):
                 raise ValueError('Wait for the repository change before editing the team')
+            if name and self.states.get(name, {}).get('desktop_unavailable'):
+                from desktop_policy import UNAVAILABLE
+                raise ValueError(UNAVAILABLE)
             if expected_project is not None and self.identity != expected_project:
                 raise ValueError('Project changed; reload the team builder')
             if creation_key:
@@ -1438,7 +1467,10 @@ class RoomRuntime:
                 await self.stop_agent(name)
                 self.host.registry.deactivate_managed(name)
             else:
-                cfg = self.profiles.config(self.profiles.items[name]); cfg['avatar_base'] = self.profiles.items[name]['template']
+                cfg = self.profiles.config(self.profiles.items[name])
+                if cfg.get('_desktop_unavailable'):
+                    raise ValueError(cfg['_desktop_unavailable'])
+                cfg['avatar_base'] = self.profiles.items[name]['template']
                 self.host.registry.register_managed(name, cfg)
                 # Restoring a profile does not start it or unpause the room.
                 self.states[name]['paused'] = True
@@ -1449,7 +1481,7 @@ class RoomRuntime:
             await self.publish_status()
             return self.profiles.items[name]
 
-    async def start(self):
+    async def start(self, *, refresh_providers=True):
         self.loop = asyncio.get_running_loop()
         self.data.mkdir(parents=True, exist_ok=True)
         handover = getattr(self, 'handover', None)
@@ -1464,6 +1496,9 @@ class RoomRuntime:
                 LOGGER.exception('Host handover record unreadable; the room starts held until the user resumes it')
                 self.handover_fault = f'{type(exc).__name__}: {exc}'[:200]
         saved = load_workspace(self.data / "workspace.json")
+        if self.cfg.get('runtime', {}).get('desktop_existing_room'):
+            self.desktop_saved_worktrees = saved.get('worktrees', {})
+            self.manual_stop_applied = saved.get('manual_stop_applied')
         self.paused = saved.get("paused", False)
         # Before any await: a Stop clicked during an update must hold the room, never an older saved paused flag.
         self.open_manual_stop(bool(saved.get('paused')), saved.get('manual_stop_applied'))
@@ -1503,7 +1538,14 @@ class RoomRuntime:
         self.consume_release_completions()  # after setup, the checkpoint and any start_stopped Stop
         self.restore_release_wakes()  # after the checkpoint, which may already hold some of them; none while stopped
         self.heartbeat = asyncio.create_task(self.beat())
-        await self.refresh()
+        if refresh_providers:
+            await self.refresh()
+        else:
+            # Desktop serves the saved Stopped room before slow CLI connection checks.
+            # The host owns the refresh task and keeps turn admission held until it ends.
+            for state in self.states.values():
+                if not state.get('desktop_unavailable'):
+                    state.update(state='blocked', detail='Checking provider connection...')
 
     async def refresh(self):
         if self.deployment and (self.deployment.rehearsal or self.deployment.reload()['writes'] == 'blocked'):
@@ -1513,6 +1555,8 @@ class RoomRuntime:
             await self.publish_status()
             return
         for name, state in list(self.states.items()):
+            if state.get('desktop_unavailable'):
+                continue
             if name in self.running:
                 continue
             provider = state["provider"]
@@ -1573,6 +1617,8 @@ class RoomRuntime:
         # runs the CLI's model list (no turn or session). An idle member does the lookup when one exists.
         groups = {}
         for name, state in self.states.items():
+            if state.get('desktop_unavailable'):
+                continue
             groups.setdefault(state['template'], []).append(name)
         names = [next((n for n in group if n not in self.running), group[0]) for group in groups.values()]
         results = await asyncio.gather(*(self.controls.refresh(name) for name in names))
@@ -1587,7 +1633,7 @@ class RoomRuntime:
                 self.wake_notices.pop(name, None)  # Refresh unblocked it: a later problem is worth telling
         # Connections no agent uses yet (added in Team > Providers) still offer their models in Add agent.
         templates = self.profiles.templates
-        unused = [t for t in templates if t not in groups]
+        unused = [t for t in templates if t not in groups and not templates[t].get('_desktop_unavailable')]
         found = await asyncio.gather(*(self.controls.lookup(templates[t].get('provider', t), templates[t], self.data) for t in unused),
                                      return_exceptions=True)
         self.profiles.template_catalogs = {t: catalog if isinstance(catalog, dict) else
@@ -1668,7 +1714,8 @@ class RoomRuntime:
                 and not getattr(self, 'repository_transition', None)
                 and not getattr(self, 'manual_stop_pending', False)
                 and (not self.deployment or self.deployment.admission_open())
-                and not getattr(self, 'deploy_refresh_pending', False))
+                and not getattr(self, 'deploy_refresh_pending', False)
+                and not getattr(self, 'desktop_refresh_pending', False))
 
     async def beat(self):
         import mcp_bridge
@@ -3501,7 +3548,8 @@ def install(host):
     host.agents.runtime = runtime
     host.runtime = runtime
     import room_deploy
-    room_deploy.install(host, runtime)
+    if runtime.cfg.get('runtime', {}).get('managed_updates', True):
+        room_deploy.install(host, runtime)
     project_registry.install(host, runtime)
     import team_builder
     team_builder.install(host, runtime)

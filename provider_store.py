@@ -168,6 +168,13 @@ class ProviderStore:
         self.error = ''
         self.entries = self.read()
 
+    def allowed(self, provider):
+        """Desktop can limit native CLIs to the supported adapters. Web defaults are unchanged."""
+        allowed = self.runtime.cfg.get('runtime', {}).get('native_providers')
+        if allowed is not None and (not isinstance(allowed, list) or not all(isinstance(p, str) for p in allowed)):
+            raise ValueError('runtime.native_providers must be a list of provider names')
+        return provider == 'api' or allowed is None or provider in allowed
+
     def read(self):
         """A file that cannot be read is reported and never overwritten: writes stay refused until it is fixed."""
         if not self.path.exists():
@@ -297,6 +304,9 @@ class ProviderStore:
         for name, entry in self.entries.items():
             if name not in self.base and not entry.get('removed'):
                 merged[name] = {**copy.deepcopy(entry), 'managed': True}
+        if self.runtime.cfg.get('runtime', {}).get('desktop_existing_room'):
+            from desktop_policy import template
+            merged = {name: template(cfg, name) for name, cfg in merged.items()}
         return merged
 
     def source(self, name):
@@ -316,12 +326,15 @@ class ProviderStore:
                          'max_tokens': cfg.get('max_tokens', DEFAULT_OUTPUT_TOKENS) if cfg.get('provider') == 'api' else None,
                          'context_tokens': cfg.get('context_tokens'), 'context_source': cfg.get('context_source', ''),
                          'tool_check': cfg.get('tool_check'), 'local': bool(cfg.get('local')),
-                         'limits': local_codex_limits() if cfg.get('local') else '', **self.key_view(name, cfg)})
+                         'limits': local_codex_limits() if cfg.get('local') else '',
+                         **({'keyed': False} if cfg.get('_desktop_unavailable') else self.key_view(name, cfg))})
+            if cfg.get('_desktop_unavailable'):
+                rows[-1].update(unavailable=cfg['_desktop_unavailable'])
         hidden = [{'id': name, 'label': cfg.get('label', name)} for name, cfg in self.base.items()
                   if self.entries.get(name, {}).get('removed')]
         connected = {cfg.get('provider') for cfg in templates.values() if not cfg.get('key_target') and not cfg.get('local')}
         return {'providers': rows, 'removed': hidden, 'error': self.error,
-                'available': [{'provider': kind, 'label': info['label']} for kind, info in SUBSCRIPTIONS.items() if kind not in connected]}
+                'available': [{'provider': kind, 'label': info['label']} for kind, info in SUBSCRIPTIONS.items() if kind not in connected and self.allowed(kind)]}
 
     def key_view(self, name, cfg):
         """What the panel may know about an API key: never the key, at most its last four characters."""
@@ -340,7 +353,7 @@ class ProviderStore:
     def offered(self, name):
         """Add agent offers a connection unless it is an API key connection that is switched off."""
         cfg = self.runtime.profiles.templates.get(name, {})
-        return not (cfg.get('key_target') and cfg.get('enabled') is False)
+        return not cfg.get('_desktop_unavailable') and not (cfg.get('key_target') and cfg.get('enabled') is False)
 
     # ----- validation -----
     def fields(self, body, current=None):
@@ -352,6 +365,8 @@ class ProviderStore:
             raise ValueError('A connection keeps its provider; add a new connection instead')
         if kind not in KINDS:
             raise ValueError('Choose Codex, Claude, Antigravity or a local OpenAI-compatible server')
+        if not self.allowed(kind):
+            raise ValueError('This desktop build supports Claude, Codex and API connections only.')
         defaults = SUBSCRIPTIONS.get(kind, {})
         label = body.get('label', (current or {}).get('label', defaults.get('label', '')))
         if not isinstance(label, str) or not 1 <= len(label.strip()) <= 60:
@@ -710,6 +725,8 @@ class ProviderStore:
             current = self.runtime.profiles.templates.get(name)
             if current is None:
                 raise ValueError('That provider connection was not found')
+            if current.get('_desktop_unavailable'):
+                raise ValueError(current['_desktop_unavailable'])
             self.idle(name)
             entry = self.fields(body, current)
             catalog = None
@@ -981,6 +998,8 @@ class ProviderStore:
                 raise ValueError('Only an edited or removed config.toml connection can be reset')
             self.idle(name)
             restored = self.base[name]
+            if restored.get('_desktop_unavailable'):
+                raise ValueError(restored['_desktop_unavailable'])
             try:
                 catalog = await self.catalog(restored)
             except ValueError as exc:
