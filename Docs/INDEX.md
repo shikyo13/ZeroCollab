@@ -20,6 +20,7 @@ Start here. Each document covers one subject; read the one that matches the ques
 | [motion-jobs.md](motion-jobs.md) | Motion | Shared admission for heavy media jobs |
 | [motion-audio.md](motion-audio.md) | Motion | Audio plan: local voice-over, music, sound effects and mixing |
 | [motion-skills/SKILL.md](motion-skills/SKILL.md), [motion-skills/RECIPES.md](motion-skills/RECIPES.md) | Motion | The product-demo skill for agents using `room_motion`, and ready-to-run recipes |
+| [research/harness-engineering/ranked-changes.md](research/harness-engineering/ranked-changes.md) | Research | Zero's harness-engineering research mapped to ZeroCollab: five ranked changes with evidence labels, seams and checks, plus what is already aligned |
 
 ## Elsewhere in the repository
 
