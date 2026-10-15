@@ -16,7 +16,7 @@ How room skills work today: a skill is `agent-skills/<name>/SKILL.md` in the roo
 | Skill | Decision | Room form | Owner | Reviewer |
 |-|-|-|-|-|
 | retro | Adapt now | `agent-skills/room-retro` (built). The first run is `retro-2026-10-14-normal-launch.md`. | harness | backend and systems for the checks |
-| grilling, grill-me | Adapt | `agent-skills/room-intake`, the lead's skill for a new Zero request: one numbered round, only Zero's decisions, each with a recommended answer that "yes" accepts; agents find the facts. Pinned for the lead only, so agents don't all start interviewing Zero (Opus 355bd1dc). | opus drafts | harness pin-checks |
+| grilling, grill-me | Adapt | `agent-skills/room-intake`, the lead's skill for a new Zero request: one numbered round, only Zero's decisions, each with a recommended answer that "yes" accepts; agents find the facts. Pinned for the lead only, so agents don't all start interviewing Zero (Opus 355bd1dc). Built: opus commit 430f2b16, SKILL.md 2f9d6b49. | opus | harness pin-checked: passes read_skill (description 109 chars, body 1757) |
 | grill-with-docs, domain-modeling | Adapt | `Docs/GLOSSARY.md`, one word per room concept with words to avoid (Stop vs Pause vs Cancel update, manifest, receipt, donor, stage, rehearsal, R6). Created lazily, beginning with the terms that confused Zero today. | harness | design |
 | wait-what | Adapt | A skill whose trigger is Zero saying "wait what" or asking what a message means: re-pitch the last message in plain words using the glossary. | harness | design |
 | to-spec | Adapt | Task details written by the lead: problem, fix, numbered user stories, the agreed check seam. No separate spec document. | opus | harness |

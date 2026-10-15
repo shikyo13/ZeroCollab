@@ -19,6 +19,8 @@ One word for one thing. Use these words when writing to Zero, and spell out the 
 |-|-|-|
 | **Release** | A numbered version of the room's server and web page, such as 0.12.72. | build, update (for the room) |
 | **Desktop shell** | The Windows app that hosts the room. Its builds are named R5, R6, R7. A shell build and a release are separate things. | release (for the shell), desktop release |
+| **Overlay** | The desktop shell's small set of changes, applied on top of an installed release's files so the release runs inside the app. | patch (alone), desktop fix |
+| **Gate** | While an install runs, the room is read-only: the gate refuses board and chat writes and holds new turns. "Gate open" means normal work. | lock, freeze |
 | **Stage** | Prepare a release on disk and check its files, without installing it. | build, package |
 | **Rehearsal** | A trial run of a staged release in a throwaway room, with no agent turns. | test run, dry run |
 | **Install** | Make a staged release the one the room runs. Running turns get 30 seconds first. | deploy, ship |
