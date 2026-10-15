@@ -11,6 +11,8 @@ import { SpeechBubble } from '../components/SpeechBubble';
 /** What follow mode adds to one task card. */
 export interface CardFollow {
   live?: AgentLive;
+  /** All speakers focused on this card; live remains its stable accent. */
+  speakers?: AgentLive[];
   move?: TaskMove;
 }
 
@@ -27,8 +29,11 @@ export function placeFollow(snap: FollowSnapshot, tasks: Task[]): FollowPlacemen
   for (const entry of Object.values(snap.live)) {
     const explicit = entry.task && tasks.find(t => t.id === entry.task);
     const executing = tasks.filter(t => t.owner === entry.agent && t.execution_state === 'executing');
-    const linked = explicit || (executing.length === 1 ? executing[0] : undefined);
-    if (linked) cards.set(linked.id, { live: entry });
+    const linked = entry.task !== undefined ? explicit : (executing.length === 1 ? executing[0] : undefined);
+    if (linked) {
+      const before = cards.get(linked.id);
+      cards.set(linked.id, { live: before?.live ?? entry, speakers: [...(before?.speakers ?? []), entry] });
+    }
     else unplaced.push(entry);
   }
   for (const [id, move] of Object.entries(snap.moves)) cards.set(id, { ...cards.get(id), move });
@@ -202,14 +207,16 @@ function CardSpeech({ name, color, text }: { name: string; color: string; text: 
 /** The commentary bubble, tool chip and move trail drawn on a card. */
 export function CardFollowLayer({ follow, agents, part }: { follow: CardFollow; agents: Agents; part: 'bubble' | 'body' }) {
   const { live, move } = follow;
+  const speakers = follow.speakers ?? (live ? [live] : []);
   if (part === 'bubble') {
-    if (!live?.text) return null;
-    return <CardSpeech name={followName(live.agent, agents)} color={agentColor(live.agent, agents)} text={live.text} />;
+    return <>{speakers.filter(entry => entry.text).map(entry =>
+      <CardSpeech key={entry.run} name={followName(entry.agent, agents)} color={agentColor(entry.agent, agents)} text={entry.text} />)}</>;
   }
   return <>
-    {live?.tool && <p className="fl-tool" title="The tool the provider reported; providers do not report its arguments here.">
-      <span>{live.tool.label || 'Using a tool'}</span> · {live.tool.status || 'started'}
-    </p>}
+    {speakers.filter(entry => entry.tool).map(entry => <p key={entry.run} className="fl-tool" title="The tool the provider reported; providers do not report its arguments here.">
+      {speakers.length > 1 && <strong>{followName(entry.agent, agents)} · </strong>}
+      <span>{entry.tool!.label || 'Using a tool'}</span> · {entry.tool!.status || 'started'}
+    </p>)}
     {move && <p className="fl-moved">
       <span aria-hidden="true">→ </span>
       {move.by ? `${followName(move.by, agents)} moved it` : 'Moved'} from {STATUS_LABELS[move.from]} · just now

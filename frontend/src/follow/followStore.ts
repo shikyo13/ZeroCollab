@@ -23,7 +23,7 @@ export interface AgentLive {
   run: string;
   channel: string;
   /** Explicit association supplied with this run; never inferred from a room reference. */
-  task?: string;
+  task?: string | null;
   /** Tail of the agent's latest streamed message; kept after the message ends until the next one. */
   text: string;
   /** Last tool the agent's provider reported in this turn. */
@@ -196,7 +196,7 @@ interface RuntimeData {
   message?: string;
   tool?: string;
   label?: string;
-  task_id?: string;
+  task_id?: string | null;
   status?: string;
   outcome?: string;
   sealed?: boolean;
@@ -204,19 +204,39 @@ interface RuntimeData {
 
 // Raw streamed text per run and message, so the bubble shows the tail of the current message.
 const streams = new Map<string, { message: string; text: string; draft: boolean }>();
+// A delayed HTTP snapshot must not undo focus already received on the event stream.
+const focusEvents = new Set<string>();
+
+function applyFocus(entry: AgentLive, data: { task_id?: string | null }) {
+  if ('task_id' in data) entry.task = data.task_id;
+}
+
+function eventEntry(d: RuntimeData) {
+  const previous = live.get(d.agent);
+  if (previous && previous.run !== d.run) focusEvents.delete(previous.run);
+  const entry = ensure(d.agent, d.run, d.channel ?? '');
+  applyFocus(entry, d);
+  if ('task_id' in d) focusEvents.add(d.run);
+  return entry;
+}
+
+function onFocus(event: RoomEvent) {
+  const d = event.data as RuntimeData;
+  if (ended.has(d.run)) return;
+  eventEntry(d).updated = now();
+  publish();
+}
 
 function onStart(event: RoomEvent) {
   const d = event.data as RuntimeData;
-  const entry = ensure(d.agent, d.run, d.channel ?? '');
-  if (d.task_id) entry.task = d.task_id;
+  eventEntry(d);
   tick(d.agent, 'started a turn', undefined);
   publish();
 }
 
 function onDelta(event: RoomEvent) {
   const d = event.data as RuntimeData;
-  const entry = ensure(d.agent, d.run, d.channel ?? '');
-  if (d.task_id) entry.task = d.task_id;
+  const entry = eventEntry(d);
   const draft = event.type === 'runtime_draft';
   let stream = streams.get(d.run);
   // The first public delta repeats the full message after a draft, rather than continuing its chunks.
@@ -234,7 +254,7 @@ function onDelta(event: RoomEvent) {
 
 function onTool(event: RoomEvent) {
   const d = event.data as RuntimeData;
-  const entry = ensure(d.agent, d.run, d.channel ?? '');
+  const entry = eventEntry(d);
   entry.tool = { name: d.tool ?? 'tool', label: d.label, status: d.status ?? '', time: now() };
   entry.updated = now();
   publish();
@@ -250,6 +270,7 @@ function onEnd(event: RoomEvent) {
   const entry = live.get(d.agent);
   if (entry && entry.run === d.run) live.delete(d.agent);
   streams.delete(d.run);
+  focusEvents.delete(d.run);
   tick(d.agent, d.outcome && d.outcome !== 'completed' ? `turn ended (${d.outcome})` : 'finished a turn');
   publish();
 }
@@ -383,10 +404,11 @@ function onMessage(event: RoomEvent) {
 // Agent ids from runtime_state, which the room broadcasts on every status change.
 const knownAgents = new Set<string>();
 function onRuntimeState(event: RoomEvent) {
-  const data = event.data as { agents?: Record<string, unknown>; project_id?: string } | undefined;
+  const data = event.data as { agents?: Record<string, unknown>; project_id?: string; runs?: RunSnapshot[] } | undefined;
   if (data?.project_id && data.project_id !== currentProject) {
     currentProject = data.project_id; lastTasks = null; lastReviews = null; lastBrowserTime = 0;
     live.clear(); streams.clear(); ended.clear(); moves.clear(); ticker.length = 0; pips.length = 0; pip = null; pipSeen.clear();
+    focusEvents.clear();
     paused = false; publish(true);
   }
   const agents = data?.agents;
@@ -394,11 +416,14 @@ function onRuntimeState(event: RoomEvent) {
     knownAgents.clear();
     Object.keys(agents).forEach(name => knownAgents.add(name));
   }
+  if (data?.runs) reconcileRuns(data.runs, true);
 }
 
 const HANDLERS: [string, Listener][] = [
   ['runtime_state', onRuntimeState],
   ['runtime_start', onStart],
+  ['runtime_focus', onFocus],
+  ['settings', () => focusEvents.clear()],
   ['runtime_delta', onDelta],
   ['runtime_draft', onDelta],
   ['runtime_tool', onTool],
@@ -420,7 +445,8 @@ function attach() {
 }
 
 /** Drop runs the server no longer reports (a missed runtime_end after a reconnect). */
-export function reconcileRuns(running: { id: string; agent: string; channel?: string }[]) {
+type RunSnapshot = { id: string; agent: string; channel?: string; task_id?: string | null };
+export function reconcileRuns(running: RunSnapshot[], pushed = false) {
   const ids = new Set(running.map(r => r.id));
   let changed = false;
   // Turns already running when the page loads or reconnects have sent their runtime_start before we
@@ -430,12 +456,23 @@ export function reconcileRuns(running: { id: string; agent: string; channel?: st
   const quietSince = now() - RECONCILE_QUIET_SECONDS;
   for (const r of running) {
     const current = live.get(r.agent);
-    if (ended.has(r.id) || current?.run === r.id || (current && current.updated >= quietSince)) continue;
+    if (ended.has(r.id)) continue;
+    if (current?.run === r.id) {
+      if ('task_id' in r && (pushed || !focusEvents.has(r.id))) {
+        changed ||= current.task !== r.task_id;
+        applyFocus(current, r);
+        if (pushed) focusEvents.add(r.id);
+      }
+      continue;
+    }
+    if (current && current.updated >= quietSince) continue;
     if (current) {
       live.delete(r.agent);
       streams.delete(current.run);
+      focusEvents.delete(current.run);
     }
-    ensure(r.agent, r.id, r.channel ?? '');
+    applyFocus(ensure(r.agent, r.id, r.channel ?? ''), r);
+    if (pushed && 'task_id' in r) focusEvents.add(r.id);
     changed = true;
   }
   // The same lag the other way: a snapshot fetched just before a turn started; only drop quiet entries.
@@ -443,6 +480,7 @@ export function reconcileRuns(running: { id: string; agent: string; channel?: st
     if (!ids.has(entry.run) && entry.updated < quietSince) {
       live.delete(agent);
       streams.delete(entry.run);
+      focusEvents.delete(entry.run);
       changed = true;
     }
   }

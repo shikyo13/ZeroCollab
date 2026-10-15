@@ -206,6 +206,7 @@ export interface Approval {
 export interface RunInfo {
   id: string;
   agent: string;
+  task_id?: string | null;
   channel: string;
   text: string;
   settings: unknown;
