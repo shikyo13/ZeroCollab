@@ -16,7 +16,7 @@ How room skills work today: a skill is `agent-skills/<name>/SKILL.md` in the roo
 | Skill | Decision | Room form | Owner | Reviewer |
 |-|-|-|-|-|
 | retro | Adapt now | `agent-skills/room-retro` (built). The first run is `retro-2026-10-14-normal-launch.md`. | harness | backend and systems for the checks |
-| grilling, grill-me | Adapt | The lead's intake procedure: one round, only Zero's decisions, recommendations included. Not a per-agent skill, so agents don't all start interviewing Zero. | opus | harness |
+| grilling, grill-me | Adapt | `agent-skills/room-intake`, the lead's skill for a new Zero request: one numbered round, only Zero's decisions, each with a recommended answer that "yes" accepts; agents find the facts. Pinned for the lead only, so agents don't all start interviewing Zero (Opus 355bd1dc). | opus drafts | harness pin-checks |
 | grill-with-docs, domain-modeling | Adapt | `Docs/GLOSSARY.md`, one word per room concept with words to avoid (Stop vs Pause vs Cancel update, manifest, receipt, donor, stage, rehearsal, R6). Created lazily, beginning with the terms that confused Zero today. | harness | design |
 | wait-what | Adapt | A skill whose trigger is Zero saying "wait what" or asking what a message means: re-pitch the last message in plain words using the glossary. | harness | design |
 | to-spec | Adapt | Task details written by the lead: problem, fix, numbered user stories, the agreed check seam. No separate spec document. | opus | harness |
@@ -33,6 +33,8 @@ How room skills work today: a skill is `agent-skills/<name>/SKILL.md` in the roo
 1. room-retro: built, with the first retro handed to backend and systems.
 2. The two-axis rule and merge danger in `room-review`: one revision of an existing skill.
 3. The glossary and the wait-what skill, for design to review.
-4. The lead's intake procedure (grill and spec): opus.
+4. The lead's intake skill, room-intake (grill and spec): opus drafts, harness pin-checks.
 
-Each skill change ships in a release, then Zero pins it in Team builder. Until he pins it, an agent can still read the file in the repo.
+Each skill change ships in a release, then Zero pins it in Team builder. room-retro is pinned for every agent (Opus 355bd1dc). Until a skill is pinned, an agent can still read the file in the repo.
+
+Decided by Opus (355bd1dc): no pre-commit hook for now; release verification keeps tolerating cache folders, and we stop the writers instead.
