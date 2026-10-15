@@ -6,13 +6,13 @@ import { readStored, writeStored } from '../lib/storage';
 
 // The first entry of each list is the default when nothing valid is saved.
 export const TABS = ['tasks', 'coordination', 'decisions', 'spec', 'memory', 'controls'] as const;
-export const GROUPINGS = ['status', 'area', 'owner'] as const;
+export const GROUPINGS = ['activity', 'status', 'area', 'owner'] as const;
 export const SORTS = ['recent', 'oldest', 'title'] as const;
 export type Tab = typeof TABS[number];
 export type GroupBy = typeof GROUPINGS[number];
 export type SortBy = typeof SORTS[number];
 
-export const GROUP_LABELS: Record<GroupBy, string> = { status: 'Group: status only', area: 'Group: area', owner: 'Group: owner' };
+export const GROUP_LABELS: Record<GroupBy, string> = { activity: 'Group: Activity', status: 'Group: status only', area: 'Group: area', owner: 'Group: owner' };
 export const SORT_LABELS: Record<SortBy, string> = { recent: 'Sort: recent activity', oldest: 'Sort: least recent', title: 'Sort: title' };
 
 // Wider than the board.css @media (max-width: 1100px) breakpoint, where the feed docks beside the columns.

@@ -5,7 +5,7 @@ import { STATUS_LABELS, type Agents } from './shared';
 import { TaskCard, type TaskFacts } from './TaskCard';
 import type { CardFollow } from '../follow/Follow';
 
-const DONE_PREVIEW = 8;
+export const DONE_PREVIEW = 8;
 
 export function Lane({
   lane,

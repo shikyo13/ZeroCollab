@@ -3,6 +3,7 @@ import type { Followup, ProjectState, Review, Task } from '../lib/types';
 import { CardFollowLayer, followName, type CardFollow } from '../follow/Follow';
 import { CardVideos, CardThumbnails } from './Attachments';
 import { AgentChip, LabelChips, RelativeTime, displayName, type Agents } from './shared';
+import type { TaskActivity } from './activity';
 import { USER } from '../lib/constants';
 
 export interface TaskFacts {
@@ -97,8 +98,10 @@ export function TaskCard({
   selected,
   onOpen,
   follow,
+  activity,
 }: {
   task: Task;
+  activity?: TaskActivity;
   facts: TaskFacts;
   agents: Agents;
   now: number;
@@ -144,24 +147,30 @@ export function TaskCard({
           {task.title}
         </span>
       </button>
-      <CardVideos attachments={task.attachments} />
+      {(!activity || task.status === 'done') && <CardVideos attachments={task.attachments} />}
       <div className="bd-card-meta">
         <AgentChip name={task.owner} agents={task.owner && agents[task.owner] ? {...agents, [task.owner]: {...agents[task.owner], label: followName(task.owner, agents)}} : agents} />
         <code className="bd-id">{task.id}</code>
       </div>
       <div className="bd-card-content">
-      {execution && (
+      {activity && <div className={`bd-activity-state bd-activity-state-${activity.group}`}>
+        <p>{activity.state}</p>
+        {activity.reasons.length > 0 && <ul>{activity.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
+      </div>}
+      {!activity && execution && (
         <p className={`bd-exec bd-exec-${execution.tone}`}>
           <span className="bd-exec-dot" aria-hidden="true" />
           {execution.text}
         </p>
       )}
-      {follow && <CardFollowLayer follow={follow} agents={agents} part="body" />}
+      {!activity && follow && <CardFollowLayer follow={follow} agents={agents} part="body" />}
       {task.next_action && task.status !== 'done' && (
         <p className="bd-next">
-          <span className="bd-muted">{waiting ? 'Then:' : 'Next:'}</span> {task.next_action}
+          <span className="bd-muted">{waiting && !activity ? 'Then:' : 'Next:'}</span> {task.next_action}
         </p>
       )}
+      {activity && follow && <CardFollowLayer follow={follow} agents={agents} part="body" />}
+      {activity && task.status !== 'done' && <CardVideos attachments={task.attachments} />}
       {facts.ownerActive && task.status !== 'done' && task.execution_state !== 'executing' && (
         <p className="bd-active" title={`${displayName(task.owner, agents)} is running a turn now, possibly on other work. Task status changes only when they update it.`}>
           <span className="bd-active-dot" aria-hidden="true" />

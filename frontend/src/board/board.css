@@ -327,3 +327,16 @@
 .bd-media-layout.is-media-sheet .fl-preview-rail {max-height:38dvh;}
 
 .bd-card-preview {outline:1px solid var(--preview-color);outline-offset:1px;}
+
+/* Activity is a vertical list of full-width sections, never more kanban columns. */
+.bd-activity-sections { display: flex; flex-direction: column; gap: 24px; }
+.bd-activity-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.bd-activity-section > .bd-lane-head { padding-bottom: 8px; border-bottom: 1px solid var(--bd-border); }
+.bd-activity-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); align-items: start; gap: 12px; }
+.bd-activity-grid .bd-card { min-width: 0; overflow-wrap: anywhere; }
+.bd-activity-state { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
+.bd-activity-state ul { display: flex; flex-direction: column; gap: 4px; color: var(--bd-text); font-weight: 400; }
+.bd-activity-state-active { color: var(--bd-success); }
+.bd-activity-state-review, .bd-activity-state-waiting { color: var(--bd-warn); }
+.bd-activity-state-planned, .bd-activity-state-later { color: var(--bd-text); }
+.bd-activity-counts { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--bd-muted); font-size: 13px; }

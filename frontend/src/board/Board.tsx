@@ -10,7 +10,9 @@ import { ActivityFeed } from './ActivityFeed';
 import { BoardToolbar } from './BoardToolbar';
 import { CoordinationView, isOpenFollowup, isOpenReview } from './Coordination';
 import { Lane } from './Lane';
-import { buildLanes, type TaskFilters } from './lanes';
+import { ActivitySections } from './ActivitySections';
+import { ACTIVITY_GROUPS, taskActivity } from './activity';
+import { buildLanes, visibleTasks, type TaskFilters } from './lanes';
 import { NewTaskForm } from './NewTaskForm';
 import { LimitsPanel, MemoryPanel, SpecPanel } from './ProjectPanels';
 import { ErrorText, type Agents } from './shared';
@@ -128,6 +130,10 @@ export default function Board() {
     [project, filters, groupBy, sortBy, agents],
   );
 
+  const activity = useMemo(() => new Map((project?.tasks ?? []).map(task =>
+    [task.id, taskActivity(task, project!, agents)])), [project, agents]);
+  const filteredTasks = useMemo(() => visibleTasks(project?.tasks ?? [], filters, sortBy), [project, filters, sortBy]);
+
   if (!project) {
     return (
       <div className="bd-root">
@@ -138,6 +144,7 @@ export default function Board() {
 
   const selectedTask = selected ? project.tasks.find(t => t.id === selected) : undefined;
   const active = project.tasks.filter(t => t.status !== 'done').length;
+  const unfinished = (groupBy === 'activity' ? filteredTasks : project.tasks).filter(t => t.status !== 'done').length;
   const openCoordination =
     (project.reviews ?? []).filter(isOpenReview).length + (project.followups ?? []).filter(isOpenFollowup).length;
   const waitingOnUser =
@@ -162,7 +169,7 @@ export default function Board() {
         <div>
           <h1 className="bd-title">Board</h1>
           <p className="bd-muted">
-            {active} active {active === 1 ? 'task' : 'tasks'} · {openCoordination} open reviews and follow-ups · {sessionTitle(channel)}
+            {unfinished} unfinished {unfinished === 1 ? 'task' : 'tasks'} · {openCoordination} open reviews and follow-ups · {sessionTitle(channel)}
             {waitingOnUser > 0 && (
               <>
                 {' · '}
@@ -213,6 +220,9 @@ export default function Board() {
             creating={creating}
             onToggleCreate={() => setCreating(v => !v)}
           />
+          {groupBy === 'activity' && <ul className="bd-activity-counts" aria-label="Activity group counts">
+            {ACTIVITY_GROUPS.map(([key, title]) => <li key={key}>{title}: {filteredTasks.filter(task => activity.get(task.id)?.group === key).length}</li>)}
+          </ul>}
           {creating && (
             <section className="bd-panel" aria-label="New task">
               <NewTaskForm
@@ -251,8 +261,11 @@ export default function Board() {
           {motionNotice && <p className="bd-motion-notice" role="status">{motionNotice}</p>}
           <div ref={mediaRef} className={`bd-media-layout${previewCount && follow.following ? ' has-previews' : ''}${mediaWidth < 1180 ? ' is-media-sheet' : ''}`}>
           <div className="bd-media-board">
-          {project.tasks.length > 0 &&
-            lanes.map(lane => (
+          {project.tasks.length > 0 && (groupBy === 'activity'
+            ? <ActivitySections tasks={filteredTasks} activity={activity} showAllDone={showAllDone} onToggleDone={() => setShowAllDone(v => !v)} facts={facts} agents={agents} now={now}
+                selected={selected} onOpen={id => setSelected(cur => cur === id ? null : id)}
+                follows={follow.following ? placement.cards : undefined} />
+            : lanes.map(lane => (
               <Lane
                 key={lane.key}
                 lane={lane}
@@ -266,7 +279,7 @@ export default function Board() {
                 onToggleDone={() => setShowAllDone(v => !v)}
                 follows={follow.following ? placement.cards : undefined}
               />
-            ))}
+            )))}
           </div>
           <FollowPip key={projectId} projectId={projectId} agents={agents} tasks={project.tasks} onOpenTask={openTask} onPreviewsChange={onPreviewsChange} />
           </div>

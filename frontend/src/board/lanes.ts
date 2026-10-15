@@ -31,13 +31,16 @@ function matches(task: Task, { query, owner, label }: TaskFilters): boolean {
   return !q || haystack.toLowerCase().includes(q);
 }
 
+export function visibleTasks(tasks: Task[], filters: TaskFilters, sortBy: SortBy): Task[] {
+  return tasks.filter(task => matches(task, filters)).sort(SORTERS[sortBy]);
+}
+
 export function buildLanes(tasks: Task[], filters: TaskFilters, groupBy: GroupBy, sortBy: SortBy, agents: Agents): Lane[] {
   // Swimlanes: a task sits in the lane of its first area, or of its owner.
   const keyOf = (task: Task) => (groupBy === 'area' ? task.labels?.[0] ?? '' : groupBy === 'owner' ? task.owner : 'all');
   const titleOf = (key: string) => (groupBy === 'area' ? key || 'No area' : groupBy === 'owner' ? displayName(key, agents) : '');
   const grouped = new Map<string, Task[]>();
-  for (const task of tasks) {
-    if (!matches(task, filters)) continue;
+  for (const task of visibleTasks(tasks, filters, sortBy)) {
     const key = keyOf(task);
     const list = grouped.get(key);
     if (list) list.push(task);
@@ -48,7 +51,6 @@ export function buildLanes(tasks: Task[], filters: TaskFilters, groupBy: GroupBy
     const columns = new Map<TaskStatus, Task[]>(TASK_STATUSES.map(s => [s, []]));
     const list = grouped.get(key) ?? [];
     for (const task of list) columns.get(task.status)?.push(task);
-    for (const column of columns.values()) column.sort(SORTERS[sortBy]);
     return { key, title: titleOf(key), columns, total: list.length };
   });
 }

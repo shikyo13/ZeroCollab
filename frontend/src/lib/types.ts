@@ -36,6 +36,8 @@ export interface Task {
   /** No check-in for a while on unattended work; never set while waiting on the user. */
   stale?: boolean;
   next_action?: string;
+  next_action_state?: 'ready' | 'waiting' | 'deferred';
+  wait_on?: ({ task: string } | { review: string } | { followup: string } | { release: string })[];
   /** 1 (highest) to 5. */
   priority?: number;
   /** Links an open request to the user on this task while the owner waits for them. */
