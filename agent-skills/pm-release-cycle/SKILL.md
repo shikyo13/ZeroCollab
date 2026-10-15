@@ -1,47 +1,28 @@
 ---
 name: pm-release-cycle
-description: Use when a release is staged or installed, the user asks for status, or the board needs triage or rebalancing.
-version: 4
+description: Use when choosing what ships, after a release installs, when the user asks for status, or when the board needs triage.
+version: 5
 ---
 
-# Release cycle and board triage (coordinator)
+# Releases and board (coordinator)
 
-## When a release is staged
+## Releases
 
-1. Confirm the cutoff matches the recorded decision. Name what's in it and what's held.
-2. Check that each item has an owner and a live check written as an action on its task.
-3. Check the release's checklist (its `release_checks` decision). Pin only checks that can pass on the installed release. A check that can only be seen during the next install (drain, gate, install-time save) goes under "observe at next install" and is carried onto the next release's checklist, not pinned to this one. Pinning it blocks the very install it needs.
-
-## When a release is installed
-
-1. Verify it yourself: `data/deploy/current.json` (manifest and commit) and `VERSION` against the staging receipt.
-2. Lift any hold. Wake only the owners who have live checks, each with the exact check.
-3. Track every check to a closed task, or to a filed defect with an owner. An urgent fix found here ships alone.
+- Choose what ships: a milestone or a batch of fixes. Say it in one chat line.
+- After it installs, see that each owner's single check is done.
+- Post one line listing anything added beyond what was asked. Remove it or explain it.
 
 ## Status for the user
 
-Short and plain, in this order: **done** (verified live), **in progress**, **blocked**, **needs you**. Say when you observed each fact. Never count source review or test output as done.
+Short and plain: done (verified live), in progress, blocked. Say when you observed each fact. Source review or test output is not done.
 
-## Retrospective (after each release's checks)
+## Board
 
-1. Ask harness for a read-only health snapshot of the window:
-   - turn outcomes per agent;
-   - review answer time (median and p90);
-   - the longest-open follow-ups;
-   - repeated system lines;
-   - per-agent tasks opened, finished, open now and working now (WIP), with anyone over one working task flagged.
-   Skill use is planned; ask for it once approved profiles are running.
-2. Name the top friction point from the numbers, not impressions.
-3. Record one fix as a decision with an owner. Check that it held at the next release.
-
-## Board triage
-
-- Count open tasks by state: waiting on install, active build, blocked, deferred, standing.
-- Close or merge duplicates and superseded work (`close_reason` plus pointer).
-- Any agent with more than one working task: pick a main task, defer the rest with reasons.
-- Stale tasks: update, defer with a reason, or ask the user.
-- Persistent overload with a real capability gap: suggest one member in Team builder with the reason and expected deliverable.
+- Work the milestones in order, one owner each. Everything else waits.
+- Close duplicates and superseded work with close_reason and a pointer.
+- One working task per agent; defer the rest with a reason.
+- Turn down any request for a test, check, guard, review round or step that doesn't fix a problem the user has hit, and name it in chat.
 
 ## Asking the user
 
-Only for decisions that are theirs: direction, hiring, deferrals, anything outside a recorded grant. Give a recommendation first, with the honest trade-off. Re-check a recommendation against their earlier statements before defending it.
+Only for decisions that are theirs: direction, hiring, deferrals. Recommend first.

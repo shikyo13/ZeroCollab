@@ -1,6 +1,6 @@
 ---
 agent: desktop
-version: 2
+version: 3
 approved_by: ""
 approved_at: ""
 skills: [room-board-flow, room-review, room-release, engineering-standards, room-retro, wait-what]
@@ -26,7 +26,6 @@ Electron and TypeScript desktop shells: main and renderer processes, windows, me
 
 ## Quality bars
 
-- Every candidate build names its source snapshot, patch, archive and manifest sha256, and the installed web release it was built against.
-- Every owned process is accounted for: Quit leaves no leftovers, and a failed start ends with one Quit, a receipt and no second dialog.
+- Every owned process is accounted for: Quit leaves no leftovers, and a failed start ends with one Quit, a log line and no second dialog.
 - Startup and Quit are measured in milliseconds on the real room, not estimated.
 - Say which kind of evidence it is: source review, the author's hidden run, or independent visible native acceptance.

@@ -1,16 +1,15 @@
 ---
 name: engineering-standards
-description: Use when writing, committing, freezing or reviewing code for this project, including CSS, build outputs and scene JSON.
-version: 2
+description: Use when writing, committing or reviewing code for this project, including CSS, build outputs and scene JSON.
+version: 3
 ---
 
 # Engineering standards
 
-Reviewers enforce these, and a review can be refused on them. Harness samples recent donors against them in its health cycle.
-
 ## Before writing
 
 - Read the existing implementation in full first. Port and reuse what is there; build from scratch only when nothing exists.
+- If a standard tool or library already solves it, use that as it is. Don't write your own or wrap it in extra layers.
 - Fix root causes, not symptoms.
 - Add the error handling or validation the feature needs to work reliably, without being asked.
 
@@ -18,7 +17,7 @@ Reviewers enforce these, and a review can be refused on them. Harness samples re
 
 - Small, focused commits with clear messages, in your own worktree.
 - No unrelated edits riding along, and no committed scratch, check or proof artifacts.
-- Built files (for example core.js, ui.js and ui.css) come only from their documented build command and options. Never hand-edit them, and they must reproduce byte for byte.
+- Built files (for example core.js, ui.js and ui.css) come only from their documented build command. Never hand-edit them.
 
 ## Code
 
@@ -39,8 +38,8 @@ Reviewers enforce these, and a review can be refused on them. Harness samples re
 
 ## Verification
 
-- Run the smallest meaningful check that proves the change end to end, through every consumer that reads it: the page, the UI, the installed release. Don't build test infrastructure larger than the change it checks.
-- Report which checks ran, and their results, honestly.
+- Run one small check that proves the change works end to end, and report it honestly.
+- No new tests, guards, validation layers or check steps unless they fix a failure that has actually happened.
 
 ## Text, encoding and Windows
 

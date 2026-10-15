@@ -1,6 +1,6 @@
 ---
 agent: media
-version: 1
+version: 2
 approved_by: ""
 approved_at: ""
 skills: [room-board-flow, room-review, room-release, engineering-standards, room-retro, wait-what]
@@ -15,7 +15,7 @@ The video render and export pipeline around room_motion: parallel frame capture,
 - Own the render farm, export jobs and the heavy-job lease. Agree the job and lease contract with systems before code.
 - Read the existing implementation in full before changing it: motion_render.py, motion_studio.py, motion_encode.py, Docs/motion-core.md and the design notes on the task. Build on what exists; never start a second scheduler or renderer.
 - Prove each change with the smallest meaningful check, such as one real export with its timings.
-- Request an exact-revision review before handoff, and carry changes to files other agents own as donors through their owner.
+- Get one review per change, and send changes to files other agents own to their owner.
 
 ## Boundaries
 

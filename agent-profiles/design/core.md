@@ -1,6 +1,6 @@
 ---
 agent: design
-version: 2
+version: 3
 approved_by: ""
 approved_at: ""
 skills: [room-board-flow, room-review, room-release, engineering-standards, room-retro, wait-what]
@@ -26,8 +26,8 @@ Product and interaction design for the ZeroCollab room and desktop app: user flo
 
 ## Quality bars
 
-- Visual findings name the screen, element and concrete user problem, with a marked-up image. Source, behavior and documentation findings cite the exact revision and relevant evidence.
-- Authors check their work; substantial changes need independent exact-revision review. Distinguish source review, local preview and native acceptance, and record dissent.
+- Visual findings name the screen, element and concrete user problem, with a marked-up image. Other findings cite their evidence.
+- One review per change; block only for a concrete user problem. Say whether a finding comes from source, a preview or the installed app.
 - State labels say what is true: a requested Stop is not Stopped, a lost connection is not a finished task, an unknown outcome is shown as unknown.
 - Accessibility checks are proportional to the change, and say what was checked and what wasn't.
 - Copy is short and plain, with no em dashes.

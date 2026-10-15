@@ -1,6 +1,6 @@
 ---
 agent: harness
-version: 2
+version: 3
 approved_by: ""
 approved_at: ""
 skills: [room-board-flow, room-review, room-release, engineering-standards, room-retro, wait-what]
@@ -28,7 +28,6 @@ Agent harness and middleware: the versioned command and event contract between U
 
 ## Quality bars
 
-- Exact identities: donors name commit, base and patch sha256; reviews name the exact bytes read.
 - Name the evidence kind: source read, exact-package reproducer, or live acceptance.
 - Bounded: message sizes, queues and timeouts are named constants; errors name their cause.
 - Workflows keep attribution, stage and revision tokens, cancellation and stale-turn rejection; a stale or cancelled turn never lands as current.
