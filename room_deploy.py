@@ -2,8 +2,10 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -22,6 +24,7 @@ AGENT_DRAIN_SECONDS = 30   # an agent-requested install: running turns get this 
 AGENT_IDLE_DRAIN_SECONDS = 600  # the same request on a host without the interrupt capability: wait for idle
 RECENT_RECEIPTS = 10       # receipts the deployments feed lists in full
 MAX_RECEIPT_SCAN = 4096    # receipts read for install dates, newest first (release_request's history bound)
+LOG = logging.getLogger(__name__)
 
 
 def read_json(path, default=None):
@@ -287,6 +290,20 @@ class DeploymentState:
                 'pending': [read_json(p, {}) for p in (self.root / 'requests').glob('*.json')]}
 
 
+def checkpoint_blocked(runtime, gate):
+    """At the idle acknowledgement with writes blocked, before any snapshot, restart or install: the room's records
+    and its queued work go to disk. A full room.db comparison writes what touched saves left for the next one
+    (roomdb.FULL_DIFF_SECONDS); only an agent deployment's block ran it before (release_maintenance.save_board), so a
+    user or desktop update gate, which writes maintenance.json directly, could lose those records when the room
+    stops (task 3438154b). Once per gate seq: the supervisor polls this route while it waits. A failed save raises,
+    so the gate is not acknowledged and the deployment stops rather than proceeding without it."""
+    room = getattr(runtime, 'project_room', None)
+    if getattr(room, 'store', None) is not None and getattr(runtime, 'blocked_save_seq', None) != gate['seq']:
+        room.save()
+        runtime.blocked_save_seq = gate['seq']
+    runtime.save_deploy_queue()
+
+
 class MutationGate:
     def __init__(self, app, state):
         self.app, self.state = app, state
@@ -359,7 +376,12 @@ def install(host, runtime):
         with state.lock:
             mutations = state.mutations
         if gate['writes'] == 'blocked' and active == 0 and mutations == 0:
-            runtime.save_deploy_queue()
+            try:
+                checkpoint_blocked(runtime, gate)
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
+                LOG.exception('Room records could not be saved at the write gate')
+                return JSONResponse({'error': f'The room could not save its records before the deployment ({exc}). '
+                                              'Nothing was acknowledged; fix the cause, then retry.'}, 503)
         return {'seq_applied': gate['seq'], 'admission': gate['admission'], 'writes': gate['writes'],
                 'active_runs': active, 'active_mutations': mutations, 'release_id': state.version.get('id', ''),
                 'project_id': runtime.identity, 'paused': runtime.paused}
