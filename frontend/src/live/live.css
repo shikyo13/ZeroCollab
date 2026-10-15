@@ -31,50 +31,54 @@
 .lv-name { font-weight: 600; font-size: 12.5px; text-shadow: 0 1px 3px #000; }
 .lv-doing { font-size: 11px; color: var(--text-dim); }
 
-/* Life at rest (task 4cbce498, Zero #18047). Zero's Edge paints with GPU compositing off (0bb2bdcf), so even
-   compositor-only animation costs CPU on every frame it changes. Ambient motion is therefore either stepped or
-   tied to real events, and the room is near zero cost when nothing happens (measured: 0.6% of a core for 13).
-   Bob (Zero #18710: the four-step bob read as slow and jittery): everyone drifts round a small loop, 3 px up and
-   down and 1.5 px sideways, once every 4 s (6 s at rest), within BADGE_CLEAR. Smooth, that is a 60 fps redraw
-   (22-25% of a core for 13 people with GPU compositing off); unsynchronized steps cost the same. So every bob
-   moves on one shared 15 fps grid: whole 1/15 s steps (each 0.4 s segment in 6 steps, 9 at rest), phases in
-   whole steps (--bob-at), and the stage snaps each bob's start onto that grid (BOB_STEP_MS). All 13 then change
-   on the same frames: 7-10% of a core (the four-step bob was 2-3%), and each step moves under half a pixel, so
-   the eye reads it as smooth. A slower grid saves little (7.5 fps: 6%) until it is stepped again (2.5 fps: 2%).
+/* Life at rest (task 4cbce498, Zero #18047). Ambient motion is smooth, at the display's frame rate (Zero #20584:
+   the 15 fps steps of 0.12.80 read as choppy). Every ambient animation changes only transform or opacity on its own
+   composited layer (will-change), so the GPU moves a cached bitmap each frame and nothing is repainted: Zero's
+   desktop app composites on the GPU (desktop eb1f289f: GPU process present, no disable flags).
+   Bob (Zero #18710): everyone drifts round a small loop, 3 px up and down and 1.5 px sideways, once every 4 s (6 s
+   at rest), within BADGE_CLEAR. Each person has their own phase (--bob-at), so the room never moves in step.
    Orbit and glow: whoever is working, while their work actually moves (lv-stir: a tool step, reply text or a
-   state change in the last few seconds); between events the orbit pauses where it is, so it resumes without a jump.
-   The orbit steps on the bob's 15 fps grid too (42 steps in 2.8 s, phase in whole steps, snapped by alignSteps),
-   and a stirring glow brightens and holds rather than breathing: a smooth orbit plus a breathing 72 px gradient
-   redrew the stage at 60 fps for as long as anyone stirred (8 stirring: +12.7 points of a core; stepped orbit and
-   held glow: +3.3, task 8638bf8b).
-   Ripple: a gold ring widens from whoever waits on you (as 0.12.65's gold pulse did, but on the compositor).
+   state change in the last few seconds); between events the orbit pauses where it is, so it resumes without a jump,
+   and the glow breathes. The glow's gradient is drawn once into its layer and only its opacity changes.
+   Ripple: a gold ring widens from whoever waits on you, on the compositor.
    Floor: a group's ground glows still under it. */
-.lv-float { animation: lv-bob 4s steps(6, jump-end) var(--bob-at, 0s) infinite; }
-.lv-quiet .lv-float { animation-duration: 6s; animation-timing-function: steps(9, jump-end); }
-/* Ten points on the loop x = 1.5 sin t, y = 3 cos t: even steps along it give the sine ease of a bob. */
+.lv-float { animation: lv-bob 4s linear var(--bob-at, 0s) infinite; will-change: transform; }
+.lv-quiet .lv-float { animation-duration: 6s; }
+/* Twenty points on the loop x = 1.5 sin t, y = 3 cos t, joined linearly: a smooth ellipse at this size. */
 @keyframes lv-bob {
-  0%, 100% { transform: translate(0, 3px); }
-  10% { transform: translate(.88px, 2.43px); }
-  20% { transform: translate(1.43px, .93px); }
-  30% { transform: translate(1.43px, -.93px); }
-  40% { transform: translate(.88px, -2.43px); }
-  50% { transform: translate(0, -3px); }
-  60% { transform: translate(-.88px, -2.43px); }
-  70% { transform: translate(-1.43px, -.93px); }
-  80% { transform: translate(-1.43px, .93px); }
-  90% { transform: translate(-.88px, 2.43px); }
+  0%, 100% { transform: translate3d(0px, 3px, 0); }
+  5% { transform: translate3d(0.46px, 2.85px, 0); }
+  10% { transform: translate3d(0.88px, 2.43px, 0); }
+  15% { transform: translate3d(1.21px, 1.76px, 0); }
+  20% { transform: translate3d(1.43px, 0.93px, 0); }
+  25% { transform: translate3d(1.5px, 0px, 0); }
+  30% { transform: translate3d(1.43px, -0.93px, 0); }
+  35% { transform: translate3d(1.21px, -1.76px, 0); }
+  40% { transform: translate3d(0.88px, -2.43px, 0); }
+  45% { transform: translate3d(0.46px, -2.85px, 0); }
+  50% { transform: translate3d(0px, -3px, 0); }
+  55% { transform: translate3d(-0.46px, -2.85px, 0); }
+  60% { transform: translate3d(-0.88px, -2.43px, 0); }
+  65% { transform: translate3d(-1.21px, -1.76px, 0); }
+  70% { transform: translate3d(-1.43px, -0.93px, 0); }
+  75% { transform: translate3d(-1.5px, 0px, 0); }
+  80% { transform: translate3d(-1.43px, 0.93px, 0); }
+  85% { transform: translate3d(-1.21px, 1.76px, 0); }
+  90% { transform: translate3d(-0.88px, 2.43px, 0); }
+  95% { transform: translate3d(-0.46px, 2.85px, 0); }
 }
-.lv-orbit { position: absolute; inset: -9px; border-radius: 50%; opacity: 0; pointer-events: none; transition: opacity .5s ease;
-  animation: lv-orbit 2.8s steps(42, jump-end) var(--orbit-at, 0s) infinite paused; }
+.lv-orbit { position: absolute; inset: -9px; border-radius: 50%; opacity: 0; pointer-events: none; transition: opacity .5s ease; will-change: transform;
+  animation: lv-orbit 2.8s linear var(--orbit-at, 0s) infinite paused; }
 .lv-orbit::before, .lv-orbit::after { content: ''; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); }
 .lv-orbit::before { left: calc(50% - 2.5px); top: -2.5px; }
 .lv-orbit::after { left: calc(50% - 2px); bottom: -2px; width: 4px; height: 4px; opacity: .6; }
 .lv-working .lv-orbit { opacity: .45; }
 .lv-working.lv-stir .lv-orbit { opacity: 1; animation-play-state: running; }
 @keyframes lv-orbit { to { transform: rotate(360deg); } }
-.lv-badge::before { content: ''; position: absolute; inset: -14px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--c) 45%, transparent) 0%, transparent 70%); opacity: 0; z-index: -1; pointer-events: none; transition: opacity .6s ease; }
+.lv-badge::before { content: ''; position: absolute; inset: -14px; border-radius: 50%; will-change: opacity; background: radial-gradient(circle, color-mix(in srgb, var(--c) 45%, transparent) 0%, transparent 70%); opacity: 0; z-index: -1; pointer-events: none; transition: opacity .6s ease; }
 .lv-working .lv-badge::before { opacity: .4; }
-.lv-working.lv-stir .lv-badge::before { opacity: .75; }
+.lv-working.lv-stir .lv-badge::before { animation: lv-breathe 1.3s ease-in-out var(--bob-at, 0s) infinite alternate; }
+@keyframes lv-breathe { from { opacity: .4; } to { opacity: .85; } }
 .lv-badge::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid #f0c674; opacity: 0; pointer-events: none; }
 .lv-waiting_on_user .lv-badge::after { animation: lv-ripple 1.9s cubic-bezier(.2, .6, .3, 1) infinite; }
 @keyframes lv-ripple { from { transform: scale(1); opacity: .75; } to { transform: scale(1.75); opacity: 0; } }
@@ -127,9 +131,11 @@
 .lv-rail i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
 .lv-rail span { flex: none; color: var(--text); }
 .lv-rail small { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font-size: 11px; }
-.lv-rail-fresh button { animation: lv-rail-glow 2.4s ease-out; }
+.lv-rail button { position: relative; }
+/* A fresh line glows in its person's colour and fades: an opacity fade of a glow drawn once, not a repainted background. */
+.lv-rail-fresh button::before { content: ''; position: absolute; inset: 0; border-radius: 6px; background: color-mix(in srgb, var(--c) 28%, transparent); opacity: 0; pointer-events: none; will-change: opacity; animation: lv-rail-glow 2.4s ease-out; }
 @keyframes lv-rail-in { from { opacity: 0; transform: translateX(-14px); } }
-@keyframes lv-rail-glow { from { background: color-mix(in srgb, var(--c) 28%, transparent); } }
+@keyframes lv-rail-glow { from { opacity: 1; } }
 
 /* The You area: questions for you rise here. */
 .lv-you { position: absolute; z-index: 6; box-sizing: border-box; border-radius: 12px; padding: 7px 12px; background: #15191cdd; border: 1px solid var(--border); font-size: var(--fs-sm); }
@@ -191,12 +197,12 @@
 /* Reduced motion: nothing moves at rest. State stays readable without motion: the ring, a static glow for working,
    a static gold ring for waiting on you, a still floor under a group. */
 .lv-reduced .lv-bubble-slot { transition: none; }
-.lv-reduced .lv-float, .lv-reduced .lv-orbit, .lv-reduced .lv-floor, .lv-reduced .lv-thumb, .lv-reduced .lv-rail li, .lv-reduced .lv-rail-fresh button { animation: none; }
+.lv-reduced .lv-float, .lv-reduced .lv-orbit, .lv-reduced .lv-floor, .lv-reduced .lv-thumb, .lv-reduced .lv-rail li, .lv-reduced .lv-rail-fresh button::before { animation: none; }
 .lv-reduced .lv-working .lv-badge::before, .lv-reduced .lv-working.lv-stir .lv-badge::before { animation: none; opacity: .55; }
 .lv-reduced .lv-waiting_on_user .lv-badge::after { animation: none; opacity: .7; transform: scale(1.25); }
 .lv-reduced .lv-orbit { display: none; }
 @media (prefers-reduced-motion: reduce) {
-  .lv-chip, .lv-session, .lv-float, .lv-orbit, .lv-floor, .lv-thumb, .lv-rail li, .lv-rail-fresh button { animation: none; }
+  .lv-chip, .lv-session, .lv-float, .lv-orbit, .lv-floor, .lv-thumb, .lv-rail li, .lv-rail-fresh button::before { animation: none; }
   .lv-bubble-slot { transition: none; }
   .lv-ring, .lv-badge { transition: none; }
   .lv-working .lv-badge::before, .lv-working.lv-stir .lv-badge::before { animation: none; opacity: .55; }
