@@ -111,9 +111,14 @@ function StopResume({ paused, refresh }: { paused: boolean; refresh: () => void 
   const { open, setOpen, root } = usePopover();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const call = async (path: '/stop' | '/resume') => {
-    setBusy(true); setError('');
-    try { await runtime(path, {}); setOpen(false); refresh(); }
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const result = await runtime<{ handover?: string; note?: string }>(path, {});
+      if (path === '/resume') setNotice(result?.handover || result?.note || '');
+      setOpen(false); refresh();
+    }
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   };
@@ -122,11 +127,13 @@ function StopResume({ paused, refresh }: { paused: boolean; refresh: () => void 
       <Icon name="play" size={16} />
     </button>
     {error && <p className="ws-popover" role="alert">{error}</p>}
+    {notice && <p className="ws-popover" role="status">{notice}</p>}
   </div>;
   return <div className="ws-stop" ref={root}>
     <button className="ws-icon-button ws-stop-button" aria-expanded={open} onClick={() => setOpen(!open)} aria-label="Stop all agents" title="Stop all agents">
       <Icon name="stop" size={16} />
     </button>
+    {!open && notice && <p className="ws-popover" role="status">{notice}</p>}
     {open && <div className="ws-popover" role="alertdialog" aria-label="Stop all agents">
       <p>Stop all agents? Active turns are cancelled and queued work is cleared. Chats and files are kept.</p>
       <div className="ws-popover-actions">
