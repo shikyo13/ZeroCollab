@@ -11,7 +11,7 @@ import type { LocalProviderStatus } from './ProfileEditor';
 
 type SignIn = {
   state: 'signed_in' | 'signed_out' | 'unknown';
-  billing?: 'subscription' | 'api' | 'unknown'; method?: string; detail?: string; command: string; reports?: boolean;
+  billing?: 'subscription' | 'api' | 'unknown' | null; method?: string; detail?: string; command: string; reports?: boolean;
 };
 type Cli = { installed: boolean; path?: string; version?: string; detail?: string; sign_in?: SignIn };
 type Server = { base_url: string; reachable: boolean; detail?: string; models?: string[]; model_count?: number };
@@ -22,7 +22,8 @@ type ProviderRow = {
 };
 /** Where servers share a default address (MLX LM and llama.cpp on 8080): port_taken_by names the one that
  * identified itself there; identity_unconfirmed marks one row for an answer that named no server. */
-type LocalServer = Server & { id: string; name: string; start_command: string; installed: boolean;
+type StartSpec = { available: boolean; command: string; saved: boolean; detail: string };
+type LocalServer = Server & { id: string; name: string; start_command: string; installed: boolean; start?: StartSpec;
   template: string | null; templates?: string[]; status: LocalProviderStatus; agents: string[];
   port_taken_by?: string; identity_unconfirmed?: boolean };
 export type ProviderStatus = { platform: string; providers: ProviderRow[]; local_servers: LocalServer[] };
@@ -53,8 +54,12 @@ function cliLine(row: ProviderRow): Line {
   // Sign in is offered only where the backend has the provider's official login command.
   const run = sign?.command ? <>Sign in opens <code>{sign.command}</code> in a new window</> : 'Sign in with its CLI, then Refresh connections';
   const signIn = sign?.command ? { label: 'Sign in', primary: true } : undefined;
+  if (row.provider === 'antigravity' && row.models.error)
+    return { label: 'Needs attention', tone: 'danger', details: [app, modelsLine(row.models), run], action: signIn };
   if (sign?.state === 'signed_in') {
     const details = [`${sign.method || 'Signed in'} · ${app}`, modelsLine(row.models)];
+    if (row.provider === 'antigravity') return { label: 'Signed in', tone: 'ok', details,
+      action: sign.command ? { label: 'Sign in again' } : undefined };
     if (sign.billing === 'api') {
       return { label: 'Signed in, API billing', tone: 'warn', details: [...details, 'Agents using this provider bill that API account'],
                action: sign.command ? { label: 'Change sign-in' } : undefined };
@@ -94,7 +99,8 @@ function localLine(local: LocalServer): Line {
   if (local.status === 'port_taken') {
     return { label: 'Port in use', tone: 'warn', details: [local.base_url, local.detail || `${local.port_taken_by || 'Another server'} is using this port`] };
   }
-  if (local.status === 'stopped') return { label: 'Not running', tone: 'muted', details: [local.base_url, startHint(local.start_command), 'Existing agents keep their provider and model.'] };
+  if (local.status === 'stopped') return { label: 'Not running', tone: 'muted', details: [local.base_url,
+    ...(local.start ? [] : [startHint(local.start_command)]), 'Existing agents keep their provider and model.'] };
   return { label: 'Not installed', tone: 'muted', details: [local.base_url] };
 }
 
@@ -131,6 +137,59 @@ function Row({ name, line, note, busy, onAction, manage, children }: RowProps) {
       {children}
     </li>
   );
+}
+
+/** Local actions stay on their row; starting never changes an agent's provider or model. */
+function LocalServerRow({ local, onChanged }: { local: LocalServer; onChanged: () => Promise<void> }) {
+  const [command, setCommand] = useState(local.start?.command || '');
+  const [busy, setBusy] = useState<'start' | 'save' | null>(null);
+  const [error, setError] = useState('');
+  const [note, setNote] = useState('');
+  const inFlight = useRef(false);
+  const savedCommand = local.start?.command || '';
+  useEffect(() => { setCommand(savedCommand); }, [savedCommand]);
+  const editableCommand = local.id === 'llamacpp' || local.id === 'mlx';
+  const dirty = command.trim() !== savedCommand;
+  const canStart = local.start?.available && (local.status === 'stopped' || local.status === 'not_installed');
+  const act = async (action: 'start' | 'save') => {
+    if (inFlight.current || !local.template) return;
+    inFlight.current = true;
+    setBusy(action); setError(''); setNote('');
+    try {
+      const path = `/providers/local/${encodeURIComponent(local.template)}`;
+      // runtime has no fetch deadline: the server may need its full 120 s to load a model.
+      if (action === 'start') {
+        const result = await runtime<{ ok: boolean; row: LocalServer | null }>(`${path}/start`, {});
+        setNote(result.row?.status === 'running' ? 'Server is running. Models refreshed.' : 'Start finished. Check the provider status below.');
+      } else {
+        await runtime(`${path}/start-command`, { command });
+        setNote(command.trim() ? 'Start command saved.' : 'Start command cleared.');
+      }
+      await onChanged();
+    } catch (e) { setError(errorMessage(e)); }
+    finally { inFlight.current = false; setBusy(null); }
+  };
+  return <Row name={local.name} line={localLine(local)} manage={canStart && (
+    <button type="button" className="bd-btn bd-btn-primary" disabled={!!busy || dirty}
+      title={dirty ? 'Save the command before starting' : undefined} onClick={() => void act('start')}>
+      {busy === 'start' ? 'Starting…' : 'Start'}
+    </button>
+  )} note={busy === 'start' ? 'Starting the server and loading its models… This can take up to 2 minutes.' : note}>
+    {local.start?.detail && <p className="bd-muted">{local.start.detail}</p>}
+    {editableCommand && local.template && <form onSubmit={event => { event.preventDefault(); void act('save'); }}>
+      <label htmlFor={`start-${local.id}`}>Start command</label>
+      <div className="pv-name">
+        <input id={`start-${local.id}`} value={command} onChange={event => setCommand(event.target.value)}
+          maxLength={2000} disabled={!!busy} spellCheck={false} style={{ flex: '1 1 240px', minWidth: 0 }} />
+        <button type="submit" className="bd-btn" disabled={!!busy || !dirty}>{busy === 'save' ? 'Saving…' : 'Save'}</button>
+      </div>
+    </form>}
+    <ErrorText message={error} />
+    {local.reachable && !!local.models?.length ? <details className="pv-models">
+      <summary>{local.models.length} {local.models.length === 1 ? 'model' : 'models'} advertised</summary>
+      <ul>{local.models.map(model => <li key={model}><code>{model}</code></li>)}</ul>
+    </details> : <p className="bd-muted">{local.status === 'running' ? 'No models advertised' : 'Model list unavailable'}</p>}
+  </Row>;
 }
 
 /** reload changes whenever the Team page's Refresh connections finishes, so the view re-checks. */
@@ -327,12 +386,7 @@ export function Providers({ reload, onChecked }: { reload: number; onChecked?: (
                         line={{ ...line, details: [...line.details, ...connectionFacts(def)] }} manage={manage(def)} />;
           })}
           {status.local_servers.map(local => (
-            <Row key={local.id} name={local.name} line={localLine(local)}>
-              {local.reachable && !!local.models?.length ? <details className="pv-models">
-                <summary>{local.models.length} {local.models.length === 1 ? 'model' : 'models'} advertised</summary>
-                <ul>{local.models.map(model => <li key={model}><code>{model}</code></li>)}</ul>
-              </details> : <p className="bd-muted">{local.status === 'running' ? 'No models advertised' : 'Model list unavailable'}</p>}
-            </Row>
+            <LocalServerRow key={local.id} local={local} onChanged={check} />
           ))}
         </ul>
         {editable && (
