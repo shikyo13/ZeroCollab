@@ -13,6 +13,7 @@ import '../board/board.css';
 import { ProfileEditor, type Profile, type ProfilesData } from './ProfileEditor';
 import { Providers } from './Providers';
 import { TeamBuilder } from './TeamBuilder';
+import { useReleaseGrant } from '../components/useReleaseGrant';
 import { leaveSuggestion, suggestionTarget } from '../lib/teamBuilder';
 import './team.css';
 
@@ -119,6 +120,7 @@ export default function Team() {
 
 function TeamHome() {
   const { data: runtimeState, error: runtimeError, refresh: refreshRuntime } = useRuntimeState();
+  const { view: releaseGrant } = useReleaseGrant(runtimeState?.project_id ?? '');
   const [data, setData] = useState<ProfilesData | null>(null);
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
@@ -288,6 +290,7 @@ function TeamHome() {
             profile={mode === 'add' ? null : profile}
             duplicate={mode === 'duplicate'}
             agent={profile ? runtimeState?.agents[profile.id] : undefined}
+            releasePermission={!!releaseGrant?.enabled && releaseGrant.profile === profile?.id}
             onDirty={onDirty}
             onSaved={async (id, message) => {
               setDirty(false);

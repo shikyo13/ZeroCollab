@@ -130,6 +130,7 @@ export function ProfileEditor({
   profile,
   duplicate,
   agent,
+  releasePermission = false,
   onDirty,
   onSaved,
   onDuplicate,
@@ -139,6 +140,7 @@ export function ProfileEditor({
   profile: Profile | null;
   duplicate: boolean;
   agent?: AgentState;
+  releasePermission?: boolean;
   onDirty: (dirty: boolean) => void;
   onSaved: (id: string, message: string) => void | Promise<void>;
   onDuplicate: () => void;
@@ -150,6 +152,8 @@ export function ProfileEditor({
   const [handleEdited, setHandleEdited] = useState(false);
   const save = useAction();
   const archive = useAction();
+  const providerChanged = editing && draft.template !== profile!.template;
+  const working = editing && agent?.state === 'working';
 
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
 
@@ -157,9 +161,9 @@ export function ProfileEditor({
   const catalog = provider?.controls;
   const models = useMemo(() => {
     const list = [...(catalog?.models ?? [])];
-    if (!list.some(m => m.value === draft.model)) list.unshift({ value: draft.model, label: (draft.model || 'Provider default') + ' · saved' });
+    if (!providerChanged && !list.some(m => m.value === draft.model)) list.unshift({ value: draft.model, label: (draft.model || 'Provider default') + ' · saved' });
     return list;
-  }, [catalog, draft.model]);
+  }, [catalog, draft.model, providerChanged]);
   const efforts = catalog?.models.find(m => m.value === draft.model)?.efforts ?? [];
 
   const update = (patch: Partial<Draft>) => {
@@ -183,7 +187,7 @@ export function ProfileEditor({
       setDirty(false);
       await onSaved(
         (saved as Profile).id,
-        editing ? 'Saved. Name and handle are updated; model and effort apply from the next turn.' : data.paused ? 'Agent added. The room remains stopped.' : 'Agent added. It will respond when addressed.',
+        editing ? providerChanged ? 'Saved. The next turn starts a fresh session with the selected provider.' : 'Saved. Name and handle are updated; model and effort apply from the next turn.' : data.paused ? 'Agent added. The room remains stopped.' : 'Agent added. It will respond when addressed.',
       );
     }
   };
@@ -213,8 +217,9 @@ export function ProfileEditor({
       : handleValue !== savedHandle
         ? `@${savedHandle} keeps working for earlier messages and tasks.`
         : 'Rename any time; earlier handles keep working.';
-  // Edits keep saving without a catalog (the server only checks model/effort when they change).
-  const saveDisabled = save.busy || !!problem || (!editing && (!!catalog?.error || !!catalog?.loading));
+  // Cosmetic edits keep saving offline; moving connections requires the destination's catalog.
+  const saveDisabled = save.busy || !!problem || ((!editing || providerChanged) &&
+    (!!catalog?.error || !!catalog?.loading || !catalog?.models.length)) || (providerChanged && working);
   const initials = (draft.name.trim() || 'Expert').slice(0, 2).toUpperCase();
 
   return (
@@ -226,7 +231,7 @@ export function ProfileEditor({
         <div>
           <h2>{editing ? `Edit ${profile!.name}` : duplicate ? 'Duplicate agent' : 'Add an agent'}</h2>
           <p className="bd-muted">
-            {editing ? 'Name and handle update everywhere when you save. Model and effort apply from the next turn.' : 'Give them a perspective. The team works together.'}
+            {editing ? 'Name and handle update everywhere when you save. Provider, model and effort apply from the next turn.' : 'Give them a perspective. The team works together.'}
           </p>
         </div>
       </div>
@@ -268,22 +273,24 @@ export function ProfileEditor({
       </div>
 
       <div className="bd-form-row">
-        <Field label="Provider" hint={editing ? 'Duplicate the agent to use a different provider.' : undefined}>
+        <Field label="Provider" hint={editing ? 'Switching provider starts a fresh session from the next turn. Board, chat and tasks carry over; the old provider\'s private conversation does not.' : undefined}>
           <select
             value={draft.template}
-            disabled={editing}
+            disabled={working || save.busy}
             onChange={e => {
               const next = data.providers.find(p => p.id === e.target.value);
+              const selectedModel = next?.controls.selected?.model;
+              const model = next?.controls.models.find(m => m.value === selectedModel)?.value ?? next?.controls.models[0]?.value ?? '';
               update({
                 template: e.target.value,
-                color: next?.color || '#8b5cf6',
-                model: next?.controls.selected?.model ?? next?.controls.models[0]?.value ?? '',
+                color: editing ? draft.color : next?.color || '#8b5cf6',
+                model,
                 effort: '',
               });
             }}
           >
-            {/* A switched-off API key connection is not offered for new agents or copies; an agent being edited keeps showing its own. */}
-            {data.providers.filter(p => p.offered !== false || (editing && p.id === draft.template)).map(p => (
+            {/* A switched-off connection remains visible only to the member already using it. */}
+            {data.providers.filter(p => p.offered !== false || (editing && p.id === profile!.template)).map(p => (
               <option key={p.id} value={p.id}>
                 {p.label}
               </option>
@@ -312,9 +319,13 @@ export function ProfileEditor({
         </div>
       </div>
 
+      {working && <p className="bd-muted">Wait for this agent's current turn to finish before switching provider.</p>}
+      {editing && releasePermission && <p className="bd-muted">Its release permission turns off when you switch provider; turn it on again in Team.</p>}
+
       <div className="bd-form-row">
         <Field label="Model">
           <select value={draft.model} disabled={!catalog?.models.length} onChange={e => update({ model: e.target.value, effort: '' })}>
+            {!models.length && <option value="">No models available</option>}
             {models.map(m => (
               <option key={m.value} value={m.value}>
                 {m.label}
