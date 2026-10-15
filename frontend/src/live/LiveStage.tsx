@@ -45,21 +45,34 @@ function wordWrap(name: string, max: number) {
   ctx.font = BUBBLE_FONT;
   const space = ctx.measureText(' ').width;
   let lines = 1, widest = x;
+  const newLine = () => { lines++; widest = Math.max(widest, x - space); x = 0; };
+  /** Places a word's characters, stopping before any that would start line `maxLines + 1`; returns how many fit. */
+  const place = (word: string, maxLines: number) => {
+    const w = ctx.measureText(word).width;
+    if (x > 0 && x + w > inner) { if (lines >= maxLines) return 0; newLine(); }
+    if (w <= inner) { x += w + space; return word.length; }
+    // Longer than a line (a link, a hash): .sb-text's overflow-wrap: anywhere breaks it wherever it overflows.
+    let n = 0;
+    for (const ch of word) {
+      const c = ctx.measureText(ch).width;
+      if (x > 0 && x + c > inner) { if (lines >= maxLines) return n; newLine(); widest = inner; }
+      x += c; n += ch.length;
+    }
+    x += space;
+    return n;
+  };
   return {
-    add(word: string) {
-      const w = ctx.measureText(word).width;
-      if (x > 0 && x + w > inner) { lines++; widest = Math.max(widest, x - space); x = 0; }
-      x += Math.min(w, inner) + space;
-      return lines;
-    },
+    add(word: string) { place(word, Infinity); return lines; },
+    /** The longest start of `word` that keeps the layout within `maxLines`, in characters. */
+    fit(word: string, maxLines: number) { return place(word, maxLines); },
     get lines() { return lines; },
     get widest() { return Math.max(widest, x - space); },
   };
 }
-export function bubbleSize(name: string, text: string, max = BUBBLE_MAX, maxLines = BUBBLE_LINES): { w: number; h: number } {
+export function bubbleSize(name: string, text: string, max = BUBBLE_MAX, maxLines = BUBBLE_LINES): { w: number; h: number; lines: number } {
   const wrap = wordWrap(name, max);
   for (const word of plainSpeech(text).split(/\s+/).filter(Boolean)) wrap.add(word);
-  return { w: Math.ceil(Math.min(max, Math.max(BUBBLE_MIN, wrap.widest + BUBBLE_PAD_X + 2))), h: Math.min(wrap.lines, maxLines) * BUBBLE_LINE + BUBBLE_PAD_Y };
+  return { w: Math.ceil(Math.min(max, Math.max(BUBBLE_MIN, wrap.widest + BUBBLE_PAD_X + 2))), h: Math.min(wrap.lines, maxLines) * BUBBLE_LINE + BUBBLE_PAD_Y, lines: wrap.lines };
 }
 
 // Reading pace (Zero #18710: bubbles cut text off because they scrolled as fast as it streamed). A closed bubble
@@ -70,10 +83,17 @@ export function bubbleSize(name: string, text: string, max = BUBBLE_MAX, maxLine
 const READ_WPM = 230, PAGE_MIN_S = 2.4, PAGE_EXTRA_S = 1;
 const PAGE_BACKLOG_CHARS = 700;   // more unread than this, and the next page starts at the newest sentences
 const STREAM_S = 2;               // words this fresh may still be mid-word: the last one waits for the next
-const pageReadS = (page: string) => Math.max(PAGE_MIN_S, page.split(/\s+/).filter(Boolean).length / READ_WPM * 60 + PAGE_EXTRA_S);
+const wordsReadS = (words: string) => words.split(/\s+/).filter(Boolean).length / READ_WPM * 60;
 const SENTENCE_END = /[.!?…:]["')\]]*$/;
-/** One person's place in what they are saying: the text read so far and the page on show. */
-interface Reading { text: string; start: number; end: number; at: number; streaming: boolean }
+/** One person's place in what they are saying: the text read so far, the page on show, when that page opened
+ * (`at`) and when a reader who started then finishes the words on it so far (`readBy`). */
+interface Reading { text: string; start: number; end: number; at: number; readBy: number; streaming: boolean }
+/** The page grew from `r.end` to `end` at `now`: the reader reads the new words after the ones before, and not
+ * before they arrived, so words that land late on a page get their own reading time (design 9980f446). */
+const grown = (r: Reading, text: string, end: number, now: number) =>
+  end > r.end ? Math.max(r.readBy, now) + wordsReadS(text.slice(r.end, end)) : r.readBy;
+/** When a page may turn: once its words are read, plus a beat, and never sooner than PAGE_MIN_S after it opened. */
+const pageTurnAt = (r: Reading) => Math.max(r.at + PAGE_MIN_S, r.readBy + PAGE_EXTRA_S);
 /** Where the page that starts at `start` ends: as many words as fit, never fewer than the `shown` end (what is
  * already on screen stays), and, when the page is full, after its last whole sentence if one ends past `shown`. */
 function pageEnd(name: string, text: string, start: number, shown: number, streaming: boolean): number {
@@ -85,7 +105,12 @@ function pageEnd(name: string, text: string, start: number, shown: number, strea
     if (streaming && e === text.length) break;   // possibly half a word
     // A page already on its last lines ends with its sentence rather than start one it can't finish.
     if (e > end && sentence === end && end > start && wrap.lines >= BUBBLE_LINES - 1) { full = true; break; }
-    if (wrap.add(m[0]) > BUBBLE_LINES) { full = true; break; }
+    if (wrap.add(m[0]) > BUBBLE_LINES) {
+      // A page's first word longer than the whole page (a long link) is cut where the page fills; the rest of it
+      // starts the next page, so reading never stalls and nothing is clipped (design 9980f446).
+      if (end === start) end = m.index + Math.max(1, wordWrap(name, BUBBLE_MAX).fit(m[0], BUBBLE_LINES));
+      full = true; break;
+    }
     if (e > end) end = e;
     if (SENTENCE_END.test(m[0])) sentence = e;
   }
@@ -376,17 +401,21 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     const text = plainSpeech(a.speech), streaming = a.state === 'working' && now - a.speechAt < STREAM_S;
     let r = readings.current.get(a.id);
     // A different message (not the one on show, grown) starts reading from its beginning.
-    if (!r || !text.startsWith(r.text.slice(0, r.end))) r = { text, start: 0, end: 0, at: now, streaming };
-    if (r.text !== text || r.streaming !== streaming || r.end === 0) r = { ...r, text, streaming, end: pageEnd(a.short, text, r.start, r.end, streaming) };
+    if (!r || !text.startsWith(r.text.slice(0, r.end))) r = { text, start: 0, end: 0, at: now, readBy: now, streaming };
+    if (r.text !== text || r.streaming !== streaming || r.end === 0) {
+      const end = pageEnd(a.short, text, r.start, r.end, streaming);
+      r = { ...r, text, streaming, end, readBy: grown(r, text, end, now) };
+    }
     const after = (t: string, i: number) => i + (t.slice(i).length - t.slice(i).trimStart().length);
     const next = after(text, r.end);
-    if (next < text.length && now - r.at >= pageReadS(text.slice(r.start, r.end))) {
+    if (next < text.length && now >= pageTurnAt(r)) {
       const start = text.length - next > PAGE_BACKLOG_CHARS ? catchUp(text) : next;
-      r = { text, streaming, start, end: pageEnd(a.short, text, start, start, streaming), at: now };
+      const end = pageEnd(a.short, text, start, start, streaming);
+      // Only turn to a page with words on it: what is left may be one word still streaming, held until it settles.
+      if (end > start) r = { text, streaming, start, end, at: now, readBy: now + wordsReadS(text.slice(start, end)) };
     }
     readings.current.set(a.id, r);
-    const page = text.slice(r.start, r.end);
-    pages.set(a.id, { page, more: after(text, r.end) < text.length, turnAt: r.at + pageReadS(page) });
+    pages.set(a.id, { page: text.slice(r.start, r.end), more: after(text, r.end) < text.length, turnAt: pageTurnAt(r) });
   }
   // A new page remounts the closed bubble, so it enters with the bubble's fade-in. An open bubble keeps its key:
   // remounting it would drop the reader's hover, focus or pin.
@@ -405,9 +434,12 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     .sort((p, q) => Number(isOpen(q.id)) - Number(isOpen(p.id)) || q.speechAt - p.speechAt).slice(0, bubbleCap(size.w, size.h));
   // A bubble leaves, or turns its page, when its time is up even if nothing else happens in the room: one timer, no loop.
   const [, setSpeechTick] = useState(0);
-  const nextSpeechEnd = Math.min(Infinity, ...feed.agents.filter(a => speaking(a) && !isOpen(a.id)).flatMap(a => {
-    const p = pages.get(a.id)!;
-    return [a.speechAt + shownFor(a), p.turnAt, a.speechAt + STREAM_S].filter(t => t > now);
+  // A word held back while it may still be streaming is released STREAM_S after the speech last changed, whether or
+  // not a page is on show yet (a reply that so far is one word, "Done", has none): that release needs its own wake.
+  const pendingWord = (a: LiveAgent) => !!readings.current.get(a.id)?.streaming;
+  const nextSpeechEnd = Math.min(Infinity, ...feed.agents.flatMap(a => {
+    const shown = speaking(a) && !isOpen(a.id), p = pages.get(a.id);
+    return [...(shown && p ? [a.speechAt + shownFor(a), p.turnAt] : []), ...(shown || pendingWord(a) ? [a.speechAt + STREAM_S] : [])].filter(t => t > now);
   }));
   useEffect(() => {
     if (paused || !Number.isFinite(nextSpeechEnd)) return;
@@ -454,7 +486,9 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     // Full width beside the person, else narrower beside them, else the nearest clear spot a little farther out.
     const taken = [...blockers, ...bubbles.flatMap(b => b.rect ? [b.rect] : [])];
     const sized = (max: number) => { const e = bubbleSize(agent.short, pages.get(agent.id)!.page, max, BUBBLE_NARROW_LINES); return box && box.w === e.w ? { w: box.w, h: box.h } : e; };
-    const spot = placeBubble(seat, sized(BUBBLE_MAX), taken, stage) ?? placeBubble(seat, sized(BUBBLE_NARROW), taken, stage)
+    // The narrow bubble only when the page still fits its lines there; otherwise it would clip the page's start.
+    const narrow = bubbleSize(agent.short, pages.get(agent.id)!.page, BUBBLE_NARROW, BUBBLE_NARROW_LINES).lines <= BUBBLE_NARROW_LINES;
+    const spot = placeBubble(seat, sized(BUBBLE_MAX), taken, stage) ?? (narrow ? placeBubble(seat, sized(BUBBLE_NARROW), taken, stage) : null)
       ?? placeBubble(seat, sized(BUBBLE_MAX), taken, stage, undefined, BUBBLE_REACH);
     if (spot) heldSpot.current.set(agent.id, { ...spot });
     bubbles.push({ agent, rect: spot?.rect ?? null, side: spot?.side });
