@@ -182,7 +182,8 @@ let composerUploadId = 0;
 
 function setupPaste() {
     document.getElementById('input').addEventListener('paste', e => {
-        const refs = FileReferences.clipboardPaths(e.clipboardData?.getData('text/plain'));
+        const text = e.clipboardData?.getData('text/plain');
+        const refs = FileReferences.clipboardEntries(text);
         if (refs) {
             if (window.chatSessionReadonly?.(activeChannel)) return;
             e.preventDefault(); void referenceComposerFiles(refs); return;
@@ -252,7 +253,24 @@ function setupDragDrop() {
 
 function offerComposerFiles(files) {
     if (window.chatSessionReadonly?.(activeChannel)) return;
-    FileReferences.offerFiles(activeChannel, files, uploadComposerFiles, repositionScrollAnchor);
+    const channel = activeChannel;
+    const paths = files.map(file => {
+        try { return window.ZeroCollabDesktop?.pathForFile?.(file) || ''; }
+        catch { return ''; }
+    });
+    if (paths.length && paths.every(path => FileReferences.isReferencePath(path))) {
+        void referenceComposerFiles(paths.map(reference => ({ reference, fallback: reference + '\n' })));
+        return;
+    }
+    FileReferences.offerFiles(channel, files, uploadComposerFiles, repositionScrollAnchor, async () => {
+        let text;
+        try { text = await navigator.clipboard.readText(); }
+        catch { throw new Error('Clipboard unavailable. Copy the path in Explorer with Ctrl+Shift+C, then paste here with Ctrl+V.'); }
+        if (channel !== activeChannel) throw new Error('The chat changed. Paste the path in the intended chat.');
+        const refs = FileReferences.clipboardEntries(text);
+        if (!refs) throw new Error('Copy the path first: in Explorer select it and press Ctrl+Shift+C.');
+        await referenceComposerFiles(refs);
+    });
 }
 
 function renderComposerUploads() {
@@ -318,6 +336,18 @@ function uploadAnchorPosition(anchor, text) {
     return prefix + text.length - prefix - suffix;
 }
 
+function insertComposerText(insertion, channel, anchor) {
+    const input = document.getElementById('input');
+    const draft = channel === activeChannel ? null : (sessionDrafts.get(channel) || { text: '', attachments: [] });
+    const text = draft ? draft.text : input.value;
+    const pos = Math.max(0, Math.min(text.length, uploadAnchorPosition(anchor, text)));
+    const next = text.slice(0, pos) + insertion + text.slice(pos);
+    anchor.text = next; anchor.position = pos + insertion.length;
+    if (draft) { draft.text = next; sessionDrafts.set(channel, draft); }
+    else { input.value = next; input.setSelectionRange(anchor.position, anchor.position); input.dispatchEvent(new Event('input', { bubbles: true })); }
+    window.ReleaseComposing?.changed();
+}
+
 function insertComposerAttachment(attachment, channel, anchor) {
     const input = document.getElementById('input');
     if (attachment.kind === 'image') {
@@ -334,10 +364,7 @@ function insertComposerAttachment(attachment, channel, anchor) {
     const label = attachment.name.replace(/[\[\]\\\r\n]/g, ' ');
     const link = `[${label}](${attachment.url})`;
     const insertion = (pos && !/\s/.test(text[pos - 1]) ? '\n' : '') + link + '\n';
-    const next = text.slice(0, pos) + insertion + text.slice(pos);
-    anchor.text = next; anchor.position = pos + insertion.length;
-    if (draft) { draft.text = next; sessionDrafts.set(channel, draft); }
-    else { input.value = next; input.setSelectionRange(anchor.position, anchor.position); input.dispatchEvent(new Event('input', { bubbles: true })); }
+    insertComposerText(insertion, channel, anchor);
     composerLinks.set(channel, [...(composerLinks.get(channel) || []), attachment]);
     window.ReleaseComposing?.changed();
 }
@@ -359,7 +386,13 @@ async function transferComposerFiles(items, operation, request) {
             insertComposerAttachment(data, channel, anchor);
             composerUploads.delete(id);
             if (item.reference) FileReferences.clearChoice(channel, uploadComposerFiles, repositionScrollAnchor);
-        } catch (error) { job.state = 'error'; job.error = error.message || `${operation} failed`; }
+        } catch (error) {
+            job.state = 'error'; job.error = error.message || `${operation} failed`;
+            if (item.fallback) {
+                insertComposerText(item.fallback, channel, anchor);
+                job.error += ' Kept as text in your draft.';
+            }
+        }
         renderComposerUploads();
     }
 }
@@ -375,7 +408,10 @@ async function uploadComposerFiles(files) {
 }
 
 async function referenceComposerFiles(refs) {
-    await transferComposerFiles(refs.map(reference => ({ name: reference, reference })), 'Referencing',
+    await transferComposerFiles(refs.map(ref => {
+        const item = typeof ref === 'string' ? { reference: ref } : ref;
+        return { ...item, name: item.reference };
+    }), 'Referencing',
         item => FileReferences.register(item.reference));
 }
 

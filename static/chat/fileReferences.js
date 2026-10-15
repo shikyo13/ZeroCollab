@@ -37,6 +37,21 @@ window.FileReferences = (() => {
         return lines.length && lines.every(isReferencePath) ? lines : null;
     }
 
+    // Keep quotes, spaces and separators for text fallback without changing recognition.
+    function clipboardEntries(text) {
+        if (!clipboardPaths(text)) return null;
+        const entries = [];
+        let pending = '';
+        for (const line of text.match(/[^\n]*(?:\n|$)/g).filter(Boolean)) {
+            pending += line;
+            if (!line.trim()) continue;
+            entries.push({ reference: unquote(line), fallback: pending });
+            pending = '';
+        }
+        if (pending) entries[entries.length - 1].fallback += pending;
+        return entries;
+    }
+
     function mediaURL(value) {
         try {
             const url = new URL(value, location.href);
@@ -83,7 +98,13 @@ window.FileReferences = (() => {
         hint.textContent = 'Link the original: paste its path (Explorer: Ctrl+Shift+C). Nothing has been copied.';
         if (choice.overflow) hint.textContent += ` Only the first ${MAX_PENDING_FILES} files are selected.`;
         const actions = document.createElement('div'); actions.className = 'composer-file-actions';
-        actions.append(button('Paste a path', () => document.getElementById('input').focus()),
+        actions.append(button('Paste a path', async () => {
+            try { await choice.paste(); }
+            catch (error) {
+                hint.textContent = error.message || 'Copy the path first: in Explorer select it and press Ctrl+Shift+C.';
+                document.getElementById('input').focus();
+            }
+        }),
             button('Upload a copy', () => {
                 choices.delete(channel); renderChoice(channel, upload, changed); changed();
                 void upload(choice.files);
@@ -91,10 +112,10 @@ window.FileReferences = (() => {
         host.append(summary, hint, actions);
     }
 
-    function offerFiles(channel, files, upload, changed) {
+    function offerFiles(channel, files, upload, changed, paste) {
         if (!files.length) return;
         const batch = [...(choices.get(channel)?.files || []), ...files];
-        choices.set(channel, { files: batch.slice(0, MAX_PENDING_FILES), overflow: batch.length > MAX_PENDING_FILES });
+        choices.set(channel, { files: batch.slice(0, MAX_PENDING_FILES), overflow: batch.length > MAX_PENDING_FILES, paste });
         renderChoice(channel, upload, changed); changed();
     }
 
@@ -120,6 +141,6 @@ window.FileReferences = (() => {
         } catch { /* Keep the useful local-file error if the connection is unavailable. */ }
     }
 
-    return Object.freeze({ clipboardPaths, isReferencePath, mediaURL, authenticatedURL, register,
+    return Object.freeze({ clipboardPaths, clipboardEntries, isReferencePath, mediaURL, authenticatedURL, register,
         offerFiles, renderChoice, clearChoice, explainFailure, hasPendingChoice: () => choices.size > 0 });
 })();
