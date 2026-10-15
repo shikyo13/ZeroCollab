@@ -7,6 +7,7 @@ import { errorMessage, runtime } from '../lib/api';
 import { ErrorText } from '../board/shared';
 import { ProviderForm, type FormRequest, type ProviderDef, type ProviderDefs } from './ProviderForm';
 import { ApiKeys, isKeyed } from './ApiKeys';
+import type { LocalProviderStatus } from './ProfileEditor';
 
 type SignIn = {
   state: 'signed_in' | 'signed_out' | 'unknown';
@@ -21,7 +22,8 @@ type ProviderRow = {
 };
 /** Where servers share a default address (MLX LM and llama.cpp on 8080): port_taken_by names the one that
  * identified itself there; identity_unconfirmed marks one row for an answer that named no server. */
-type LocalServer = Server & { id: string; name: string; start_command: string; installed: boolean; configured: boolean;
+type LocalServer = Server & { id: string; name: string; start_command: string; installed: boolean;
+  template: string | null; templates?: string[]; status: LocalProviderStatus; agents: string[];
   port_taken_by?: string; identity_unconfirmed?: boolean };
 export type ProviderStatus = { platform: string; providers: ProviderRow[]; local_servers: LocalServer[] };
 
@@ -84,16 +86,15 @@ function serverLine(server: Server, start?: string): Line {
 }
 
 function localLine(local: LocalServer): Line {
-  if (local.reachable && local.identity_unconfirmed) {
+  if (local.status === 'unidentified') {
     return { label: 'Running, not identified', tone: 'warn', details: [`${local.base_url} · ${local.model_count ?? 0} models served`,
-      `A compatible server answered but did not say whether it is ${local.name}`] };
+      local.detail || `A compatible server answered but did not say whether it is ${local.name}`, 'Choose a named connection until this server is identified.'] };
   }
-  if (local.reachable) return { label: 'Running', tone: 'ok', details: [`${local.base_url} · ${local.model_count ?? 0} models served`, 'Not added as a provider yet'] };
-  if (local.port_taken_by) {
-    return { label: local.installed ? 'Installed, port in use' : 'Not installed', tone: 'muted',
-             details: [`${local.base_url} · ${local.port_taken_by} is using this port`, ...(local.installed ? [`Only one server can use this address; stop ${local.port_taken_by} to use ${local.name} here`] : [])] };
+  if (local.status === 'running') return { label: 'Running', tone: 'ok', details: [local.base_url, 'Choose this provider in an agent’s edit card.'] };
+  if (local.status === 'port_taken') {
+    return { label: 'Port in use', tone: 'warn', details: [local.base_url, local.detail || `${local.port_taken_by || 'Another server'} is using this port`] };
   }
-  if (local.installed) return { label: 'Installed, not running', tone: 'muted', details: [local.base_url, startHint(local.start_command)] };
+  if (local.status === 'stopped') return { label: 'Not running', tone: 'muted', details: [local.base_url, startHint(local.start_command), 'Existing agents keep their provider and model.'] };
   return { label: 'Not installed', tone: 'muted', details: [local.base_url] };
 }
 
@@ -108,9 +109,9 @@ function connectionFacts(def: ProviderDef | undefined): string[] {
   return def.local ? [`Runs with Codex · ${def.limits ?? ''}`, context, check] : [context, check];
 }
 
-type RowProps ={ name: string; line: Line; note?: string; busy?: boolean; onAction?: () => void; manage?: React.ReactNode };
+type RowProps ={ name: string; line: Line; note?: string; busy?: boolean; onAction?: () => void; manage?: React.ReactNode; children?: React.ReactNode };
 
-function Row({ name, line, note, busy, onAction, manage }: RowProps) {
+function Row({ name, line, note, busy, onAction, manage, children }: RowProps) {
   return (
     <li className="pv-row">
       <div className="pv-name">
@@ -127,12 +128,13 @@ function Row({ name, line, note, busy, onAction, manage }: RowProps) {
       </div>
       {line.details.map((detail, i) => <p key={i} className="bd-muted">{detail}</p>)}
       {note && <p className="pv-pending" role="status">{note}</p>}
+      {children}
     </li>
   );
 }
 
 /** reload changes whenever the Team page's Refresh connections finishes, so the view re-checks. */
-export function Providers({ reload }: { reload: number }) {
+export function Providers({ reload, onChecked }: { reload: number; onChecked?: () => void }) {
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(false);
@@ -160,6 +162,7 @@ export function Providers({ reload }: { reload: number }) {
     setChecking(true);
     try {
       setStatus(await runtime<ProviderStatus>('/providers/status'));
+      onChecked?.();
       setError('');
       setChecked(new Date());
     } catch (e) {
@@ -168,7 +171,7 @@ export function Providers({ reload }: { reload: number }) {
       inFlight.current = false;
       setChecking(false);
     }
-  }, []);
+  }, [onChecked]);
   useEffect(() => { void check(); }, [check, reload]);
 
   const pendingRef = useRef(pending);
@@ -257,9 +260,6 @@ export function Providers({ reload }: { reload: number }) {
   const configured = status.providers.filter(p => p.server && !isKeyed(defById.get(p.template)));
   const keyed = (defs?.providers ?? []).filter(isKeyed);
   const keyedServers = Object.fromEntries(status.providers.filter(p => p.server).map(p => [p.template, p.server]));
-  // Servers can share a default address (MLX LM and llama.cpp on 8080); only one is the configured one.
-  const localByBase = new Map(status.local_servers.filter(s => s.configured).map(s => [s.base_url.replace(/\/$/, ''), s]));
-  const unconfigured = status.local_servers.filter(s => !s.configured);
   const when = checking ? 'Checking…' : checked ? `Checked at ${checked.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
   const editable = !defs?.error;
 
@@ -321,20 +321,18 @@ export function Providers({ reload }: { reload: number }) {
         <ul className="pv-list">
           {configured.map(row => {
             const server = row.server!;
-            const local = localByBase.get(server.base_url.replace(/\/$/, ''));
             const def = defById.get(row.template);
-            const line = serverLine(server, local?.start_command);
-            return <Row key={row.template} name={local ? `${row.label} (${local.name})` : row.label}
+            const line = serverLine(server);
+            return <Row key={row.template} name={row.label}
                         line={{ ...line, details: [...line.details, ...connectionFacts(def)] }} manage={manage(def)} />;
           })}
-          {unconfigured.map(local => (
-            <Row key={local.id} name={local.name} line={localLine(local)}
-                 manage={editable && local.reachable && (
-                   <button type="button" className="bd-btn bd-btn-primary pv-small"
-                     onClick={() => setForm({ mode: 'create', provider: 'api', label: local.identity_unconfirmed ? 'Local model' : local.name, base_url: local.base_url })}>
-                     Add as provider
-                   </button>
-                 )} />
+          {status.local_servers.map(local => (
+            <Row key={local.id} name={local.name} line={localLine(local)}>
+              {local.reachable && !!local.models?.length ? <details className="pv-models">
+                <summary>{local.models.length} {local.models.length === 1 ? 'model' : 'models'} advertised</summary>
+                <ul>{local.models.map(model => <li key={model}><code>{model}</code></li>)}</ul>
+              </details> : <p className="bd-muted">{local.status === 'running' ? 'No models advertised' : 'Model list unavailable'}</p>}
+            </Row>
           ))}
         </ul>
         {editable && (

@@ -101,7 +101,7 @@ function AgentRow({
   );
 }
 
-export default function Team() {
+export default function Team({ active }: { active: boolean }) {
   const [target, setTarget] = useState(suggestionTarget);
   useEffect(() => {
     const read = () => setTarget(suggestionTarget());
@@ -109,7 +109,7 @@ export default function Team() {
     return () => window.removeEventListener('popstate', read);
   }, []);
   return <>
-    <div hidden={!!target}><TeamHome /></div>
+    <div hidden={!!target}><TeamHome active={active && !target} /></div>
     {target && <div className="bd-root tm-root"><TeamBuilder
       key={`${target.project}:${target.proposal}`} target={target}
       onClose={() => { leaveSuggestion(); window.setTimeout(() => document.querySelector<HTMLElement>('.tm-root h1')?.focus(), 0); }}
@@ -118,7 +118,7 @@ export default function Team() {
   </>;
 }
 
-function TeamHome() {
+function TeamHome({ active }: { active: boolean }) {
   const { data: runtimeState, error: runtimeError, refresh: refreshRuntime } = useRuntimeState();
   const { view: releaseGrant } = useReleaseGrant(runtimeState?.project_id ?? '');
   const [data, setData] = useState<ProfilesData | null>(null);
@@ -156,6 +156,12 @@ function TeamHome() {
       if (next) setSelected(cur => cur ?? next.profiles.find(p => !p.archived)?.id ?? null);
     });
   }, [load]);
+  useEffect(() => {
+    if (!active) return;
+    // Discovery refreshes the catalogs that /profiles exposes to the editor.
+    void runtime('/providers/status').then(() => load()).catch(e => setLoadError(errorMessage(e)));
+  }, [active, load]);
+  const providersChecked = useCallback(() => { void load(); }, [load]);
   // broadcast_agents follows every profile change; catalogs arrive with runtime refreshes.
   useRoomEvent('agents', () => void load());
 
@@ -195,7 +201,7 @@ function TeamHome() {
   }
 
   const providerLabel = (template: string) => data.providers.find(p => p.id === template)?.label || template;
-  const active = data.profiles.filter(p => !p.archived).length;
+  const activeCount = data.profiles.filter(p => !p.archived).length;
 
   return (
     <div className="bd-root tm-root">
@@ -203,7 +209,7 @@ function TeamHome() {
         <div>
           <h1 className="bd-title" tabIndex={-1}>Team</h1>
           <p className="bd-muted">
-            {active} active {active === 1 ? 'agent' : 'agents'}
+            {activeCount} active {activeCount === 1 ? 'agent' : 'agents'}
             {data.paused ? ' · room stopped' : ''}. Each agent has its own prompt, model, inbox, task ownership and working tree.
           </p>
         </div>
@@ -215,6 +221,7 @@ function TeamHome() {
             title="Re-check provider sign-in and reload model catalogs"
             onClick={() => guarded() || void refreshAction.run(async () => {
               await runtime('/refresh', {});
+              await runtime('/providers/status');
               await load();
               setChecks(n => n + 1);
             })}
@@ -239,12 +246,12 @@ function TeamHome() {
       <ProjectManagerControls key={runtimeState?.project_id ?? runtimeState?.project} state={runtimeState} refresh={refreshRuntime} />
       <nav className="bd-tabs tm-sections" aria-label="Team sections">
         <button type="button" className="bd-tab" aria-current={section === 'agents' ? 'page' : undefined}
-          onClick={() => guarded('Save or cancel your changes first.') || setSection('agents')}>Agents ({active})</button>
+          onClick={() => guarded('Save or cancel your changes first.') || setSection('agents')}>Agents ({activeCount})</button>
         <button type="button" className="bd-tab" aria-current={section === 'providers' ? 'page' : undefined}
           onClick={() => guarded('Save or cancel your changes first.') || setSection('providers')}>Providers</button>
       </nav>
 
-      {section === 'providers' ? <Providers reload={checks} /> : <div className="tm-layout">
+      {section === 'providers' ? <Providers reload={checks} onChecked={providersChecked} /> : <div className="tm-layout">
         <section className="tm-roster" aria-label="Agents">
           {visible.length ? (
             <ul className="tm-agents">

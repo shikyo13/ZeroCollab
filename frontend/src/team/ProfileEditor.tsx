@@ -29,11 +29,15 @@ interface ModelOption {
   efforts?: string[];
 }
 
+export type LocalProviderStatus = 'running' | 'stopped' | 'not_installed' | 'port_taken' | 'unidentified';
+
 export interface ProviderInfo {
   id: string;
   provider: string;
   label: string;
   color: string;
+  kind?: 'subscription' | 'local' | 'connection';
+  local?: { server: string; status: LocalProviderStatus; detail: string; start_command: string; base_url: string; checked_at: number } | null;
   /** False for an API key connection that is switched off: Add agent does not offer it. */
   offered?: boolean;
   controls: {
@@ -54,6 +58,11 @@ export interface ProfilesData {
 }
 
 const SWATCHES = ['#8b5cf6', '#3b82f6', '#14b8a6', '#22c55e', '#f59e0b', '#f97316', '#ec4899'];
+
+function defaultModel(provider: ProviderInfo | undefined): string {
+  const models = provider?.controls.models ?? [];
+  return models.find(m => m.value === provider?.controls.selected?.model)?.value ?? models[0]?.value ?? '';
+}
 
 /** Every name that routes to a profile: its id, current handle and previous handles. */
 function namesOf(p: Profile): string[] {
@@ -108,7 +117,7 @@ function initialDraft(data: ProfilesData, profile: Profile | null, duplicate: bo
       handle: duplicate ? id : profile.handle || profile.id,
       template: moved ? provider?.id ?? '' : profile.template,
       color: profile.color,
-      model: moved ? provider?.controls.selected?.model ?? provider?.controls.models[0]?.value ?? '' : profile.model,
+      model: moved ? defaultModel(provider) : profile.model,
       effort: moved ? '' : profile.effort || '',
       background: profile.background || '',
     };
@@ -119,7 +128,7 @@ function initialDraft(data: ProfilesData, profile: Profile | null, duplicate: bo
     handle: '',
     template: provider?.id ?? '',
     color: provider?.color || '#8b5cf6',
-    model: provider?.controls.selected?.model ?? provider?.controls.models[0]?.value ?? '',
+    model: defaultModel(provider),
     effort: '',
     background: '',
   };
@@ -159,12 +168,15 @@ export function ProfileEditor({
 
   const provider = data.providers.find(p => p.id === draft.template);
   const catalog = provider?.controls;
+  const localUnavailable = !!provider?.local && provider.local.status !== 'running';
+  const selectionChanged = !editing || providerChanged || draft.model !== profile!.model;
   const models = useMemo(() => {
     const list = [...(catalog?.models ?? [])];
-    if (!providerChanged && !list.some(m => m.value === draft.model)) list.unshift({ value: draft.model, label: (draft.model || 'Provider default') + ' · saved' });
+    if (editing && !providerChanged && !list.some(m => m.value === draft.model)) list.unshift({ value: draft.model, label: (draft.model || 'Provider default') + ' · saved' });
     return list;
-  }, [catalog, draft.model, providerChanged]);
+  }, [catalog, draft.model, providerChanged, editing]);
   const efforts = catalog?.models.find(m => m.value === draft.model)?.efforts ?? [];
+  const savedEffort = editing && !providerChanged && !!draft.effort && !efforts.includes(draft.effort);
 
   const update = (patch: Partial<Draft>) => {
     setDraft(d => ({ ...d, ...patch }));
@@ -180,7 +192,7 @@ export function ProfileEditor({
         // A new agent's handle is its id; an existing agent keeps its id and changes only the handle.
         handle: editing ? draft.handle : draft.id,
         // Without a catalog (provider offline) keep the saved effort so cosmetic edits still save.
-        effort: !catalog?.models.length || efforts.includes(draft.effort) ? draft.effort : '',
+        effort: localUnavailable || !catalog?.models.length || efforts.includes(draft.effort) ? draft.effort : '',
       });
     });
     if (ok && saved) {
@@ -218,7 +230,7 @@ export function ProfileEditor({
         ? `@${savedHandle} keeps working for earlier messages and tasks.`
         : 'Rename any time; earlier handles keep working.';
   // Cosmetic edits keep saving offline; moving connections requires the destination's catalog.
-  const saveDisabled = save.busy || !!problem || ((!editing || providerChanged) &&
+  const saveDisabled = save.busy || !!problem || (selectionChanged && localUnavailable) || ((!editing || providerChanged) &&
     (!!catalog?.error || !!catalog?.loading || !catalog?.models.length)) || (providerChanged && working);
   const initials = (draft.name.trim() || 'Expert').slice(0, 2).toUpperCase();
 
@@ -279,20 +291,20 @@ export function ProfileEditor({
             disabled={working || save.busy}
             onChange={e => {
               const next = data.providers.find(p => p.id === e.target.value);
-              const selectedModel = next?.controls.selected?.model;
-              const model = next?.controls.models.find(m => m.value === selectedModel)?.value ?? next?.controls.models[0]?.value ?? '';
+              const restoring = editing && next?.id === profile!.template;
+              const model = restoring ? profile!.model : defaultModel(next);
               update({
                 template: e.target.value,
                 color: editing ? draft.color : next?.color || '#8b5cf6',
                 model,
-                effort: '',
+                effort: restoring ? profile!.effort : '',
               });
             }}
           >
             {/* A switched-off connection remains visible only to the member already using it. */}
-            {data.providers.filter(p => p.offered !== false || (editing && p.id === profile!.template)).map(p => (
+            {data.providers.filter(p => p.offered !== false || p.id === draft.template || (editing && p.id === profile!.template)).map(p => (
               <option key={p.id} value={p.id}>
-                {p.label}
+                {p.label}{p.local && p.local.status !== 'running' ? ' · Unavailable' : ''}
               </option>
             ))}
           </select>
@@ -320,11 +332,17 @@ export function ProfileEditor({
       </div>
 
       {working && <p className="bd-muted">Wait for this agent's current turn to finish before switching provider.</p>}
+      {provider?.local && <div className="bd-muted" role="status">
+        {localUnavailable ? <>
+          <p>{provider.local.detail || `${provider.label} is unavailable.`} Your saved provider and model are kept.</p>
+          {provider.local.start_command && <p>Start it with <code>{provider.local.start_command}</code>, then use Refresh connections.</p>}
+        </> : <p>Models advertised by {provider.label}. Tool support is checked when you first save a model.</p>}
+      </div>}
       {editing && releasePermission && <p className="bd-muted">Its release permission turns off when you switch provider; turn it on again in Team.</p>}
 
       <div className="bd-form-row">
         <Field label="Model">
-          <select value={draft.model} disabled={!catalog?.models.length} onChange={e => update({ model: e.target.value, effort: '' })}>
+          <select value={draft.model} disabled={localUnavailable || !catalog?.models.length} onChange={e => update({ model: e.target.value, effort: '' })}>
             {!models.length && <option value="">No models available</option>}
             {models.map(m => (
               <option key={m.value} value={m.value}>
@@ -334,8 +352,9 @@ export function ProfileEditor({
           </select>
         </Field>
         <Field label="Reasoning effort">
-          <select value={efforts.includes(draft.effort) ? draft.effort : ''} disabled={!efforts.length} onChange={e => update({ effort: e.target.value })}>
+          <select value={savedEffort || efforts.includes(draft.effort) ? draft.effort : ''} disabled={localUnavailable || !efforts.length} onChange={e => update({ effort: e.target.value })}>
             <option value="">Provider default</option>
+            {savedEffort && <option value={draft.effort}>{effortLabel(draft.effort)} · saved</option>}
             {efforts.map(v => (
               <option key={v} value={v}>
                 {effortLabel(v)}
