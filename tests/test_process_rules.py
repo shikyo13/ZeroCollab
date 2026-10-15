@@ -260,10 +260,12 @@ class InstallChecks(unittest.TestCase):
         (self.deploy / 'receipts' / ('f' * 32 + '.json')).write_text(json.dumps(
             {'status': 'deployed', 'release_id': self.RELEASE, 'request': {'manifest_sha': self.MANIFEST}}), 'utf-8')
 
-    def stage(self, shipped=None, reviews=()):
+    def stage(self, shipped=None, reviews=(), coverage=None):
         value = {'release_id': self.RELEASE, 'manifest_sha': self.MANIFEST, 'project': 'test', 'reviews': list(reviews)}
         if shipped:
             value['shipped_tasks'] = shipped
+        if coverage:
+            value['coverage'] = coverage
         (self.deploy / 'releases' / self.RELEASE / 'stage.json').write_text(json.dumps(value), 'utf-8')
 
     def tick(self, later=0):
@@ -376,6 +378,21 @@ class InstallChecks(unittest.TestCase):
         self.assertEqual(sorted(self.tick()), ['opened', 'opened'])
         self.assertEqual(self.bound, [[self.a]])
         self.assertIn(f'not in its checks: {self.b}', self.items('lead')[0]['text'])
+
+    def test_only_reviews_of_the_shipped_bytes_are_candidates(self):
+        # 94369513: an approved review of an earlier version of a shipped file flagged long-done tasks every release.
+        old = self.room.task('peer', 'create', title='Done long ago')['id']
+        self.room.task('peer', 'update', old, status='done')
+        for task_id, sha in ((old, 'a' * 64), (self.b, 'b' * 64)):
+            self.room.state.setdefault('reviews', []).append({'id': f'r-{task_id}', 'task_id': task_id, 'status': 'approved',
+                                               'snapshot': {'files': [{'relative': 'room_runtime.py', 'sha256': sha}]}})
+        self.receipt()
+        self.stage([{'task_id': self.a, 'owner': 'worker', 'scope': ''}],
+                   coverage={'room_runtime.py': {'sha256': 'c' * 64, 'normalized_sha256': 'b' * 64}})
+        self.tick()
+        text = self.items('lead')[0]['text']
+        self.assertIn(f'not in its checks: {self.b}', text)  # reviewed the bytes that shipped (normalized match)
+        self.assertNotIn(old, text)  # reviewed an earlier version of the same file
 
     def test_the_next_install_ends_the_previous_installs_open_items(self):
         # security 88e8d152 SF2: a check of a release that is no longer running can't be answered.

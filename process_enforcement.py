@@ -371,15 +371,21 @@ def declared_tasks(stage):
 
 
 def candidates(room, stage):
-    """Tasks the lead may want to bind: the stage's own reviews, and approved reviews of files this release changed
-    (security N1). Suggestions only; the room never binds from them."""
+    """Tasks the lead may want to bind: the stage's own reviews, and approved reviews of exactly the bytes this
+    release ships (security N1). A review counts when one of its snapshot files has the hash the stage's coverage
+    records for that path, raw or normalized, so an old review of an earlier version of a shipped file no longer
+    flags a long-done task on every release (94369513), while a donor approved earlier that ships now still does.
+    Suggestions only; the room never binds from them."""
     if not stage:
         return []
     reviews = {r['id']: r for r in room.state.get('reviews', [])}
-    changed = set(stage.get('coverage') or {}) if isinstance(stage.get('coverage'), dict) else set()
+    coverage = stage.get('coverage') if isinstance(stage.get('coverage'), dict) else {}
+    shipped = {path: {entry.get('sha256'), entry.get('normalized_sha256')} - {None}
+               for path, entry in coverage.items() if isinstance(entry, dict)}
     found = [reviews[i]['task_id'] for i in stage.get('reviews') or [] if isinstance(i, str) and i in reviews]
     found += [r['task_id'] for r in reviews.values() if r['status'] == 'approved'
-              and changed & {f.get('relative') for f in (r.get('snapshot') or {}).get('files', [])}]
+              and any(f.get('sha256') in shipped.get(f.get('relative'), ())
+                      for f in (r.get('snapshot') or {}).get('files', []))]
     open_ids = {t['id'] for t in room.state['tasks'] if not t.get('closure') and 'release-pipeline' not in (t.get('labels') or [])}
     return [t for t in dict.fromkeys(found) if t in open_ids][:MAX_CANDIDATES]
 
