@@ -1570,53 +1570,48 @@ async def open_path(body: dict):
     path = body.get("path", "")
     if not path:
         return JSONResponse({"error": "no path"}, status_code=400)
-    # Off the event loop: checking a network path (\\host\share) waits for the share, which can take
-    # tens of seconds when it is offline, and would hold every other request meanwhile.
+    # Classified off the event loop: checking a network path (//host/share) waits for the share, which can take
+    # tens of seconds when it is offline, and would hold every other request meanwhile. The launch happens only
+    # after a classification that answered in time, so a timed-out request never opens a window later.
     try:
-        status, payload = await asyncio.wait_for(asyncio.to_thread(_open_in_file_manager, path), OPEN_PATH_TIMEOUT_S)
+        kind = await asyncio.wait_for(asyncio.to_thread(_path_kind, path), OPEN_PATH_TIMEOUT_S)
     except asyncio.TimeoutError:
         return JSONResponse({"error": f"The path did not answer within {OPEN_PATH_TIMEOUT_S} s. If it is on a network "
                                       "share, check that the share is online, then try again."}, status_code=504)
-    return JSONResponse(payload, status_code=status)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    if kind is None:
+        return JSONResponse({"error": "path not found"}, status_code=404)
+    try:
+        _open_in_file_manager(Path(path), kind)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True})
 
 
 OPEN_PATH_TIMEOUT_S = 8  # under the chat link's own 10 s limit, so the user sees this answer
 
 
-def _open_in_file_manager(path):
-    """(status, payload) for /api/open-path; runs in a worker thread."""
+def _path_kind(path):
+    """'file', 'dir' or None (missing); runs in a worker thread because a network path can block."""
+    p = Path(path)
+    return 'file' if p.is_file() else 'dir' if p.is_dir() else None
+
+
+def _open_in_file_manager(p, kind):
+    """Start the native file manager on p; Popen returns at once, so this runs on the event loop."""
     import subprocess
     import sys
 
-    p = Path(path)
-    try:
-        if sys.platform == "win32":
-            # /n opens a new window even when one already shows that folder (frontend task 0b919f8e).
-            # /select cannot be combined with it: Explorer opens or focuses a window with the file selected.
-            if p.is_file():
-                subprocess.Popen(["explorer", "/select,", str(p)])
-            elif p.is_dir():
-                subprocess.Popen(["explorer", "/n,", str(p)])
-            else:
-                return 404, {"error": "path not found"}
-        elif sys.platform == "darwin":
-            if p.is_file():
-                subprocess.Popen(["open", "-R", str(p)])
-            elif p.is_dir():
-                subprocess.Popen(["open", str(p)])
-            else:
-                return 404, {"error": "path not found"}
-        else:
-            # Linux — xdg-open opens the containing folder for files
-            if p.is_file():
-                subprocess.Popen(["xdg-open", str(p.parent)])
-            elif p.is_dir():
-                subprocess.Popen(["xdg-open", str(p)])
-            else:
-                return 404, {"error": "path not found"}
-    except Exception as e:
-        return 500, {"error": str(e)}
-    return 200, {"ok": True}
+    if sys.platform == "win32":
+        # /n opens a new window even when one already shows that folder (frontend task 0b919f8e).
+        # /select cannot be combined with it: Explorer opens or focuses a window with the file selected.
+        subprocess.Popen(["explorer", "/select,", str(p)] if kind == 'file' else ["explorer", "/n,", str(p)])
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(p)] if kind == 'file' else ["open", str(p)])
+    else:
+        # Linux: xdg-open opens the containing folder for files
+        subprocess.Popen(["xdg-open", str(p.parent if kind == 'file' else p)])
 
 
 def _file_view_roots(sender: str):
