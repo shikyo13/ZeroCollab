@@ -1567,12 +1567,26 @@ async def open_path(body: dict):
     Security note: This endpoint is intended for local-only use (127.0.0.1).
     Do not expose this server on a public network without additional access controls.
     """
-    import subprocess
-    import sys
-
     path = body.get("path", "")
     if not path:
         return JSONResponse({"error": "no path"}, status_code=400)
+    # Off the event loop: checking a network path (\\host\share) waits for the share, which can take
+    # tens of seconds when it is offline, and would hold every other request meanwhile.
+    try:
+        status, payload = await asyncio.wait_for(asyncio.to_thread(_open_in_file_manager, path), OPEN_PATH_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        return JSONResponse({"error": f"The path did not answer within {OPEN_PATH_TIMEOUT_S} s. If it is on a network "
+                                      "share, check that the share is online, then try again."}, status_code=504)
+    return JSONResponse(payload, status_code=status)
+
+
+OPEN_PATH_TIMEOUT_S = 8  # under the chat link's own 10 s limit, so the user sees this answer
+
+
+def _open_in_file_manager(path):
+    """(status, payload) for /api/open-path; runs in a worker thread."""
+    import subprocess
+    import sys
 
     p = Path(path)
     try:
@@ -1584,14 +1598,14 @@ async def open_path(body: dict):
             elif p.is_dir():
                 subprocess.Popen(["explorer", "/n,", str(p)])
             else:
-                return JSONResponse({"error": "path not found"}, status_code=404)
+                return 404, {"error": "path not found"}
         elif sys.platform == "darwin":
             if p.is_file():
                 subprocess.Popen(["open", "-R", str(p)])
             elif p.is_dir():
                 subprocess.Popen(["open", str(p)])
             else:
-                return JSONResponse({"error": "path not found"}, status_code=404)
+                return 404, {"error": "path not found"}
         else:
             # Linux — xdg-open opens the containing folder for files
             if p.is_file():
@@ -1599,11 +1613,10 @@ async def open_path(body: dict):
             elif p.is_dir():
                 subprocess.Popen(["xdg-open", str(p)])
             else:
-                return JSONResponse({"error": "path not found"}, status_code=404)
+                return 404, {"error": "path not found"}
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-    return JSONResponse({"ok": True})
+        return 500, {"error": str(e)}
+    return 200, {"ok": True}
 
 
 def _file_view_roots(sender: str):
