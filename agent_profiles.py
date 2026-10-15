@@ -40,6 +40,9 @@ class AgentProfiles:
         self.template_catalogs = {}
         # Each built-in local provider's last probe (provider_setup.annotate_local): {template: status entry}.
         self.local_status = {}
+        # Each built-in's (status, advertised models) at that probe; None until the first. A change makes
+        # GET /providers/status run the full refresh, so catalogs and blocked agents follow the server.
+        self.local_signature = None
         self.items = {}
         self.path = None
 

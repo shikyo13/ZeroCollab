@@ -400,7 +400,7 @@ def annotate_local(rows, runtime):
     agents = {}
     for pid, profile in runtime.profiles.items.items():
         agents.setdefault(profile.get('template'), []).append(pid)
-    checked, cache = time.time(), {}
+    checked, cache, signature = time.time(), {}, {}
     for row in rows:
         state = local_state(row)
         templates = [provider_store.LOCAL_PREFIX + key for key, _, base, _ in listed_servers() if base == row['base_url']]
@@ -413,7 +413,9 @@ def annotate_local(rows, runtime):
             cache[template] = {'server': template.removeprefix(provider_store.LOCAL_PREFIX), 'status': state,
                                'detail': row.get('detail', ''), 'start_command': row.get('start_command', ''),
                                'base_url': row['base_url'], 'checked_at': checked}
+            signature[template] = (state, tuple(sorted(row.get('models') or [])))
     runtime.profiles.local_status = cache
+    runtime.profiles.local_signature = signature
     return cache
 
 
@@ -538,11 +540,22 @@ def run_sign_in(provider):
     return code
 
 
+async def checked_status(runtime):
+    """status(), and when a local server started, stopped or changed its models since the last probe, the full
+    refresh, which loads its catalog and blocks or unblocks its agents, so /profiles matches this answer."""
+    before = runtime.profiles.local_signature
+    result = await status(runtime)
+    if before is not None and runtime.profiles.local_signature != before:
+        async with runtime.profile_lock:
+            await runtime.refresh()
+    return result
+
+
 def install(host, runtime):
     @host.app.get('/api/runtime/providers/status')
     async def providers_status():
         try:
-            return await status(runtime)
+            return await checked_status(runtime)
         except Exception as exc:  # the Setup page shows the reason instead of a blank panel
             return JSONResponse({'error': f'{type(exc).__name__}: {exc}'[:400]}, 500)
 

@@ -165,6 +165,28 @@ class StatusTests(Base):
                 asyncio.run(store.require_local('local-ollama', 'llama3:70b'))
         self.assertEqual(caught.exception.field, 'model')
 
+    def test_status_refreshes_only_when_a_local_server_changes(self):
+        runtime = SimpleNamespace(profiles=SimpleNamespace(items={}, local_status={}, local_signature=None),
+                                  profile_lock=asyncio.Lock(), refresh=mock.AsyncMock())
+        rows = [{'id': 'ollama', 'base_url': SERVERS[0][2], 'reachable': False, 'installed': True, 'models': []}]
+
+        async def status(runtime):
+            provider_setup.annotate_local(copy.deepcopy(rows), runtime)
+            return {}
+
+        async def run():
+            with mock.patch.object(provider_setup, 'status', status):
+                await provider_setup.checked_status(runtime)  # first probe: nothing to compare with
+                await provider_setup.checked_status(runtime)  # unchanged
+                self.assertEqual(runtime.refresh.await_count, 0)
+                rows[0].update(reachable=True, models=['qwen3:8b'])  # Ollama started after the room
+                await provider_setup.checked_status(runtime)
+                self.assertEqual(runtime.refresh.await_count, 1)
+                rows[0]['models'] = ['qwen3:8b', 'gemma3:4b']  # a model pulled while running
+                await provider_setup.checked_status(runtime)
+                self.assertEqual(runtime.refresh.await_count, 2)
+        asyncio.run(run())
+
 
 if __name__ == '__main__':
     unittest.main()
