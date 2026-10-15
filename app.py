@@ -1577,10 +1577,12 @@ async def open_path(body: dict):
     p = Path(path)
     try:
         if sys.platform == "win32":
+            # /n opens a new window even when one already shows that folder (frontend task 0b919f8e).
+            # /select cannot be combined with it: Explorer opens or focuses a window with the file selected.
             if p.is_file():
                 subprocess.Popen(["explorer", "/select,", str(p)])
             elif p.is_dir():
-                subprocess.Popen(["explorer", str(p)])
+                subprocess.Popen(["explorer", "/n,", str(p)])
             else:
                 return JSONResponse({"error": "path not found"}, status_code=404)
         elif sys.platform == "darwin":
