@@ -34,6 +34,7 @@ declare global {
     chatSessionTitle?: (id: string) => string;
     chatSessionReadonly?: (id: string) => boolean;
     ws?: WebSocket | null;
+    roomConnectionState?: string;
     username?: string;
     /** channels.js: keep chats in the sidebar list while the workspace shell owns the page. */
     __chatsInShellSidebar?: boolean;
@@ -78,6 +79,29 @@ export function useRoomEvent<T = unknown>(type: string, handler: (event: RoomEve
       if (attached) window.Hub?.off(type, listener);
     };
   }, [type]);
+}
+
+function readServerConnected(): boolean {
+  return window.roomConnectionState !== 'signed_out' && window.ws?.readyState === WebSocket.OPEN;
+}
+
+function subscribeServerConnection(notify: () => void): () => void {
+  const cancel = whenLegacyReady(() => {
+    window.Hub?.on('chat_connection', notify);
+    // The first settings frame confirms an open socket before history finishes.
+    window.Hub?.on('settings', notify);
+    notify();
+  });
+  return () => {
+    cancel();
+    window.Hub?.off('chat_connection', notify);
+    window.Hub?.off('settings', notify);
+  };
+}
+
+/** Reachability follows the existing room socket, independently of deployment readiness. */
+export function useServerConnected(): boolean {
+  return useSyncExternalStore(subscribeServerConnection, readServerConnected, () => false);
 }
 
 function subscribeChannel(notify: () => void): () => void {

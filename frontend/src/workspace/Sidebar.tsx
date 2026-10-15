@@ -10,7 +10,7 @@ import { LegacySlot } from '../components/LegacySlot';
 import { brand } from '../components/brand';
 import { legacy } from '../legacy';
 import { EVENTS } from '../lib/constants';
-import { useRuntimeState } from '../lib/room';
+import { useRuntimeState, useServerConnected } from '../lib/room';
 import type { ProjectSummary } from './projectData';
 import type { View } from './useWorkspaceRoute';
 import { ProjectActions } from './ProjectActions';
@@ -33,6 +33,7 @@ export function Sidebar({ view, navigate, projects, active, deployments, onOpenP
   onHelp: () => void;
 }) {
   const { data } = useRuntimeState();
+  const connected = useServerConnected();
   const [chatsOpen, setChatsOpen] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [archivedOpen, setArchivedOpen] = useState(false);
@@ -52,7 +53,7 @@ export function Sidebar({ view, navigate, projects, active, deployments, onOpenP
     return () => { document.removeEventListener('keydown', key); document.removeEventListener('pointerdown', outside); };
   }, [drawerOpen]);
   const updateAvailable = !deployments.error && !!deployments.data?.releases.some(r => r.relation === 'newer');
-  const serverLabel = updateAvailable ? 'Server: Update available' : 'Server';
+  const serverLabel = `Server: ${connected ? 'connected' : 'disconnected'}${updateAvailable ? ', Update available' : ''}`;
   const agents = Object.values(data?.agents ?? {}).filter(a => !a.archived).length;
   const busy = active ? active.tasks.working + active.tasks.review + active.tasks.blocked : 0;
   // The active project first, then the most recently updated ones.
@@ -120,7 +121,7 @@ export function Sidebar({ view, navigate, projects, active, deployments, onOpenP
     <div className="pn-announcement" role="status">{notice}</div>
     <div className="workspace-nav-bottom">
       <button className="ws-nav-item backend-trigger" aria-current={view === 'server' ? 'page' : undefined} onClick={() => openServer('status')} title={serverLabel} aria-label={serverLabel}>
-        <i className="backend-indicator" aria-hidden="true"><i className={`backend-dot ${deployments.ready ? 'is-running' : ''}`} /></i>
+        <i className="backend-indicator" aria-hidden="true"><i className={`backend-dot ${connected ? 'is-running' : ''}`} /></i>
         <span>Server</span>{updateAvailable && <small className="backend-status">Update available</small>}
       </button>
       <button className="ws-nav-item" onClick={() => window.toggleSettings?.()} title="Settings"><Icon name="settings" size={18} /><span>Settings</span></button>
