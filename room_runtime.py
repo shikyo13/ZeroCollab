@@ -517,6 +517,19 @@ def request_task_ids(entry):
     return ids
 
 
+def request_focus(entry):
+    """The task a woken turn is for (task b5526ef8): the newest human request that names a task, else the newest
+    request that names one, else None. Requests are queued oldest first; later human direction takes precedence."""
+    named = []
+    for request in (entry or {}).get('requests', []):
+        ref = request.get('ref') or {}
+        task_id = request.get('task_id') or (ref.get('id') if ref.get('collection') == 'tasks' else None)
+        if isinstance(task_id, str) and task_id:
+            named.append((bool(request.get('human')), task_id))
+    chosen = [task_id for human, task_id in named if human] or [task_id for _, task_id in named]
+    return chosen[-1] if chosen else None
+
+
 class Run:
     def __init__(self, manager, name, entry):
         self.manager, self.name, self.entry = manager, name, entry
@@ -540,6 +553,12 @@ class Run:
         # Tasks this turn is known to work on: started for, delegated in its requests, or claimed/updated
         # during the turn. Running alone does not say which owned task is executing.
         self.task_ids = request_task_ids(entry)
+        # The one task this turn is working on, where the Board and Live put its speech (task b5526ef8). Seeded from
+        # the requests that woke it and moved only by a deliberate start (RoomRuntime.refocus); None when the turn
+        # is not tied to one task. task_ids above stays cumulative: it decides which cards read 'Running now'.
+        self.focus_seed = request_focus(entry)
+        self.focus_history = [self.focus_seed] if self.focus_seed else []
+        self.focus = None
         self.steering = SteeringDelivery(self)
         self.interrupt = None
         self.reported_settings = {}
@@ -654,8 +673,13 @@ class Run:
         # Zero #12950/#12974). Text being written goes to the Live and Follow views as runtime_draft; a sealed
         # decision position sends no text at all.
         await self.manager.emit("runtime_draft", {"run": self.id, "message": self.message_id,
-            "phase": self.message_phase, "agent": self.name, "channel": self.channel,
+            "phase": self.message_phase, "agent": self.name, "channel": self.channel, "task_id": self.task_id,
             **({'text': '', 'sealed': True} if self.sealed else {'text': text})})
+
+    @property
+    def task_id(self):
+        """The focus as runtime events carry it: None while a sealed decision position is written."""
+        return None if self.sealed else self.focus
 
     @property
     def sealed(self):
@@ -776,7 +800,7 @@ class Run:
                     self.stop_reason = 'Native tool-call budget reached. Send a new instruction to continue this bounded task.'
                     raise RuntimeError(self.stop_reason)
         await self.manager.emit("runtime_tool", {"run": self.id, "agent": self.name, "channel": self.channel,
-                                                  "tool": name, "status": status,
+                                                  "tool": name, "status": status, "task_id": self.task_id,
                                                   # A sealed decision turn says no more than that it is working.
                                                   "label": 'working on a team decision' if self.sealed else
                                                   # question() asks through the same approval path as tool "Question".
@@ -886,7 +910,7 @@ class RoomRuntime:
                 "budgets": list(self.project_room.chains.values())[-12:], "goal": self.goals.goal,
                 "approvals": [a["display"] for a in self.approvals.values()],
                 "responders": self.responders_view(),
-                "runs": [{"id": r.id, "agent": r.name, "channel": r.channel, "text": '',
+                "runs": [{"id": r.id, "agent": r.name, "channel": r.channel, "task_id": r.task_id, "text": '',
                           "message": r.message_id, "phase": r.message_phase,
                           "steering": [{'message_id': q.get('message_id'), 'ref': q.get('ref'), 'status': q.get('_steering')}
                                        for q in r.steering.pending[-8:]],
@@ -914,11 +938,39 @@ class RoomRuntime:
         if live is not None:
             await live.publish(live.observe(kind, data))
 
+    def run_focus(self, run):
+        """The newest task in run's focus history that is still valid: on the board, not done, and either the task
+        the turn was woken for or one the agent still owns. None when nothing is."""
+        candidates = set(run.focus_history)
+        tasks = {t['id']: t for t in self.project_room.state['tasks'] if t['id'] in candidates}
+        for task_id in reversed(run.focus_history):
+            task = tasks.get(task_id)
+            if task and task.get('status') != 'done' and (task_id == run.focus_seed or task.get('owner') == run.name):
+                return task_id
+        return None
+
+    async def refocus(self, run, arguments, result):
+        """After one of run's successful room_task changes (task b5526ef8). A deliberate start moves the focus to that
+        task: claim or accept, or a create or update that leaves it working and the agent's without closing or
+        deferring it. Any change can end the current focus (done, or no longer the agent's), which falls back to the
+        previous valid one. A change is sent as runtime_focus, so the Board follows it between drafts."""
+        action = arguments.get('action')
+        deferred = bool(arguments.get('close_reason') or arguments.get('wait') or arguments.get('wait_on')
+                        or arguments.get('next_action_state') in ('waiting', 'deferred'))
+        if result.get('owner') == run.name and (action in ('claim', 'accept') or (
+                action in ('create', 'update') and result.get('status') == 'working' and not deferred)):
+            run.focus_history = [t for t in run.focus_history if t != result['id']] + [result['id']]
+        focus = self.run_focus(run)
+        if focus != run.focus:
+            run.focus = focus
+            await self.emit('runtime_focus', {'run': run.id, 'agent': run.name, 'channel': run.channel,
+                                              'task_id': run.task_id})
+
     async def activity_note(self, run, kind, text):
         """A line for the Activity view (the runtime_tool feed it already shows), never the chat."""
         if run.sealed:
             text = 'Sealed: part of a team decision position, shown when the positions are revealed.'
-        await self.emit("runtime_tool", {"run": run.id, "agent": run.name, "channel": run.channel, "tool": kind,
+        await self.emit("runtime_tool", {"run": run.id, "agent": run.name, "channel": run.channel, "task_id": run.task_id, "tool": kind,
                                          "status": "note", "details": {"text": text[:4000]}}, persist=True)
 
     def responders_view(self):
@@ -1765,7 +1817,9 @@ class RoomRuntime:
         # The idle detail ("Ready to start", "Last turn completed") would contradict Working; the run line describes the turn.
         self.states[name].update(state="working", detail="")
         outcome = "completed"
-        await self.emit("runtime_start", {"run": run.id, "agent": name, "channel": run.channel, "settings": run.settings}, persist=True)
+        run.focus = self.run_focus(run)
+        await self.emit("runtime_start", {"run": run.id, "agent": name, "channel": run.channel, "task_id": run.task_id,
+                                          "settings": run.settings}, persist=True)
         await self.publish_status()
         try:
             changes = await self.collect_diffs()
@@ -2091,6 +2145,7 @@ class RoomRuntime:
                 return result
             if result.get('owner') == run.name or (result.get('transfer') or {}).get('to') == run.name:
                 run.task_ids.add(result['id'])
+            await self.refocus(run, arguments, result)
             # The conversation whose budget a later ready-task wake for this task would use.
             self.ready_wakes.record_chain(result['id'], run.entry['chain'])
             if arguments.get('action') == 'delegate':

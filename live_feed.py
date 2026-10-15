@@ -55,8 +55,11 @@ class LiveFeed:
         return task['title'] if task else ''
 
     def current_task(self, name):
-        """The run's own task when it names exactly one, else the single task this agent owns that is working."""
+        """The run's focus (the same task the Board places its speech on, task b5526ef8), else the run's own task when
+        it names exactly one, else the single task this agent owns that is working."""
         run = self.runtime.running.get(name)
+        if getattr(run, 'task_id', None):
+            return run.task_id
         explicit = sorted(getattr(run, 'task_ids', ()) or ()) if run else []
         if len(explicit) == 1:
             return explicit[0]
@@ -131,6 +134,8 @@ class LiveFeed:
                 self.activity[name] = data['label']
                 return self.agent_delta(name)
             return []
+        if kind == 'runtime_focus':
+            return self.agent_delta(data.get('agent'))
         if kind in ('runtime_start', 'runtime_end'):
             name = data.get('agent')
             if kind == 'runtime_start':
