@@ -647,8 +647,12 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
       const beside = b.side === 'right' || b.side === 'left', shownH = bubbleBox.current.get(b.agent.id)?.h ?? b.rect!.h;
       const slot: CSSProperties = up ? { left: b.rect!.x, bottom: size.h - (b.rect!.y + b.rect!.h) }
         : { left: b.rect!.x, top: b.rect!.y + (beside ? Math.max(0, (b.rect!.h - shownH) / 2) : 0) };
+      // A talk longer than its bubble keeps its newest lines in view, so its first line, with the speaker's name,
+      // fades off the top: the name then stays on a tag over that faded edge, so every bubble says whose it is.
+      const said = talkText(b.agent.id), scrolled = !isOpen(b.agent.id) && bubbleSize(b.agent.short, said, b.rect!.w, b.lines + 1).lines > b.lines;
       return <div key={b.agent.id} className="lv-bubble-slot" style={slot}>
-        <SpeechBubble key={talkKey(b.agent.id)} name={b.agent.short} color={b.agent.color} text={talkText(b.agent.id)}
+        {scrolled && <span className="lv-bubble-who" style={{ '--c': b.agent.color } as CSSProperties} aria-hidden="true">{b.agent.short}</span>}
+        <SpeechBubble key={talkKey(b.agent.id)} name={b.agent.short} color={b.agent.color} text={said}
           width={b.rect!.w} maxLines={b.lines} reduced={reduced} openMaxHeight={openRoom.current.get(b.agent.id)} style={TALK_STYLE}
           onSize={box => {
             const prev = bubbleBox.current.get(b.agent.id);

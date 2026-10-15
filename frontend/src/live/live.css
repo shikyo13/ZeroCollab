@@ -98,6 +98,9 @@
    The slot glides when a bubble changes spot. */
 .lv-bubble-slot { position: absolute; z-index: 4; transition: left .38s cubic-bezier(.2, .8, .2, 1), top .38s cubic-bezier(.2, .8, .2, 1), bottom .38s cubic-bezier(.2, .8, .2, 1); }
 .lv-bubble-slot:has(.sb-open) { z-index: 9; }
+/* A talk scrolled past its first line keeps its speaker's name on a tag over the bubble's faded top edge (39620499). */
+.lv-bubble-who { position: absolute; z-index: 1; top: 4px; left: 12px; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0 6px; border-radius: 6px; background: #191e22; font: 600 11px/16px Inter, 'Segoe UI', system-ui, sans-serif; color: color-mix(in srgb, var(--c) 70%, white); pointer-events: none; }
 /* A closed bubble shows one page that always fits (LiveStage reading pace, Zero #18710), so its box follows the
    text at once: easing it while words stream in kept the box a step behind and sliced off a line. A new page
    enters with the bubble's own fade-in (sb-in), which reads as the page turning. Opening still eases. */
