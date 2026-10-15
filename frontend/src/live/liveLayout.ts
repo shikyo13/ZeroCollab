@@ -201,10 +201,17 @@ export function layoutStage(input: SeatInput[], stage: Rect, reserved: Rect[] = 
 
 export type BubbleSide = 'right' | 'left' | 'above' | 'below' | 'upRight' | 'upLeft' | 'downRight' | 'downLeft';
 
+/** Whether a bubble fits here: inside the stage, with a few pixels of air on every side, so it never sits flush
+ * against a chip, a panel or a name. */
+export function bubbleClear(rect: Rect, blockers: Rect[], bounds: Rect) {
+  return rect.x >= bounds.x && rect.y >= bounds.y && rect.x + rect.w <= bounds.x + bounds.w && rect.y + rect.h <= bounds.y + bounds.h
+    && blockers.every(b => overlap({ x: rect.x - 4, y: rect.y - 4, w: rect.w + 8, h: rect.h + 8 }, b) === 0);
+}
+
 /** A clear spot for one speech bubble next to its person, else (reach > 0) the nearest clear spot within reach
- * px, or null when every spot covers something: the caller then shows a small cue by the person instead (text
+ * px (marked `ring`), or null when every spot covers something: the caller then shows a small cue by the person instead (text
  * is never dropped, only moved). */
-export function placeBubble(p: Point, size: { w: number; h: number }, blockers: Rect[], bounds: Rect, prefer?: BubbleSide, reach = 0): { side: BubbleSide; rect: Rect } | null {
+export function placeBubble(p: Point, size: { w: number; h: number }, blockers: Rect[], bounds: Rect, prefer?: BubbleSide, reach = 0): { side: BubbleSide; rect: Rect; ring?: true } | null {
   const o = PERSON.w / 2 + 8;
   const c: Record<BubbleSide, Point> = {
     right: { x: p.x + o, y: p.y - size.h / 2 }, left: { x: p.x - o - size.w, y: p.y - size.h / 2 },
@@ -214,9 +221,7 @@ export function placeBubble(p: Point, size: { w: number; h: number }, blockers: 
   };
   const order: BubbleSide[] = ['right', 'left', 'upRight', 'upLeft', 'above', 'below', 'downRight', 'downLeft'];
   if (prefer) order.unshift(prefer);
-  // A few pixels of air on every side, so a bubble never sits flush against a chip, a panel or a name.
-  const clear = (rect: Rect) => rect.x >= bounds.x && rect.y >= bounds.y && rect.x + rect.w <= bounds.x + bounds.w && rect.y + rect.h <= bounds.y + bounds.h
-    && blockers.every(b => overlap({ x: rect.x - 4, y: rect.y - 4, w: rect.w + 8, h: rect.h + 8 }, b) === 0);
+  const clear = (rect: Rect) => bubbleClear(rect, blockers, bounds);
   for (const side of order) {
     const rect = { ...c[side], ...size };
     if (clear(rect)) return { side, rect };
@@ -229,7 +234,7 @@ export function placeBubble(p: Point, size: { w: number; h: number }, blockers: 
     for (let k = 0; k < steps; k++) {
       const ang = (k / steps) * 2 * Math.PI;
       const rect = { x: p.x + radius * Math.cos(ang) - size.w / 2, y: p.y + radius * Math.sin(ang) - size.h / 2, ...size };
-      if (clear(rect)) return { side: rect.y + rect.h / 2 < p.y ? 'above' : 'below', rect };
+      if (clear(rect)) return { side: rect.y + rect.h / 2 < p.y ? 'above' : 'below', rect, ring: true };
     }
   }
   return null;
