@@ -1,7 +1,7 @@
 ---
 name: pm-release-cycle
 description: Use when a release is staged or installed, the user asks for status, or the board needs triage or rebalancing.
-version: 3
+version: 4
 ---
 
 # Release cycle and board triage (coordinator)
@@ -10,6 +10,7 @@ version: 3
 
 1. Confirm the cutoff matches the recorded decision. Name what's in it and what's held.
 2. Check that each item has an owner and a live check written as an action on its task.
+3. Check the release's checklist (its `release_checks` decision). Pin only checks that can pass on the installed release. A check that can only be seen during the next install (drain, gate, install-time save) goes under "observe at next install" and is carried onto the next release's checklist, not pinned to this one. Pinning it blocks the very install it needs.
 
 ## When a release is installed
 
