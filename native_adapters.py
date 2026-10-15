@@ -138,8 +138,8 @@ def local_setup(run):
     room relay (provider_relay: local servers drop Codex's MCP tool namespaces, so the relay offers the
     room tools as plain functions). Returns (env, -c arguments), or None for any other agent. Decided from
     the agent's connection, never from model output:
-    - L1: automatic approvals are off for this run, so the thread is workspace-write with on-request
-      approvals and every escalation goes to the user, whatever the room setting;
+    - L1: approvals follow the room setting like any other agent (Zero #20772): with automatic approvals on,
+      codex() runs the thread with approval 'never' and full access;
     - L2: the address is re-checked at launch, and by the relay on every request (loopback, own port, /v1);
     - L3: no user key: the only credential is this run's relay token, which dies with the run; tool
       shells drop KEY, SECRET and TOKEN variables, as for every Codex agent (codex());
@@ -150,7 +150,6 @@ def local_setup(run):
     if cfg.get('provider') != 'codex' or not cfg.get('local') or not cfg.get('local_target'):
         return None
     provider_keys.local_codex_url(cfg.get('base_url', ''), provider_keys.room_ports(run.manager.cfg))
-    run.automatic_tool_approvals = False
     run.relay_token = secrets.token_urlsafe(32)
     base = f"http://127.0.0.1:{run.manager.cfg['server']['port']}/relay/{cfg['local_target']}/v1"
     args = ['-c', 'model_provider="zerocollab_local"']
@@ -591,7 +590,9 @@ async def gemini(run, prompt):
         # ACP optional client filesystem/terminal capabilities are not advertised.
         raise RuntimeError("Client capability is disabled")
 
-    proc = await spawn(run, command("gemini") + ["--acp", "--approval-mode", "default"])
+    # yolo: Gemini runs its tools without asking, as Claude's bypassPermissions and Codex's 'never' do.
+    mode = "yolo" if run.automatic_tool_approvals else "default"
+    proc = await spawn(run, command("gemini") + ["--acp", "--approval-mode", mode])
     rpc = Rpc(run, proc, notify, incoming)
     try:
         await rpc.request("initialize", {"protocolVersion": 1, "clientCapabilities": {},

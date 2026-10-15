@@ -174,7 +174,7 @@ def configure(original, room_root, data, uploads, *, port, mcp_ports, encoder):
     cfg['mcp'] = {'http_port': mcp_ports[0], 'sse_port': mcp_ports[1]}
     cfg.setdefault('images', {})['upload_dir'] = str(uploads)
     cfg.setdefault('browser', {})['blocked_ports'] = sorted(set(blocked))
-    cfg.setdefault('runtime', {}).update(automatic_tool_approvals=bool(original.get('runtime', {}).get('automatic_tool_approvals', False)), managed_updates=True,
+    cfg.setdefault('runtime', {}).update(automatic_tool_approvals=bool(original.get('runtime', {}).get('automatic_tool_approvals', True)), managed_updates=True,
         native_providers=['codex', 'claude', 'antigravity'], desktop_existing_room=True, desktop_isolated_cli=False,
         desktop_manager_disabled=False)
     cfg['agents'] = {name: {**template(value, name), 'managed': True}

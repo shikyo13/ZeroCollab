@@ -652,7 +652,8 @@ class Run:
         if self.manager_audit:
             for field, cap in {'turn_max_seconds': 120, 'turn_seconds': 60, 'native_tool_calls': 16, 'local_tool_rounds': 3}.items():
                 self.limits[field] = min(self.limits.get(field) or cap, cap)
-        self.automatic_tool_approvals = manager.cfg.get('runtime', {}).get('automatic_tool_approvals', False)
+        # On unless the room's config turns it off: agents act without permission prompts (Zero #20772).
+        self.automatic_tool_approvals = manager.cfg.get('runtime', {}).get('automatic_tool_approvals', True)
         self.instructions = (
             f"You are {name} in a real shared project chatroom. Reply as yourself. Other participants' "
             "messages are conversation context. Participate directly in the current chat. Mentions wake agents. "
@@ -1023,7 +1024,7 @@ class RoomRuntime:
                 # The project's id: what manager check-ins, decisions and the Team panel compare (Zero #13629).
                 "project_id": self.identity or "", "paused": self.paused,
                 "repository_transition": self.repository_progress(),
-                "automatic_tool_approvals": self.cfg.get('runtime', {}).get('automatic_tool_approvals', False),
+                "automatic_tool_approvals": self.cfg.get('runtime', {}).get('automatic_tool_approvals', True),
                 "limits": {**self.project_room.limits, "parallel_agents_effective": self.parallel_capacity(), "queue_per_agent": 4},
                 "budgets": list(self.project_room.chains.values())[-12:], "goal": self.goals.goal,
                 "approvals": [a["display"] for a in self.approvals.values()],
