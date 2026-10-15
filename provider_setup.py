@@ -425,10 +425,11 @@ def annotate_local(rows, runtime):
         templates = [provider_store.LOCAL_PREFIX + key for key, _, base, _ in listed_servers() if base == row['base_url']]
         own = provider_store.LOCAL_PREFIX + row['id'] if not row['id'].startswith('shared:') else None
         if own:
-            # What Start would run (edd41ff3). A saved llama.cpp command proves it is installed even off PATH.
+            # What Start would run (edd41ff3). A saved llama.cpp command, or models already checked on it (Bonsai's,
+            # migrated from its old connection), proves it is installed even when llama-server is off PATH.
             start = local_start.spec(row['id'], entries.get(own, {}).get('local_start', ''))
             row['start'] = local_start.public(start)
-            if start['saved'] and start['available']:
+            if (start['saved'] and start['available']) or entries.get(own, {}).get('models'):
                 row['installed'] = True
         state = local_state(row)
         row.update(status=state, template=own, configured=True,

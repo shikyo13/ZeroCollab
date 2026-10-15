@@ -277,6 +277,15 @@ class StartTests(Base):
         with self.assertRaises(FieldError):  # Ollama starts with its own app
             asyncio.run(store.save_start_command('local-ollama', 'ollama serve'))
 
+    def test_migrated_bonsai_reads_not_running_not_not_installed(self):
+        runtime = room(self.folder, {'p1': {'bonsai': profile('bonsai', 'bonsai')}})
+        store = migrated(runtime)
+        runtime.profiles = SimpleNamespace(store=store, items={}, local_status={})
+        rows = [{'id': 'llamacpp', 'base_url': SERVERS[2][2], 'reachable': False, 'installed': False}]
+        provider_setup.annotate_local(rows, runtime)
+        self.assertEqual(rows[0]['status'], 'stopped')
+        self.assertFalse(rows[0]['start']['available'])  # Start needs the saved command and its model
+
 
 if __name__ == '__main__':
     unittest.main()
