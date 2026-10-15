@@ -251,10 +251,9 @@ class Browser:
         self.capacity_guard = None
         self.lifecycle_guard = None
 
-    async def publish_activity(self, actor, label, action, phase, page=None):
+    async def publish_activity(self, actor, label, action, phase, page=None, point=None):
         # Broadcast existing observer status plus action metadata, not action arguments or screenshots.
-        self.activity = {'actor': actor, 'label': label, 'action': action,
-                         'phase': phase, 'time': time.time(), 'page': page or self.active}
+        self.activity = activity_record(actor, label, action, phase, page or self.active, point)
         await self.runtime.emit('browser_activity', self.status())
 
     def note(self, kind, text, page=None):
@@ -966,6 +965,7 @@ class Browser:
             if not self.status()['running']:
                 raise ValueError('Open a page first')
             page = self.page(arguments)
+            spot = None  # where a click or scroll landed, for Live's cursor (Zero #20226)
             if action == 'record_start':
                 return {**self.status(page), **await self.record_start(
                     page, max_seconds=arguments.get('max_seconds', DEFAULT_RECORD_SECONDS),
@@ -1014,6 +1014,7 @@ class Browser:
                     point = arguments
                 if action == 'click':
                     x, y = self.point(point, page)
+                    spot = self.spot(x, y, page)
                     for phase in ('mousePressed', 'mouseReleased'):
                         await self.command('Input.dispatchMouseEvent', {'type': phase, 'x': x, 'y': y, 'button': 'left', 'clickCount': 1}, page=page)
                 else:
@@ -1030,6 +1031,7 @@ class Browser:
                     'buttons': 0 if phase == 'mouseReleased' else 1, 'clickCount': 1}, page=page)
             elif action == 'scroll':
                 x, y = self.point(arguments, page, default=True)
+                spot = self.spot(x, y, page)
                 delta = max(-2000, min(2000, float(arguments.get('delta', 500))))
                 await self.command('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': y, 'deltaX': 0, 'deltaY': delta}, page=page)
             elif action == 'key':
@@ -1063,13 +1065,26 @@ class Browser:
             else:
                 raise ValueError('Unknown browser action')
             page.frame_at = 0
-            return self.status(page)
+            return {**self.status(page), 'point': spot} if spot else self.status(page)
 
     def point(self, args, page, default=False):
         x, y = float(args.get('x', page.width / 2 if default else -1)), float(args.get('y', page.height / 2 if default else -1))
         if not (0 <= x < page.width and 0 <= y < page.height):
             raise ValueError('Point is outside the browser viewport')
         return x, y
+
+    @staticmethod
+    def spot(x, y, page):
+        """A viewport point as fractions 0..1 of the page's width and height; coordinates only, never what was typed."""
+        return {'x': round(x / page.width, 4), 'y': round(y / page.height, 4)}
+
+
+def activity_record(actor, label, action, phase, page, point=None):
+    """The published action metadata; a finished click or scroll adds where it landed (Browser.spot), nothing else."""
+    record = {'actor': actor, 'label': label, 'action': action, 'phase': phase, 'time': time.time(), 'page': page}
+    if point and phase == 'done' and action in ('click', 'scroll'):
+        record['point'] = point
+    return record
 
 
 def browser_capacity():
@@ -1186,11 +1201,10 @@ class BrowserManager:
         finally:
             self.starting.discard(browser.id)
 
-    async def publish_activity(self, actor, label, action, phase, page=None):
+    async def publish_activity(self, actor, label, action, phase, page=None, point=None):
         browser = await self.prepare(actor, label, {})
         self.selection.set(browser)
-        browser.activity = {'actor': actor, 'label': label, 'action': action,
-                            'phase': phase, 'time': time.time(), 'page': page or browser.active}
+        browser.activity = activity_record(actor, label, action, phase, page or browser.active, point)
         await self.runtime.emit('browser_activity', self.wrap(browser, browser.status()))
 
     async def close(self):
@@ -1257,8 +1271,8 @@ def install(host, runtime):
                 return JSONResponse({'error': 'Project changed; reload the browser view'}, 409)
             result = await browser.act('user', 'You', body)
             selected = browser.selection.get()
-            selected.activity = {'actor': 'user', 'label': 'You', 'action': body.get('action', 'status'),
-                                 'phase': 'done', 'time': time.time(), 'page': result.get('page')}
+            selected.activity = activity_record('user', 'You', body.get('action', 'status'), 'done',
+                                                result.get('page'), result.get('point'))
             await runtime.emit('browser_activity', browser.wrap(selected, selected.status()))
             return {**result, 'activity': browser.activity}
         except (ValueError, TypeError, OSError) as exc:

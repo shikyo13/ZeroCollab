@@ -43,6 +43,7 @@ from response_claims import ResponseClaims
 from manager_wakes import ManagerWakes, install as install_manager_wakes
 import project_registry
 import live_feed
+import room_markup
 from board_push import BoardPush, detached
 from agent_profiles import AgentProfiles
 import agent_skills
@@ -2194,7 +2195,7 @@ class RoomRuntime:
             except Exception:
                 await self.browser.publish_activity(run.id, run.name, action, 'failed')
                 raise
-            await self.browser.publish_activity(run.id, run.name, action, 'done')
+            await self.browser.publish_activity(run.id, run.name, action, 'done', point=result.get('point'))
             if action in RECORDING_RESULTS and result.get('phase') == 'done' and result.get('path'):
                 # A finished take is used where it lies, never copied (Zero #14949): registered like a pasted
                 # path, so room_motion inspect and import_asset take its fileref and chat links serve it in place.
@@ -2301,8 +2302,10 @@ class RoomRuntime:
                 arguments = {**arguments, 'post': False}
             result = self.project_room.markup(run.name, run.channel, run.entry['chain'], **arguments)
             attachment = result.get('attachment') or {}
+            # A markup carries its marks (normalized, as drawn) so Live can trace them on the original (Zero #20226).
+            marks = room_markup.normalize_marks(arguments.get('marks') or []) if attachment.get('source') else None
             await self.live.publish(self.live.artifact(run, attachment.get('url'), 'markup' if attachment.get('source') else 'upload',
-                                                       attachment.get('source', '')))
+                                                       attachment.get('source', ''), marks=marks))
             self.project_state_soon()
             return result
         if tool == 'room_read':

@@ -180,8 +180,11 @@ class LiveFeed:
                 return []
             page = activity.get('page') or ''
             url = f"/api/runtime/browser/frame?project={self.runtime.identity}" + (f'&page={page}' if page else '')
-            return self.set_artifact(name, {'url': url, 'kind': 'browser_frame', 'page': data.get('url') or '',
-                                            'frame_at': time.time()})
+            item = {'url': url, 'kind': 'browser_frame', 'page': data.get('url') or '', 'frame_at': time.time()}
+            point = activity.get('point')
+            if isinstance(point, dict):
+                item['point'] = point  # where a click or scroll landed, 0..1 of the viewport (shared_browser.Browser.spot)
+            return self.set_artifact(name, item)
         return []
 
     def handoff_delta(self, delta):
@@ -263,13 +266,16 @@ class LiveFeed:
                                     channel, item.get('task_id', ''), item.get('id', ''), item.get('result'))
         return []
 
-    def artifact(self, run, url, kind, source_url=''):
-        """A visual an agent produced in its turn: a browser screenshot, a markup or an upload."""
+    def artifact(self, run, url, kind, source_url='', marks=None):
+        """A visual an agent produced in its turn: a browser screenshot, a markup or an upload. A markup also
+        carries its marks (room_markup.normalize_marks: kind, x1 y1 x2 y2 as 0..1, color, note), in drawing order."""
         if getattr(run, 'sealed', False) or not url:
             return []
         item = {'url': url, 'kind': kind}
         if source_url:
             item['source_url'] = source_url
+        if marks:
+            item['marks'] = marks
         return self.set_artifact(run.name, item)
 
     def set_artifact(self, name, item):
