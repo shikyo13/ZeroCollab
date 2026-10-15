@@ -1,4 +1,5 @@
 import { projectState } from '../lib/projectState';
+import { runtime } from '../lib/api';
 /* Follow mode: a live view of what the team is doing, built only from events the room
  * already emits (runtime_start/delta/tool/end, project_state, browser_activity).
  * Tool events carry a name and status, not reliable parameters (Claude reports input {} at
@@ -80,6 +81,7 @@ export interface FollowSnapshot {
 }
 
 const TEXT_TAIL = 50000; // runaway guard; the bubble owns visual collapse, not source truncation
+const SPEECH_BUFFER_CHUNKS = 1024;
 const TICKER_KEPT = 30;
 const MOVE_SHOWN_MS = 6000;
 const RECONCILE_QUIET_SECONDS = 10;
@@ -183,6 +185,7 @@ function tail(text: string): string {
 function ensure(agent: string, run: string, channel: string): AgentLive {
   let entry = live.get(agent);
   if (!entry || entry.run !== run) {
+    if (entry) rememberEnded(entry.run);
     entry = { agent, run, channel, text: '', started: now(), updated: now() };
     live.set(agent, entry);
   }
@@ -201,12 +204,117 @@ interface RuntimeData {
   status?: string;
   outcome?: string;
   sealed?: boolean;
+  end?: number;
 }
 
 // Raw streamed text per run and message, so the bubble shows the tail of the current message.
-const streams = new Map<string, { message: string; text: string; draft: boolean }>();
+const streams = new Map<string, { message: string; text: string; draft: boolean; end?: number }>();
 // A delayed HTTP snapshot must not undo focus already received on the event stream.
 const focusEvents = new Set<string>();
+// Revisions belong to entries, so replaced/removed runs leave no revision cache behind.
+const speechRevisions = new WeakMap<AgentLive, number>();
+const eventRevisions = new WeakMap<AgentLive, number>();
+let speechGeneration = 0;
+let speechRequest = 0;
+interface SpeechBuffer {
+  message: string; sealed: boolean; count: number; chars: number; valid: boolean;
+  chunks: { end: number; text: string }[];
+}
+let speechCapture: { generation: number; buffers: WeakMap<AgentLive, SpeechBuffer> } | null = null;
+const speechEnd = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+function bufferSpeech(entry: AgentLive, d: RuntimeData, draft: boolean) {
+  if (!speechCapture || speechCapture.generation !== speechGeneration) return;
+  const buffers = speechCapture.buffers;
+  let buffer = buffers.get(entry);
+  if (!buffer) {
+    buffer = { message: d.message ?? '', sealed: !!d.sealed, count: 0, chars: 0, valid: true, chunks: [] };
+    buffers.set(entry, buffer);
+  }
+  buffer.count++;
+  const text = d.sealed ? '' : d.text ?? '';
+  buffer.chars += text.length; // memory budget only; never a server position
+  const last = buffer.chunks.at(-1);
+  if (!draft || !speechEnd(d.end) || buffer.message !== d.message || buffer.sealed !== !!d.sealed
+      || last && (d.end < last.end || text.length > 0 && d.end === last.end)
+      || buffer.count > SPEECH_BUFFER_CHUNKS || buffer.chars > TEXT_TAIL) buffer.valid = false;
+  if (buffer.valid) buffer.chunks.push({ end: d.end!, text });
+  else buffer.chunks.length = 0;
+}
+
+interface SpeechSnapshot {
+  run: string;
+  agent: string;
+  channel: string;
+  task_id: string | null;
+  message: string | null;
+  draft: boolean;
+  sealed: boolean;
+  text: string;
+  end: number;
+}
+
+/** Recover state without replaying it as activity. Every response belongs to one connection/project. */
+async function refreshSpeech() {
+  const generation = speechGeneration;
+  const request = ++speechRequest;
+  const capture = { generation, buffers: new WeakMap<AgentLive, SpeechBuffer>() };
+  speechCapture = capture;
+  const before = new Map([...live].map(([agent, entry]) => [agent, {
+    entry, speech: speechRevisions.get(entry) ?? 0, event: eventRevisions.get(entry) ?? 0,
+  }]));
+  try {
+    const data = await runtime<{ runs: SpeechSnapshot[] }>('/speech');
+    if (generation !== speechGeneration || request !== speechRequest || !Array.isArray(data.runs)) return;
+    const present = new Set(data.runs.map(r => r.run));
+    for (const r of data.runs) {
+      const current = live.get(r.agent);
+      const previous = before.get(r.agent);
+      // A pushed runtime_state may have seeded the same run while HTTP was in flight.
+      // A replacement/end or message reset wins; same-message drafts can be joined exactly.
+      if (ended.has(r.run) || current && current.run !== r.run) continue;
+      if (previous && current !== previous.entry) continue;
+      const changed = current ? (speechRevisions.get(current) ?? 0) - (previous?.speech ?? 0) : 0;
+      const buffer = current && capture.buffers.get(current);
+      if (changed && (!buffer?.valid || buffer.count !== changed || buffer.message !== r.message
+          || buffer.sealed !== r.sealed || !speechEnd(r.end))) continue;
+      const entry = current ?? ensure(r.agent, r.run, r.channel);
+      const after = changed ? buffer!.chunks.filter(chunk => chunk.end > r.end) : [];
+      const text = r.sealed ? '' : (r.text + after.map(chunk => chunk.text).join('')).slice(-TEXT_TAIL);
+      // end uses Python code points. Compare only positions from the server, never JS string lengths.
+      const end = after.at(-1)?.end ?? (speechEnd(r.end) ? r.end : undefined);
+      streams.set(r.run, { message: r.message ?? '', text, draft: r.draft, end });
+      entry.text = r.sealed ? 'Sealed position' : tail(text);
+      if (!focusEvents.has(r.run)) applyFocus(entry, r);
+      entry.updated = now();
+    }
+    // Only retire entries that existed at request start and have received no later event.
+    for (const [agent, previous] of before) {
+      if (!present.has(previous.entry.run) && live.get(agent) === previous.entry
+          && (eventRevisions.get(previous.entry) ?? 0) === previous.event) {
+        live.delete(agent);
+        streams.delete(previous.entry.run);
+        focusEvents.delete(previous.entry.run);
+      }
+    }
+    publish();
+  } catch {
+    // Keep streamed state on a failed fetch; the next connect/project change retries.
+  } finally {
+    if (speechCapture === capture) speechCapture = null;
+  }
+}
+
+function changeProject(project?: string) {
+  if (!project || project === currentProject) return;
+  currentProject = project;
+  speechGeneration += 1;
+  lastTasks = null; lastReviews = null; lastBrowserTime = 0;
+  live.clear(); streams.clear(); ended.clear(); moves.clear(); ticker.length = 0; pips.length = 0; pip = null; pipSeen.clear();
+  focusEvents.clear();
+  paused = false; publish(true);
+  void refreshSpeech();
+}
 
 function applyFocus(entry: AgentLive, data: { task_id?: string | null }) {
   if ('task_id' in data) entry.task = data.task_id;
@@ -216,6 +324,7 @@ function eventEntry(d: RuntimeData) {
   const previous = live.get(d.agent);
   if (previous && previous.run !== d.run) focusEvents.delete(previous.run);
   const entry = ensure(d.agent, d.run, d.channel ?? '');
+  eventRevisions.set(entry, (eventRevisions.get(entry) ?? 0) + 1);
   applyFocus(entry, d);
   if ('task_id' in d) focusEvents.add(d.run);
   return entry;
@@ -230,7 +339,8 @@ function onFocus(event: RoomEvent) {
 
 function onStart(event: RoomEvent) {
   const d = event.data as RuntimeData;
-  eventEntry(d);
+  const entry = eventEntry(d);
+  speechRevisions.set(entry, (speechRevisions.get(entry) ?? 0) + 1);
   tick(d.agent, 'started a turn', undefined);
   publish();
 }
@@ -238,7 +348,9 @@ function onStart(event: RoomEvent) {
 function onDelta(event: RoomEvent) {
   const d = event.data as RuntimeData;
   const entry = eventEntry(d);
+  speechRevisions.set(entry, (speechRevisions.get(entry) ?? 0) + 1);
   const draft = event.type === 'runtime_draft';
+  bufferSpeech(entry, d, draft);
   let stream = streams.get(d.run);
   // The first public delta repeats the full message after a draft, rather than continuing its chunks.
   if (!stream || stream.message !== (d.message ?? '') || stream.draft && !draft) {
@@ -246,6 +358,9 @@ function onDelta(event: RoomEvent) {
     streams.set(d.run, stream);
   }
   stream.draft = draft;
+  // The response can cover chunks still queued on the event stream.
+  if (draft && !d.sealed && speechEnd(d.end) && stream.end !== undefined && d.end <= stream.end) return;
+  stream.end = draft && speechEnd(d.end) ? d.end : undefined;
   // Retain the current reply for expanded reading; cap only runaway streams.
   stream.text = d.sealed ? '' : (stream.text + (d.text ?? '')).slice(-TEXT_TAIL);
   entry.text = d.sealed ? 'Sealed position' : tail(stream.text);
@@ -264,10 +379,14 @@ function onTool(event: RoomEvent) {
 // Runs that ended here, so a snapshot that lags their runtime_end never seeds them again.
 const ended = new Set<string>();
 
+function rememberEnded(run: string) {
+  ended.add(run);
+  if (ended.size > 200) ended.delete(ended.values().next().value as string);
+}
+
 function onEnd(event: RoomEvent) {
   const d = event.data as RuntimeData;
-  ended.add(d.run);
-  if (ended.size > 200) ended.delete(ended.values().next().value as string);
+  rememberEnded(d.run);
   const entry = live.get(d.agent);
   if (entry && entry.run === d.run) live.delete(d.agent);
   streams.delete(d.run);
@@ -278,10 +397,7 @@ function onEnd(event: RoomEvent) {
 
 function onProjectState(state: ProjectState, baseline: boolean) {
   if (!state || !Array.isArray(state.tasks)) return;
-  if (state.project_id && currentProject && state.project_id !== currentProject) {
-    lastTasks = null; lastReviews = null; moves.clear(); ticker.length = 0; pips.length = 0; pip = null; pipSeen.clear();
-  }
-  currentProject = state.project_id || currentProject;
+  changeProject(state.project_id);
   if (baseline) { lastTasks = null; lastReviews = null; }
   const tasks = new Map(state.tasks.map(t => [t.id, t]));
   const reviews = new Map((state.reviews ?? []).map(r => [r.id, r]));
@@ -406,12 +522,7 @@ function onMessage(event: RoomEvent) {
 const knownAgents = new Set<string>();
 function onRuntimeState(event: RoomEvent) {
   const data = event.data as { agents?: Record<string, unknown>; project_id?: string; runs?: RunSnapshot[] } | undefined;
-  if (data?.project_id && data.project_id !== currentProject) {
-    currentProject = data.project_id; lastTasks = null; lastReviews = null; lastBrowserTime = 0;
-    live.clear(); streams.clear(); ended.clear(); moves.clear(); ticker.length = 0; pips.length = 0; pip = null; pipSeen.clear();
-    focusEvents.clear();
-    paused = false; publish(true);
-  }
+  changeProject(data?.project_id);
   const agents = data?.agents;
   if (agents) {
     knownAgents.clear();
@@ -424,7 +535,10 @@ const HANDLERS: [string, Listener][] = [
   ['runtime_state', onRuntimeState],
   ['runtime_start', onStart],
   ['runtime_focus', onFocus],
-  ['settings', () => focusEvents.clear()],
+  ['settings', () => { speechGeneration += 1; focusEvents.clear(); void refreshSpeech(); }],
+  ['chat_connection', event => {
+    if ((event as unknown as { state: string }).state !== 'connected') speechGeneration += 1;
+  }],
   ['runtime_delta', onDelta],
   ['runtime_draft', onDelta],
   ['runtime_tool', onTool],
@@ -439,6 +553,7 @@ function attach() {
     if (!window.Hub || attached) return;
     attached = true;
     HANDLERS.forEach(([type, fn]) => window.Hub!.on(type, fn));
+    void refreshSpeech();
   };
   if (window.Hub) run();
   else window.addEventListener('load', run, { once: true });
@@ -467,6 +582,7 @@ export function reconcileRuns(running: RunSnapshot[], pushed = false) {
     }
     if (current && current.updated >= quietSince) continue;
     if (current) {
+      rememberEnded(current.run);
       live.delete(r.agent);
       streams.delete(current.run);
       focusEvents.delete(current.run);
