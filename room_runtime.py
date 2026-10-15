@@ -951,14 +951,15 @@ class RoomRuntime:
 
     async def refocus(self, run, arguments, result):
         """After one of run's successful room_task changes (task b5526ef8). A deliberate start moves the focus to that
-        task: claim or accept, or a create or update that leaves it working and the agent's without closing or
-        deferring it. Any change can end the current focus (done, or no longer the agent's), which falls back to the
-        previous valid one. A change is sent as runtime_focus, so the Board follows it between drafts."""
+        task: claim or accept, or a create or update that leaves it working and the agent's, none of them closing or
+        deferring it (frontend 7e85bd4c). Any change can end the current focus (done, or no longer the agent's), which
+        falls back to the previous valid one. A change is sent as runtime_focus, so the Board follows it between
+        drafts."""
         action = arguments.get('action')
         deferred = bool(arguments.get('close_reason') or arguments.get('wait') or arguments.get('wait_on')
                         or arguments.get('next_action_state') in ('waiting', 'deferred'))
-        if result.get('owner') == run.name and (action in ('claim', 'accept') or (
-                action in ('create', 'update') and result.get('status') == 'working' and not deferred)):
+        if result.get('owner') == run.name and not deferred and (action in ('claim', 'accept') or (
+                action in ('create', 'update') and result.get('status') == 'working')):
             run.focus_history = [t for t in run.focus_history if t != result['id']] + [result['id']]
         focus = self.run_focus(run)
         if focus != run.focus:

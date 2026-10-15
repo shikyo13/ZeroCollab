@@ -55,11 +55,11 @@ class LiveFeed:
         return task['title'] if task else ''
 
     def current_task(self, name):
-        """The run's focus (the same task the Board places its speech on, task b5526ef8), else the run's own task when
-        it names exactly one, else the single task this agent owns that is working."""
+        """A running turn's focus: the same task the Board places its speech on, or '' when it is not tied to one
+        (task b5526ef8, frontend 7e85bd4c). Without a running turn, the single task this agent owns that is working."""
         run = self.runtime.running.get(name)
-        if getattr(run, 'task_id', None):
-            return run.task_id
+        if run is not None and hasattr(run, 'focus'):
+            return run.task_id or ''
         explicit = sorted(getattr(run, 'task_ids', ()) or ()) if run else []
         if len(explicit) == 1:
             return explicit[0]

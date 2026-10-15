@@ -99,6 +99,26 @@ class RefocusTest(unittest.TestCase):
         board[0]['owner'] = 'qa'
         self.assertIsNone(change(runtime, run, {'action': 'delegate', 'task_id': 'a', 'owner': 'qa'}, board[0]))
 
+    def test_a_claim_or_accept_that_defers_does_not_move_it(self):
+        board = [task('a'), task('b', status='open')]  # frontend 7e85bd4c, critical 2
+        runtime = Runtime(board)
+        run = run_for(runtime, [{'task_id': 'a', 'human': False}])
+        self.assertEqual(change(runtime, run, {'action': 'claim', 'task_id': 'b', 'next_action_state': 'deferred'}, board[1]), 'a')
+        self.assertEqual(change(runtime, run, {'action': 'accept', 'task_id': 'b', 'wait': {'kind': 'review'}}, board[1]), 'a')
+        self.assertEqual(runtime.events, [])
+
+    def test_live_reports_the_same_task_as_the_board_including_none(self):
+        from live_feed import LiveFeed  # frontend 7e85bd4c, critical 1
+        board = [task('a', status='review')]
+        runtime = Runtime(board)
+        run = run_for(runtime, [{'prompt': 'chat', 'human': True}])
+        run.task_ids = {'a'}  # a taskless turn updated a task in review: 'Running now', but not its focus
+        runtime.running = {'desktop': run}
+        feed = LiveFeed(runtime)
+        self.assertEqual(feed.current_task('desktop'), '')
+        run.focus = 'a'
+        self.assertEqual(feed.current_task('desktop'), 'a')
+
 
 if __name__ == '__main__':
     unittest.main()
