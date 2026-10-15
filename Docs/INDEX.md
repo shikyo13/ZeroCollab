@@ -6,6 +6,7 @@ Start here. Each document covers one subject; read the one that matches the ques
 
 | Document | Category | Read it for |
 |-|-|-|
+| [GLOSSARY.md](GLOSSARY.md) | Overview | One word per room concept (Stop, Resume, Quit, release, desktop shell, stage, rehearsal, install, donor, live check, normal launch) with the words to avoid |
 | [project-summary.md](project-summary.md) | Overview | What ZeroCollab is, feature areas and the module that owns each, design rules, known gaps |
 | [architecture.md](architecture.md) | Architecture | Process and browser layout (ASCII), and four flows: chat message, managed agent turn, repository change, deployment |
 | [dependency-map.md](dependency-map.md) | Dependencies | Third-party packages and who uses them, the internal Python import graph and its cycles, frontend packages, chat script load order |
