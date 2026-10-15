@@ -173,7 +173,9 @@ def local_setup(run):
 
 
 def room_server(run):
-    return {'command': sys.executable, 'args': ['-X', 'utf8', str(Path(__file__).with_name('room_mcp.py'))],
+    # -B: the room server imports the installed release, which must stay byte-exact; never write __pycache__ there.
+    # The desktop's bundled Python is isolated, so PYTHONDONTWRITEBYTECODE can't do this (desktop f0692e72).
+    return {'command': sys.executable, 'args': ['-B', '-X', 'utf8', str(Path(__file__).with_name('room_mcp.py'))],
             'env': room_environment(run)}
 
 
