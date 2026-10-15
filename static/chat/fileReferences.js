@@ -132,19 +132,30 @@ window.FileReferences = (() => {
     // Probe only after a referenced media element fails. Do not download or poll originals.
     async function explainFailure(node, value) {
         if (!REFERENCE_URL.test(mediaURL(value)?.pathname || '')) return;
-        const note = document.createElement('span'); note.className = 'msg-reference-status';
-        note.textContent = 'The original file is unavailable. It may have moved or been deleted.';
-        node.after(note);
+        // Callers attach this handler once. Log no element or authenticated URL.
+        if (node.error) console.warn('Referenced media failed', {
+            code: node.error.code, message: node.error.message,
+        });
+        let message = '';
         try {
             const response = await fetch(authenticatedURL(value), {
                 headers: { Range: 'bytes=0-0' }, signal: AbortSignal.timeout(REFERENCE_TIMEOUT_MS),
             });
-            if (!response.ok) note.textContent = (await response.json()).error || note.textContent;
-            else {
-                if (response.headers.get('X-File-Changed') === '1') note.textContent = 'The original file has changed since it was linked.';
+            if (response.ok) {
+                if (response.headers.get('X-File-Changed') === '1') message = 'The original file has changed since it was linked.';
                 await response.body?.cancel();
+            } else if (response.status === 404 || response.status === 410) {
+                message = 'The original file is unavailable. It may have moved or been deleted.';
+                await response.body?.cancel();
+            } else {
+                const data = await response.json().catch(() => ({}));
+                message = data.error || `The file could not be checked (HTTP ${response.status}).`;
             }
-        } catch { /* Keep the useful local-file error if the connection is unavailable. */ }
+        } catch { message = 'The file could not be checked. Try again when the connection is available.'; }
+        if (!message) return;
+        const note = document.createElement('span'); note.className = 'msg-reference-status';
+        note.textContent = message;
+        node.after(note);
     }
 
     return Object.freeze({ clipboardPaths, clipboardEntries, isReferencePath, mediaURL, authenticatedURL, register,
