@@ -181,6 +181,9 @@ RELEASE_WAKES_VERSION = 1
 # Keys are never pruned: a receipt the core can still replay must find its key (Astra 648775e5 B3, 6e99c753).
 # Retention will follow the core's receipt retention once that policy exists; a record is a few hundred bytes.
 MANUAL_STOP_FAULT_FILE = 'manual-control.fault'  # a latch write failed: no automatic reopen until a user Resume
+# A Stop or Resume clicked behind blocked writes that no latch recorded: kept until applied, so a restart keeps it.
+MANUAL_STOP_DEFERRED_FILE = 'manual-control.deferred'
+MANUAL_STOP_ACTIONS = ('stop', 'resume')
 DEFERRED_STOP_NOTICE = 'Room stopped: you clicked Stop while an update was finishing. Active turns cancelled.'
 DEFERRED_CLICK_NOTE = 'Recorded. The room applies it as soon as the update finishes.'
 RELEASE_FIELDS = ('deployment_id', 'project', 'receipt_id', 'outcome')  # required, non-empty strings
@@ -2929,8 +2932,30 @@ class RoomRuntime:
         for name, entry in self.deploy_held.items():
             if name not in self.running:
                 pending.setdefault(name, []).insert(0, entry)
-        atomic_json(self.deployment.root / 'pending-wakes.json', {'project_id': self.identity, 'queues': pending,
-                                                                  'interrupted': list(self.install_interrupted.values())})
+        path = self.deployment.root / 'pending-wakes.json'
+        foreign = self.foreign_deploy_checkpoint(path)
+        if foreign:
+            # A start that opened another project restored nothing from this checkpoint. Replacing it at close
+            # would lose that project's queued work before the previous host restores it (backend 3de6cf8e note 1).
+            LOGGER.warning('Kept the deployment checkpoint of project %s; %d queued wake(s) of %s were not saved',
+                           foreign, sum(map(len, pending.values())), self.identity)
+            return
+        atomic_json(path, {'project_id': self.identity, 'queues': pending,
+                           'interrupted': list(self.install_interrupted.values())})
+
+    def foreign_deploy_checkpoint(self, path):
+        """The project id of a checkpoint at path that holds another project's work, else None. Admission opening
+        deletes the checkpoint (resume_deploy_checks), so one survives only in a start that never admitted turns."""
+        from room_deploy import read_json
+        try:
+            saved = read_json(path, {}) or {}
+        except (OSError, ValueError):
+            return None  # unreadable: restore ignores it too, so it holds nothing to keep
+        if not isinstance(saved, dict) or saved.get('project_id') == self.identity:
+            return None
+        queues = saved.get('queues') if isinstance(saved.get('queues'), dict) else {}
+        held = any(queues.values()) or bool(saved.get('interrupted'))
+        return (saved.get('project_id') or 'none') if held else None
 
     def restore_deploy_queue(self):
         if not self.deployment:
@@ -2967,6 +2992,12 @@ class RoomRuntime:
         fault = self.deployment.root / MANUAL_STOP_FAULT_FILE
         if fault.exists():
             self.manual_stop_fault = 'an earlier Stop or Resume could not be recorded'
+            action = self.unlatched_click()
+            if action:
+                # The click outlived the process that took it: hold the room the same way, and apply it once
+                # writes open (reconcile_manual_stop's no-latch branch).
+                self.manual_stop_pending, self.manual_stop_deferred = True, action
+                self.paused = True if action == 'stop' else self.paused
             return
         try:
             self.manual_stop = ManualStopState(self.deployment.root, self.deployment.lock, initially_stopped=stopped)
@@ -2986,12 +3017,34 @@ class RoomRuntime:
                 self.paused = True
 
     def defer_manual_stop(self, action):
-        """A user click while writes are blocked: latched already, applied later. Memory only."""
+        """A user click while writes are blocked: latched already, applied later. Memory only, unless no latch
+        recorded it (then MANUAL_STOP_DEFERRED_FILE keeps it until commit_manual_stop applies it)."""
         self.manual_stop_pending, self.manual_stop_deferred = True, action
         if action == 'stop':
             self.paused = True
         else:
             self.unpause()
+        if self.manual_stop is None and self.deployment:
+            # No latch recorded this click, so memory is its only copy; a restart before writes open would drop a
+            # Stop and run the room (backend 3de6cf8e note 2). Same folder and class of write as the latch.
+            try:
+                atomic_write(self.deployment.root / MANUAL_STOP_DEFERRED_FILE,
+                             lambda stream: stream.write(json.dumps({'action': action})))
+            except OSError:
+                LOGGER.exception('The %s click could not be kept across a restart; it applies only in this process', action)
+
+    def unlatched_click(self):
+        """The click defer_manual_stop kept for a missing latch, or None."""
+        try:
+            value = json.loads((self.deployment.root / MANUAL_STOP_DEFERRED_FILE).read_text('utf-8'))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            # Unknowable click: hold like a Stop, which the user can always undo with Resume.
+            LOGGER.warning('Unreadable deferred Stop/Resume; holding the room stopped: %s', exc)
+            return 'stop'
+        action = value.get('action') if isinstance(value, dict) else None
+        return action if action in MANUAL_STOP_ACTIONS else 'stop'
 
     @staticmethod
     def manual_stop_stamp(latch):
@@ -3020,6 +3073,11 @@ class RoomRuntime:
             LOGGER.exception('An applied Stop/Resume was not saved; turns stay held')
             return False
         self.manual_stop_pending, self.manual_stop_deferred = False, None
+        try:
+            if self.deployment:
+                (self.deployment.root / MANUAL_STOP_DEFERRED_FILE).unlink(missing_ok=True)  # applied and saved now
+        except OSError:
+            LOGGER.exception('An applied deferred Stop/Resume record could not be removed; the next start reapplies it')
         latch = self.latch_now()
         if latch is not None and self.manual_stop_stamp(latch) != self.manual_stop_applied:
             self.manual_stop_pending = True
