@@ -1676,6 +1676,10 @@ UPLOAD_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
     "X-Content-Type-Options": "nosniff",
 }
+# A video opened on its own becomes a browser-made video page. It needs media-src to load itself, and its own
+# origin, or the sandbox turns its request into a refused cross-origin one (desktop 48947866). Scripts stay off:
+# the sandbox still has no allow-scripts. Images and SVG keep the stricter header above.
+VIDEO_CSP = "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; sandbox allow-same-origin"
 
 
 def serve_file(filepath, download_name=None, headers=None):
@@ -1683,6 +1687,8 @@ def serve_file(filepath, download_name=None, headers=None):
     download_name the download keeps that name; without it a chat link's download="<name>" decides."""
     headers = {**UPLOAD_HEADERS, **(headers or {})}
     media_type = UPLOAD_MEDIA_TYPES.get(filepath.suffix.lower())
+    if media_type is not None and media_type.startswith('video/'):
+        return FileResponse(filepath, media_type=media_type, headers={**headers, "Content-Security-Policy": VIDEO_CSP})
     if media_type is not None:
         return FileResponse(filepath, media_type=media_type, headers=headers)
     if download_name:

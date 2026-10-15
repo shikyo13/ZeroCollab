@@ -104,6 +104,17 @@ class UploadBoundsTests(unittest.TestCase):
             self.assertEqual(response.headers['x-content-type-options'], 'nosniff')
             self.assertNotIn('content-disposition', response.headers)  # inline: previews keep working
 
+    def test_video_opened_alone_can_load_itself_without_scripts(self):
+        # Desktop 48947866: a standalone video page needs media-src and its own origin; scripts stay off.
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, 'clip.webm').write_bytes(b'\x1a\x45\xdf\xa3')
+            csp = self.serve(root, 'clip.webm').headers['content-security-policy']
+            self.assertIn("media-src 'self'", csp)
+            self.assertIn('sandbox allow-same-origin', csp)
+            self.assertNotIn('allow-scripts', csp)
+            Path(root, 'evil.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+            self.assertTrue(self.serve(root, 'evil.svg').headers['content-security-policy'].endswith('; sandbox'))
+
     def test_raster_upload_keeps_its_image_type(self):
         with tempfile.TemporaryDirectory() as root:
             Path(root, 'shot.jpg').write_bytes(b'\xff\xd8\xff')
