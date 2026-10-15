@@ -289,10 +289,13 @@ def _install_security_middleware(token: str, cfg: dict, sessions=None):
                 if _self.registry and _self.registry.resolve_token(bearer):
                     return await call_next(request)
 
-            # The web room takes the token from the header only; a query parameter put it into URLs.
+            # The web room takes the token from the header only; a query parameter put it into URLs. The one
+            # exception is reading a referenced file: a <video> or <img> src can't send a header, and the desktop
+            # page authenticates by token, not cookie (task 09a53fa4). Origin and fetch checks above still apply.
+            media_read = request.method in ("GET", "HEAD") and path.startswith("/api/files/ref/")
             req_token = (
                 request.headers.get("x-session-token")
-                or (None if sessions is not None else request.query_params.get("token"))
+                or (None if sessions is not None and not media_read else request.query_params.get("token"))
             )
             if not _token_matches(req_token, _self.session_token) and not _self._run_token_allows(
                     request.headers.get("x-session-token"), request.method, path):
