@@ -10,7 +10,7 @@ const controller = 'http://127.0.0.1:8301';
 
 /** The tray's local controller outlives the backend, so this mounted UI can
  * still start it after Stop. It never relies on the backend's API/session. */
-export function BackendControls({ inline = false }: { inline?: boolean }) {
+export function BackendControls({ inline = false, active = true }: { inline?: boolean; active?: boolean }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -40,12 +40,24 @@ export function BackendControls({ inline = false }: { inline?: boolean }) {
 
   useEffect(() => {
     mounted.current = true;
-    void refresh();
-    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, inline || open || pending || status?.busy ? 2500 : 15000);
+    return () => { mounted.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (active && !document.hidden) void refresh();
+  }, [active, refresh]);
+
+  const watching = active || !!pending || !!status?.busy;
+  useEffect(() => {
+    if (!watching) return;
+    // Hidden panels stay mounted, but only an in-progress action needs tracking.
+    // An absent optional tray controller must not generate failures every 2.5 s.
+    const delay = unavailable ? 60000 : inline || open || pending || status?.busy ? 2500 : 15000;
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, delay);
     const visible = () => { if (!document.hidden) void refresh(); };
     document.addEventListener('visibilitychange', visible);
-    return () => { mounted.current = false; window.clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
-  }, [inline, open, pending, status?.busy, refresh]);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
+  }, [watching, unavailable, inline, open, pending, status?.busy, refresh]);
 
   useEffect(() => {
     if (!open || inline) return;

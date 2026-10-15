@@ -13,7 +13,7 @@ const readSection = (): ServerSection => {
   return sections.includes(section as ServerSection) ? section as ServerSection : 'status';
 };
 
-export function ServerPage({ deployments }: { deployments: DeploymentFeed }) {
+export function ServerPage({ active, deployments }: { active: boolean; deployments: DeploymentFeed }) {
   const [section, setSection] = useState(readSection);
   useEffect(() => {
     const changed = () => setSection(readSection());
@@ -31,7 +31,7 @@ export function ServerPage({ deployments }: { deployments: DeploymentFeed }) {
       <div className="server-version bd-panel"><h2>Installed release</h2>
         <p>{deployments.data?.current.version || deployments.data?.current.id || (deployments.error ? 'Status unavailable' : 'Loading…')}</p>
         <button className="bd-btn" onClick={() => openServer('updates')}>View updates</button></div>
-      <BackendControls inline />
+      <BackendControls inline active={active && section === 'status'} />
       <div className="deploy-panel bd-panel"><h2>Deployment supervisor</h2><SupervisorStatus feed={deployments} /></div>
     </section>
     <section hidden={section !== 'updates'} aria-label="Server updates"><Deployments feed={deployments} /></section>

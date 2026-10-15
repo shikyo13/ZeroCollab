@@ -52,7 +52,7 @@ export default function App() {
         <section className="workspace-board" hidden={view !== 'board'} aria-label="Task board"><Board /></section>
         <section className="workspace-live" hidden={view !== 'live'} aria-label="Live view"><LiveTeam active={view === 'live'} navigate={navigate} /></section>
         <section className="workspace-team" hidden={view !== 'team'} aria-label="Team"><Team /></section>
-        <section className="workspace-server" hidden={view !== 'server'} aria-labelledby="server-title"><ServerPage deployments={deployments} /></section>
+        <section className="workspace-server" hidden={view !== 'server'} aria-labelledby="server-title"><ServerPage active={view === 'server'} deployments={deployments} /></section>
       </main></SidePanel>
     </div>
     <ChatSearch open={search} setOpen={setSearch} projects={projects.projects} navigate={navigate} onOpenProject={openProject} />
