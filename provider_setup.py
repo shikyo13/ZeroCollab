@@ -380,17 +380,23 @@ def local_state(row):
 
 def local_unavailable(info, row):
     """Why an agent cannot take this built-in provider now, and what the user does about it."""
-    state = row.get('status')
+    state, base, label = row.get('status'), info['base_url'], info['label']
+    add = 'Team > Providers > Add another server, then choose that connection in the agent editor'
     if state == 'unidentified':
-        return (f'Something answers at {info["base_url"]} but did not say which server it is. Start {info["label"]} there, '
-                'or add it in Team > Providers as a named server.')
+        # ProviderStore.fields accepts a named connection at this address while no built-in runs there as itself.
+        return (f'A server answered at {base}, but ZeroCollab could not tell which one it is. To use it, add {base} '
+                f'through {add}. To use {label} instead, stop that server, start {label}, then use Refresh connections.')
     if state == 'port_taken':
-        return f'{row.get("detail") or "Another server is using this port"}. Stop it or start {info["label"]} on another port.'
+        return (f'{row.get("detail") or "Another server is using this port"}. To use {label} here, stop the server using '
+                f'{base}, start {label}, then use Refresh connections. To use another port, add that address through {add}.')
     if state == 'not_installed':
         # local_installed() only looks on PATH and in the usual app folders, so it cannot prove an absence.
-        return (f'{info["label"]} isn\'t running, and it wasn\'t found on this computer. Install or start it with '
-                f'`{info["start_command"]}`, then Refresh connections.')
-    return f'{info["label"]} isn\'t running. Start it with `{info["start_command"]}`, then Refresh connections.'
+        return (f'{label} was not found in the usual locations, and no server answered at {base}. If it is installed '
+                f'elsewhere, start it there. Otherwise, install it first. Once installed, start it with '
+                f'`{info["start_command"]}`, then use Refresh connections.')
+    if state == 'stopped':
+        return f'{label} isn\'t running. Start it with `{info["start_command"]}`, then use Refresh connections.'
+    return f'{label} could not be checked. Use Refresh connections to try again.'  # the probe failed or hasn't run
 
 
 def annotate_local(rows, runtime):

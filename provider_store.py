@@ -352,8 +352,12 @@ class ProviderStore:
                 out.update({k: current[k] for k in ('base_url', *KEY_FIELDS) if k in current})
             return out
         base_url = server_address(body.get('base_url', (current or {}).get('base_url', '')))
-        builtin = next((info for info in self.local_servers().values()
-                        if info['base_url'].rstrip('/') == base_url.rstrip('/')), None)
+        # Refused only while a built-in answers there as itself. A server the probe couldn't identify (MLX LM and
+        # llama.cpp share :8080) is usable only as a named connection, as its status message says.
+        seen = getattr(getattr(self.runtime, 'profiles', None), 'local_status', None) or {}
+        builtin = next((info for name, info in self.local_servers().items()
+                        if info['base_url'].rstrip('/') == base_url.rstrip('/')
+                        and seen.get(name, {}).get('status') == 'running'), None)
         if builtin and not current:
             raise FieldError(f'{builtin["label"]} is already a provider: choose it in the agent editor', 'base_url')
         model = body.get('model', (current or {}).get('model', ''))

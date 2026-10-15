@@ -111,10 +111,16 @@ class BuiltinTests(Base):
             store.new_id('x', 'local-mine')
         self.assertTrue(store.new_id('Local Box').startswith('provider-'))
 
-    def test_named_server_at_a_local_default_address_is_refused(self):
+    def test_named_server_at_a_running_builtins_address_is_refused(self):
+        store = self.store()
+        body = {'provider': 'api', 'label': 'Mine', 'base_url': 'http://127.0.0.1:11434/v1', 'model': 'm'}
+        store.runtime.profiles = SimpleNamespace(local_status={'local-ollama': {'status': 'running'}})
         with self.assertRaises(FieldError) as caught:
-            self.store().fields({'provider': 'api', 'label': 'Mine', 'base_url': 'http://127.0.0.1:11434/v1', 'model': 'm'})
+            store.fields(body)
         self.assertEqual(caught.exception.field, 'base_url')
+        # An answer the probe couldn't identify is usable only as a named connection, as its message says.
+        store.runtime.profiles.local_status = {'local-ollama': {'status': 'unidentified'}}
+        self.assertEqual(store.fields(body)['base_url'], 'http://127.0.0.1:11434/v1')
 
     def test_builtins_cannot_be_edited_or_removed(self):
         store = self.store()
