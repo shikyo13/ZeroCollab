@@ -146,20 +146,25 @@ interface Effect { kind: 'comet' | 'baton' | 'gold' | 'answer' | 'broadcast'; fr
 /** The bob's shared step grid (live.css lv-bob): every bob changes on the same 1/15 s frames, so 13 people cost
  * one 15 fps redraw rather than thirteen interleaved ones (Zero #18710). */
 const BOB_STEP_MS = 1000 / 15, BOB_STEPS = 60;   // a 4 s loop is 60 steps
-/** Each person's own place on the bob loop, stable for their id and a whole number of grid steps, so the room
- * never bobs in step and still changes on the shared frames. */
+const ORBIT_STEPS = 42;                            // the 2.8 s orbit on the same grid (live.css lv-orbit)
+/** The animations that step on the shared grid. */
+const GRID_STEPPED = new Set(['lv-bob', 'lv-orbit']);
+/** Each person's own place on the bob and orbit loops, stable for their id and a whole number of grid steps, so
+ * the room never moves in step and still changes on the shared frames. */
 function rhythm(id: string): CSSProperties {
   let h = 2166136261; for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
-  const u = (h >>> 0) / 4294967296, step = (h >>> 12) % BOB_STEPS;
-  return { '--bob-at': `${(-step * BOB_STEP_MS / 1000).toFixed(6)}s`, '--orbit-at': `${(-u * 3).toFixed(2)}s` } as CSSProperties;
+  const step = (h >>> 12) % BOB_STEPS, orbit = (h >>> 3) % ORBIT_STEPS;
+  const at = (n: number) => `${(-n * BOB_STEP_MS / 1000).toFixed(6)}s`;
+  return { '--bob-at': at(step), '--orbit-at': at(orbit) } as CSSProperties;
 }
-/** Moves each running bob's start onto the shared grid. A CSS animation starts on whatever frame its style
- * applied, so people who appear later (or after a view switch) would otherwise step on frames of their own. */
-function alignBobs(root: HTMLElement) {
+/** Moves each running bob's and orbit's start onto the shared grid. A CSS animation starts (or resumes from its
+ * pause, as an orbit does when its person stirs) on whatever frame its style applied, so it would otherwise step
+ * on frames of its own and add a redraw for each person. */
+function alignSteps(root: HTMLElement) {
   for (const anim of root.getAnimations({ subtree: true })) {
-    if ((anim as CSSAnimation).animationName !== 'lv-bob') continue;
+    if (!GRID_STEPPED.has((anim as CSSAnimation).animationName)) continue;
     void anim.ready.then(() => {
-      // Only a running bob: setting a paused animation's start time would resume it against the CSS pause.
+      // Only a running one: setting a paused animation's start time would resume it against the CSS pause.
       if (anim.playState !== 'running' || anim.startTime === null) return;
       const start = Number(anim.startTime), snapped = Math.round(start / BOB_STEP_MS) * BOB_STEP_MS;
       if (Math.abs(start - snapped) > 0.5) anim.startTime = snapped;
@@ -282,7 +287,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   useEffect(() => { kick.current(); }, [paused, reduced]);
   // Bobs restart when someone joins, on resume and when motion comes back: put them on the shared grid again.
   const memberKey = feed.agents.map(a => a.id).join(' ');
-  useEffect(() => { if (root.current && !paused && !reduced) alignBobs(root.current); }, [memberKey, paused, reduced]);
+  useEffect(() => { if (root.current && !paused && !reduced) alignSteps(root.current); }, [memberKey, paused, reduced]);
 
   // Animation loop: springs toward seats (three movers at most), shake, hop and effects on canvas. It runs
   // only while one of those is in motion and rests otherwise; kick() restarts it on the event that creates
@@ -476,6 +481,9 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     if (was?.key !== key) stirAt.current.set(a.id, { key, at: now });
   }
   const stirring = (a: LiveAgent) => a.state === 'working' && now - (stirAt.current.get(a.id)?.at ?? 0) < STIR_S;
+  // An orbit resumes on whatever frame its person starts stirring: put it back on the shared grid.
+  const stirKey = feed.agents.filter(stirring).map(a => a.id).join(' ');
+  useEffect(() => { if (root.current && !paused && !reduced) alignSteps(root.current); }, [stirKey, paused, reduced]);
   const [, setStirTick] = useState(0);
   const nextStirEnd = Math.min(Infinity, ...feed.agents.filter(stirring).map(a => stirAt.current.get(a.id)!.at + STIR_S));
   useEffect(() => {

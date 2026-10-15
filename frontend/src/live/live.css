@@ -43,6 +43,10 @@
    the eye reads it as smooth. A slower grid saves little (7.5 fps: 6%) until it is stepped again (2.5 fps: 2%).
    Orbit and glow: whoever is working, while their work actually moves (lv-stir: a tool step, reply text or a
    state change in the last few seconds); between events the orbit pauses where it is, so it resumes without a jump.
+   The orbit steps on the bob's 15 fps grid too (42 steps in 2.8 s, phase in whole steps, snapped by alignSteps),
+   and a stirring glow brightens and holds rather than breathing: a smooth orbit plus a breathing 72 px gradient
+   redrew the stage at 60 fps for as long as anyone stirred (8 stirring: +12.7 points of a core; stepped orbit and
+   held glow: +3.3, task 8638bf8b).
    Ripple: a gold ring widens from whoever waits on you (as 0.12.65's gold pulse did, but on the compositor).
    Floor: a group's ground glows still under it. */
 .lv-float { animation: lv-bob 4s steps(6, jump-end) var(--bob-at, 0s) infinite; }
@@ -61,7 +65,7 @@
   90% { transform: translate(-.88px, 2.43px); }
 }
 .lv-orbit { position: absolute; inset: -9px; border-radius: 50%; opacity: 0; pointer-events: none; transition: opacity .5s ease;
-  animation: lv-orbit 2.8s linear var(--orbit-at, 0s) infinite paused; }
+  animation: lv-orbit 2.8s steps(42, jump-end) var(--orbit-at, 0s) infinite paused; }
 .lv-orbit::before, .lv-orbit::after { content: ''; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); }
 .lv-orbit::before { left: calc(50% - 2.5px); top: -2.5px; }
 .lv-orbit::after { left: calc(50% - 2px); bottom: -2px; width: 4px; height: 4px; opacity: .6; }
@@ -70,8 +74,7 @@
 @keyframes lv-orbit { to { transform: rotate(360deg); } }
 .lv-badge::before { content: ''; position: absolute; inset: -14px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--c) 45%, transparent) 0%, transparent 70%); opacity: 0; z-index: -1; pointer-events: none; transition: opacity .6s ease; }
 .lv-working .lv-badge::before { opacity: .4; }
-.lv-working.lv-stir .lv-badge::before { animation: lv-breathe 1.3s ease-in-out var(--bob-at, 0s) infinite alternate; }
-@keyframes lv-breathe { from { opacity: .4; } to { opacity: .85; } }
+.lv-working.lv-stir .lv-badge::before { opacity: .75; }
 .lv-badge::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid #f0c674; opacity: 0; pointer-events: none; }
 .lv-waiting_on_user .lv-badge::after { animation: lv-ripple 1.9s cubic-bezier(.2, .6, .3, 1) infinite; }
 @keyframes lv-ripple { from { transform: scale(1); opacity: .75; } to { transform: scale(1.75); opacity: 0; } }
