@@ -40,6 +40,7 @@ function renderMarkdown(text) {
     }
     html = colorMentions(html);
     html = linkifyUrls(html);
+    html = linkifyUploadImages(html);
     html = linkifyPaths(html);
     return stripUnsafeUrls(html);
 }
@@ -203,20 +204,51 @@ document.addEventListener('click', (e) => {
 
 // Uploaded image links in prose use the same viewer as attachment thumbnails.
 // Keep the real href for copy-link, downloads and intentional modified clicks.
+const CHAT_IMAGE_EXTENSIONS = 'png|jpe?g|gif|webp';
+const CHAT_UPLOAD_IMAGE_PATH = new RegExp(`^/uploads/[^/]+\\.(${CHAT_IMAGE_EXTENSIONS})$`, 'i');
+const CHAT_BARE_IMAGE = new RegExp(String.raw`(?<![\w/.:@-])/uploads/[a-z0-9_-][a-z0-9_.-]*\.(?:${CHAT_IMAGE_EXTENSIONS})(?:[?#][^\s<>"')\]]*)?(?=$|[\s).,!:;?\]])`, 'gi');
+
 function chatUploadImageUrl(href) {
     try {
         const url = new URL(href, location.href);
         if (url.origin !== location.origin || url.username || url.password) return null;
-        if (!/^\/uploads\/[^/]+\.(png|jpe?g|gif|webp)$/i.test(url.pathname)) return null;
+        if (!CHAT_UPLOAD_IMAGE_PATH.test(url.pathname)) return null;
         return url.href;
     } catch { return null; }
 }
 
+// Bare root-relative upload URLs are not autolinked by Markdown. Leave code and existing links alone.
+function linkifyUploadImages(html) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT, {
+        acceptNode: node => node.parentElement?.closest('a, code, pre') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+        let end = 0;
+        const parts = [];
+        for (const match of node.nodeValue.matchAll(CHAT_BARE_IMAGE)) {
+            if (!chatUploadImageUrl(match[0])) continue;
+            const link = document.createElement('a');
+            link.setAttribute('href', match[0]);
+            link.textContent = match[0];
+            parts.push(node.nodeValue.slice(end, match.index), link);
+            end = match.index + match[0].length;
+        }
+        if (parts.length) node.replaceWith(...parts, node.nodeValue.slice(end));
+    }
+    return tpl.innerHTML;
+}
+
 document.addEventListener('click', (e) => {
     if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
-    const link = e.target.closest?.('.msg-text a[href]');
+    const link = e.target.closest?.('.msg-text a[href], .msg-attachments a[data-chat-image]');
     if (!link || link.hasAttribute('download') || typeof openImageModal !== 'function') return;
-    const url = chatUploadImageUrl(link.getAttribute('href'));
+    const url = link.hasAttribute('data-chat-image')
+        ? FileReferences.mediaURL(link.getAttribute('href'))?.href
+        : chatUploadImageUrl(link.getAttribute('href'));
     if (!url) return;
     e.preventDefault();
     openImageModal(url);

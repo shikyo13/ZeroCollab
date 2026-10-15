@@ -1450,13 +1450,24 @@ body.channels-in-sidebar #channel-bar {
 }
 
 .msg-attachments img {
-    max-width: 300px;
+    max-width: min(300px, 100%);
     max-height: 200px;
     border-radius: var(--radius-lg);
     border: 1px solid var(--border-subtle);
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
     transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.msg-image-link {
+    display: inline-block;
+    max-width: 100%;
+    border-radius: var(--radius-lg);
+}
+
+.msg-image-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
 }
 
 .msg-attachments img:hover {

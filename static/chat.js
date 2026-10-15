@@ -601,7 +601,7 @@ function appendMessage(msg, options = {}) {
                     attachmentsHtml += `<a class="msg-file-link" href="${escapeHtml(FileReferences.authenticatedURL(att.url))}" download="${escapeHtml(att.name || '')}">${escapeHtml(att.name || 'File')}</a>`;
                     continue;
                 }
-                attachmentsHtml += `<img src="${escapeHtml(FileReferences.authenticatedURL(att.url) || att.url)}" alt="${escapeHtml(att.name)}" data-note="${escapeHtml(att.note || '')}" data-source="${escapeHtml(att.source || '')}" data-url="${escapeHtml(att.url)}" onclick="openImageModal(this.dataset.url)">`;
+                attachmentsHtml += chatImageThumbnail(att);
             }
             attachmentsHtml += '</div>';
         }
@@ -847,6 +847,7 @@ function recolorMessages() {
         const textEl = el.querySelector('.msg-text');
         if (textEl && el.dataset.rawText) {
             textEl.innerHTML = styleHashtags(renderMarkdown(el.dataset.rawText));
+            renderUploadedFileLinks(el, messageIndex.get(Number(el.dataset.id))?.attachments || []);
             addCodeCopyButtons(el);
         }
     }
@@ -1126,11 +1127,36 @@ function createTaskFromMessage(msgId) {
 document.addEventListener('DOMContentLoaded', init);
 
 // Only same-origin uploads are media/download chips. Ordinary links remain ordinary links.
+function chatImageThumbnail(att) {
+    const url = FileReferences.authenticatedURL(att.url) || att.url;
+    const name = att.name || 'Shared image';
+    return `<a class="msg-image-link" href="${escapeHtml(url)}" data-chat-image aria-label="${escapeHtml('Open ' + name)}"><img src="${escapeHtml(url)}" alt="${escapeHtml(name)}" data-note="${escapeHtml(att.note || '')}" data-source="${escapeHtml(att.source || '')}" data-url="${escapeHtml(att.url)}"></a>`;
+}
+
 function renderUploadedFileLinks(container, attachments) {
     const seenVideos = new Set();
+    const seenImages = new Set([...container.querySelectorAll('.msg-attachments img, .msg-text img')]
+        .map(img => chatUploadImageUrl(img.dataset.url || img.getAttribute('src')))
+        .filter(Boolean).map(url => new URL(url).pathname));
     for (const link of container.querySelectorAll('.msg-text a[href]')) {
+        if (link.closest('pre, code')) continue;
         let url;
         try { url = new URL(link.getAttribute('href'), location.href); } catch { continue; }
+        if (chatUploadImageUrl(url.href)) {
+            if (!seenImages.has(url.pathname)) {
+                seenImages.add(url.pathname);
+                let gallery = container.querySelector('.msg-attachments');
+                if (!gallery) {
+                    gallery = document.createElement('div');
+                    gallery.className = 'msg-attachments';
+                    (container.querySelector('.chat-bubble') || container).appendChild(gallery);
+                }
+                const meta = attachments.find(att => chatUploadImageUrl(att.url)
+                    && new URL(att.url, location.href).pathname === url.pathname);
+                gallery.insertAdjacentHTML('beforeend', chatImageThumbnail(meta || { url: url.href, name: link.textContent }));
+            }
+            continue;
+        }
         if (!FileReferences.mediaURL(url.href)) continue;
         if (/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(url.pathname)) continue;
         const meta = attachments.find(a => a.url === url.pathname);
