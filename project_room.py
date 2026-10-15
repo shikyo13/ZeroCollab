@@ -574,7 +574,12 @@ class ProjectRoom:
         if getattr(run, 'manager_audit', None):
             self.save(touched=())
             return  # Timer sessions never replace the ordinary conversation continuation.
-        self.state.setdefault('cursors', {})[run.session_key] = run.context_delivery
+        delivery = run.context_delivery
+        if getattr(run, 'compacted', False):
+            # The session was compacted, so its summary may lack the blocks these fingerprints vouch for: keep only
+            # the message cursor, and the next turn sends every block in full instead of 'Unchanged' (task 437f53ee).
+            delivery = {key: value for key, value in delivery.items() if key == 'message_id'}
+        self.state.setdefault('cursors', {})[run.session_key] = delivery
         receipts = self.state.setdefault('receipts', {}).get(run.session_key, [])
         delivered = run.receipts
         receipts = [r for r in receipts if r not in delivered] + sorted(delivered - {''})
@@ -583,7 +588,7 @@ class ProjectRoom:
             self.state.setdefault('sessions', {})[run.session_key] = {'id': run.provider_session,
                 'settings': run.settings, 'provider': self.runtime.states[run.name]['provider'],
                 'instruction_hash': run.instruction_hash,
-                'context': run.context_delivery, 'usage_total': getattr(run, 'provider_usage_total', 0)}
+                'context': delivery, 'usage_total': getattr(run, 'provider_usage_total', 0)}
         self.save(touched=())
 
     def task(self, actor, action, task_id='', title='', details='', paths=None, owner='', status='', update='', depends_on=None, labels=None, attachments=None,

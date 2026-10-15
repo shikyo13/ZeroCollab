@@ -102,6 +102,24 @@ class ExecutionContextTests(TurnContextTests):
         run2.previous_session = {'context': run.context_delivery}
         self.assertIn('Execution context: [Unchanged; already in your native session.', self.room.context(run2))
 
+    def turn(self, text, compacted=False):
+        """One turn in the same native session, saved by complete() as a real turn end is."""
+        run = self.run_for(self.store.add('user', text, channel='general'))
+        run.session_key, run.settings, run.instruction_hash, run.provider_session = 'opus:general', {}, 'h', 'sess'
+        run.previous_session = self.room.previous_session(run)
+        prompt = self.room.context(run)
+        run.compacted = compacted
+        self.room.complete(run)
+        return prompt
+
+    def test_after_a_compaction_the_next_turn_sends_every_block_in_full(self):
+        self.turn('@opus first look')
+        self.assertIn('Execution context: [Unchanged;', self.turn('@opus second', compacted=True))
+        after = self.turn('@opus third')  # task 437f53ee: the session's summary may have dropped the blocks
+        self.assertNotIn('[Unchanged;', after)
+        self.assertNotIn('@opus second', after)  # the message cursor is kept: no chat replay
+        self.assertIn('Execution context: [Unchanged;', self.turn('@opus fourth'))  # and delivery resumes
+
     def test_repository_project_names_worktree_and_branch(self):
         self.r.project = 'D:/dune'
         self.r.states['opus'].update(workspace_kind='repository', branch='chatroom/p/opus-1')

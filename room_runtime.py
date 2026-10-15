@@ -550,6 +550,9 @@ class Run:
         self.session_key = name + ':' + self.channel
         self.previous_session = {}
         self.context_delivery = {}
+        # The provider compacted this native session during the turn (Claude compact_boundary, Codex
+        # contextCompaction): its summary may have dropped blocks the saved fingerprints say it holds (task 437f53ee).
+        self.compacted = False
         self.receipts = set()
         # Tasks this turn is known to work on: started for, delegated in its requests, or claimed/updated
         # during the turn. Running alone does not say which owned task is executing.

@@ -412,6 +412,8 @@ async def codex(run, prompt, *, audit_disabled=()):
                     if await run.begin_message(item['id']):
                         await run.delta(item.get('text', ''))
             elif item.get("type") not in ("userMessage", "reasoning"):
+                if item.get('type') == 'contextCompaction':
+                    run.compacted = True  # the next turn resends every block in full (task 437f53ee)
                 await run.tool_event(item.get("type", "tool"), item, method.split("/")[-1])
         elif method == "turn/completed" and not done.done():
             turn = params.get("turn", {})
@@ -762,6 +764,8 @@ async def claude(run, prompt):
     async def claude_event(msg):
         nonlocal sent, message_id, grace_deadline, open_for_input, audit_permissions, prompt_added
         kind = msg.get("type")
+        if kind == 'system' and msg.get('subtype') == 'compact_boundary':
+            run.compacted = True  # the next turn resends every block in full (task 437f53ee)
         if kind == 'system' and msg.get('subtype') == 'init':
             run.provider_session = msg.get('session_id')
             await run.report_settings(model=msg.get('model'), effort=msg.get('effort'))
