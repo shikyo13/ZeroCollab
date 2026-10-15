@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-zc-handover'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Open your existing room</title><style>
+body{margin:0;background:#0d1013;color:#e9eff5;font:17px system-ui}main{max-width:760px;margin:72px auto;padding:32px;border:1px solid #344149;border-radius:16px;background:#151b20}h1{font-size:32px;margin-top:0}p{line-height:1.55;color:#bac7d2}label{display:block;margin:24px 0 8px}input{width:100%;box-sizing:border-box;background:#0d1013;color:#e9eff5;border:1px solid #60707e;padding:14px;border-radius:8px;font:inherit}button{font:inherit;border-radius:8px;border:1px solid #4b6470;padding:12px 18px;background:#24343d;color:#e9eff5;margin:16px 8px 0 0}button:disabled{opacity:.55}.primary{background:#67cfe2;color:#06202b}.notice{padding:18px;border-left:4px solid #efc06c;background:#2d251b;color:#ffe1ad;margin:24px 0;white-space:pre-wrap}.small{font-size:14px;color:#93a6b5}button:focus-visible,input:focus-visible{outline:3px solid #67cfe2;outline-offset:3px}@media(max-width:700px){main{margin:24px 12px;padding:24px}}
+</style></head><body><main><h1>Open your existing room</h1><p>Choose the ZeroCollab runtime folder. Your chats, board, team and project files stay where they are.</p>
+<label for="folder">Room folder</label><input id="folder" readonly placeholder="Choose the folder containing config.toml">
+<button id="choose" type="button">Choose folder...</button><p id="data" class="small"></p>
+<p class="small">Agents start stopped. Codex and Claude use the same sign-ins and saved sessions as your web room.</p>
+<div id="notice" class="notice" role="status" hidden></div><button id="open" type="button" class="primary" disabled>Open room</button>
+<p class="small">Opening this room keeps the same conversations and message numbers. Nothing runs until you press Resume. Stop the web room and its supervisor, and close external wrapper windows before switching.</p></main>
+<script nonce="zc-handover">
+const bridge=window.desktopRoom, choose=document.getElementById('choose'), open=document.getElementById('open');
+function show(state){document.getElementById('folder').value=state.room||'';document.getElementById('data').textContent=state.data?'Room data: '+state.data:'';const notice=document.getElementById('notice');notice.textContent=state.message||'';notice.hidden=!state.message;choose.disabled=state.busy;open.disabled=!state.canOpen;open.textContent=state.message&&!state.busy?'Try again':'Open room';}
+if(bridge){bridge.onState(show);bridge.state().then(show);choose.onclick=()=>bridge.choose().then(show);open.onclick=()=>bridge.open().then(show);}else{show({message:'Open this screen in the ZeroCollab desktop app.'});choose.disabled=true;}
+</script></body></html>
