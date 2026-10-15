@@ -7,10 +7,11 @@
  * People are buttons (keyboard reachable); effects are drawn on an aria-hidden canvas and always have a
  * plain-text twin, and the Latest rail lists what changed as buttons. */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { isVideo, type LiveAgent, type LiveFeed, type LiveInteraction } from './liveFeed';
+import { isVideo, type LiveAgent, type LiveArtifact, type LiveFeed, type LiveInteraction } from './liveFeed';
 import { plainSpeech, SpeechBubble } from '../components/SpeechBubble';
-import { bubbleClear, collabGroups, LABEL_H, LINK_HOLD_S, layoutStage, nextLinkExpiry, overlap, placeBubble, speechBlocker, springStep,
+import { bubbleClear, collabGroups, LABEL_H, LINK_HOLD_S, layoutStage, nextLinkExpiry, overlap, personRect, placeBubble, placeLift, SHELF, shelfRect, speechBlocker, springStep,
   type BubbleSide, type CollabGroup, type CollabLink, type Point, type Rect } from './liveLayout';
+import { LIFT_HEAD, LiveLift, type Lift } from './LiveLift';
 
 // Caps sized for a 13-person room (Zero #18047: three of each showed about a third of what happened).
 const MAX_EFFECTS = 6;         // at most six comets or batons in the air
@@ -19,8 +20,17 @@ const EFFECT_STALE_MS = 4000;  // a comet still waiting for a slot this long is 
 const MAX_FRAME_MS = 50;       // a frame never advances motion further than this, however late it runs
 const SETTLE = { px: 0.25, pxPerS: 1 };       // a spring this close and this slow is at rest: snap it and stop
 const SHAKE = { ms: 480, cycles: 34, px: 7 }; // one head shake after a failed turn
-const HOP = { ms: 320, px: 8 };               // the small hop when a comet or baton lands
+const HOP = { ms: 450, px: 12 };              // the hop when a comet or baton lands (swarm, Zero #20226)
 const EFFECT_TAIL_MS = 1700;   // an effect stays drawn this long after it lands (ring, fade)
+// Sparks where a comet lands, in the sender's colour; an approval throws confetti over the pair (swarm, Zero #20226).
+const SPARKS = { n: 7, confetti: 16, speed: [50, 120], lifeMs: [600, 1000], gravity: 160 };
+const CONFETTI = ['#f0c674', '#5fd39a', '#54d9ed', '#e879b9'];
+interface Spark { x: number; y: number; vx: number; vy: number; born: number; life: number; c: string; r: number }
+// A picture lifted out of its thumb (LiveLift): at most this wide, its picture at most this tall; a picture still
+// waiting for its turn this long is dropped, and a browser lift stops renewing after this long when others wait.
+const LIFT_W = 420, LIFT_PIC_H = 250, LIFT_STALE_S = 20, LIFT_SHARE_S = 10;
+const liftable = (a: LiveArtifact) => a.kind === 'browser_frame' || !isVideo(a.url);
+const artKey = (a: LiveArtifact | null) => a ? `${a.url}|${a.at}` : '';
 // A bubble stays while its person is active and for a while after their newest words, whatever state they are
 // in now (a finished turn, a reviewer's posted verdict), so the last thing said stays readable.
 const SPEECH_SHOWN_S = 14, SPEECH_AFTER_S = 9;
@@ -151,7 +161,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   const [size, setSize] = useState({ w: 900, h: 560 });
   const bodies = useRef(new Map<string, Body>());
   const nodes = useRef(new Map<string, HTMLButtonElement>());
-  const effects = useRef<Effect[]>([]), queued = useRef<Effect[]>([]);
+  const effects = useRef<Effect[]>([]), queued = useRef<Effect[]>([]), sparks = useRef<Spark[]>([]);
   const seen = useRef(new Set<string>());
   const prevState = useRef(new Map<string, string>()), prevActivity = useRef(new Map<string, string>());
   const joined = useRef(new Map<string, { group: string; at: number }>());
@@ -199,24 +209,49 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
   }, [relations, paused]);
   // Group membership: the time each person joined fixes their seat order inside the group.
   const people = useMemo(() => feed.agents.map(a => {
-    const g = groups.get(a.id), group = g?.key ?? '';
+    // A stopped person sits on the shelf (Zero #20226), never in a group.
+    const stopped = a.state === 'stopped', g = stopped ? undefined : groups.get(a.id), group = g?.key ?? '';
     const j = joined.current.get(a.id);
     if (!j || j.group !== group) joined.current.set(a.id, { group, at: Date.now() });
     // Someone pulled into a group by a relation keeps full size there, even while idle.
-    const quiet = !g && (a.state === 'idle' || a.state === 'stopped');
-    return { id: a.id, order: a.order, group, label: g ? `◆ ${chipText(g, feed)} · talking · 00` : undefined, joinedAt: joined.current.get(a.id)!.at, quiet, hasThumb: !!a.artifact };
+    const quiet = stopped || !g && a.state === 'idle';
+    return { id: a.id, order: a.order, group, label: g ? `◆ ${chipText(g, feed)} · talking · 00` : undefined, joinedAt: joined.current.get(a.id)!.at, quiet, hasThumb: !!a.artifact, stopped };
   }), [feed.agents, groups]); // eslint-disable-line react-hooks/exhaustive-deps
   const stage: Rect = { x: 0, y: 0, w: size.w, h: size.h };
   // The Latest rail sits bottom-left and is reserved like the You area: nobody is seated or speaks under it.
   const railRows = size.h >= 640 ? 5 : size.h >= 460 ? 3 : 0;
   const railH = RAIL.head + RAIL.row * railRows + RAIL.pad;
   const rail: Rect | null = railRows && size.w >= 560 ? { x: 12, y: size.h - 12 - railH, w: Math.min(RAIL.w, size.w - 24), h: railH } : null;
+  // Stopped people sit on a shelf along the bottom, right of the rail (Zero #20226). Its band is kept clear of the field
+  // even while nobody is stopped, so the first stop never reshuffles the room; it shows (and blocks speech) only when used.
+  const stoppedCount = people.filter(p => p.stopped).length;
+  const shelfBand = shelfRect(Math.max(1, stoppedCount), stage, rail);
+  // What shows and blocks is only as wide as the people on it, so speech keeps the rest of the band.
+  const shelf = stoppedCount && shelfBand ? { ...shelfBand, w: Math.min(shelfBand.w, SHELF.slot * stoppedCount + 8) } : null;
+  // A lifted picture is reserved like the You area while it is up: whoever sits under it steps aside, and back as it
+  // shrinks into its thumb.
+  const [lift, setLift] = useState<Lift | null>(null);
+  // Reserved with a margin, so nobody's ring or name ends up against its edge.
+  const liftRect = useMemo(() => lift && !lift.closing ? { x: lift.rect.x - 12, y: lift.rect.y - 12, w: lift.rect.w + 24, h: lift.rect.h + 24 } : null,
+    [lift?.rect, lift?.closing]); // eslint-disable-line react-hooks/exhaustive-deps
   const spots = useRef(new Map<string, Rect>());
   const layout = useMemo(() => {
-    const next = layoutStage(people, stage, rail ? [youArea, rail] : [youArea], spots.current, rail ? [rail] : []);
+    const next = layoutStage(people, stage, [youArea, ...(rail ? [rail] : []), ...(liftRect ? [liftRect] : [])], spots.current, rail ? [rail] : [], shelfBand);
     spots.current = new Map(next.formations.map(f => [f.group, f.box]));
     return next;
-  }, [people, size.w, size.h, youArea.x, youArea.y, youArea.w, youArea.h, rail?.y, rail?.w]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [people, size.w, size.h, youArea.x, youArea.y, youArea.w, youArea.h, rail?.y, rail?.w, shelfBand?.y, shelfBand?.x, shelfBand?.h, liftRect]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Who was here when Live opened; anyone added since arrives (drops in from the top edge and glides to their seat).
+  const present = useRef<Set<string> | null>(null);
+  if (feed.ready && !present.current && feed.agents.length) present.current = new Set(feed.agents.map(a => a.id));
+  const arrived = (id: string) => !!present.current && !present.current.has(id);
+  // Each tool step pulses a ring out of the badge once (a remounted CSS animation, live.css lv-pulse).
+  const pulses = useRef(new Map<string, { act: string; n: number }>());
+  for (const a of feed.agents) {
+    const p = pulses.current.get(a.id);
+    if (!p) pulses.current.set(a.id, { act: a.activity, n: 0 });
+    else if (p.act !== a.activity) { if (a.activity && a.state === 'working') p.n++; p.act = a.activity; }
+  }
 
   // Seats and per-person events (state change shake, tool ring step).
   useEffect(() => {
@@ -224,7 +259,10 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     for (const a of feed.agents) {
       const seat = layout.seats.get(a.id); if (!seat) continue;
       let b = bodies.current.get(a.id);
-      if (!b) { b = { x: seat.x, y: seat.y, vx: 0, vy: 0, tx: seat.x, ty: seat.y, waitingSince: 0, shakeAt: -1e9, hopAt: -1e9, ring: 0 }; bodies.current.set(a.id, b); }
+      if (!b) {
+        const drop = arrived(a.id) && !live.current.reduced;
+        b = { x: seat.x, y: drop ? -60 : seat.y, vx: 0, vy: 0, tx: seat.x, ty: seat.y, waitingSince: 0, shakeAt: -1e9, hopAt: -1e9, ring: 0 }; bodies.current.set(a.id, b);
+      }
       if (b.tx !== seat.x || b.ty !== seat.y) {
         b.tx = seat.x; b.ty = seat.y; b.waitingSince = t;
         // Paused, the feed is a snapshot, so only the stage's shape moved this seat (the watch session opened, a
@@ -255,6 +293,89 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
 
   // Pausing freezes the clock and lets the loop rest; resuming or switching reduced motion restarts it.
   useEffect(() => { kick.current(); }, [paused, reduced]);
+
+  // Lifted pictures (Zero #20226): a new picture from someone lifts out of their thumb, one at a time in arrival
+  // order. A newer picture from the same person replaces the one still waiting; someone still driving the browser
+  // keeps their lift up (each action renews it) until others have waited LIFT_SHARE_S.
+  const liftRef = useRef(lift); liftRef.current = lift;
+  const liftSince = useRef(0);
+  const liftQueue = useRef<{ id: string; art: LiveArtifact; at: number }[]>([]);
+  const artSeen = useRef<Map<string, string> | null>(null);
+  const placing = useRef(false);
+  const scene = useRef({ feed, people, layout, rail, shelf, youArea, stage });
+  scene.current = { feed, people, layout, rail, shelf, youArea, stage };
+  const pump = useRef(() => {});
+  pump.current = () => {
+    if (liftRef.current || placing.current) return;
+    const now = Date.now() / 1000;
+    liftQueue.current = liftQueue.current.filter(q => now - q.at < LIFT_STALE_S);
+    const q = liftQueue.current.shift(); if (!q) return;
+    const a = scene.current.feed.agents.find(x => x.id === q.id);
+    if (!a || a.state === 'stopped') { pump.current(); return; }
+    // A markup is shown on its original, with its marks traced over it; anything else as it is.
+    const src = q.art.kind === 'markup' && q.art.source_url && q.art.marks?.length ? q.art.source_url : q.art.url;
+    const show = (nat: { w: number; h: number }) => {
+      placing.current = false;
+      const next = liftFor(a, q.art, src, nat);
+      if (next) { liftSince.current = Date.now() / 1000; setLift(next); } else pump.current();
+    };
+    placing.current = true;
+    if (q.art.kind === 'browser_frame') show({ w: 1280, h: 800 });
+    else { const img = new Image(); img.src = src; img.decode().then(() => show({ w: img.naturalWidth, h: img.naturalHeight }), () => { placing.current = false; pump.current(); }); }
+  };
+  /** Where the lift goes: the largest of three sizes that fits beside its owner (liveLayout.placeLift). */
+  function liftFor(a: LiveAgent, art: LiveArtifact, src: string, nat: { w: number; h: number }): Lift | null {
+    const s = scene.current, seat = s.layout.seats.get(a.id), me = s.people.find(p => p.id === a.id);
+    if (!seat || !me || !nat.w || !nat.h) return null;
+    // Footprints include the ring, orbit and bob (speechBlocker), so the lift never sits against someone's ring.
+    const thumb = me.hasThumb && !me.quiet && s.layout.thumbs, owner = speechBlocker(seat, me.quiet, thumb);
+    const aspect = nat.h / nat.w, picH = Math.min(LIFT_PIC_H, LIFT_W * aspect), w = Math.max(160, picH / aspect);
+    const sizes = [1, 0.85, 0.7].map(k => ({ w: Math.round(w * k), h: Math.round(picH * k) + LIFT_HEAD }));
+    // Hard: the panels, the shelf, and every group's floor with the gap groups keep, so no group has to move for it.
+    const hard = [s.youArea, ...(s.rail ? [s.rail] : []), ...(s.shelf ? [s.shelf] : []), ...s.layout.formations.map(f => ({ x: f.box.x - 28, y: f.box.y - 28, w: f.box.w + 56, h: f.box.h + 56 }))];
+    const grouped = new Set(s.layout.formations.flatMap(f => f.members));
+    const movable = s.people.filter(p => p.id !== a.id && !grouped.has(p.id) && !(s.shelf && p.stopped))
+      .flatMap(p => { const q = s.layout.seats.get(p.id); return q ? [speechBlocker(q, p.quiet, p.hasThumb && !p.quiet && s.layout.thumbs)] : []; });
+    const rect = placeLift(owner, sizes, hard, movable, s.stage);
+    if (!rect) return null;
+    // It grows out of the thumb (or the badge when there is none) and shrinks back into it.
+    const origin = { x: seat.x - rect.x, y: (thumb ? seat.y + 78 : seat.y - 4) - rect.y };
+    return { owner: a.id, name: a.short, color: a.color, art, src, nat, rect, origin, closing: false };
+  }
+  useEffect(() => {
+    if (!feed.ready) return;
+    const seen = artSeen.current ??= new Map(feed.agents.map(a => [a.id, artKey(a.artifact)]));
+    const cur = liftRef.current;
+    // Its owner stopped or left: the lift goes back.
+    if (cur && !cur.closing && !feed.agents.some(a => a.id === cur.owner && a.state !== 'stopped')) setLift({ ...cur, closing: true });
+    for (const a of feed.agents) {
+      const k = artKey(a.artifact);
+      if (seen.get(a.id) === k) continue;
+      seen.set(a.id, k);
+      if (!a.artifact || !liftable(a.artifact) || a.state === 'stopped' || paused) continue;
+      if (cur && !cur.closing && cur.owner === a.id && cur.art.kind === 'browser_frame' && a.artifact.kind === 'browser_frame') {
+        // The same person still driving: the new click ripples and the hold restarts, unless others have waited long enough.
+        if (!liftQueue.current.length || Date.now() / 1000 - liftSince.current < LIFT_SHARE_S) setLift({ ...cur, art: a.artifact });
+        continue;
+      }
+      liftQueue.current = liftQueue.current.filter(q => q.id !== a.id);
+      liftQueue.current.push({ id: a.id, art: a.artifact, at: Date.now() / 1000 });
+    }
+    pump.current();
+  }, [feed.agents, feed.ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!lift) pump.current(); }, [lift]);
+  // A resize that leaves the lift outside the stage sends it back.
+  useEffect(() => {
+    const cur = liftRef.current;
+    if (cur && !cur.closing && (cur.rect.x + cur.rect.w > size.w || cur.rect.y + cur.rect.h > size.h)) setLift({ ...cur, closing: true });
+  }, [size.w, size.h]);
+  const closeLift = () => {
+    const cur = liftRef.current; if (!cur || cur.closing) return;
+    setLift({ ...cur, closing: true });
+    // Reduced motion has no shrink to wait for.
+    if (reduced) setLift(null);
+  };
+  useEffect(() => { if (reduced && lift?.closing) setLift(null); }, [reduced, lift]);
 
   // Animation loop: springs toward seats (everyone who has somewhere to go, at once), shake, hop and effects on canvas. It runs
   // only while one of those is in motion and rests otherwise; kick() restarts it on the event that creates
@@ -298,7 +419,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
         written.set(el, { transform, ring });
       }
       if (ctx && canvas.current) {
-        if (effects.current.length) {
+        if (effects.current.length || sparks.current.length) {
           drawEffects(ctx, canvas.current, t, paused, reduced); canvasDrawn = true;
           busy ||= !paused;
         } else if (canvasDrawn) {
@@ -360,12 +481,37 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
       }
     }
     effects.current = effects.current.filter(e => (t - e.start) < e.dur + EFFECT_TAIL_MS);
+    // Sparks fly out and fall on the animation clock, so Pause holds them where they are.
+    for (const s of sparks.current) {
+      const age = (t - s.born) / 1000, k = age * 1000 / s.life;
+      if (k < 0 || k >= 1) continue;
+      ctx.globalAlpha = 1 - k; ctx.fillStyle = s.c;
+      ctx.beginPath(); ctx.arc(s.x + s.vx * age, s.y + s.vy * age + SPARKS.gravity * age * age / 2, s.r, 0, 7); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    sparks.current = sparks.current.filter(s => t - s.born < s.life);
   }
-  function land(e: Effect, t: number) { const b = bodies.current.get(e.to); if (b) b.hopAt = t; }
+  /** A comet or baton lands: its target hops and throws a few sparks; an approval throws confetti over the pair. */
+  function land(e: Effect, t: number) {
+    const b = bodies.current.get(e.to); if (b) b.hopAt = t;
+    if (live.current.reduced) return;
+    burst(centre(e.to), SPARKS.n, [e.color], t);
+    if (e.label.startsWith('approved')) {
+      burst(centre(e.to), SPARKS.confetti, CONFETTI, t); burst(centre(e.from), SPARKS.confetti, CONFETTI, t);
+      const a = bodies.current.get(e.from); if (a) a.hopAt = t;
+    }
+  }
+  function burst(at: Point, n: number, colors: string[], t: number) {
+    for (let i = 0; i < n; i++) {
+      const ang = Math.random() * Math.PI * 2, speed = SPARKS.speed[0] + Math.random() * (SPARKS.speed[1] - SPARKS.speed[0]);
+      sparks.current.push({ x: at.x, y: at.y - 4, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed - 40, born: t,
+        life: SPARKS.lifeMs[0] + Math.random() * (SPARKS.lifeMs[1] - SPARKS.lifeMs[0]), c: colors[i % colors.length], r: 1.8 + Math.random() * 1.6 });
+    }
+  }
 
   // Speech: the talks the stage has room for, each in a clear spot or as a cue by the person.
   const now = wallNow();
-  const blockers: Rect[] = [youArea, ...(rail ? [rail] : []), ...layout.formations.map(f => ({ ...f.box, h: 22 })),
+  const blockers: Rect[] = [youArea, ...(rail ? [rail] : []), ...(shelf ? [shelf] : []), ...(lift ? [lift.rect] : []), ...layout.formations.map(f => ({ ...f.box, h: 22 })),
     ...people.map(p => { const s = layout.seats.get(p.id); return s ? speechBlocker(s, p.quiet, p.hasThumb && layout.thumbs) : null; }).filter((r): r is Rect => !!r)];
   const isOpen = (id: string) => !!bubbleBox.current.get(id)?.open;
   const shownFor = (a: LiveAgent) => ACTIVE.includes(a.state) ? SPEECH_SHOWN_S : SPEECH_AFTER_S;
@@ -580,18 +726,21 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
         <span aria-hidden="true">◆</span><b>{g ? chipText(g, feed) : 'Shared task'}</b><small>· {why ? `${why} · ` : ''}{f.members.length}</small>
       </button>;
     })}
+    {shelf && <div className="lv-shelf" aria-hidden="true" style={{ left: shelf.x, top: shelf.y, width: shelf.w, height: shelf.h }}><h2>Stopped</h2></div>}
     {feed.agents.map(a => {
-      const quiet = !groups.has(a.id) && (a.state === 'idle' || a.state === 'stopped');
-      const bubble = bubbles.find(b => b.agent.id === a.id);
+      const quiet = a.state === 'stopped' || !groups.has(a.id) && a.state === 'idle';
+      const bubble = bubbles.find(b => b.agent.id === a.id), pulse = pulses.current.get(a.id)?.n ?? 0;
       return <button key={a.id} type="button" ref={el => { if (el) nodes.current.set(a.id, el); else nodes.current.delete(a.id); }}
-        className={`lv-person lv-${a.state}${quiet ? ' lv-quiet' : ''}${stirring(a) ? ' lv-stir' : ''}${selectedPerson === a.id ? ' lv-selected' : ''}`}
+        className={`lv-person lv-${a.state}${quiet ? ' lv-quiet' : ''}${stirring(a) ? ' lv-stir' : ''}${arrived(a.id) ? ' lv-arrive' : ''}${selectedPerson === a.id ? ' lv-selected' : ''}`}
         style={{ '--c': a.color, ...rhythm(a.id) } as CSSProperties}
         onClick={() => onSelectPerson(a.id)}
         aria-label={`${a.name}: ${stateWords(a)}${a.task_title ? `, on ${a.task_title}` : ''}${bubble && a.speech ? `. Says: ${a.speech}` : ''}`}>
         <span className="lv-float">
-          <span className="lv-badge"><span className="lv-orbit" aria-hidden="true" /><span className="lv-ring" aria-hidden="true" />{initials(a.short)}</span>
+          <span className="lv-badge"><span className="lv-orbit" aria-hidden="true" /><span className="lv-ring" aria-hidden="true" />
+            {pulse > 0 && <span key={pulse} className="lv-pulse" aria-hidden="true" />}{initials(a.short)}</span>
           <span className="lv-name" title={a.name}>{a.short}</span>
-          <span className="lv-doing">{stateWords(a)}</span>
+          {/* A new activity rolls in (keyed, so the CSS entrance runs once per change). */}
+          <span key={stateWords(a)} className="lv-doing">{stateWords(a)}</span>
           {a.artifact && !quiet && layout.thumbs && (a.artifact.kind === 'browser_frame'
             ? <span className="lv-thumb lv-thumb-live" aria-hidden="true">● browser</span>
             : isVideo(a.artifact.url) ? <span key={a.artifact.url} className="lv-thumb lv-thumb-live" aria-hidden="true">▶ video</span>
@@ -610,6 +759,8 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
         </button>
       </li>)}</ol> : <p>Nothing has changed since you opened Live.</p>}
     </section>}
+    {lift && <LiveLift key={`${lift.owner}:${lift.src}`} lift={lift} paused={paused} onOpen={() => onSelectPerson(lift.owner)} onDone={closeLift}
+      onGone={() => setLift(null)} />}
     {bubbles.filter(b => b.rect).map(b => {
       // A bubble above its person is anchored by its bottom edge, so it grows upward, away from the badge.
       const up = b.side === 'above' || b.side === 'upLeft' || b.side === 'upRight';

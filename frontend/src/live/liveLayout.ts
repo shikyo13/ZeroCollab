@@ -17,12 +17,14 @@ export interface SeatInput {
   joinedAt?: number;
   quiet: boolean;
   hasThumb: boolean;
+  /** Stopped (Zero #20226): seated on the shelf along the bottom, never in the field or a group. */
+  stopped?: boolean;
 }
 
 export interface Formation { group: string; members: string[]; box: Rect }
 /** thumbs: false when home rows are too tight for pictures under people; the stage then leaves them out (they
  * stay in Latest and the watch session) rather than letting a picture cover the row below. */
-export interface StageLayout { seats: Map<string, Point>; formations: Formation[]; reserved: Rect[]; thumbs: boolean }
+export interface StageLayout { seats: Map<string, Point>; formations: Formation[]; reserved: Rect[]; thumbs: boolean; shelf: Rect | null }
 
 // w is the widest line a person draws (name or activity, both clipped to it in live.css), so nothing placed
 // beside a person can cover their words (4cbce498: bubbles covered activity lines 36 px past the old 96 px box).
@@ -82,27 +84,50 @@ function homeSeats(people: SeatInput[], area: Rect, reserved: Rect[]): { seats: 
   return { seats, rowH };
 }
 
-/** Place everyone. `reserved` areas (the You area, open panels) are never used for seats. `fixed` reserved areas
+/** The stopped shelf (Zero #20226): one row of small seats along the bottom, right of the Latest rail, wrapping to a
+ * second row when the room has many stopped people. Its height for `count` people across `width` px. */
+export const SHELF = { slot: 112, row: 70, head: 18, pad: 10 };
+export function shelfRect(count: number, stage: Rect, rail: Rect | null): Rect | null {
+  if (!count) return null;
+  const x = rail ? rail.x + rail.w + 16 : stage.x + 12, w = stage.x + stage.w - 12 - x;
+  if (w < SHELF.slot) return null;
+  const rows = Math.ceil(count / Math.max(1, Math.floor(w / SHELF.slot))), h = SHELF.head + rows * SHELF.row;
+  return { x, y: stage.y + stage.h - SHELF.pad - h, w, h };
+}
+
+/** Place everyone. `reserved` areas (the You area, a lifted picture) are never used for seats. `fixed` reserved areas
  * (the Latest rail) shape the home grid itself; the others can change size (the You area grows while you answer),
- * so a home seat under one steps aside instead, and the rest of the room keeps its seats. */
-export function layoutStage(input: SeatInput[], stage: Rect, reserved: Rect[] = [], previous?: Map<string, Rect>, fixed: Rect[] = []): StageLayout {
+ * so a home seat under one steps aside instead, and the rest of the room keeps its seats. Stopped people sit on
+ * the `shelf` (shelfRect), in roster order. The field above it keeps a home for everyone, stopped or not, so stopping
+ * or resuming someone moves only them (their home waits empty), never the rest of the room. */
+export function layoutStage(input: SeatInput[], stage: Rect, reserved: Rect[] = [], previous?: Map<string, Rect>, fixed: Rect[] = [], shelf: Rect | null = null): StageLayout {
   const area = { x: stage.x + 60, y: stage.y + 70, w: Math.max(120, stage.w - 120), h: Math.max(120, stage.h - 130) };
-  const { seats: home, rowH: homeRowH } = homeSeats(input, area, fixed);
+  if (shelf) area.h = Math.max(120, Math.min(area.h, shelf.y - 8 - area.y));
+  const shelved = shelf ? input.filter(p => p.stopped).sort((a, b) => a.order - b.order) : [];
+  const { seats: home, rowH: homeRowH } = homeSeats(input, area, shelf ? [...fixed, shelf] : fixed);
+  if (shelf) {
+    const perRow = Math.max(1, Math.floor(shelf.w / SHELF.slot));
+    shelved.forEach((p, i) => home.set(p.id, { x: shelf.x + SHELF.slot * (i % perRow + 0.5), y: shelf.y + SHELF.head + 26 + SHELF.row * Math.floor(i / perRow) }));
+  }
   // A cramped stage (a narrow window, the watch session open) keeps every person clear by leaving pictures out.
   const roomy = homeRowH >= PERSON.h + PERSON.thumbH + 16;
-  const people = roomy ? input : input.map(p => ({ ...p, hasThumb: false }));
-  // A home seat under a resizable reserved area steps below it, else beside it, to the first spot that covers
+  const people = (roomy ? input : input.map(p => ({ ...p, hasThumb: false }))).map(p => shelf && p.stopped ? { ...p, group: undefined, quiet: true, hasThumb: false } : p);
+  // A home seat under a resizable reserved area steps below it, else beside it, else to the nearest spot that covers
   // nobody else's seat; nobody sits under something you are using.
+  const blocked = [...fixed, ...(shelf ? [shelf] : [])];
+  // Someone stepping aside keeps this much air from everyone else (a touching name and badge read as one person).
+  const STEP_GAP = 14;
   for (const p of people) {
+    if (shelf && p.stopped) continue;
     const seat = home.get(p.id)!;
     for (const r of reserved) {
       if (overlap(personRect(seat, p.quiet, p.hasThumb), r) === 0) continue;
       const others = people.filter(q => q.id !== p.id).map(q => personRect(home.get(q.id)!, q.quiet, q.hasThumb));
       const options = [{ x: seat.x, y: r.y + r.h + 36 }, { x: r.x + r.w + PERSON.w / 2 + 10, y: seat.y }, { x: r.x - PERSON.w / 2 - 10, y: seat.y }];
       const fits = (q: Point) => { const rect = personRect(q, p.quiet, p.hasThumb);
-        return rect.x >= stage.x && rect.x + rect.w <= stage.x + stage.w && rect.y + rect.h <= stage.y + stage.h - 10
-          && reserved.every(x => overlap(rect, x) === 0) && others.every(o => overlap(rect, o) === 0); };
-      home.set(p.id, options.find(fits) ?? options[0]);
+        return rect.x >= stage.x && rect.y >= stage.y && rect.x + rect.w <= stage.x + stage.w && rect.y + rect.h <= stage.y + stage.h - 10
+          && [...reserved, ...blocked].every(x => overlap(rect, x) === 0) && others.every(o => overlap({ x: o.x - STEP_GAP, y: o.y - STEP_GAP, w: o.w + 2 * STEP_GAP, h: o.h + 2 * STEP_GAP }, rect) === 0); };
+      home.set(p.id, options.find(fits) ?? nearestFit(seat, fits) ?? options[0]);
     }
   }
   const byGroup = new Map<string, SeatInput[]>();
@@ -120,7 +145,7 @@ export function layoutStage(input: SeatInput[], stage: Rect, reserved: Rect[] = 
   const failed = new Set<string>();
   for (;;) {
     const placed = placeGroups(groups.filter(g => !failed.has(g.group)));
-    if (placed.failed.every(g => failed.has(g))) return { ...placed, reserved, thumbs: roomy };
+    if (placed.failed.every(g => failed.has(g))) return { ...placed, reserved, thumbs: roomy, shelf };
     placed.failed.forEach(g => failed.add(g));
   }
 
@@ -131,8 +156,9 @@ export function layoutStage(input: SeatInput[], stage: Rect, reserved: Rect[] = 
     // Obstacles: busy people at home and anyone showing a picture are hard. Quiet people are soft: a full room has
     // no gap between home rows wide enough for a group (4cbce498: a pair needs ~190 px, rows sit ~186 px apart),
     // so a group may take quiet people's spots, and they move into the homes its members just left.
-    const hard: Rect[] = [...reserved, ...staying.filter(p => !p.quiet || p.hasThumb).map(p => personRect(home.get(p.id)!, p.quiet, p.hasThumb))];
-    const soft = staying.filter(p => p.quiet && !p.hasThumb);
+    // The shelf is hard too: a group never forms over it, and nobody on it is moved into the field.
+    const hard: Rect[] = [...reserved, ...(shelf ? [shelf] : []), ...staying.filter(p => !p.quiet || p.hasThumb).map(p => personRect(home.get(p.id)!, p.quiet, p.hasThumb))];
+    const soft = staying.filter(p => p.quiet && !p.hasThumb && !(shelf && p.stopped));
     const quietRect = (q: Point) => personRect(q, true, false);
     const boxes: Rect[] = [], vacated: Point[] = [];
     const inArea = (r: Rect) => r.x >= area.x - 40 && r.y >= area.y - 50 && r.x + r.w <= area.x + area.w + 40 && r.y + r.h <= area.y + area.h + 40;
@@ -199,7 +225,45 @@ export function layoutStage(input: SeatInput[], stage: Rect, reserved: Rect[] = 
   }
 }
 
-export type BubbleSide = 'right' | 'left' | 'above' | 'below' | 'upRight' | 'upLeft' | 'downRight' | 'downLeft';
+/** The nearest point to `from` that `fits`, spiralling out in 20 px rings, or null within 600 px. */
+function nearestFit(from: Point, fits: (q: Point) => boolean): Point | null {
+  for (let radius = 20; radius <= 600; radius += 20) {
+    const steps = Math.ceil((2 * Math.PI * radius) / 24);
+    for (let k = 0; k < steps; k++) {
+      const ang = (k / steps) * 2 * Math.PI, q = { x: from.x + radius * Math.cos(ang), y: from.y + radius * Math.sin(ang) };
+      if (fits(q)) return q;
+    }
+  }
+  return null;
+}
+
+/** Where a picture lifted out of its owner's thumb goes (Zero #20226): beside the owner, clear of `hard` rects (the
+ * You area, the rail, the shelf, group floors with their gap) and of the owner, displacing as few of `movable`
+ * (people at home, who then step aside) as it can, at most `MAX_DISPLACED`. Tries `sizes` largest first; null when
+ * none fits, and the picture stays in its thumb. */
+const MAX_DISPLACED = 3;
+export function placeLift(owner: Rect, sizes: { w: number; h: number }[], hard: Rect[], movable: Rect[], stage: Rect): Rect | null {
+  const o = { x: owner.x + owner.w / 2, y: owner.y + owner.h / 2 };
+  for (const size of sizes) {
+    let best: { r: Rect; cost: number } | null = null;
+    for (let y = stage.y + 12; y + size.h <= stage.y + stage.h - 12; y += 12) {
+      for (let x = stage.x + 12; x + size.w <= stage.x + stage.w - 12; x += 12) {
+        const r = { x, y, ...size }, pad = { x: x - 8, y: y - 8, w: size.w + 16, h: size.h + 16 };
+        if (overlap(pad, owner) || hard.some(h => overlap(pad, h))) continue;
+        const displaced = movable.filter(m => overlap(pad, m) > 0).length;
+        if (displaced > MAX_DISPLACED) continue;
+        // Nearest edge to the owner, so it reads as theirs; each displaced person costs as much as 400 px of distance.
+        const dx = Math.max(r.x - o.x, 0, o.x - (r.x + r.w)), dy = Math.max(r.y - o.y, 0, o.y - (r.y + r.h));
+        const cost = displaced * 400 + Math.hypot(dx, dy);
+        if (!best || cost < best.cost) best = { r, cost };
+      }
+    }
+    if (best) return best.r;
+  }
+  return null;
+}
+
+export type BubbleSide ='right' | 'left' | 'above' | 'below' | 'upRight' | 'upLeft' | 'downRight' | 'downLeft';
 
 /** Whether a bubble fits here: inside the stage, with a few pixels of air on every side, so it never sits flush
  * against a chip, a panel or a name. */

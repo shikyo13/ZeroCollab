@@ -27,7 +27,14 @@ export interface LiveArtifact {
   frame_at?: number;
   /** Markup note, one line per numbered mark (derived mode only). */
   note?: string;
+  /** Markup: its marks in drawing order (room_markup.normalize_marks), so Live can trace them on source_url. */
+  marks?: LiveMark[];
+  /** Browser frame: where the click or scroll landed, 0..1 of the viewport (shared_browser.Browser.spot). */
+  point?: { x: number; y: number };
 }
+
+/** One mark of a markup, as room_markup draws it: x/y are 0..1 of the image; a pin uses x1/y1. */
+export interface LiveMark { kind: 'box' | 'arrow' | 'pin'; x1: number; y1: number; x2: number; y2: number; color: string; note?: string }
 
 export interface LiveAgent {
   id: string;
@@ -342,7 +349,7 @@ export function useLiveFeed(active: boolean): LiveFeed {
 
     // ---------- chat: what an agent posts is their speech (both modes); @mentions and shared images (derived mode) ----------
     function onMessage(event: RoomEvent) {
-      const m = event.data as { id?: string | number; sender?: string; text?: string; channel?: string; project_id?: string; timestamp?: number; attachments?: { url: string; note?: string; source?: string }[] };
+      const m = event.data as { id?: string | number; sender?: string; text?: string; channel?: string; project_id?: string; timestamp?: number; attachments?: { url: string; note?: string; source?: string; marks?: LiveMark[] }[] };
       if (!m?.sender || m.sender === 'system' || (m.project_id && project && m.project_id !== project)) return;
       const from = m.sender === 'user' ? 'user' : idFor(m.sender) || m.sender;
       if (from !== 'user' && !agents.has(from)) return;
@@ -357,18 +364,19 @@ export function useLiveFeed(active: boolean): LiveFeed {
       for (const to of targets) interact({ id: `mention:${m.id ?? at}:${to}`, at, channel: m.channel, from, to, kind: 'mention', text: clip(m.text || '', 140), fresh: ready });
       const image = (m.attachments ?? []).filter(x => IMAGE.test(x.url)).pop();
       const a = agentFor(from);
-      if (image && a) { a.artifact = { url: image.url, kind: image.source ? 'markup' : 'upload', at, source_url: image.source, note: image.note }; publish(); }
+      if (image && a) { a.artifact = { url: image.url, kind: image.source ? 'markup' : 'upload', at, source_url: image.source, note: image.note, marks: image.source ? image.marks : undefined }; publish(); }
     }
 
     // ---------- shared browser: the agent driving it shows the live frame (derived mode) ----------
     function onBrowser(event: RoomEvent) {
       if (source === 'server') return;
-      const d = event.data as { project?: string; page?: string; activity?: { actor?: string; label?: string; action?: string; phase?: string; time?: number; page?: string } | null };
+      const d = event.data as { project?: string; page?: string; activity?: { actor?: string; label?: string; action?: string; phase?: string; time?: number; page?: string; point?: { x: number; y: number } } | null };
       const act = d?.activity;
       if (!act?.action || act.phase !== 'done' || ['status', 'inspect', 'release'].includes(act.action) || act.actor === 'user') return;
       const a = agentFor(idFor(act.label || '') || '');
       if (!a) return;
-      a.artifact = { url: `/api/runtime/browser/frame?project=${encodeURIComponent(d.project || project)}`, kind: 'browser_frame', at: act.time || now(), page: act.page || d.page, frame_at: act.time };
+      a.artifact = { url: `/api/runtime/browser/frame?project=${encodeURIComponent(d.project || project)}`, kind: 'browser_frame', at: act.time || now(), page: act.page || d.page, frame_at: act.time,
+        point: act.point && Number.isFinite(act.point.x) && Number.isFinite(act.point.y) ? act.point : undefined };
       a.activity = act.action === 'screenshot' ? 'taking a browser screenshot' : 'using the shared browser';
       publish();
     }
