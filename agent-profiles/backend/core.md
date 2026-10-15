@@ -1,9 +1,9 @@
 ---
 agent: backend
-version: 2
+version: 3
 approved_by: ""
 approved_at: ""
-skills: [room-board-flow, room-review, room-release, engineering-standards, backend-donor-series]
+skills: [room-board-flow, room-review, room-release, engineering-standards, backend-donor-series, room-retro, wait-what]
 ---
 
 ## Expertise

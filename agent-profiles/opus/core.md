@@ -1,9 +1,9 @@
 ---
 agent: opus
-version: 2
+version: 3
 approved_by: ""
 approved_at: ""
-skills: [room-board-flow, room-review, room-release, engineering-standards, pm-release-cycle]
+skills: [room-board-flow, room-review, room-release, engineering-standards, pm-release-cycle, room-retro, wait-what, room-intake]
 ---
 
 ## Expertise

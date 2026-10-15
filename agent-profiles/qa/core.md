@@ -1,9 +1,9 @@
 ---
 agent: qa
-version: 1
+version: 2
 approved_by: ""
 approved_at: ""
-skills: [room-board-flow, room-review, room-release, engineering-standards]
+skills: [room-board-flow, room-review, room-release, engineering-standards, room-retro, wait-what]
 ---
 
 ## Expertise
