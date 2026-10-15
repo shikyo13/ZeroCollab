@@ -60,17 +60,23 @@ window.FileReferences = (() => {
         } catch { return null; }
     }
 
+    function sessionToken() {
+        return window.__SESSION_TOKEN__ || '';
+    }
+
     function authenticatedURL(value) {
         const url = mediaURL(value);
         if (!url) return '';
-        if (window.SESSION_TOKEN) url.searchParams.set('token', window.SESSION_TOKEN);
+        const token = sessionToken();
+        if (token) url.searchParams.set('token', token);
         return url.pathname + url.search;
     }
 
     async function register(ref) {
+        const token = sessionToken();
         const response = await fetch('/api/files/reference', {
             method: 'POST', headers: { 'Content-Type': 'application/json',
-                ...(window.SESSION_TOKEN ? { 'X-Session-Token': window.SESSION_TOKEN } : {}) },
+                ...(token ? { 'X-Session-Token': token } : {}) },
             body: JSON.stringify({ ref }), signal: AbortSignal.timeout(REFERENCE_TIMEOUT_MS),
         });
         const data = await response.json();
