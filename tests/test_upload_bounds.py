@@ -115,6 +115,31 @@ class UploadBoundsTests(unittest.TestCase):
             Path(root, 'evil.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
             self.assertTrue(self.serve(root, 'evil.svg').headers['content-security-policy'].endswith('; sandbox'))
 
+    def test_desktop_update_feed_serves_only_its_own_files(self):
+        # Task d8cf6035: electron-updater's generic feed reads latest.yml, then the installer (by Range) and blockmaps.
+        from fastapi.testclient import TestClient
+        with tempfile.TemporaryDirectory() as root:
+            feed = Path(root, 'desktop-updates')
+            feed.mkdir()
+            Path(feed, 'latest.yml').write_text('version: 1.0.1\npath: ZeroCollab-Setup-1.0.1.exe\n')
+            Path(feed, 'ZeroCollab-Setup-1.0.1.exe').write_bytes(bytes(range(256)) * 4)
+            Path(feed, 'ZeroCollab-Setup-1.0.1.exe.blockmap').write_bytes(b'\x1f\x8b')
+            Path(feed, 'notes.txt').write_text('not served')
+            Path(root, 'secret.exe').write_bytes(b'outside')
+            client = TestClient(app.app)
+            with patch.object(app, 'config', {'server': {'data_dir': root}}):
+                listing = client.get('/api/desktop-updates/latest.yml')
+                self.assertEqual((listing.status_code, listing.headers['cache-control']), (200, 'no-store'))
+                self.assertIn('ZeroCollab-Setup-1.0.1.exe', listing.text)
+                part = client.get('/api/desktop-updates/ZeroCollab-Setup-1.0.1.exe', headers={'Range': 'bytes=256-511'})
+                self.assertEqual((part.status_code, part.content), (206, bytes(range(256))))
+                head = client.head('/api/desktop-updates/ZeroCollab-Setup-1.0.1.exe')
+                self.assertEqual((head.status_code, head.headers['content-length'], head.content), (200, '1024', b''))
+                self.assertEqual(client.get('/api/desktop-updates/ZeroCollab-Setup-1.0.1.exe.blockmap').content, b'\x1f\x8b')
+                for name in ('notes.txt', '..%2Fsecret.exe', '%2E%2E%5Csecret.exe', 'C%3Asecret.exe', 'x.exe%3Astream',
+                             '.hidden.exe', 'Missing-1.0.0.exe'):
+                    self.assertEqual(client.get('/api/desktop-updates/' + name).status_code, 404, name)
+
     def test_raster_upload_keeps_its_image_type(self):
         with tempfile.TemporaryDirectory() as root:
             Path(root, 'shot.jpg').write_bytes(b'\xff\xd8\xff')

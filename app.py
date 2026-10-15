@@ -1710,6 +1710,29 @@ async def serve_upload(filename: str):
     return serve_file(filepath)
 
 
+# --- Desktop app updates (task d8cf6035): electron-updater's generic feed, from the room's data folder ---
+
+# The feed and nothing else: latest.yml, the installers it names and their blockmaps (differential download also
+# reads the installed version's blockmap, so older ones stay). No separators, drive letters or streams can match.
+DESKTOP_UPDATE_NAME = _re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,159}\.exe(?:\.blockmap)?')
+
+
+@app.api_route("/api/desktop-updates/{filename}", methods=["GET", "HEAD"])
+async def desktop_update_file(filename: str):
+    """The desktop app's update feed in data/desktop-updates. Range requests work (FileResponse), and nothing is
+    cached, so a new latest.yml is seen on the next check. The session token check in the middleware applies."""
+    if filename != "latest.yml" and not DESKTOP_UPDATE_NAME.fullmatch(filename):
+        return JSONResponse({"error": "Not an update feed file. Only latest.yml, *.exe and *.exe.blockmap "
+                                      "named with letters, digits, '.', '_' or '-' are served."}, status_code=404)
+    folder = Path(config.get("server", {}).get("data_dir", "./data")) / "desktop-updates"
+    path = folder / filename
+    if not path.is_file() or path.resolve().parent != folder.resolve():
+        return JSONResponse({"error": f"{filename} is not in the update feed folder ({folder})."}, status_code=404)
+    media_type = "text/yaml" if filename == "latest.yml" else "application/octet-stream"
+    return FileResponse(path, media_type=media_type,
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
 # --- Files referenced in place (Zero #14949: paste a path, no copy) ---
 
 def file_references():
