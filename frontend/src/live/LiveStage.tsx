@@ -416,7 +416,8 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
       if (msg.startsWith(t.msg) && t.text.endsWith(t.msg)) t.text = t.text.slice(0, t.text.length - t.msg.length) + msg;
       else if (!t.text.endsWith(msg)) t.text += '\n' + msg;
       t.msg = msg;
-      if (t.text.length > TALK_KEEP) {
+      // A talk someone is reading (open) is never trimmed under them; it is trimmed once they close it.
+      if (t.text.length > TALK_KEEP && !isOpen(a.id)) {
         const cut = t.text.indexOf(' ', t.text.length - TALK_KEEP) + 1 || t.text.length - TALK_KEEP;
         t.text = t.text.slice(cut); t.start = Math.max(0, t.start - cut); t.shown = Math.max(t.start, t.shown - cut);
       }
@@ -427,7 +428,7 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     t.limit = t.text.slice(0, t.text.length - half).trimEnd().length;
     if (onScreen.current.get(a.id)?.talk === t.id) {
       if (reduced) t.shown = Math.max(t.shown, t.limit);
-      else if (t.limit - t.shown > REVEAL_BACKLOG) {
+      else if (t.limit - t.shown > REVEAL_BACKLOG && !isOpen(a.id)) {
         // Talking faster than anyone reads: skip to the newest sentences rather than fall ever further behind.
         t.start = catchUp(t.text.slice(0, t.limit)); t.shown = wordsAfter(t.text, t.start, REVEAL_FIRST, t.limit); t.step = now;
       } else {
@@ -587,10 +588,12 @@ export function LiveStage({ feed, reduced, paused, youArea, selectedPerson, sele
     if (t && !isOpen(id)) bubbleKeys.current.set(id, `${id}:${t.id}`);
     return bubbleKeys.current.get(id) ?? id;
   };
-  /** What a bubble shows: the talk so far (from where it picked up, marked … after a skip), or all of it when open. */
+  /** What a bubble shows: closed, the talk so far from where its view picked up (marked … after a skip); open, all of it. */
   const talkText = (id: string) => {
     const t = talks.current.get(id); if (!t) return '';
-    return (t.start > 0 ? '… ' : '') + (isOpen(id) ? t.text.slice(t.start) : t.text.slice(t.start, t.shown));
+    // Open, it shows the whole talk the stage keeps, including anything the closed bubble skipped or hasn't revealed:
+    // `start` and `shown` only place the closed bubble's view, never what a reader can reach.
+    return isOpen(id) ? t.text : (t.start > 0 ? '… ' : '') + t.text.slice(t.start, t.shown);
   };
 
   const groupOf = new Map<string, CollabGroup>([...groups.values()].map(g => [g.key, g]));

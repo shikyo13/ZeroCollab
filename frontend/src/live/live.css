@@ -101,10 +101,10 @@
 /* A talk scrolled past its first line keeps its speaker's name on a tag over the bubble's faded top edge (39620499). */
 .lv-bubble-who { position: absolute; z-index: 1; top: 4px; left: 12px; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding: 0 6px; border-radius: 6px; background: #191e22; font: 600 11px/16px Inter, 'Segoe UI', system-ui, sans-serif; color: color-mix(in srgb, var(--c) 70%, white); pointer-events: none; }
-/* A closed bubble shows one page that always fits (LiveStage reading pace, Zero #18710), so its box follows the
-   text at once: easing it while words stream in kept the box a step behind and sliced off a line. A new page
-   enters with the bubble's own fade-in (sb-in), which reads as the page turning. Opening still eases. */
-.lv-bubble-slot .speech-bubble:not(.sb-open) { transition: box-shadow .2s ease-out; }
+/* A bubble grows with its talk (39620499): its words arrive at reading pace, so the shared bubble's own height ease
+   (SpeechBubble, 250 ms) runs as each line is added. The newest line shows at once at the bottom while the box
+   eases up to it, and the layout reserves the grown size from the start. Reduced motion makes it instant
+   (sb-reduced). The paging-era override that held the box still is gone with the pages. */
 @keyframes lv-in { from { opacity: 0; transform: translateY(6px); } }
 
 .lv-chip { position: absolute; z-index: 2; transform: translate(-50%, -100%); max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 999px; padding: 3px 12px; font-size: 12px;
