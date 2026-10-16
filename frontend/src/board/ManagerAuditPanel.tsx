@@ -1,6 +1,6 @@
 /* One saved Project manager identity. The server chooses its coordination task,
  * chat and project scope; the Team form saves identity and automatic checks together. */
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { runtime, errorMessage } from '../lib/api';
 import { useRoomEvent } from '../lib/room';
 import { leaderName } from '../lib/responders';
@@ -78,7 +78,7 @@ export function ProjectManagerControls({ state, refresh }: { state: RuntimeState
   const chosen = state?.responders?.configured.lead ?? '';
   useEffect(() => { if (state?.responders) setSaved(state.responders); }, [state?.responders]);
   useEffect(() => { void load(); }, [chosen, load]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!edited && saved && status) setDraft({ lead: saved.configured.lead, enabled: status.enabled,
       interval: status.config?.interval_minutes ?? status.options.interval.default });
   }, [saved, status, edited]);
@@ -111,6 +111,7 @@ export function ProjectManagerControls({ state, refresh }: { state: RuntimeState
     });
     submitted.current = false;
   };
+  if (!saved || !status) return loadError ? <ErrorText message={loadError} /> : null;
   return <section className="tm-leader bd-panel" aria-labelledby="tm-manager-heading">
     <div>
       <h2 id="tm-manager-heading">Project manager</h2>

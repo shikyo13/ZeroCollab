@@ -1027,12 +1027,12 @@ function buildMentionToggles() {
 
     // Prune stale mentions for agents no longer in config
     for (const name of activeMentions) {
-        if (name !== MENTION_ALL && !(name in agentConfig)) activeMentions.delete(name);
+        if (name !== MENTION_ALL && (!(name in agentConfig) || agentConfig[name].archived)) activeMentions.delete(name);
     }
 
     // @all comes first; on send it is prefixed like an agent chip and addresses the available agents.
     const chips = [[MENTION_ALL, { handle: MENTION_ALL, label: 'Wake the whole team' }],
-        ...Object.entries(agentConfig).filter(([, cfg]) => cfg.state !== 'pending')];  // skip pending instances
+        ...Object.entries(agentConfig).filter(([, cfg]) => cfg.state !== 'pending' && !cfg.archived)];
     for (const [name, cfg] of chips) {
         const btn = document.createElement('button');
         btn.className = 'mention-toggle' + (name === MENTION_ALL ? ' mention-all' : '');

@@ -2,7 +2,7 @@
  * controls (static/runtime.js provider cards) in one place. Same endpoints:
  * /api/runtime/profiles[/{id}[/archive]], /api/runtime/agent/{id}/stop|resume,
  * /api/runtime/refresh, plus runtime_state/agents events. */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { errorMessage, runtime } from '../lib/api';
 import { leaderId, leaderName } from '../lib/responders';
 import { sessionTitle, useRoomEvent, useRuntimeState } from '../lib/room';
@@ -133,6 +133,13 @@ function TeamHome({ active }: { active: boolean }) {
   const [building, setBuilding] = useState(false);
   const [section, setSection] = useState<'agents' | 'providers'>('agents');
   const [checks, setChecks] = useState(0);
+  const editor = useRef<HTMLElement>(null);
+  const [editorRequest, setEditorRequest] = useState(0);
+  useEffect(() => {
+    if (!editorRequest || !editor.current) return;
+    editor.current.scrollIntoView({ block: 'start' });
+    editor.current.focus({ preventScroll: true });
+  }, [editorRequest]);
   const refreshAction = useAction();
   const onDirty = useCallback((value: boolean) => {
     setDirty(value);
@@ -152,9 +159,7 @@ function TeamHome({ active }: { active: boolean }) {
   }, []);
 
   useEffect(() => {
-    void load().then(next => {
-      if (next) setSelected(cur => cur ?? next.profiles.find(p => !p.archived)?.id ?? null);
-    });
+    void load();
   }, [load]);
   useEffect(() => {
     if (!active) return;
@@ -182,6 +187,8 @@ function TeamHome({ active }: { active: boolean }) {
     setNotice('');
     setSelected(id);
     setMode(nextMode);
+    setSection('agents');
+    setEditorRequest(n => n + 1);
   };
 
   if (!data) {
@@ -243,7 +250,6 @@ function TeamHome({ active }: { active: boolean }) {
         </div>
       </header>
       <ErrorText message={loadError || runtimeError || refreshAction.error} />
-      <ProjectManagerControls key={runtimeState?.project_id ?? runtimeState?.project} state={runtimeState} refresh={refreshRuntime} />
       <nav className="bd-tabs tm-sections" aria-label="Team sections">
         <button type="button" className="bd-tab" aria-current={section === 'agents' ? 'page' : undefined}
           onClick={() => guarded('Save or cancel your changes first.') || setSection('agents')}>Agents ({activeCount})</button>
@@ -251,7 +257,7 @@ function TeamHome({ active }: { active: boolean }) {
           onClick={() => guarded('Save or cancel your changes first.') || setSection('providers')}>Providers</button>
       </nav>
 
-      {section === 'providers' ? <Providers reload={checks} onChecked={providersChecked} /> : <div className="tm-layout">
+      {section === 'providers' ? <Providers reload={checks} onChecked={providersChecked} /> : <div className={`tm-layout${!selected && mode === 'edit' ? ' tm-layout-browse' : ''}`}>
         <section className="tm-roster" aria-label="Agents">
           {visible.length ? (
             <ul className="tm-agents">
@@ -280,7 +286,7 @@ function TeamHome({ active }: { active: boolean }) {
             </label>
           )}
         </section>
-        <section className="bd-panel tm-editor" aria-label="Agent profile">
+        {(selected || mode !== 'edit') && <section className="bd-panel tm-editor" aria-label="Agent profile" ref={editor} tabIndex={-1}>
           {notice && !guard && (
             <p className="tm-notice" role="status">
               {notice}
@@ -314,11 +320,16 @@ function TeamHome({ active }: { active: boolean }) {
               setNotice('');
               setMode('edit');
               setResetKey(k => k + 1);
-              if (mode !== 'edit') setSelected(cur => cur ?? data.profiles.find(p => !p.archived)?.id ?? null);
+              setSelected(null);
+              document.querySelector<HTMLButtonElement>('.tm-root .bd-header .bd-btn-primary')?.focus();
             }}
           />
-        </section>
+        </section>}
       </div>}
+      <details className="tm-manager-settings">
+        <summary>Project manager settings</summary>
+        <ProjectManagerControls key={runtimeState?.project_id ?? runtimeState?.project} state={runtimeState} refresh={refreshRuntime} />
+      </details>
     </div>
   );
 }

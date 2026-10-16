@@ -13,7 +13,9 @@
 .ws-nav-item kbd { font: 11px var(--font-ui); color: var(--text-faint); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
 .ws-count { color: var(--text-faint); font-size: 12px; }
 .ws-badge { font-size: 11px; padding: 0 7px; border-radius: 9px; background: var(--warning-surface); color: var(--warning); }
-.ws-projects { display: flex; flex-direction: column; gap: 1px; min-height: 0; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+.ws-projects { display: flex; flex: 1 1 auto; flex-direction: column; gap: 1px; min-height: 0; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+.ws-projects > * { flex-shrink: 0; }
+.workspace-nav > :not(.ws-projects) { flex-shrink: 0; }
 .ws-section { display: flex; align-items: center; padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: var(--text-faint); }
 .ws-section span { flex: 1; }
 .ws-section button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--text-faint); border-radius: 6px; }
@@ -126,8 +128,11 @@
   .modern-workspace .workspace-toolbar header { flex-wrap: wrap; }
 }
 
-/* Mention chips: one compact scrolling row instead of tall wrapping buttons. */
-.modern-workspace #mention-toggles { flex-wrap: nowrap; }
+/* Compact mention chips wrap so every recipient remains visible. */
+.modern-workspace #mention-toggles { flex-wrap: wrap; overflow: visible; }
+.modern-workspace #mention-toggles-row { align-items: flex-start; }
+.modern-workspace #steering-delivery { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-stop > .ws-icon-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: auto; padding: 0 10px; white-space: nowrap; font-size: 13px; }
 .modern-workspace .mention-toggle { white-space: nowrap; padding: 3px 10px; font-size: 12.5px; line-height: 1.4; min-height: 0; border-radius: 12px; }
 
 /* Ctrl+K quick switcher. */

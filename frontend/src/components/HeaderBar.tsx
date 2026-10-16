@@ -124,14 +124,14 @@ function StopResume({ paused, refresh }: { paused: boolean; refresh: () => void 
   };
   if (paused) return <div className="ws-stop" ref={root}>
     <button className="ws-icon-button ws-resume" disabled={busy} onClick={() => void call('/resume')} aria-label="Resume all agents" title="Resume all agents">
-      <Icon name="play" size={16} />
+      <Icon name="play" size={16} /><span>Resume all</span>
     </button>
     {error && <p className="ws-popover" role="alert">{error}</p>}
     {notice && <p className="ws-popover" role="status">{notice}</p>}
   </div>;
   return <div className="ws-stop" ref={root}>
     <button className="ws-icon-button ws-stop-button" aria-expanded={open} onClick={() => setOpen(!open)} aria-label="Stop all agents" title="Stop all agents">
-      <Icon name="stop" size={16} />
+      <Icon name="stop" size={16} /><span>Stop all</span>
     </button>
     {!open && notice && <p className="ws-popover" role="status">{notice}</p>}
     {open && <div className="ws-popover" role="alertdialog" aria-label="Stop all agents">

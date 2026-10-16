@@ -23,6 +23,12 @@
 .tm-agent-run, .tm-agent-detail { font-size: 12.5px; color: var(--bd-muted); overflow-wrap: anywhere; }
 .tm-archived-toggle { padding: 4px 2px; }
 .tm-editor { min-width: 0; }
+.tm-editor { scroll-margin-top: 16px; }
+.tm-editor:focus-visible { outline: 2px solid var(--bd-accent); outline-offset: 3px; }
+.tm-layout-browse { grid-template-columns: minmax(0, 1fr); }
+.tm-layout-browse .tm-agents { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
+.tm-manager-settings { margin-top: 24px; border-top: 1px solid var(--bd-border); padding-top: 16px; }
+.tm-manager-settings > summary { cursor: pointer; color: var(--bd-muted); font-size: 14px; }
 .tm-editor-head { display: flex; align-items: center; gap: 14px; }
 .tm-editor-head h2 { font-size: 19px; }
 .tm-handle { display: flex; align-items: center; border: 1px solid var(--bd-border); border-radius: 8px; background: var(--bg-input); }
