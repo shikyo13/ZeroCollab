@@ -88,8 +88,14 @@ body.modern-workspace {
 .modern-workspace .workspace-help { width: min(760px, 92vw); max-width: 90vw; max-height: 88dvh; overflow: auto; background: var(--bg-msg); border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 18px; padding: 28px; }
 .workspace-help::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
 .workspace-help .workspace-page-heading { margin-bottom: 16px; }
-.workspace-help-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 26px 0; }
-.workspace-help h3 { color: var(--text); font-size: 16px; margin-bottom: 8px; }
+.workspace-help-section { margin: 26px 0 0; }
+.workspace-help-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 22px; margin: 12px 0 18px; }
+.workspace-help h3 { color: var(--text); font-size: 17px; margin-bottom: 8px; }
+.workspace-help h4 { color: var(--text); font-size: 14px; margin: 0 0 2px; }
+.workspace-help-grid p { margin: 0; }
+.workspace-help-steps { margin: 0 0 18px; padding-left: 22px; display: grid; gap: 8px; font-size: 14px; line-height: 1.6; }
+.workspace-help-steps b { color: var(--text); }
+.workspace-help-shot { display: block; width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--border-strong); }
 .workspace-help p { font-size: 14px; line-height: 1.7; }
 .workspace-help summary { cursor: pointer; color: var(--accent-text); margin: 18px 0 10px; }
 .workspace-help .workspace-primary { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); padding: 10px 24px; }
