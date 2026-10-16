@@ -169,6 +169,22 @@ class MessageStore:
                 msgs = [m for m in msgs if m.get("channel", "general") == channel]
             return msgs
 
+    def search(self, query: str, channel_allowed=None, limit: int = 20) -> list[dict]:
+        """Newest first: messages whose text or an attachment's name contains query, ignoring case. All messages
+        are already in memory, so a scan is enough (about 20k messages in tens of milliseconds); limit stops it."""
+        needle = query.casefold()
+        found = []
+        with self._lock:
+            for message in reversed(self._messages):
+                if channel_allowed is not None and not channel_allowed(message.get("channel", "general")):
+                    continue
+                names = [a.get("name") or "" for a in message.get("attachments") or [] if isinstance(a, dict)]
+                if needle in (message.get("text") or "").casefold() or any(needle in n.casefold() for n in names):
+                    found.append(message)
+                    if len(found) >= limit:
+                        break
+        return found
+
     def delete(self, msg_ids: list[int]) -> list[int]:
         """Delete messages, retaining uploads shared by chat and board records."""
         with self._lock:

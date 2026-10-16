@@ -1327,6 +1327,33 @@ async def get_messages(request: Request, since_id: int = 0, limit: int = 50, cha
     return msgs
 
 
+SEARCH_RESULTS = 30  # most message hits one search returns
+SEARCH_SNIPPET = 160  # characters of message text shown around the match
+
+
+@app.get("/api/messages/search")
+async def search_messages(q: str = "", limit: int = 20):
+    """Ctrl+K search over the active project's chats: message text and attachment names, newest first."""
+    query = q.strip()
+    if len(query) < 2:
+        return JSONResponse({"error": "Type at least 2 characters to search messages."}, status_code=400)
+    rt = _runtime()
+    hits = await asyncio.to_thread(store.search, query, rt.owns_channel if rt else None,
+                                   max(1, min(limit, SEARCH_RESULTS)))
+    results = []
+    for message in hits:
+        text = " ".join((message.get("text") or "").split())
+        at = text.casefold().find(query.casefold())
+        start = max(0, at - SEARCH_SNIPPET // 3) if at >= 0 else 0
+        snippet = text[start:start + SEARCH_SNIPPET]
+        results.append({"id": message["id"], "channel": message.get("channel", "general"),
+                        "sender": message.get("sender", ""), "timestamp": message.get("timestamp"),
+                        "snippet": ("…" if start else "") + snippet + ("…" if start + SEARCH_SNIPPET < len(text) else ""),
+                        "attachments": [a.get("name") for a in message.get("attachments") or []
+                                        if isinstance(a, dict) and a.get("name")]})
+    return results
+
+
 @app.post("/api/send")
 async def api_send(request: Request):
     """REST endpoint for API agents to send messages without WebSocket.

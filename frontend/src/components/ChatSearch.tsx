@@ -1,18 +1,23 @@
-/* Ctrl+K quick switcher: jump to any chat (open, closed or pre-project history), project or view
- * by title. It searches titles, not message text. Opening a chat goes through channels.js. */
+/* Ctrl+K quick switcher: jump to any chat (open, closed or pre-project history), project or view by title,
+ * and to messages of this project's chats by their text or attachment names (task 7a7169ed). Opening a chat
+ * goes through channels.js; a message hit then scrolls to the message with reply.js's scrollToMessage. */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStoreValue } from '../lib/room';
+import { api } from '../lib/api';
+import { sessionTitle, useStoreValue } from '../lib/room';
 import type { ProjectSummary } from '../workspace/projectData';
 import type { View } from '../workspace/useWorkspaceRoute';
 
 type Session = { id: string; title: string; readonly?: boolean };
 type Archive = { closed: Session[]; history: Session[] };
 type Result = { key: string; label: string; hint: string; run: () => void };
+type MessageHit = { id: number; channel: string; sender: string; timestamp?: number; snippet: string; attachments: string[] };
 
 const NO_SESSIONS: Session[] = [];
 const NO_ARCHIVE: Archive = { closed: [], history: [] };
 const VIEWS: [View, string][] = [['board', 'Board'], ['team', 'Team'], ['activity', 'Activity'], ['server', 'Server'], ['projects', 'All projects']];
 const RESULTS_SHOWN = 12;
+const MESSAGE_RESULTS = 20;
+const SEARCH_DELAY_MS = 200;  // typing pause before the message search runs
 
 export function ChatSearch({ open, setOpen, projects, navigate, onOpenProject }: {
   open: boolean; setOpen: (open: boolean) => void; projects: ProjectSummary[];
@@ -22,7 +27,22 @@ export function ChatSearch({ open, setOpen, projects, navigate, onOpenProject }:
   const archive = useStoreValue<Archive>('chatArchive', NO_ARCHIVE);
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(0);
+  const [hits, setHits] = useState<MessageHit[]>([]);
+  const [searchError, setSearchError] = useState('');
   const dialog = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const q = query.trim();
+    setHits([]); setSearchError('');
+    if (!open || q.length < 2) return;
+    let current = true;
+    const timer = window.setTimeout(() => {
+      api<MessageHit[]>(`/api/messages/search?q=${encodeURIComponent(q)}&limit=${MESSAGE_RESULTS}`)
+        .then(found => { if (current) setHits(found); })
+        .catch(e => { if (current) setSearchError(`Message search failed: ${e instanceof Error ? e.message : String(e)}`); });
+    }, SEARCH_DELAY_MS);
+    return () => { current = false; window.clearTimeout(timer); };
+  }, [open, query]);
 
   useEffect(() => {
     const shortcut = (e: KeyboardEvent) => {
@@ -48,8 +68,16 @@ export function ChatSearch({ open, setOpen, projects, navigate, onOpenProject }:
     const matches = q ? all.filter(r => r.label.toLowerCase().includes(q)) : all;
     // Keep an exact named view reachable even when matching titles fill the limit.
     const exactView = q ? matches.find(r => r.key.startsWith('v') && r.label.toLowerCase() === q) : undefined;
-    return (exactView ? [exactView, ...matches.filter(r => r !== exactView)] : matches).slice(0, RESULTS_SHOWN);
-  }, [sessions, archive, projects, query, navigate, onOpenProject]);
+    const titles = (exactView ? [exactView, ...matches.filter(r => r !== exactView)] : matches).slice(0, RESULTS_SHOWN);
+    const messages = hits.map(h => ({
+      key: 'm' + h.id,
+      label: h.snippet || h.attachments.join(', '),
+      hint: [h.sender, sessionTitle(h.channel), h.timestamp ? new Date(h.timestamp * 1000).toLocaleString() : ''].filter(Boolean).join(' · '),
+      // switchChannel renders the chat first; the message may then be older batches away, which scrollToMessage loads.
+      run: chat(h.channel, () => { window.switchChannel?.(h.channel); window.setTimeout(() => window.scrollToMessage?.(h.id), 50); }),
+    }));
+    return [...titles, ...messages];
+  }, [sessions, archive, projects, query, hits, navigate, onOpenProject]);
 
   useEffect(() => {
     const key = results[index]?.key;
@@ -59,7 +87,7 @@ export function ChatSearch({ open, setOpen, projects, navigate, onOpenProject }:
   const choose = (result: Result | undefined) => { if (!result) return; setOpen(false); result.run(); };
   return <dialog ref={dialog} className="ws-search" aria-label="Search chats and projects" onClose={() => setOpen(false)}
     onClick={e => { if (e.target === dialog.current) setOpen(false); }}>
-    <input autoFocus value={query} placeholder="Search chats, projects and views" aria-label="Search" role="combobox"
+    <input autoFocus value={query} placeholder="Search chats, messages, files and views" aria-label="Search" role="combobox"
       aria-expanded="true" aria-controls="ws-search-results" aria-activedescendant={results[index] ? `ws-search-${results[index].key}` : undefined}
       onChange={e => { setQuery(e.target.value); setIndex(0); }}
       onKeyDown={e => {
@@ -70,7 +98,8 @@ export function ChatSearch({ open, setOpen, projects, navigate, onOpenProject }:
     <ul id="ws-search-results" role="listbox">
       {results.map((r, i) => <li key={r.key} id={`ws-search-${r.key}`} role="option" aria-selected={i === index}
         onMouseEnter={() => setIndex(i)} onClick={() => choose(r)}><span>{r.label}</span><small>{r.hint}</small></li>)}
-      {!results.length && <li className="ws-search-empty">No chat, project or view matches "{query}". Search covers titles, not message text.</li>}
+      {searchError && <li className="ws-search-empty" role="alert">{searchError}</li>}
+      {!results.length && !searchError && <li className="ws-search-empty">Nothing in this project's chats, messages or files matches "{query}".</li>}
     </ul>
   </dialog>;
 }

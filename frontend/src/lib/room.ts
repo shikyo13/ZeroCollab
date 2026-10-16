@@ -41,6 +41,8 @@ declare global {
     setChannelSidebarMode?: (mode: 'top' | 'sidebar', persist?: boolean) => void;
     showChannelCreateDialog?: () => void;
     switchChannel?: (id: string) => void;
+    /** reply.js: scroll the open chat to a message, loading older batches until it is shown. */
+    scrollToMessage?: (id: number) => void;
     reopenChatSession?: (id: string) => void;
     viewChatHistory?: (id: string) => void;
     /** channels.js and settings.js: the header chat menu's actions on the open chat. */
