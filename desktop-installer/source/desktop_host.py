@@ -79,7 +79,7 @@ def main():
                 self.locks.append(handle)
             self.lease = writer.open_room_writer(data, kind='desktop', supervisor=True)
             self.status['data_lease'] = 'held'
-            self.start_stopped = 'desktop'
+            self.start_stopped = None
 
         def session(self, wait_seconds=0):
             deadline = time.monotonic() + wait_seconds
@@ -184,13 +184,7 @@ def main():
                     self.session_hashes = result.json()['sessions']
                 except (engine.httpx.HTTPError, ValueError, KeyError):
                     pass
-                # During deployment the gate is blocked and runtime.close saves
-                # the deployment queue. Normal Quit preserves the existing Stop contract.
-                if graceful:
-                    try:
-                        self.client.post('/api/runtime/stop', json={}, timeout=20).raise_for_status()
-                    except engine.httpx.HTTPError:
-                        pass
+                # Quit closes the app; it is not the user's Stop command.
                 try:
                     self.child.stdin.write(b'quit\n')
                     self.child.stdin.flush()

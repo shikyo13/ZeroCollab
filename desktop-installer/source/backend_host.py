@@ -254,9 +254,6 @@ def serve_owned(args, root, source, profile, parent_job, room_root, original, da
     emit({'type': 'progress', 'stage': 'install-runtime'})
     runtime = install(room)
     runtime.release_manager.live_root = room_root
-    # Host-owned attribute, not a saved setting or a user config override.
-    if not handoff or handoff['start_stopped']:
-        runtime.start_stopped = 'Desktop opened this existing room in Stopped state. Saved work has not been replayed.'
     from run import mount_web
     emit({'type': 'progress', 'stage': 'mount-workspace'})
     build_id = mount_web(room.app, source / 'static', session_token=None)
@@ -280,7 +277,7 @@ def serve_owned(args, root, source, profile, parent_job, room_root, original, da
         nonlocal connection_checks, server_loop
         server_loop = asyncio.get_running_loop()
         runtime.desktop_refresh_pending = True
-        emit({'type': 'progress', 'stage': 'start-stopped-room'})
+        emit({'type': 'progress', 'stage': 'start-room'})
         watchdog = threading.Timer(10, startup_snapshot, args=(asyncio.current_task(), threading.get_ident()))
         watchdog.daemon = True
         watchdog.start()
@@ -326,7 +323,7 @@ def serve_owned(args, root, source, profile, parent_job, room_root, original, da
         if connection_checks is not None:
             connection_checks.cancel()
             await asyncio.gather(connection_checks, return_exceptions=True)
-        await runtime.close()
+        await runtime.close(preserve_state=True)
         emit({'type': 'closed', 'instance': instance, 'runtime_closed': True})
 
     import uvicorn

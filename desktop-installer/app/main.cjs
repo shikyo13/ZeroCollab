@@ -7,6 +7,7 @@ const { pathToFileURL } = require('node:url');
 const { allowedDownload } = require('./downloads.cjs');
 const { createUIState } = require('./ui-state.cjs');
 const { createUpdater } = require('./auto-update.cjs');
+if (process.platform === 'win32') app.setAppUserModelId('com.zerocollab.desktop');
 const DEFAULT_CONTENT_SIZE = { width: 1280, height: 800 };
 const WINDOW_SAVE_DELAY_MS = 200;
 const testCaption = process.env.ZC_DESKTOP_TEST_TITLE || '';
@@ -218,7 +219,7 @@ else {
   async function quitRoom() {
     if (exiting) return;
     const answer = await dialog.showMessageBox(win, { type: 'warning', title: 'Quit ZeroCollab?',
-      message: 'Quit this desktop room and ZeroCollab?', detail: 'This stops this desktop room: active turns are cancelled, queued work is cleared and goals are paused. Saved chats and tasks are kept. The same saved room can be reopened in the web app after Quit. Close any external wrapper windows before switching apps.',
+      message: 'Quit this desktop room and ZeroCollab?', detail: 'Active turns end and the room is saved. On the next launch, this room restores its running or stopped state. Individually paused agents stay paused.',
       buttons: ['Keep running', 'Quit ZeroCollab'], defaultId: 0, cancelId: 0 });
     if (answer.response !== 1) return;
     beginShutdown();

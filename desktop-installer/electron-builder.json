@@ -13,7 +13,7 @@
     { "from": "../desktop-startup/build-links-r4/resources/python", "to": "python" },
     { "from": "../desktop-startup/build-links-r4/resources/encoder", "to": "encoder" }
   ],
-  "win": { "target": "nsis", "icon": "app/zerocollab.ico", "signAndEditExecutable": false },
+  "win": { "target": "nsis", "icon": "app/zerocollab.ico", "signAndEditExecutable": true, "signExecutable": false },
   "nsis": { "oneClick": true, "perMachine": false, "allowElevation": false, "packElevateHelper": false,
     "deleteAppDataOnUninstall": false, "createDesktopShortcut": "always", "shortcutName": "ZeroCollab" },
   "publish": { "provider": "generic", "url": "http://127.0.0.1/api/desktop-updates/" },

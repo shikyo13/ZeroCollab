@@ -1,7 +1,7 @@
 {
   "name": "zerocollab-desktop",
   "productName": "ZeroCollab",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "private": true,
   "description": "ZeroCollab desktop workspace",
   "author": "ZeroCollab contributors",
