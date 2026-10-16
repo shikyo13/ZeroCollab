@@ -18,6 +18,30 @@ import faulthandler
 import importlib.util
 
 CONNECTION_SHUTDOWN_SECONDS = 5
+RESERVED_PORTS = (8300, 8200, 8201)
+
+
+def room_listener(data, port=None):
+    """Keep the room's origin stable so browser preferences survive relaunches."""
+    saved_port = data / 'desktop-port.json'
+    fixed = port is not None  # a supervisor handoff already chose its control address
+    if port is None:
+        try:
+            port = json.loads(saved_port.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            port = 0
+        if type(port) is not int or not 1024 <= port <= 65535 or port in RESERVED_PORTS:
+            port = 0
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(('127.0.0.1', port))
+    except OSError:
+        if fixed:
+            listener.close()
+            raise
+        listener.bind(('127.0.0.1', 0))
+    saved_port.write_text(json.dumps(listener.getsockname()[1]) + '\n', encoding='utf-8')
+    return listener
 
 
 def attach_parent_job(owner):
@@ -213,8 +237,7 @@ def run_owned(args, root, source, profile, parent_job, commands_in):
 
 
 def serve_owned(args, root, source, profile, parent_job, room_root, original, data, uploads, lease, desktop_configure, commands_in, backend_identity, handoff):
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.bind(('127.0.0.1', handoff['port'] if handoff else 0))
+    listener = room_listener(data, handoff['port'] if handoff else None)
     listener.listen(128)
     port = listener.getsockname()[1]
     if port in (8300, 8200, 8201):

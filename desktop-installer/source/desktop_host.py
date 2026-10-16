@@ -48,8 +48,7 @@ def main():
     # CAS, snapshot, verify, rollback and recovery algorithms remain frozen.
     engine.LIVE, engine.DATA, engine.SPOOL = room_root, data, data / 'deploy'
     engine.HANDBACK = engine.SPOOL / 'handback.json'
-    with socket.socket() as probe:
-        probe.bind(('127.0.0.1', 0))
+    with host.room_listener(data) as probe:
         port = probe.getsockname()[1]
     quit_event = threading.Event()
 

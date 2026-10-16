@@ -264,7 +264,7 @@ else {
   app.on('before-quit', event => { if (!exiting) { event.preventDefault(); void quitRoom(); } });
   app.on('window-all-closed', () => {});
   app.whenReady().then(async () => {
-    const ses = session.fromPartition('zc-test-' + Date.now());
+    const ses = session.fromPartition('persist:zerocollab');
     ses.setPermissionRequestHandler((contents, permission, callback, details) => callback(
       (permission === 'clipboard-sanitized-write' && trustedDocument(details.requestingUrl)) ||
       roomClipboardRead(contents, permission, details.requestingUrl, details.isMainFrame)));
