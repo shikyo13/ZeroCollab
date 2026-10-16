@@ -1333,12 +1333,15 @@ SEARCH_SNIPPET = 160  # characters of message text shown around the match
 
 @app.get("/api/messages/search")
 async def search_messages(q: str = "", limit: int = 20):
-    """Ctrl+K search over the active project's chats: message text and attachment names, newest first."""
+    """Ctrl+K search over the active project's chats, closed ones included (frontend 4f8c54e2): message text and
+    attachment names, newest first. Each hit says whether its chat is closed, so opening it reopens the chat."""
     query = q.strip()
     if len(query) < 2:
         return JSONResponse({"error": "Type at least 2 characters to search messages."}, status_code=400)
     rt = _runtime()
-    hits = await asyncio.to_thread(store.search, query, rt.owns_channel if rt else None,
+    import project_registry
+    chats = project_registry.searchable(rt) if rt else None
+    hits = await asyncio.to_thread(store.search, query, chats.__contains__ if chats is not None else None,
                                    max(1, min(limit, SEARCH_RESULTS)))
     results = []
     for message in hits:
@@ -1346,7 +1349,8 @@ async def search_messages(q: str = "", limit: int = 20):
         at = text.casefold().find(query.casefold())
         start = max(0, at - SEARCH_SNIPPET // 3) if at >= 0 else 0
         snippet = text[start:start + SEARCH_SNIPPET]
-        results.append({"id": message["id"], "channel": message.get("channel", "general"),
+        channel = message.get("channel", "general")
+        results.append({"id": message["id"], "channel": channel, "closed": bool(chats and chats.get(channel)),
                         "sender": message.get("sender", ""), "timestamp": message.get("timestamp"),
                         "snippet": ("…" if start else "") + snippet + ("…" if start + SEARCH_SNIPPET < len(text) else ""),
                         "attachments": [a.get("name") for a in message.get("attachments") or []

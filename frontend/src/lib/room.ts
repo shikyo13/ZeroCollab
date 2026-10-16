@@ -43,7 +43,8 @@ declare global {
     switchChannel?: (id: string) => void;
     /** reply.js: scroll the open chat to a message, loading older batches until it is shown. */
     scrollToMessage?: (id: number) => void;
-    reopenChatSession?: (id: string) => void;
+    /** channels.js: resolves once the reopen request settles; a failure shows a toast and leaves the chat closed. */
+    reopenChatSession?: (id: string) => Promise<void> | void;
     viewChatHistory?: (id: string) => void;
     /** channels.js and settings.js: the header chat menu's actions on the open chat. */
     renameChatSession?: (id: string) => void;

@@ -10,7 +10,15 @@ import type { View } from '../workspace/useWorkspaceRoute';
 type Session = { id: string; title: string; readonly?: boolean };
 type Archive = { closed: Session[]; history: Session[] };
 type Result = { key: string; label: string; hint: string; run: () => void };
-type MessageHit = { id: number; channel: string; sender: string; timestamp?: number; snippet: string; attachments: string[] };
+type MessageHit = { id: number; channel: string; closed: boolean; sender: string; timestamp?: number; snippet: string; attachments: string[] };
+
+/** Open the hit's chat, reopening it first if it is closed, then scroll to the message. A failed reopen has
+ * already shown its toast and leaves another chat open, so nothing scrolls there. */
+async function openHit(hit: MessageHit) {
+  if (hit.closed) await window.reopenChatSession?.(hit.channel);
+  else window.switchChannel?.(hit.channel);
+  if (window.activeChannel === hit.channel) window.scrollToMessage?.(hit.id);
+}
 
 const NO_SESSIONS: Session[] = [];
 const NO_ARCHIVE: Archive = { closed: [], history: [] };
@@ -72,9 +80,9 @@ export function ChatSearch({ open, setOpen, projects, navigate, onOpenProject }:
     const messages = hits.map(h => ({
       key: 'm' + h.id,
       label: h.snippet || h.attachments.join(', '),
-      hint: [h.sender, sessionTitle(h.channel), h.timestamp ? new Date(h.timestamp * 1000).toLocaleString() : ''].filter(Boolean).join(' · '),
-      // switchChannel renders the chat first; the message may then be older batches away, which scrollToMessage loads.
-      run: chat(h.channel, () => { window.switchChannel?.(h.channel); window.setTimeout(() => window.scrollToMessage?.(h.id), 50); }),
+      hint: [h.sender, sessionTitle(h.channel) + (h.closed ? ' (closed)' : ''),
+             h.timestamp ? new Date(h.timestamp * 1000).toLocaleString() : ''].filter(Boolean).join(' · '),
+      run: chat(h.channel, () => { void openHit(h); }),
     }));
     return [...titles, ...messages];
   }, [sessions, archive, projects, query, hits, navigate, onOpenProject]);

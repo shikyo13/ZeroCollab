@@ -326,6 +326,13 @@ def owned(runtime):
     return [s['id'] for s in open_sessions(folder)] if folder is not None else []
 
 
+def searchable(runtime):
+    """Read-only scope of message search: every chat of the active project, closed ones included, mapped to
+    whether it is closed. Never a write or routing scope (owned is)."""
+    folder = active_folder(runtime)
+    return {s['id']: bool(s.get('closed')) for s in sessions(folder)} if folder is not None else {}
+
+
 def default_session(runtime):
     folder = active_folder(runtime)
     if folder is None:
