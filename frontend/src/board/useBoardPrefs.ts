@@ -15,9 +15,6 @@ export type SortBy = typeof SORTS[number];
 export const GROUP_LABELS: Record<GroupBy, string> = { activity: 'Group: Activity', status: 'Group: status only', area: 'Group: area', owner: 'Group: owner' };
 export const SORT_LABELS: Record<SortBy, string> = { recent: 'Sort: recent activity', oldest: 'Sort: least recent', title: 'Sort: title' };
 
-// Wider than the board.css @media (max-width: 1100px) breakpoint, where the feed docks beside the columns.
-const FEED_DOCKED_QUERY = '(min-width: 1101px)';
-
 function readChoice<T extends string>(key: string, allowed: readonly T[]): T {
   const saved = readStored(key) as T | null;
   return saved && allowed.includes(saved) ? saved : allowed[0];
@@ -37,10 +34,10 @@ export function useBoardPrefs() {
   const [tab, setTab] = useStoredChoice(STORAGE_KEYS.boardTab, TABS);
   const [groupBy, setGroupBy] = useStoredChoice(STORAGE_KEYS.boardGroup, GROUPINGS);
   const [sortBy, setSortBy] = useStoredChoice(STORAGE_KEYS.boardSort, SORTS);
-  // The activity rail sits beside the columns on wide screens; on narrow ones it is an overlay, so it starts closed.
+  // Give tasks the Board's width by default; retain an explicit choice to open the feed.
   const [feedOpen, setFeedOpenState] = useState(() => {
     const saved = readStored(STORAGE_KEYS.boardFeed);
-    return saved ? saved === '1' : window.matchMedia(FEED_DOCKED_QUERY).matches;
+    return saved === '1';
   });
   const setFeedOpen = useCallback((next: boolean) => {
     setFeedOpenState(next);

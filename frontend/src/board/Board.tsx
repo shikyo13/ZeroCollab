@@ -150,7 +150,8 @@ export default function Board() {
   const waitingOnUser =
     (project.reviews ?? []).filter(r => r.reviewer === USER && r.status === 'pending').length +
     (project.followups ?? []).filter(f => f.assigned_to === USER && f.status === 'open').length;
-  const owners = [...new Set(project.tasks.map(t => t.owner).filter(Boolean))];
+  const owners = [...new Set(project.tasks.map(t => t.owner).filter(owner =>
+    owner && (owner === USER || (agents[owner] && !agents[owner].archived))))];
   const knownLabels = [...new Set(project.tasks.flatMap(t => t.labels ?? []))].sort();
   const side = selectedTask ? 'detail' : feedOpen ? 'feed' : '';
 
@@ -263,6 +264,7 @@ export default function Board() {
           <div className="bd-media-board">
           {project.tasks.length > 0 && (groupBy === 'activity'
             ? <ActivitySections tasks={filteredTasks} activity={activity} showAllDone={showAllDone} onToggleDone={() => setShowAllDone(v => !v)} facts={facts} agents={agents} now={now}
+                filterKey={filters.query || filters.owner || filters.label ? JSON.stringify(filters) : ''}
                 selected={selected} onOpen={id => setSelected(cur => cur === id ? null : id)}
                 follows={follow.following ? placement.cards : undefined} />
             : lanes.map(lane => (
