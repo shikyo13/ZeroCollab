@@ -968,6 +968,8 @@ class RoomRuntime:
         self.states, self.queues, self.workers, self.running, self.approvals = {}, {}, {}, {}, {}
         self.loop = None
         self.paused = False
+        self.stopped_noticed = False  # chat already says the room is Stopped; saved, so a reopen doesn't repeat it
+        self.closing = False  # close(preserve_state=True) is ending turns; their end posts nothing (desktop 1b088201)
         # Set by the launcher before start() when the other app (web or desktop) used this room's data last:
         # the room then opens Stopped, so nothing queued over there runs here until the user clicks Resume.
         self.start_stopped = None
@@ -1153,6 +1155,7 @@ class RoomRuntime:
         save_workspace(self.data / "workspace.json", {"project": str(self.project) if self.project else None,
               "project_id": self.identity, "paused": self.paused,
               "paused_agents": [n for n, s in self.states.items() if s.get("paused")],
+              "stopped_notice": self.paused and self.stopped_noticed,
               "worktrees": {n: self.desktop_saved_worktrees.get(n, s["worktree"]) if s.get('desktop_unavailable')
                             else s["worktree"] for n, s in self.states.items()},
               **({"manual_stop_applied": self.manual_stop_applied} if self.manual_stop_applied else {})})
@@ -1501,6 +1504,7 @@ class RoomRuntime:
             self.desktop_saved_worktrees = saved.get('worktrees', {})
             self.manual_stop_applied = saved.get('manual_stop_applied')
         self.paused = saved.get("paused", False)
+        self.stopped_noticed = bool(self.paused and saved.get('stopped_notice'))
         # Before any await: a Stop clicked during an update must hold the room, never an older saved paused flag.
         self.open_manual_stop(bool(saved.get('paused')), saved.get('manual_stop_applied'))
         project = saved.get('project')
@@ -1533,6 +1537,12 @@ class RoomRuntime:
         if self.start_stopped:
             # Before the heartbeat exists, so no queued entry, ready wake, goal step or manager check-in runs first.
             await self.stop(notice=self.start_stopped)
+        elif self.paused and not self.stopped_noticed:
+            # Reopened Stopped, the way it was left: said once per Stopped stretch, never on every launch.
+            self.host.store.add("system", "This room is Stopped, as it was left. Click Resume when ready.",
+                                channel=self.default_channel())
+            self.stopped_noticed = True
+            self.save_project()
         for note in self.profiles.store.migration_notes:  # once, from the local-provider migration (6b673b03)
             self.host.store.add("system", note, channel=self.default_channel())
         self.profiles.store.migration_notes = []
@@ -2092,12 +2102,14 @@ class RoomRuntime:
             installing = getattr(run, 'install_interrupted', False)  # an install's interrupt, not the user's Stop
             if self.goals.goal and self.goals.goal['owner'] == name and not installing:
                 self.goals.pause('Goal lead turn cancelled.')
-            self.states[name].update(state="ready", detail="Interrupted for an install; resumes after it"
+            self.states[name].update(state="ready", detail="Interrupted when the app closed; resumes when it reopens"
+                                     if self.closing else "Interrupted for an install; resumes after it"
                                      if installing else "Stopped; pending work cleared")
             self.wake_notices.pop(name, None)
             await run.finish_message(partial=True)
-            self.host.store.add("system", f"{name} was interrupted for an install and resumes after it."
-                                if installing else f"{name} stopped.", channel=run.channel)
+            if not self.closing:  # the app quitting or updating says nothing per agent; the turn resumes on reopen
+                self.host.store.add("system", f"{name} was interrupted for an install and resumes after it."
+                                    if installing else f"{name} stopped.", channel=run.channel)
         except Exception as exc:
             outcome = "failed"
             if self.goals.goal and self.goals.goal['owner'] == name:
@@ -3030,6 +3042,8 @@ class RoomRuntime:
                   if failed_clears else ' Queues cleared.')
         text = (notice + detail if notice else "Room stopped. Active turns cancelled." + detail) + " Click Resume when ready."
         self.host.store.add("system", text, channel=self.default_channel())
+        self.stopped_noticed = True
+        self.save_project()
         await self.publish_status()
 
     def save_deploy_queue(self):
@@ -3317,7 +3331,8 @@ class RoomRuntime:
         return None, {'warning': MANUAL_STOP_BROKEN.format(error=error, state=state)}
 
     def unpause(self):
-        self.paused = False  # the latch's synchronous transition: an assignment only, so it cannot fail
+        # The latch's synchronous transition: assignments only, so it cannot fail. The next Stop is announced again.
+        self.paused, self.stopped_noticed = False, False
 
     async def after_resume(self):
         """What follows the room leaving Stop, outside the latch's lock and under normal admission."""
@@ -3486,7 +3501,31 @@ class RoomRuntime:
             if marked:
                 self.write_release_wakes(data)
 
-    async def close(self):
+    async def close_preserving_state(self):
+        """The desktop app quits or updates itself (desktop 1b088201): the room reopens as it was left, not Stopped.
+        Paused flags, paused agents and the goal stay as they are. Running turns end like an install's interrupt and
+        resume on reopen; queued and held work goes in the pending-wakes checkpoint that startup restores."""
+        self.closing = True
+        for name in list(self.running):
+            self.install_interrupt(name, 'app-close')
+        held = {name: entry for name, entry in self.deploy_held.items() if name not in self.running}
+        # Workers first, so no queued entry starts and no finishing turn schedules new work while turns end.
+        self.heartbeat.cancel()
+        for worker in self.workers.values():
+            worker.cancel()
+        await asyncio.gather(self.heartbeat, *self.workers.values(), return_exceptions=True)
+        await asyncio.gather(*(self.cancel_turn(name) for name in self.states))
+        if self.deployment:
+            self.deploy_held.update(held)  # a cancelled worker dropped the entry it was holding for admission
+            self.save_deploy_queue()
+        self.save_project()
+        if self.project_room.store is not None:
+            try:
+                self.project_room.save()
+            except Exception:
+                LOGGER.exception('The board could not be saved at shutdown; room.db keeps its last commit')
+
+    async def close(self, preserve_state=False):
         manager = getattr(self, 'release_manager', None)
         if manager is not None:
             # First (Astra 4bd7c547): no new release job starts, and a running verification is stopped and joined
@@ -3500,6 +3539,8 @@ class RoomRuntime:
         elif self.deployment and self.deployment.reload()['writes'] == 'blocked':
             if not self.running:
                 self.save_deploy_queue()
+        elif preserve_state:
+            await self.close_preserving_state()
         else:
             await self.stop()
             # stop() ends with touched saves; this full comparison writes anything they left for the next one
