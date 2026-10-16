@@ -7,6 +7,7 @@ const { pathToFileURL } = require('node:url');
 const { allowedDownload } = require('./downloads.cjs');
 const { createUIState } = require('./ui-state.cjs');
 const { createUpdater } = require('./auto-update.cjs');
+const { waitForInstaller } = require('./install-wait.cjs');
 if (process.platform === 'win32') app.setAppUserModelId('com.zerocollab.desktop');
 const DEFAULT_CONTENT_SIZE = { width: 1280, height: 800 };
 const WINDOW_SAVE_DELAY_MS = 200;
@@ -47,6 +48,8 @@ let generation = 0, returnURL = '';
 let hostQuitting = false;
 const evidence = { mode: 'desktop', cli_logins: { mode: 'shared' }, rendering: process.env.ZC_TEST_CAPTURE === '1' ? 'offscreen software author capture' : 'default', lifecycle: [], readiness: null, shutdown: null };
 const loadingURL = pathToFileURL(path.join(root, 'loading.html')).href;
+const installWaitURL = pathToFileURL(path.join(root, 'install-wait.html')).href;
+const installWaitAbort = new AbortController();
 const handoverURL = pathToFileURL(path.join(root, 'handover.html')).href;
 const updateURL = pathToFileURL(path.join(root, 'update.html')).href;
 const updateAssetURLs = new Set([updateURL, ...['update.css', 'update.cjs'].map(name => pathToFileURL(path.join(root, name)).href)]);
@@ -133,7 +136,7 @@ else {
       (process.env.ZC_TEST_CAPTURE === '1' && contents.getType() === 'offscreen');
     if (!creatingWindow || !allowedType) { contents.destroy(); return; }
     const navigation = (event, url) => {
-      if ([loadingURL, handoverURL, updateURL].includes(url) || trustedDocument(url)) return;
+      if ([loadingURL, installWaitURL, handoverURL, updateURL].includes(url) || trustedDocument(url)) return;
       event.preventDefault();
       if (event.isMainFrame !== false) openWebLink(contents, url);
     };
@@ -247,6 +250,7 @@ else {
   function beginShutdown() {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    installWaitAbort.abort();
     if (win && !win.webContents.isDestroyed()) win.webContents.send('zc-ui-flush');
     exiting = true;
     launchState = 'stopping';
@@ -302,7 +306,7 @@ else {
       });
     });
     ses.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
-      let allowed = details.url === loadingURL || details.url === handoverURL || updateAssetURLs.has(details.url);
+      let allowed = details.url === loadingURL || details.url === installWaitURL || details.url === handoverURL || updateAssetURLs.has(details.url);
       try { const u = new URL(details.url); allowed ||= u.origin === origin ||
         (u.protocol === 'ws:' && origin && 'http://' + u.host === origin) ||
         (u.protocol === 'blob:' && u.origin === origin) ||
@@ -356,6 +360,20 @@ else {
       { label: 'Quit ZeroCollab...', click: quitRoom }]));
     tray.on('double-click', () => { win.show(); win.focus(); });
     await win.loadFile(path.join(root, 'loading.html'));
+    let waitingView;
+    try {
+      await waitForInstaller({ signal: installWaitAbort.signal, onWaiting() {
+        if (exiting || win.isDestroyed()) return;
+        event('installer-waiting');
+        waitingView = win.loadFile(path.join(root, 'install-wait.html')).catch(() => {
+          if (!exiting) fail('Desktop update progress could not load');
+        });
+      } });
+      if (waitingView) { await waitingView; event('installer-finished'); }
+    } catch {
+      if (!exiting) fail('The desktop update has not finished. Let installation finish, then reopen ZeroCollab.');
+      return;
+    }
     if (launchState !== 'starting') return;
     if (selectedRoom) launchRoom();
     else {
