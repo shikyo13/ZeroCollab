@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import app
+import zerocollab.api.app as app
 
 
 class SettingsPersistenceTests(unittest.TestCase):
@@ -28,7 +28,7 @@ class SettingsPersistenceTests(unittest.TestCase):
         app._save_settings()
         previous = self.path.read_bytes()
         app.room_settings['subtitle'] = 'New value'
-        with patch('durable.os.replace', side_effect=OSError('disk failure')):
+        with patch('zerocollab.storage.durable.os.replace', side_effect=OSError('disk failure')):
             with self.assertRaises(OSError):
                 app._save_settings()
         self.assertEqual(self.path.read_bytes(), previous)

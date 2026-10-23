@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import app
-import local_files
+import zerocollab.api.app as app
+import zerocollab.storage.local_files as local_files
 
 
 class Request:

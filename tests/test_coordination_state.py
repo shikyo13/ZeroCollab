@@ -1,6 +1,6 @@
 import unittest
 
-from coordination_state import execution_state, update_execution
+from zerocollab.coordination.coordination_state import execution_state, update_execution
 
 
 class ExecutionStateTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class RecordIntegrationTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from types import SimpleNamespace
-        from project_room import ProjectRoom
+        from zerocollab.coordination.project_room import ProjectRoom
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

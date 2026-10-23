@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
-from room_runtime import RoomRuntime, Run, execute_file_tool, file_tool_target, git, load_workspace, save_workspace
-from coordination_queue import WakeQueue
-from project_room import ProjectRoom
-import project_registry
+from zerocollab.runtime.room_runtime import RoomRuntime, Run, execute_file_tool, file_tool_target, git, load_workspace, save_workspace
+from zerocollab.coordination.coordination_queue import WakeQueue
+from zerocollab.coordination.project_room import ProjectRoom
+import zerocollab.storage.project_registry as project_registry
 
 class WorkspacePersistenceTests(unittest.TestCase):
     def setUp(self):
@@ -28,7 +28,7 @@ class WorkspacePersistenceTests(unittest.TestCase):
 
     def test_failed_replace_keeps_selection(self):
         save_workspace(self.path, self.old)
-        with patch('room_runtime.os.replace', side_effect=OSError('disk failure')):
+        with patch('zerocollab.runtime.room_runtime.os.replace', side_effect=OSError('disk failure')):
             with self.assertRaises(OSError):
                 save_workspace(self.path, self.new)
         self.assertEqual(load_workspace(self.path), self.old)
@@ -85,7 +85,7 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         r.repository_workspace = Mock(side_effect=lambda p, n: {'worktree': str(p / n), 'branch': 'new', 'workspace_kind': 'repository'})
         self.r = r
         self.target = self.root / 'new'
-        self.enterContext(patch('project_registry.repository_root', side_effect=lambda p: Path(p)))
+        self.enterContext(patch('zerocollab.storage.project_registry.repository_root', side_effect=lambda p: Path(p)))
 
     async def test_drain_keeps_queued_and_held_work_and_honors_new_pause(self):
         r = self.r
@@ -119,7 +119,7 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.r.turn_admission_open())
 
     async def test_failed_project_record_write_keeps_old_selection(self):
-        with patch('project_registry._save_record', side_effect=OSError('disk failure')):
+        with patch('zerocollab.storage.project_registry._save_record', side_effect=OSError('disk failure')):
             with self.assertRaisesRegex(OSError, 'disk failure'):
                 await self.r.start_repository_change(self.r.identity, self.target)
         self.assertEqual(self.r.project, self.root / 'old')
@@ -233,7 +233,7 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         original = room.task('a', 'create', title='Before repository', paths=['src'])
         self.assertEqual(original['repository_key'], '')
         first_key = project_registry.repository_key(self.target)
-        with patch('project_registry._save_record', side_effect=OSError('disk full')):
+        with patch('zerocollab.storage.project_registry._save_record', side_effect=OSError('disk full')):
             with self.assertRaises(OSError):
                 await r.start_repository_change(r.identity, self.target)
         self.assertEqual(room.task_repository_key(original), '')
@@ -288,12 +288,12 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         await self.r.start_repository_change(self.r.identity, self.target, action='add')
         for state in self.r.states.values():
             state['provider'] = 'api'
-        with patch('room_runtime._worktree_diff', return_value='diff'):
+        with patch('zerocollab.runtime.room_runtime._worktree_diff', return_value='diff'):
             diffs = await self.r.collect_diffs()
         self.assertIsInstance(diffs['a'], str)
         for key in self.r.states['a']['repositories']:
             self.assertIn('[Repository ' + key + ']', diffs['a'])
-        with patch('room_runtime._worktree_diff', return_value=''):
+        with patch('zerocollab.runtime.room_runtime._worktree_diff', return_value=''):
             self.assertEqual(await self.r.collect_diffs(), {'a': '', 'b': ''})
 
     async def test_extra_instructions_change_session_hash_and_local_file_target_is_confined(self):

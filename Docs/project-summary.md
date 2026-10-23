@@ -1,19 +1,21 @@
 # Project summary
 
+Current source layout: Python modules moved by domain into `src/zerocollab/`; desktop shell/host/UI live under `apps/desktop/`; independent media source/tests/docs live under `tools/motion/`. Basenames below describe those modules. [README ownership map](../README.md#source-layout) and [motion README](../tools/motion/README.md) are the current setup/entry-point references. Browser-product launch instructions in older design notes are retired.
+
 ZeroCollab (version 0.9.0, `VERSION`) is a local, single-user workspace where a person and several AI coding agents share one chat, one kanban board and one team roster. It runs on the user's machine (Python 3.11+, default `http://127.0.0.1:8300`), uses each provider's own locally signed-in CLI, and never handles provider credentials or calls paid APIs on its own.
 
 ## What the user gets
 
 | Area | What it does | Main code |
 |-|-|-|
-| Chat | Channels and chat sessions per project, attachments, streaming replies, @mention routing with a hop limit, slash commands `/goal` and `/clear`, voice typing, export/import of messages | `app.py`, `store.py`, `router.py`, `archive.py`, `static/chat*.js` |
+| Chat | Channels and chat sessions per project, attachments, streaming replies, @mention routing with a hop limit, slash commands `/goal` and `/clear`, voice typing, export/import of messages | `app.py`, `store.py`, `router.py`, `archive.py`, `apps/desktop/renderer/static/chat*.js` |
 | Managed agents | One CLI turn per wake-up in the agent's own Git worktree; per-agent Stop/Resume, model and effort; tool approvals; steering mid-turn; diffs per agent | `room_runtime.py`, `native_adapters.py`, `steering_delivery.py`, `provider_controls.py` |
-| Board | Tasks with owners, reserved paths, dependencies, priority, next action, evidence, images; peer reviews and follow-ups; spec and notes; execution limits and budgets | `project_room.py`, `coordination_records.py`, `coordination_state.py`, `coordination_queue.py`, `frontend/src/board/` |
-| Projects | Several projects, each with its own board, team, goal, chats and repositories; switch, create, attach or change repositories while running | `project_registry.py`, `frontend/src/workspace/` |
-| Team | Project-local agent profiles (name, prompt, color, provider template); team proposals drafted by connected agents and approved by the user | `agent_profiles.py`, `team_builder.py`, `frontend/src/team/` |
+| Board | Tasks with owners, reserved paths, dependencies, priority, next action, evidence, images; peer reviews and follow-ups; spec and notes; execution limits and budgets | `project_room.py`, `coordination_records.py`, `coordination_state.py`, `coordination_queue.py`, `apps/desktop/renderer/src/board/` |
+| Projects | Several projects, each with its own board, team, goal, chats and repositories; switch, create, attach or change repositories while running | `project_registry.py`, `apps/desktop/renderer/src/workspace/` |
+| Team | Project-local agent profiles (name, prompt, color, provider template); team proposals drafted by connected agents and approved by the user | `agent_profiles.py`, `team_builder.py`, `apps/desktop/renderer/src/team/` |
 | Goal | A user-started shared goal with a lead; continues on events, never on a timer poll | `room_goals.py` |
-| Markup | Agents and the user annotate screenshots (boxes, arrows, pins) | `room_markup.py`, `frontend/src/annotate/` |
-| Deployments | Releases packaged from a commit, approved in the Deployments panel, applied by the supervisor with drain, verification and rollback | `release_pack.py`, `room_deploy.py`, `supervisor.py`, `frontend/src/components/Deployments.tsx` |
+| Markup | Agents and the user annotate screenshots (boxes, arrows, pins) | `room_markup.py`, `apps/desktop/renderer/src/annotate/` |
+| Deployments | Releases packaged from a commit, approved in the Deployments panel, applied by the supervisor with drain, verification and rollback | `release_pack.py`, `room_deploy.py`, `supervisor.py`, `apps/desktop/renderer/src/components/Deployments.tsx` |
 | Local models | OpenAI-compatible endpoints as managed agents with validated structured tool calls | `local_protocol.py`, `wrapper_api.py` |
 | Launcher agents | Older path: a visible terminal per agent, prompts typed in by a wrapper | `wrapper*.py`, `agents.py`, `queue_file.py`, `windows/`, `macos-linux/` |
 
@@ -34,8 +36,8 @@ A single process (`run.py`) serves the FastAPI app, the WebSocket and both MCP s
 
 The UI has two layers on one page:
 
-- **Chat client.** Classic scripts in `static/`, which own the WebSocket.
-- **Workspace.** A React and TypeScript bundle built by Vite from `frontend/src` into `static/modern/`. It renders the board, projects, team, activity and deployments, and receives WebSocket frames through `lib/room.ts`.
+- **Chat client.** Classic scripts in `apps/desktop/renderer/static/`, which own the WebSocket.
+- **Workspace.** A React and TypeScript bundle built by Vite from `apps/desktop/renderer/src` into `apps/desktop/renderer/static/modern/`. It renders the board, projects, team, activity and deployments, and receives WebSocket frames through `lib/room.ts`.
 
 ## Status and known gaps (as of 2026-10-07)
 

@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import process_enforcement as pe
-from project_room import ProjectRoom, RELEASE_GRANTEE
+import zerocollab.runtime.process_enforcement as pe
+from zerocollab.coordination.project_room import ProjectRoom, RELEASE_GRANTEE
 
 HOUR = 3600
 

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from decision_flow import DecisionFlow
+from zerocollab.coordination.decision_flow import DecisionFlow
 
 NAMES = ['opus', 'systems', 'harness', 'backend', 'frontend', 'desktop', 'qa', 'media']
 

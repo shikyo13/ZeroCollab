@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from project_room import DEFAULT_LIMITS, ProjectRoom
-from router import Router
+from zerocollab.coordination.project_room import DEFAULT_LIMITS, ProjectRoom
+from zerocollab.coordination.router import Router
 
 
 class HandoffLimitRetiredTests(unittest.TestCase):

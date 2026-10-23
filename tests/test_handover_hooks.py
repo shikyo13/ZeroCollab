@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from room_runtime import RoomRuntime
+from zerocollab.runtime.room_runtime import RoomRuntime
 
 
 class Stop(Exception):
@@ -49,7 +49,7 @@ class HandoverHooks(unittest.TestCase):
         # security N2: hold, don't fail to start; the user's Resume releases it and it is recorded.
         runtime = mock.MagicMock(spec_set=None)
         runtime.handover.startup_hold.side_effect = ValueError('ack_schema')
-        with mock.patch('room_runtime.load_workspace', side_effect=Stop):
+        with mock.patch('zerocollab.runtime.room_runtime.load_workspace', side_effect=Stop):
             with self.assertRaises(Stop):  # start() carries on past the hold to the workspace load
                 asyncio.run(RoomRuntime.start(runtime))
         self.assertIn('ack_schema', runtime.handover_fault)
@@ -72,7 +72,7 @@ class HandoverHooks(unittest.TestCase):
             runtime.resume_deploy_checks = mock.AsyncMock(side_effect=[None, Halt])
             runtime.consume_release_completions = mock.Mock()
             runtime.deployment.reload.return_value = {'writes': 'blocked'}
-            with mock.patch('room_runtime.LOGGER') as logger, mock.patch('asyncio.sleep', mock.AsyncMock()):
+            with mock.patch('zerocollab.runtime.room_runtime.LOGGER') as logger, mock.patch('asyncio.sleep', mock.AsyncMock()):
                 with self.assertRaises(Halt):
                     await RoomRuntime.beat(runtime)
             return logger.exception.call_count
@@ -80,7 +80,7 @@ class HandoverHooks(unittest.TestCase):
 
     def test_resume_note_says_until_when_the_bridge_holds(self):
         import sys
-        sys.modules['host_handover'] = SimpleNamespace(SECONDS=600)
+        sys.modules['zerocollab.runtime.host_handover'] = SimpleNamespace(SECONDS=600)
         self.addCleanup(sys.modules.pop, 'host_handover', None)
         runtime = SimpleNamespace(handover=SimpleNamespace(held=True, hold_since=None, request=None,
                                                            ack={'nonce': 'ab' * 16, 'created': 0}))

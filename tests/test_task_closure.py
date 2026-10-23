@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from project_room import ProjectRoom
+from zerocollab.coordination.project_room import ProjectRoom
 
 
 class TaskClosure(unittest.TestCase):

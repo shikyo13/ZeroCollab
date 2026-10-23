@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import project_registry as registry
-from coordination_queue import WakeQueue
+import zerocollab.storage.project_registry as registry
+from zerocollab.coordination.coordination_queue import WakeQueue
 
 
 class ChatSessionTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from wrapper import _queued_prompt
+from zerocollab.legacy.wrapper import _queued_prompt
 
 
 class WrapperPromptTests(unittest.TestCase):

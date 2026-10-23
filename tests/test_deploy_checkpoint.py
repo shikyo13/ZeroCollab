@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from coordination_queue import WakeQueue
-import room_runtime
-from room_runtime import RoomRuntime
+from zerocollab.coordination.coordination_queue import WakeQueue
+import zerocollab.runtime.room_runtime as room_runtime
+from zerocollab.runtime.room_runtime import RoomRuntime
 
 
 def runtime(root, identity='bbbbbbbbbbbb'):

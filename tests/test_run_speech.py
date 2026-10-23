@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from room_runtime import Run, SPEECH_TAIL_CHARS  # noqa: E402
+from zerocollab.runtime.room_runtime import Run, SPEECH_TAIL_CHARS  # noqa: E402
 
 
 class FakeRun(SimpleNamespace):

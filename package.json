@@ -1,0 +1,10 @@
+{
+  "name": "zerocollab-workspace",
+  "private": true,
+  "scripts": {
+    "start": "npm --prefix apps/desktop run start",
+    "build": "npm --prefix apps/desktop/renderer run build",
+    "desktop:prepare": "python scripts/prepare_desktop.py",
+    "desktop:package": "npm --prefix apps/desktop run package"
+  }
+}

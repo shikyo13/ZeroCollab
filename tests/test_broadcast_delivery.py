@@ -3,7 +3,7 @@ import unittest
 import weakref
 from unittest.mock import AsyncMock, Mock, patch
 
-import app
+import zerocollab.api.app as app
 
 
 class BroadcastDeliveryTests(unittest.IsolatedAsyncioTestCase):

@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from PIL import Image
-from room_markup import render_markup, normalize_marks
+from zerocollab.integrations.room_markup import render_markup, normalize_marks
 
 
 def screenshot(size=(320, 180), format='PNG'):
@@ -48,7 +48,7 @@ class MarkupTests(unittest.TestCase):
         for source in (b'', b'not an image', b'<svg></svg>', screenshot(format='BMP')):
             with self.assertRaises(ValueError):
                 render_markup(source)
-        with patch('room_markup.PIXEL_LIMIT', 100), self.assertRaises(ValueError):
+        with patch('zerocollab.integrations.room_markup.PIXEL_LIMIT', 100), self.assertRaises(ValueError):
             render_markup(screenshot())
         with self.assertRaises(ValueError):
             render_markup(screenshot(), summary='x' * 1001)

@@ -33,7 +33,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import wrapper_unix  # noqa: E402
+import zerocollab.legacy.wrapper_unix as wrapper_unix  # noqa: E402
 
 OPEN = b"\x1b[200~"
 CLOSE = b"\x1b[201~"

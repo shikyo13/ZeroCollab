@@ -9,9 +9,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import app
+import zerocollab.api.app as app
 from fastapi import WebSocketDisconnect
-from store import MessageStore
+from zerocollab.storage.store import MessageStore
 
 
 class HistoryDeliveryTests(unittest.TestCase):

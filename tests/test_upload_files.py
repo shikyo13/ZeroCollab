@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from project_room import message_text
+from zerocollab.coordination.project_room import message_text
 
 
 class UploadFileLines(unittest.TestCase):
@@ -36,8 +36,8 @@ class UploadFileLines(unittest.TestCase):
 
     def test_pasted_reference_resolves_through_the_registry_only(self):
         # harness 86468487, Zero #14949: an original pasted by path is read in place; the client's path is ignored.
-        import local_files
-        from project_room import Files
+        import zerocollab.storage.local_files as local_files
+        from zerocollab.coordination.project_room import Files
         original = Path(tempfile.mkdtemp()) / 'm2 promo.mp4'
         original.write_bytes(b'm' * 3072)
         registry = local_files.Registry(Path(tempfile.mkdtemp()) / 'file_references.json')
@@ -60,7 +60,7 @@ class UploadFileLines(unittest.TestCase):
 
     def test_original_vanishing_after_lookup_costs_one_line(self):
         # backend 236cdebc: lookup saw the file, then it went; the prompt must still build.
-        from project_room import Files
+        from zerocollab.coordination.project_room import Files
         gone = Path(tempfile.mkdtemp()) / 'gone.pdf'
         registry = type('Registry', (), {'lookup': lambda self, key: (gone, False)})()
         message = {'id': 7, 'sender': 'Zero', 'text': '',

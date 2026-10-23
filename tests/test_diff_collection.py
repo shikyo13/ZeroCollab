@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from room_runtime import RoomRuntime
+from zerocollab.runtime.room_runtime import RoomRuntime
 
 
 class DiffCollectionTests(unittest.IsolatedAsyncioTestCase):
@@ -27,7 +27,7 @@ class DiffCollectionTests(unittest.IsolatedAsyncioTestCase):
                     raise AssertionError('event loop did not release worker')
             return path
 
-        with patch('room_runtime._worktree_diff', side_effect=collect):
+        with patch('zerocollab.runtime.room_runtime._worktree_diff', side_effect=collect):
             task = asyncio.create_task(runtime.collect_diffs())
             try:
                 async with asyncio.timeout(3):
@@ -64,7 +64,7 @@ class DiffCollectionTests(unittest.IsolatedAsyncioTestCase):
                 runtime.project = 'project'
                 runtime.states = {name: {'worktree': name, 'provider': 'api'}
                                   for name in ('bad', 'good')}
-                with patch('room_runtime._worktree_diff', side_effect=[failure, 'actual diff']), \
+                with patch('zerocollab.runtime.room_runtime._worktree_diff', side_effect=[failure, 'actual diff']), \
                      self.assertLogs('room_runtime', level='WARNING'):
                     result = await runtime.collect_diffs()
                 self.assertIn('unavailable', result['bad'])
@@ -75,6 +75,6 @@ class DiffCollectionTests(unittest.IsolatedAsyncioTestCase):
         runtime = RoomRuntime.__new__(RoomRuntime)
         runtime.project = 'project'
         runtime.states = {'a': {'worktree': 'a', 'provider': 'api'}}
-        with patch('room_runtime.asyncio.to_thread', side_effect=asyncio.CancelledError):
+        with patch('zerocollab.runtime.room_runtime.asyncio.to_thread', side_effect=asyncio.CancelledError):
             with self.assertRaises(asyncio.CancelledError):
                 await runtime.collect_diffs()

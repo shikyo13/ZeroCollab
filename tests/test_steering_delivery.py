@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 
-from steering_delivery import SteeringDelivery
+from zerocollab.runtime.steering_delivery import SteeringDelivery
 
 
 class SteeringTests(unittest.IsolatedAsyncioTestCase):
@@ -86,8 +86,8 @@ class SteeringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [1, 2, 3])
 
     async def test_runtime_routes_only_same_channel_and_stop_refuses(self):
-        from room_runtime import RoomRuntime
-        from coordination_queue import WakeQueue
+        from zerocollab.runtime.room_runtime import RoomRuntime
+        from zerocollab.coordination.coordination_queue import WakeQueue
         runtime = object.__new__(RoomRuntime)
         runtime.paused = False
         runtime.states = {'a': {'state': 'working'}}

@@ -5,10 +5,10 @@ import typing
 import unittest
 import unittest.mock
 
-import release_interface
-import room_mcp
-import room_runtime
-from project_room import coordination_tools
+import zerocollab.releases.release_interface as release_interface
+import zerocollab.api.room_mcp as room_mcp
+import zerocollab.runtime.room_runtime as room_runtime
+from zerocollab.coordination.project_room import coordination_tools
 
 
 class Parity(unittest.TestCase):

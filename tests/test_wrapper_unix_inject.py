@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest import mock
 
-import wrapper_unix
+import zerocollab.legacy.wrapper_unix as wrapper_unix
 
 
 @unittest.skipIf(sys.platform == 'win32', 'Unix executable fixture')

@@ -4,9 +4,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from coordination_queue import WakeQueue
-from project_room import DEFAULT_LIMITS, ProjectRoom
-from room_runtime import RoomRuntime
+from zerocollab.coordination.coordination_queue import WakeQueue
+from zerocollab.coordination.project_room import DEFAULT_LIMITS, ProjectRoom
+from zerocollab.runtime.room_runtime import RoomRuntime
 
 
 class RestoredChainTests(unittest.IsolatedAsyncioTestCase):
@@ -42,8 +42,8 @@ class RestoredChainTests(unittest.IsolatedAsyncioTestCase):
 
     async def turn(self, r, run, request):
         entry = {'channel': 'general', 'chain': 'lost-in-restart', 'requests': [request]}
-        with patch('room_runtime.Run', return_value=run), patch('room_runtime.native.terminate', AsyncMock()), \
-             patch('room_runtime.native.restore_room_server'):
+        with patch('zerocollab.runtime.room_runtime.Run', return_value=run), patch('zerocollab.runtime.room_runtime.native.terminate', AsyncMock()), \
+             patch('zerocollab.runtime.room_runtime.native.restore_room_server'):
             await r.run_turn('a', entry)
 
     async def test_restored_work_runs_on_a_fresh_record_of_its_conversation(self):

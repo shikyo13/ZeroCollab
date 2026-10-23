@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import app
-import archive
-from store import MessageStore
+import zerocollab.api.app as app
+import zerocollab.storage.archive as archive
+from zerocollab.storage.store import MessageStore
 
 
 def make_store(root: Path):
@@ -77,7 +77,7 @@ class ArchiveRoundTripTests(unittest.TestCase):
         def batch():
             self.assertFalse(parsing)
             return original_batch()
-        with patch('archive._message_lines', side_effect=lines), patch.object(
+        with patch('zerocollab.storage.archive._message_lines', side_effect=lines), patch.object(
             self.target_store, 'import_batch', side_effect=batch
         ):
             report = archive.import_archive(blob, self.target_store, ['general'])
@@ -89,7 +89,7 @@ class ArchiveRoundTripTests(unittest.TestCase):
         before = self.target_store.get_recent()
         disk = self.target_store._path.read_bytes()
         blob = archive.build_export(self.source_store)
-        with patch('store.atomic_write', side_effect=OSError('disk failure')):
+        with patch('zerocollab.storage.store.atomic_write', side_effect=OSError('disk failure')):
             with self.assertRaises(OSError):
                 archive.import_archive(blob, self.target_store, ['general'])
         self.assertEqual(self.target_store.get_recent(), before)
@@ -209,7 +209,7 @@ class ImportThreadTests(unittest.IsolatedAsyncioTestCase):
         async def consume():
             async with archive.prepared_import(b'zip'):
                 self.fail('cancelled request must not apply')
-        with patch('archive._prepare_import', side_effect=prepare):
+        with patch('zerocollab.storage.archive._prepare_import', side_effect=prepare):
             task = asyncio.create_task(consume())
             try:
                 async with asyncio.timeout(2):
@@ -242,7 +242,7 @@ class ImportThreadTests(unittest.IsolatedAsyncioTestCase):
             seed_history(source)
             upload = UploadFile(file=io.BytesIO(archive.build_export(source)), filename='history.zip')
             settings = {'channels': ['general'], 'max_channels': 8}
-            with patch('archive._prepare_import', side_effect=prepare), patch.object(app, 'store', target), patch.object(app, 'room_settings', settings), patch.object(app, '_save_settings'), patch.object(app, 'broadcast_settings', new_callable=AsyncMock), patch.object(app, '_broadcast', new_callable=AsyncMock):
+            with patch('zerocollab.storage.archive._prepare_import', side_effect=prepare), patch.object(app, 'store', target), patch.object(app, 'room_settings', settings), patch.object(app, '_save_settings'), patch.object(app, 'broadcast_settings', new_callable=AsyncMock), patch.object(app, '_broadcast', new_callable=AsyncMock):
                 task = asyncio.create_task(app.import_history(upload))
                 try:
                     async with asyncio.timeout(2):
@@ -268,7 +268,7 @@ class ExportThreadTests(unittest.IsolatedAsyncioTestCase):
                 return b'archive'
             finally:
                 finished.set()
-        with patch('archive._build_export', side_effect=build):
+        with patch('zerocollab.storage.archive._build_export', side_effect=build):
             task = asyncio.create_task(app.export_history())
             try:
                 async with asyncio.timeout(2):
@@ -292,7 +292,7 @@ class ExportThreadTests(unittest.IsolatedAsyncioTestCase):
         def build(*args, **kwargs):
             self.assertNotEqual(threading.get_ident(), loop_thread)
             return b'archive'
-        with patch('archive.build_export', side_effect=build):
+        with patch('zerocollab.storage.archive.build_export', side_effect=build):
             response = await app.export_history()
         self.assertEqual(response.body, b'archive')
 

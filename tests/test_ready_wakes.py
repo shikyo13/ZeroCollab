@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import roomdb
-from project_room import ProjectRoom
-from ready_wakes import ReadyWakes
+import zerocollab.storage.roomdb as roomdb
+from zerocollab.coordination.project_room import ProjectRoom
+from zerocollab.coordination.ready_wakes import ReadyWakes
 
 
 class ReadyWakeTests(unittest.TestCase):

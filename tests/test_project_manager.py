@@ -8,10 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from manager_wakes import ManagerWakes, install
-from project_room import ProjectRoom
-from ready_wakes import ReadyWakes
-import native_adapters as native
+from zerocollab.coordination.manager_wakes import ManagerWakes, install
+from zerocollab.coordination.project_room import ProjectRoom
+from zerocollab.coordination.ready_wakes import ReadyWakes
+import zerocollab.providers.native_adapters as native
 
 
 class SetupChecks(unittest.TestCase):

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from board_push import BoardPush, COLLECTIONS, ENVELOPE, detached
+from zerocollab.coordination.board_push import BoardPush, COLLECTIONS, ENVELOPE, detached
 
 
 def board():
@@ -143,7 +143,7 @@ class BoardPushTest(unittest.TestCase):
         self.assertEqual(self.advance()[1][0], 'project_delta')
 
     def test_a_change_during_the_push_await_never_reaches_that_rev(self):
-        from room_runtime import RoomRuntime  # frontend f7e96ca6, critical 2
+        from zerocollab.runtime.room_runtime import RoomRuntime  # frontend f7e96ca6, critical 2
         self.advance()
         followup = {'id': 'f1', 'status': 'open'}
         self.room.state['followups'].append(followup)  # the live list: snapshots share it

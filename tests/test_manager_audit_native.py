@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import native_adapters as native
-from room_runtime import Run
+import zerocollab.providers.native_adapters as native
+from zerocollab.runtime.room_runtime import Run
 
 
 class CodexBoundaryChecks(unittest.IsolatedAsyncioTestCase):

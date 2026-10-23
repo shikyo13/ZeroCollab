@@ -3,7 +3,7 @@ import time
 import unittest
 from types import SimpleNamespace
 
-from room_runtime import RoomRuntime, TRANSIENT_FAILURE, TRANSIENT_RETRY_SECONDS
+from zerocollab.runtime.room_runtime import RoomRuntime, TRANSIENT_FAILURE, TRANSIENT_RETRY_SECONDS
 
 # The exact detail Astra's two turns failed with on 2026-10-14 (runtime_events, runs 3a6238af2ed8 and f94c3b744e22).
 CODEX_429 = ("{'message': 'exceeded retry limit, last status: 429 Too Many Requests', 'codexErrorInfo': "

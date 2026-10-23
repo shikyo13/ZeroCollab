@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-import room_deploy
+import zerocollab.releases.room_deploy as room_deploy
 
 
 def stage(spool, version, created, rehearsed=True):
@@ -139,7 +139,7 @@ class DeployCandidateTests(unittest.IsolatedAsyncioTestCase):
         # opus c11b3a54, abort 2e245f54: the drain-time revalidation refused the True/30 the room itself stamped.
         # The real path writes the request; validate() then reads the stored record (prepare/token stubbed: they
         # need a live release manager and board, and are unchanged).
-        import release_request
+        import zerocollab.releases.release_request as release_request
         values = {'release_id': self.new['id'], 'manifest_sha': self.new['manifest_sha'],
                   'expected_manifest_sha': self.current['manifest_sha'], 'idempotency_key': 'k1'}
         saved = {'action': 'request', 'values': values}

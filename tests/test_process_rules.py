@@ -7,10 +7,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import process_enforcement
-import room_runtime
-from coordination_records import RuleRefused
-from project_room import RELEASE_GRANTEE, SCOPE_REVIEW_ROUNDS, ProjectRoom
+import zerocollab.runtime.process_enforcement as process_enforcement
+import zerocollab.runtime.room_runtime as room_runtime
+from zerocollab.coordination.coordination_records import RuleRefused
+from zerocollab.coordination.project_room import RELEASE_GRANTEE, SCOPE_REVIEW_ROUNDS, ProjectRoom
 
 
 class Rules(unittest.TestCase):

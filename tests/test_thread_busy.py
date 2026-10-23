@@ -5,9 +5,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-import native_adapters as native
-from coordination_queue import WakeQueue
-from room_runtime import RoomRuntime
+import zerocollab.providers.native_adapters as native
+from zerocollab.coordination.coordination_queue import WakeQueue
+from zerocollab.runtime.room_runtime import RoomRuntime
 
 BUSY = 'thread 01a1257a already has an active writer'
 
@@ -93,8 +93,8 @@ class RoomRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 raise native.ThreadBusy(BUSY)
         terminate = AsyncMock()
         entry = {'channel': 'general', 'chain': 'c', 'requests': [{'human': True, 'chain': 'c', 'prompt': 'hi'}]}
-        with patch('room_runtime.Run', return_value=run), patch('room_runtime.native.codex', codex), \
-             patch('room_runtime.native.terminate', terminate), patch('room_runtime.native.restore_room_server'):
+        with patch('zerocollab.runtime.room_runtime.Run', return_value=run), patch('zerocollab.runtime.room_runtime.native.codex', codex), \
+             patch('zerocollab.runtime.room_runtime.native.terminate', terminate), patch('zerocollab.runtime.room_runtime.native.restore_room_server'):
             await r.run_turn('a', entry)
         self.assertEqual(prompts, ['new since last turn', 'full room context'])
         self.assertEqual(run.previous_session, {})

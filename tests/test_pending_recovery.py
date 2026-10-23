@@ -3,8 +3,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from coordination_queue import WakeQueue
-from room_runtime import RoomRuntime
+from zerocollab.coordination.coordination_queue import WakeQueue
+from zerocollab.runtime.room_runtime import RoomRuntime
 
 
 class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -35,9 +35,9 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         run = Mock(id='run', channel='general', settings={}, stop_reason='', stderr='')
         run.finish_message = AsyncMock()
         run.steering.close = AsyncMock()
-        self.enterContext(patch('room_runtime.Run', return_value=run))
-        self.enterContext(patch('room_runtime.native.terminate', new=AsyncMock()))
-        self.enterContext(patch('room_runtime.native.restore_room_server'))
+        self.enterContext(patch('zerocollab.runtime.room_runtime.Run', return_value=run))
+        self.enterContext(patch('zerocollab.runtime.room_runtime.native.terminate', new=AsyncMock()))
+        self.enterContext(patch('zerocollab.runtime.room_runtime.native.restore_room_server'))
         r.local_turn = AsyncMock(side_effect=RuntimeError('provider unavailable'))
 
     async def wait_until(self, predicate):
@@ -111,9 +111,9 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         run.finish_message = AsyncMock()
         run.steering.close = AsyncMock()
         r.local_turn = AsyncMock(side_effect=RuntimeError('provider unavailable'))
-        with patch('room_runtime.Run', return_value=run), \
-             patch('room_runtime.native.terminate', new=AsyncMock()), \
-             patch('room_runtime.native.restore_room_server'):
+        with patch('zerocollab.runtime.room_runtime.Run', return_value=run), \
+             patch('zerocollab.runtime.room_runtime.native.terminate', new=AsyncMock()), \
+             patch('zerocollab.runtime.room_runtime.native.restore_room_server'):
             await r.run_turn('a', self.entry('general'))
         self.assertEqual(r.states['a']['state'], 'blocked')
         self.assertIs(r.queues['a'].get_nowait(), pending)

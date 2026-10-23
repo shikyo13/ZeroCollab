@@ -7,8 +7,8 @@ from pathlib import Path
 import threading
 from unittest.mock import AsyncMock, Mock, patch
 
-import queue_file
-from agents import AgentTrigger
+import zerocollab.legacy.queue_file as queue_file
+from zerocollab.runtime.agents import AgentTrigger
 
 
 def produce(path, prefix):
@@ -66,13 +66,13 @@ class AsyncQueueCallerTests(unittest.IsolatedAsyncioTestCase):
             if path.name.startswith('first_'):
                 raise TimeoutError('queue busy')
         trigger = AgentTrigger(Mock())
-        with patch('agents.file_queue.append', side_effect=append), self.assertLogs('agents', level='ERROR'):
+        with patch('zerocollab.runtime.agents.file_queue.append', side_effect=append), self.assertLogs('agents', level='ERROR'):
             results = [await trigger.trigger(name) for name in ('first', 'second')]
         self.assertEqual(results, [False, True])
         self.assertEqual(calls, ['first_queue.jsonl', 'second_queue.jsonl'])
 
     async def test_stop_cancels_turns_before_off_thread_clear_failure(self):
-        from room_runtime import RoomRuntime
+        from zerocollab.runtime.room_runtime import RoomRuntime
         with tempfile.TemporaryDirectory() as directory:
             runtime = object.__new__(RoomRuntime)
             runtime.data = Path(directory)
@@ -87,7 +87,7 @@ class AsyncQueueCallerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotEqual(threading.get_ident(), loop_thread)
                 runtime.cancel_turn.assert_awaited_once_with('a')
                 raise TimeoutError('queue busy')
-            with patch('room_runtime.file_queue.clear', side_effect=clear), self.assertLogs('room_runtime', level='ERROR'):
+            with patch('zerocollab.runtime.room_runtime.file_queue.clear', side_effect=clear), self.assertLogs('room_runtime', level='ERROR'):
                 await runtime.stop()
             self.assertTrue(runtime.paused)
             self.assertIn('could not be cleared', runtime.host.store.add.call_args.args[1])

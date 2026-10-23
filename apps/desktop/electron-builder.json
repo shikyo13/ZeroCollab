@@ -1,0 +1,19 @@
+{
+  "appId": "com.zerocollab.desktop",
+  "productName": "ZeroCollab",
+  "electronVersion": "44.7.0",
+  "directories": { "app": "electron", "output": "../../build/desktop/dist" },
+  "artifactName": "ZeroCollab-Setup-${version}.${ext}",
+  "asar": true,
+  "npmRebuild": false,
+  "files": ["**/*", "!package-lock.json"],
+  "extraResources": [
+    { "from": "../../build/desktop/resources", "to": ".", "filter": ["**/*", "!development.json", "!**/__pycache__/**", "!**/*.pyc"] }
+  ],
+  "win": { "target": "nsis", "icon": "electron/zerocollab.ico", "signAndEditExecutable": true, "signExecutable": false },
+  "nsis": { "oneClick": true, "perMachine": false, "allowElevation": false, "packElevateHelper": false,
+    "deleteAppDataOnUninstall": false, "createDesktopShortcut": "always", "shortcutName": "ZeroCollab" },
+  "publish": { "provider": "generic", "url": "http://127.0.0.1/api/desktop-updates/" },
+  "electronFuses": { "runAsNode": false, "enableNodeOptionsEnvironmentVariable": false,
+    "enableNodeCliInspectArguments": false, "enableEmbeddedAsarIntegrityValidation": true, "onlyLoadAppFromAsar": true }
+}

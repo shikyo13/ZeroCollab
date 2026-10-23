@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import roomdb
+import zerocollab.storage.roomdb as roomdb
 
 
 def sample():
@@ -90,7 +90,7 @@ class RoomDb(unittest.TestCase):
 
     def test_the_maintenance_block_writes_a_missed_mark_or_refuses(self):
         from types import SimpleNamespace
-        from release_maintenance import ReleaseMaintenance
+        from zerocollab.releases.release_maintenance import ReleaseMaintenance
         project = self.folder / 'projects' / 'p'
         project.mkdir(parents=True)
         (project / roomdb.JSON_NAME).write_text(json.dumps(sample()), 'utf-8')

@@ -4,9 +4,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from project_room import ProjectRoom
-from room_runtime import RoomRuntime
-from store import MessageStore
+from zerocollab.coordination.project_room import ProjectRoom
+from zerocollab.runtime.room_runtime import RoomRuntime
+from zerocollab.storage.store import MessageStore
 from tests.test_agent_identity import AgentIdentityTests
 
 

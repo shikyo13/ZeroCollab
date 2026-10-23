@@ -1,5 +1,7 @@
 # Dependency map
 
+Current source layout: Python modules moved by domain into `src/zerocollab/`; desktop shell/host/UI live under `apps/desktop/`; independent media source/tests/docs live under `tools/motion/`. Basenames below describe those modules. [README ownership map](../README.md#source-layout) and [motion README](../tools/motion/README.md) are the current setup/entry-point references. Browser-product launch instructions in older design notes are retired.
+
 What depends on what: third-party packages, the internal Python import graph, the frontend's dependencies and the order the chat client's scripts load. The import tables are generated from the source with `ast` (top-level and function-level imports both count).
 
 ## Third-party Python packages
@@ -214,24 +216,24 @@ Change these modules with the cycle in mind: a new top-level import between them
 | `wrapper_windows` | wrapper |
 <!-- /generated -->
 
-## Frontend (`frontend/`)
+## Frontend (`apps/desktop/renderer/`)
 
 | Dependency | Version range | Role |
 |-|-|-|
 | `react`, `react-dom` | `^19.2.0` | Workspace views |
 | `typescript` | `~5.9.3` | Type check (`tsc --noEmit` runs before every build) |
-| `vite` | `^7.3.1` | Bundler; `npm run build` writes `static/modern/workspace.js` and `workspace.css` |
+| `vite` | `^7.3.1` | Bundler; `npm run build` writes `apps/desktop/renderer/static/modern/workspace.js` and `workspace.css` |
 | `@types/react`, `@types/react-dom` | `^19.2.0` | Types |
 
 The workspace has no client router or state library. Its seams with the rest of the app:
 
 - `lib/api.ts` calls the FastAPI routes with the page's session token.
-- `lib/room.ts` bridges to the chat client: `static/chat.js` owns the single `/ws` connection and re-emits frames that React views subscribe to with `useRoomEvent`.
+- `lib/room.ts` bridges to the chat client: `apps/desktop/renderer/static/chat.js` owns the single `/ws` connection and re-emits frames that React views subscribe to with `useRoomEvent`.
 - `lib/types.ts` mirrors server payloads from `room_runtime.py`, `project_room.py` and `coordination_records.py`; it is a copy of the contract, not a new API, so change both sides together.
 
-## Chat client script order (`static/index.html`)
+## Chat client script order (`apps/desktop/renderer/static/index.html`)
 
-Classic scripts sharing globals, so order matters. `marked` 15.0.12 is vendored at `static/vendor/marked.min.js`, byte-identical to the npm package file, with its upstream license at `static/vendor/marked.LICENSE.md`. `.gitattributes` marks `static/vendor/**` as `-text`, so releases (which ship checkout bytes) never convert their line endings. `chat.js` `init()` calls `marked.setOptions` first, so the page must not depend on a CDN being reachable. To upgrade, replace the file from the npm tarball and bump the `?v=` tag.
+Classic scripts sharing globals, so order matters. `marked` 15.0.12 is vendored at `apps/desktop/renderer/static/vendor/marked.min.js`, byte-identical to the npm package file, with its upstream license at `apps/desktop/renderer/static/vendor/marked.LICENSE.md`. `.gitattributes` marks `apps/desktop/renderer/static/vendor/**` as `-text`, so releases (which ship checkout bytes) never convert their line endings. `chat.js` `init()` calls `marked.setOptions` first, so the page must not depend on a CDN being reachable. To upgrade, replace the file from the npm tarball and bump the `?v=` tag.
 
 <!-- generated:scripts -->
 1. `/static/vendor/marked.min.js`

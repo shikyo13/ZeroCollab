@@ -8,7 +8,7 @@ skills: [room-board-flow, room-review, room-release, engineering-standards, back
 
 ## Expertise
 
-Python 3 and FastAPI services and asyncio concurrency. The ZeroCollab room server: room runtime, project room, room MCP tools, coordination records, board, chat and history persistence, uploads and file references, the shared browser service, the room_motion agent interface and scene schema, and deployment integration.
+Python 3 and FastAPI services and asyncio concurrency. The ZeroCollab room server: room runtime, project room, room MCP tools, coordination records, board, chat and history persistence, uploads and file references, the shared browser service, the external motion recording adapter (standalone scene/media code lives in tools/motion), and deployment integration.
 
 ## Responsibilities
 

@@ -1,5 +1,7 @@
 # File and module index
 
+Current source layout: Python modules moved by domain into `src/zerocollab/`; desktop shell/host/UI live under `apps/desktop/`; independent media source/tests/docs live under `tools/motion/`. Basenames below describe those modules. [README ownership map](../README.md#source-layout) and [motion README](../tools/motion/README.md) are the current setup/entry-point references. Browser-product launch instructions in older design notes are retired.
+
 Every source file, with its line count and the purpose its own header states. The Python and frontend tables are generated from the module docstrings and file headers, so a file without a header shows "-". Regenerate them after adding or renaming files (see "Keeping these docs current" in [INDEX.md](INDEX.md)).
 
 ## Repository root
@@ -17,8 +19,8 @@ Every source file, with its line count and the purpose its own header states. Th
 | `COLLABORATION.md` | Collaboration rules appended to every managed agent's instructions |
 | `README.md`, `ROOM-QUICKSTART.md` | User documentation |
 | `windows/`, `macos-linux/` | Launchers: `_launch.bat` / `_launch.sh` shared steps plus one `start_*` shim per agent |
-| `frontend/` | React workspace source (Vite + TypeScript), built into `static/modern/` |
-| `static/` | Chat client served as-is, plus the built workspace bundle |
+| `apps/desktop/renderer/` | React workspace source (Vite + TypeScript), built into `apps/desktop/renderer/static/modern/` |
+| `apps/desktop/renderer/static/` | Chat client served as-is, plus the built workspace bundle |
 | `tests/` | Python tests (`tests/browser/` holds browser-driven checks) |
 | `Docs/` | This documentation library |
 
@@ -136,9 +138,9 @@ Every source file, with its line count and the purpose its own header states. Th
 | `wrapper_windows.py` | 438 | Windows agent injection - uses Win32 WriteConsoleInput to type into the agent CLI. |
 <!-- /generated -->
 
-## Frontend (`frontend/src`)
+## Frontend (`apps/desktop/renderer/src`)
 
-Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `workspace.css`; never edit the built files.
+Built by `npm run build` in `apps/desktop/renderer/` into `apps/desktop/renderer/static/modern/workspace.js` and `workspace.css`; never edit the built files.
 
 <!-- generated:frontend-files -->
 | File | Lines | Purpose (file header) |
@@ -274,9 +276,9 @@ Built by `npm run build` in `frontend/` into `static/modern/workspace.js` and `w
 | `workspace/useWorkspaceRoute.ts` | 102 | The workspace view and focused project, kept in the URL (?view=, ?project=) so reloads, links and the browser Back button land on the same page. |
 <!-- /generated -->
 
-## Chat client (`static/`)
+## Chat client (`apps/desktop/renderer/static/`)
 
-Loaded by `static/index.html` in this order (see [dependency-map.md](dependency-map.md)):
+Loaded by `apps/desktop/renderer/static/index.html` in this order (see [dependency-map.md](dependency-map.md)):
 
 <!-- generated:scripts -->
 1. `/static/vendor/marked.min.js`

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from registry import RuntimeRegistry
+from zerocollab.runtime.registry import RuntimeRegistry
 
 
 class RegistryPersistenceTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class RegistryPersistenceTests(unittest.TestCase):
             return real_replace(source, target)
 
         self.registry._renames = {'old': 'first'}
-        with mock.patch('durable.os.replace', side_effect=paused_replace):
+        with mock.patch('zerocollab.storage.durable.os.replace', side_effect=paused_replace):
             first = threading.Thread(target=self.registry._save_renames)
             def save_second():
                 self.registry._save_renames()
@@ -61,7 +61,7 @@ class RegistryPersistenceTests(unittest.TestCase):
         self.registry._save_renames()
         original = (self.root / 'renames.json').read_bytes()
         self.registry._renames['old'] = 'second'
-        with mock.patch('durable.os.replace', side_effect=PermissionError('locked')), self.assertLogs('registry', level='ERROR') as logs:
+        with mock.patch('zerocollab.storage.durable.os.replace', side_effect=PermissionError('locked')), self.assertLogs('registry', level='ERROR') as logs:
             self.registry._save_renames()
         self.assertEqual((self.root / 'renames.json').read_bytes(), original)
         self.assertIn('renames.json', logs.output[0])

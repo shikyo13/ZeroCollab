@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from store import MessageStore
+from zerocollab.storage.store import MessageStore
 
 
 class PersistenceTests(unittest.TestCase):
@@ -39,7 +39,7 @@ class PersistenceTests(unittest.TestCase):
             lambda: self.store.delete_channel('work'),
         ]
         for operation in operations:
-            with self.subTest(operation=operation), mock.patch('store.os.replace', side_effect=fail_log):
+            with self.subTest(operation=operation), mock.patch('zerocollab.storage.store.os.replace', side_effect=fail_log):
                 with self.assertRaises(OSError):
                     operation()
             self.assertEqual(self.path.read_bytes(), original)

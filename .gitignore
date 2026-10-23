@@ -19,6 +19,7 @@ build/
 .claude/
 .codex/
 node_modules/
+.zerocollab-motion/
 .env.*
 *.local.toml
 *.pem

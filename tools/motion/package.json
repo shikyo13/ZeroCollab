@@ -1,0 +1,15 @@
+{
+  "name": "zerocollab-motion-renderer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:core": "node src/zerocollab_motion/kit/build-core.mjs",
+    "build:product-adapter": "node adapters/zerocollab/build-product-ui.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "zerocollab-workspace": "file:../.."
+  }
+}

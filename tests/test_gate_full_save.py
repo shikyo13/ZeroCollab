@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import roomdb  # noqa: E402
-from room_deploy import checkpoint_blocked  # noqa: E402
+import zerocollab.storage.roomdb as roomdb  # noqa: E402
+from zerocollab.releases.room_deploy import checkpoint_blocked  # noqa: E402
 
 
 class Room:

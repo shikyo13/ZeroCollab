@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 from fastapi import UploadFile
 from starlette.datastructures import Headers
-import app
-import archive
+import zerocollab.api.app as app
+import zerocollab.storage.archive as archive
 
 class UploadBoundsTests(unittest.TestCase):
     def test_oversized_image_reads_only_limit_plus_one_and_writes_nothing(self):

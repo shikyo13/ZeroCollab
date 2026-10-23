@@ -16,16 +16,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import app
-import mcp_bridge
-import mcp_proxy
-import wrapper
-import wrapper_unix
+import zerocollab.api.app as app
+import zerocollab.api.mcp_bridge as mcp_bridge
+import zerocollab.api.mcp_proxy as mcp_proxy
+import zerocollab.legacy.wrapper as wrapper
+import zerocollab.legacy.wrapper_unix as wrapper_unix
 if sys.platform == "win32":
-    import wrapper_windows
+    import zerocollab.legacy.wrapper_windows as wrapper_windows
 from mcp.server.fastmcp import Context
-from registry import RuntimeRegistry
-from store import MessageStore
+from zerocollab.runtime.registry import RuntimeRegistry
+from zerocollab.storage.store import MessageStore
 
 
 class FakeRequest:

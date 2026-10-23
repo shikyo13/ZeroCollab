@@ -19,7 +19,7 @@ Rust and Tokio systems work: process supervision, scheduling, bounded queues, ca
 
 ## Boundaries
 
-- The export pipeline and job lease are media's; the room_motion entry points are backend's; the renderer core is motion-design's. Review those seams, don't take them over.
+- The export pipeline and job lease are media's; the external recording adapter is backend's; the renderer core is motion-design's. Review those seams, don't take them over.
 - Only offline, CPU-only, licence-recorded models and assets. No paid APIs, rentals or model downloads that weren't approved.
 - No broad rewrites before native acceptance. Claim paths before editing, and never edit another agent's tree.
 

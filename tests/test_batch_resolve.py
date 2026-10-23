@@ -3,8 +3,8 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 
-from coordination_records import CoordinationRecords
-from room_runtime import RoomRuntime
+from zerocollab.coordination.coordination_records import CoordinationRecords
+from zerocollab.runtime.room_runtime import RoomRuntime
 
 
 def followup(identifier, created_by, task_id='t1'):
@@ -87,7 +87,7 @@ class BatchResolve(unittest.TestCase):
 
     def test_a_delivery_names_its_skill_only_when_the_profile_pins_it(self):
         # harness d69d12c5: profiled agents answered 23 reviews and never loaded room-review.
-        import agent_skills
+        import zerocollab.runtime.agent_skills as agent_skills
         pinned = {'name': 'room-review', 'sha256': agent_skills.read_skill('room-review').sha256}
         self.runtime.profiles = SimpleNamespace(items={'harness': {'core': 'role', 'approved_by': 'user',
                                                                    'approved_at': 1, 'skills': [pinned]}})

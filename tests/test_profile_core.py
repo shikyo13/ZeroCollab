@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import agent_profiles
-import agent_skills
+import zerocollab.runtime.agent_profiles as agent_profiles
+import zerocollab.runtime.agent_skills as agent_skills
 
 CORE = """---
 agent: backend

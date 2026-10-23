@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import profile_bell
-from agent_profiles import AgentProfiles
-from project_room import ProjectRoom
+import zerocollab.runtime.profile_bell as profile_bell
+from zerocollab.runtime.agent_profiles import AgentProfiles
+from zerocollab.coordination.project_room import ProjectRoom
 
 CORE = """---
 agent: {name}

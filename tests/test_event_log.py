@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import room_runtime
-from room_runtime import RoomRuntime
+import zerocollab.runtime.room_runtime as room_runtime
+from zerocollab.runtime.room_runtime import RoomRuntime
 
 
 class EventLogTests(unittest.TestCase):

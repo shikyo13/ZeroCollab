@@ -5,10 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import mcp_bridge
-from project_room import write_json
-from provider_controls import ProviderControls
-from room_goals import RoomGoals
+import zerocollab.api.mcp_bridge as mcp_bridge
+from zerocollab.coordination.project_room import write_json
+from zerocollab.providers.provider_controls import ProviderControls
+from zerocollab.coordination.room_goals import RoomGoals
 
 
 class StateWriterTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class StateWriterTests(unittest.TestCase):
             for writer in writers:
                 with self.subTest(writer=writer):
                     path.write_text('{"old": true}', encoding='utf-8')
-                    with patch('durable.os.replace', side_effect=OSError('disk failure')):
+                    with patch('zerocollab.storage.durable.os.replace', side_effect=OSError('disk failure')):
                         with self.assertRaises(OSError):
                             writer()
                     self.assertEqual(json.loads(path.read_text()), {'old': True})
@@ -41,7 +41,7 @@ class StateWriterTests(unittest.TestCase):
                  patch.object(mcp_bridge, '_cursors', {'a': {'general': 4}}):
                 mcp_bridge._save_cursors()
                 mcp_bridge._cursors['a']['general'] = 5
-                with patch('durable.os.replace', side_effect=OSError('disk failure')), \
+                with patch('zerocollab.storage.durable.os.replace', side_effect=OSError('disk failure')), \
                      self.assertLogs(mcp_bridge.log, level='WARNING'):
                     mcp_bridge._save_cursors()
                 self.assertEqual(json.loads(path.read_text()), {'a': {'general': 4}})

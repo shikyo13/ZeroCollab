@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from room_goals import RoomGoals
+from zerocollab.coordination.room_goals import RoomGoals
 
 
 class GoalTests(unittest.TestCase):
@@ -127,9 +127,9 @@ class GoalTests(unittest.TestCase):
 class RuntimeGoalTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from unittest.mock import AsyncMock, patch
-        import room_runtime
-        from project_room import ProjectRoom
-        from coordination_queue import WakeQueue
+        import zerocollab.runtime.room_runtime as room_runtime
+        from zerocollab.coordination.project_room import ProjectRoom
+        from zerocollab.coordination.coordination_queue import WakeQueue
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.r = room_runtime.RoomRuntime.__new__(room_runtime.RoomRuntime)
@@ -157,7 +157,7 @@ class RuntimeGoalTests(unittest.IsolatedAsyncioTestCase):
             def begin(inner, deadline): pass
             async def finish_message(inner, **kwargs): pass
         for target, value in [('Run', FakeRun), ('native.terminate', AsyncMock()), ('native.restore_room_server', lambda run: None)]:
-            patcher = patch('room_runtime.' + target, value)
+            patcher = patch('zerocollab.runtime.room_runtime.' + target, value)
             patcher.start(); self.addCleanup(patcher.stop)
 
     async def test_goal_round_uses_turn_budget_not_peer_hop(self):
@@ -197,9 +197,9 @@ class RuntimeGoalTests(unittest.IsolatedAsyncioTestCase):
         from fastapi import FastAPI
         from httpx import ASGITransport, AsyncClient
         from unittest.mock import patch
-        import room_runtime
+        import zerocollab.runtime.room_runtime as room_runtime
         host = SimpleNamespace(app=FastAPI(), agents=SimpleNamespace())
-        with patch('room_runtime.RoomRuntime', return_value=self.r):
+        with patch('zerocollab.runtime.room_runtime.RoomRuntime', return_value=self.r):
             room_runtime.install(host)
         async with AsyncClient(transport=ASGITransport(app=host.app), base_url='http://test') as client:
             goal = (await client.get('/api/runtime/goal')).json()

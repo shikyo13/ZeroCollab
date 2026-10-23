@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import agent_skills
+import zerocollab.runtime.agent_skills as agent_skills
 
 
 class AgentSkills(unittest.TestCase):

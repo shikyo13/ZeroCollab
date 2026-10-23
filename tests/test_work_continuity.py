@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import project_room
-import roomdb
-import work_continuity as wc
-from project_room import ProjectRoom
-from ready_wakes import ReadyWakes
+import zerocollab.coordination.project_room as project_room
+import zerocollab.storage.roomdb as roomdb
+import zerocollab.coordination.work_continuity as wc
+from zerocollab.coordination.project_room import ProjectRoom
+from zerocollab.coordination.ready_wakes import ReadyWakes
 
 NAMES = ('worker', 'lead', 'peer')
 
@@ -285,7 +285,7 @@ class Asks(Continuity):
     def test_an_ask_wake_survives_the_queue_prune(self):
         # 0.12.52 live: a review ask-wake was pruned at admission as "already delivered", because its ref action
         # read as a verdict for the task owner. The wake must pass current_request exactly as the ask itself does.
-        from coordination_queue import current_request
+        from zerocollab.coordination.coordination_queue import current_request
         self.turn(name='peer', progress={}, took=10)
         review = self.room.records.review('worker', 'request', task_id=self.task_id, reviewer='peer',
                                           revision='r1', text='look')['item']

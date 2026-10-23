@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import room_runtime
-from project_room import ProjectRoom
-from store import MessageStore
+import zerocollab.runtime.room_runtime as room_runtime
+from zerocollab.coordination.project_room import ProjectRoom
+from zerocollab.storage.store import MessageStore
 
 
 class PromptBlockTests(unittest.TestCase):

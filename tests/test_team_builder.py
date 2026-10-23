@@ -8,9 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from agent_profiles import AgentProfiles
-from room_runtime import RoomRuntime
-from team_builder import TeamBuilder, install
+from zerocollab.runtime.agent_profiles import AgentProfiles
+from zerocollab.runtime.room_runtime import RoomRuntime
+from zerocollab.coordination.team_builder import TeamBuilder, install
 
 
 class TeamBuilderTests(unittest.IsolatedAsyncioTestCase):

@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coordination_records import CoordinationRecords
-from project_room import ProjectRoom
+from zerocollab.coordination.coordination_records import CoordinationRecords
+from zerocollab.coordination.project_room import ProjectRoom
 
 
 class ReviewHashingTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class ReviewHashingTests(unittest.TestCase):
             room.state = {'tasks': [], 'reviews': [review, review]}
             room.limits, room.chains = {}, {}
             room.records = CoordinationRecords(room)
-            with patch('coordination_records.hashlib.file_digest', wraps=hashlib.file_digest) as digest:
+            with patch('zerocollab.coordination.coordination_records.hashlib.file_digest', wraps=hashlib.file_digest) as digest:
                 result = room.snapshot()
                 self.assertEqual(digest.call_count, 1)
                 self.assertEqual([r['changed_files'] for r in result['reviews']], [[], []])

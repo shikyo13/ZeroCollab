@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from project_room import ProjectRoom
-from store import MessageStore
+from zerocollab.coordination.project_room import ProjectRoom
+from zerocollab.storage.store import MessageStore
 
 
 class TurnContextTests(unittest.TestCase):
@@ -143,8 +143,8 @@ class ExecutionContextTests(TurnContextTests):
 
 class ActivityTaskTests(unittest.TestCase):
     def test_task_ids_come_from_requests_not_from_running_alone(self):
-        from coordination_queue import WakeQueue, current_request
-        from room_runtime import RoomRuntime
+        from zerocollab.coordination.coordination_queue import WakeQueue, current_request
+        from zerocollab.runtime.room_runtime import RoomRuntime
         queue = WakeQueue(maxsize=4)
         queue.put_nowait({'channel': 'g', 'chain': 'c', 'requests': [{'prompt': 'start', 'task_id': 't2'}]})
         run = SimpleNamespace(channel='g', task_ids={'t1'})
@@ -191,7 +191,7 @@ class LedgerTests(TurnContextTests):
 
 class RoomToolsTests(unittest.TestCase):
     def test_unobserved_room_tools_are_unconfirmed_not_failed(self):
-        from room_runtime import RoomRuntime
+        from zerocollab.runtime.room_runtime import RoomRuntime
         posted = []
         r = SimpleNamespace(states={'opus': {'provider': 'claude'}, 'gem': {'provider': 'gemini'}},
                             host=SimpleNamespace(store=SimpleNamespace(add=lambda *a, **k: posted.append(a[1]))))
@@ -224,7 +224,7 @@ class RoomToolsTests(unittest.TestCase):
 
 class DependencyReadyTests(unittest.TestCase):
     def test_owner_is_woken_only_when_every_dependency_is_done(self):
-        from room_runtime import RoomRuntime
+        from zerocollab.runtime.room_runtime import RoomRuntime
         calls = []
         tasks = [{'id': 'a', 'status': 'done', 'owner': 'opus', 'depends_on': [], 'updated': 1, 'title': 'A'},
                  {'id': 'b', 'status': 'working', 'owner': 'opus', 'depends_on': [], 'updated': 1, 'title': 'B'},
@@ -245,7 +245,7 @@ class DependencyReadyTests(unittest.TestCase):
         self.assertIn('It is marked blocked: check whether these dependencies were the block', calls[1][3])
         self.assertEqual(calls[0][4], {'collection': 'tasks', 'id': 'c', 'updated': 2, 'action': 'ready', 'by': 'opus'})
         # The wake is re-checked at delivery: if an upstream reopened meanwhile, it is no longer current.
-        from coordination_queue import current_request
+        from zerocollab.coordination.coordination_queue import current_request
         ref = {'ref': calls[0][4]}
         self.assertTrue(current_request(ref, 'astra', r.project_room.state, set()))
         tasks[0]['status'] = 'working'
@@ -254,8 +254,8 @@ class DependencyReadyTests(unittest.TestCase):
 
 class DeliveryResultTests(unittest.TestCase):
     def setUp(self):
-        from coordination_queue import WakeQueue
-        from room_runtime import RoomRuntime
+        from zerocollab.coordination.coordination_queue import WakeQueue
+        from zerocollab.runtime.room_runtime import RoomRuntime
         self.queue = WakeQueue(maxsize=4)
         self.r = SimpleNamespace(paused=False, running={}, deploy_held={}, queues={'astra': self.queue},
                                  states={'astra': {'state': 'ready'}}, parallel_capacity=lambda: 2)
@@ -300,7 +300,7 @@ class DeliveryResultTests(unittest.TestCase):
 
 
 def RoomRuntime_notify(r, name):
-    from room_runtime import RoomRuntime
+    from zerocollab.runtime.room_runtime import RoomRuntime
     return RoomRuntime.notify_participant(r, name, 'general', 'c', 'p', {'collection': 'reviews', 'id': 'r1', 'updated': 1})
 
 

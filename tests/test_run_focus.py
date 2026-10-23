@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from room_runtime import RoomRuntime, request_focus
+from zerocollab.runtime.room_runtime import RoomRuntime, request_focus
 
 
 def task(task_id, owner='desktop', status='working'):
@@ -108,7 +108,7 @@ class RefocusTest(unittest.TestCase):
         self.assertEqual(runtime.events, [])
 
     def test_live_reports_the_same_task_as_the_board_including_none(self):
-        from live_feed import LiveFeed  # frontend 7e85bd4c, critical 1
+        from zerocollab.integrations.live_feed import LiveFeed  # frontend 7e85bd4c, critical 1
         board = [task('a', status='review')]
         runtime = Runtime(board)
         run = run_for(runtime, [{'prompt': 'chat', 'human': True}])

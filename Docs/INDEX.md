@@ -16,11 +16,9 @@ Start here. Each document covers one subject; read the one that matches the ques
 | [chat-file-references.md](chat-file-references.md) | Feature design | Pasting a local file path into chat as a reference instead of uploading a copy (`local_files.py`, `app.py` routes) |
 | [decisions-in-chat-contract.md](decisions-in-chat-contract.md) | Feature design | Backend contract for in-chat team decisions |
 | [decision-flow-model.md](decision-flow-model.md) | Feature design | Decision flow backend model v2 (`decisions.json`), a design for review |
-| [motion-scene-v2.md](motion-scene-v2.md) | Motion | Scene v2 field reference shared by the motion core, render farm, Studio, layers and `room_motion` (`motion_scene.py`) |
-| [motion-render2.md](motion-render2.md) | Motion | The scene v2 renderer: evaluation pipeline, camera, cursor and footage (`motion/core/`) |
-| [motion-jobs.md](motion-jobs.md) | Motion | Shared admission for heavy media jobs |
-| [motion-audio.md](motion-audio.md) | Motion | Audio plan: local voice-over, music, sound effects and mixing |
-| [motion-skills/SKILL.md](motion-skills/SKILL.md), [motion-skills/RECIPES.md](motion-skills/RECIPES.md) | Motion | The product-demo skill for agents using `room_motion`, and ready-to-run recipes |
+| [../tools/motion/README.md](../tools/motion/README.md) | Motion | Current independent CLI/MCP, dependencies, artifact inputs/outputs and recording adapter |
+| [../tools/motion/Docs/motion-scene-v2.md](../tools/motion/Docs/motion-scene-v2.md) | Motion reference | Scene v2 fields; historical tool names are superseded by the standalone interface |
+| [research/2026-10-23-desktop-motion-extraction.md](research/2026-10-23-desktop-motion-extraction.md) | Migration evidence | Desktop-only source structure, extraction boundary, checks and limits |
 | [research/agent-skills-adoption/plan.md](research/agent-skills-adoption/plan.md) | Research | Matt Pocock's agent skills mapped to the room (adopt, adapt or skip, with owners), and the first retro ([retro-2026-10-14-normal-launch.md](research/agent-skills-adoption/retro-2026-10-14-normal-launch.md)) |
 | [research/harness-engineering/ranked-changes.md](research/harness-engineering/ranked-changes.md) | Research | Zero's harness-engineering research mapped to ZeroCollab: five ranked changes with evidence labels, seams and checks, plus what is already aligned |
 
@@ -37,9 +35,9 @@ Start here. Each document covers one subject; read the one that matches the ques
 
 | Question | Where |
 |-|-|
-| Where is a REST route defined? | `run.py` serves `/` with the session token; `app.py` for chat, settings and uploads; `room_runtime.install` for `/api/runtime/*`; `project_registry.install` for projects and repositories; `room_deploy.install` for deployments; `team_builder.py` for proposals |
+| Where is a REST route defined? | `api/run.py` mounts the private desktop renderer without embedding its token; `api/app.py` for chat, settings and uploads; `room_runtime.install` for `/api/runtime/*`; `project_registry.install` for projects and repositories; `room_deploy.install` for deployments; `team_builder.py` for proposals |
 | Where do agent tools live? | `mcp_bridge.py` (`chat_*`), `room_mcp.py` plus `RoomRuntime.coordination` (`room_*`) |
-| What does the frontend expect from the server? | `frontend/src/lib/types.ts` and `frontend/src/workspace/projectData.ts` mirror the payloads |
+| What does the frontend expect from the server? | `apps/desktop/renderer/src/lib/types.ts` and `apps/desktop/renderer/src/workspace/projectData.ts` mirror the payloads |
 | Where is state on disk? | [file-index.md](file-index.md#data-directory-serverdata_dir-default-data) |
 | What can stop or replace the server? | Only `supervisor.py`; see flow 4 in [architecture.md](architecture.md) |
 

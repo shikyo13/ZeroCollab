@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from registry import RuntimeRegistry
+from zerocollab.runtime.registry import RuntimeRegistry
 
 
 class RegisterGuard(unittest.TestCase):
@@ -27,7 +27,7 @@ class RegisterGuard(unittest.TestCase):
     def client(self):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        import app as host
+        import zerocollab.api.app as host
         application = FastAPI()
         patcher = patch.multiple(host, app=application, registry=self.registry, session_token='ui-token')
         patcher.start()

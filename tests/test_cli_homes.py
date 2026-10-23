@@ -5,8 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cli_homes import (MARKER_FILENAME, MAX_HOME_CHARS, MAX_MARKER_BYTES,
-                       check_marker, effective_homes, write_marker)
+from zerocollab.providers.cli_homes import MARKER_FILENAME, MAX_HOME_CHARS, MAX_MARKER_BYTES, check_marker, effective_homes, write_marker
 
 
 class CliHomeTests(unittest.TestCase):

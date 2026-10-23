@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from native_adapters import CODEX_MESSAGE_LIMIT, Rpc
+from zerocollab.providers.native_adapters import CODEX_MESSAGE_LIMIT, Rpc
 
 
 class RpcReaderTests(unittest.IsolatedAsyncioTestCase):

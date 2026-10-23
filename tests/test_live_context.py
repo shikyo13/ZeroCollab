@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import project_room
-from project_room import ProjectRoom
+import zerocollab.coordination.project_room as project_room
+from zerocollab.coordination.project_room import ProjectRoom
 
 
 class LiveContext(unittest.TestCase):

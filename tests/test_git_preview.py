@@ -4,8 +4,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from git_preview import capture, ERROR_BYTES
-from room_runtime import _worktree_diff
+from zerocollab.storage.git_preview import capture, ERROR_BYTES
+from zerocollab.runtime.room_runtime import _worktree_diff
 
 
 class GitPreviewTests(unittest.TestCase):

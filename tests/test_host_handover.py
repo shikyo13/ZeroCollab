@@ -9,8 +9,8 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 
-import host_handover as hh
-from ui_composing import Composing
+import zerocollab.runtime.host_handover as hh
+from zerocollab.api.ui_composing import Composing
 
 
 class State:

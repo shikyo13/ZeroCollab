@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import mcp_bridge
+import zerocollab.api.mcp_bridge as mcp_bridge
 
 
 class ChannelFallbackStateTests(unittest.TestCase):

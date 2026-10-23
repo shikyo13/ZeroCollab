@@ -4,9 +4,9 @@ By ZeroTheAbsolute.
 
 ## Start and stop
 
-Run `Start-Room.cmd`, then open http://127.0.0.1:8300. Use `Stop-Room.cmd` to close the server. Closing the browser leaves the workspace running. Windows launchers use this folder's private Python environment.
+Start the installed Electron app, or run `npm start` / `Start-Room.cmd` from a configured source checkout. Quit from the desktop app to stop its owned backend. The standalone web frontend is deprecated; opening localhost in a normal browser is no longer a supported entry point.
 
-For macOS/Linux, install the official Codex, Claude and Antigravity CLIs, sign in using their own commands, create a Python environment from `requirements.txt`, and run `python run.py` from this folder. Local model endpoints are configured separately.
+Source setup and the separate development profile are described in [README.md](README.md). Select a prepared room in desktop setup; source/build outputs remain separate from the selected room's data.
 
 The left navigation has four views: **Chat**, **Board**, **Team** and **Activity**. **Stop all** / **Resume all** and any pending agent approval requests stay visible above every view. **Quick guide** opens a short orientation; nothing opens automatically.
 

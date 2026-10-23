@@ -8,11 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import local_start
-import provider_setup
-import provider_store
-from agent_profiles import AgentProfiles
-from provider_store import FieldError, ProviderStore
+import zerocollab.runtime.local_start as local_start
+import zerocollab.providers.provider_setup as provider_setup
+import zerocollab.providers.provider_store as provider_store
+from zerocollab.runtime.agent_profiles import AgentProfiles
+from zerocollab.providers.provider_store import FieldError, ProviderStore
 
 BONSAI = {'type': 'api', 'managed': True, 'provider': 'api', 'base_url': 'http://127.0.0.1:8080/v1',
           'tool_schema_url': 'http://127.0.0.1:8080/tools', 'model': 'Bonsai-2-27B', 'max_tokens': 1024,

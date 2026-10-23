@@ -7,10 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from agent_profiles import AgentProfiles
-from registry import RuntimeRegistry
-from room_runtime import RoomRuntime
-from router import Router
+from zerocollab.runtime.agent_profiles import AgentProfiles
+from zerocollab.runtime.registry import RuntimeRegistry
+from zerocollab.runtime.room_runtime import RoomRuntime
+from zerocollab.coordination.router import Router
 
 
 class AgentIdentityTests(unittest.IsolatedAsyncioTestCase):

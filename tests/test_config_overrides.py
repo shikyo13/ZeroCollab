@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import config_loader  # noqa: E402
+import zerocollab.runtime.config_loader as config_loader  # noqa: E402
 
 
 ENV_VARS = [

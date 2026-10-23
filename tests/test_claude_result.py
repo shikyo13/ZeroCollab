@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-import native_adapters as native
+import zerocollab.providers.native_adapters as native
 
 
 class FakeClaude:

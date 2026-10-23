@@ -5,9 +5,9 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import roomdb
-from manager_wakes import ManagerWakes, TURN_CREDITS
-from ready_wakes import ReadyWakes
+import zerocollab.storage.roomdb as roomdb
+from zerocollab.coordination.manager_wakes import ManagerWakes, TURN_CREDITS
+from zerocollab.coordination.ready_wakes import ReadyWakes
 
 
 class SchedulerChecks(unittest.TestCase):
@@ -308,7 +308,7 @@ class SchedulerChecks(unittest.TestCase):
 class RealProjectAdmissionChecks(SchedulerChecks):
     def setUp(self):
         super().setUp()
-        from project_room import ProjectRoom
+        from zerocollab.coordination.project_room import ProjectRoom
         folder = self.r.project_room.path.parent
         self.r.data, self.r.project, self.r.identity = folder, None, 'test'
         room = ProjectRoom(self.r)
@@ -353,7 +353,7 @@ class RealProjectAdmissionChecks(SchedulerChecks):
     def test_real_http_schema_and_stale_project_generation(self):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from manager_wakes import install
+        from zerocollab.coordination.manager_wakes import install
         app = FastAPI()
         install(self.r, SimpleNamespace(app=app))
         with TestClient(app) as client:
@@ -381,8 +381,8 @@ class RealProjectAdmissionChecks(SchedulerChecks):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from unittest.mock import patch
-        import app as host
-        from manager_wakes import install
+        import zerocollab.api.app as host
+        from zerocollab.coordination.manager_wakes import install
         application = FastAPI()
         self.r.running['lead'] = SimpleNamespace(room_token='disposable-run-token', id='run')
         with patch.object(host, 'app', application), patch.object(host, 'runtime', self.r), \

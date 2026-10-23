@@ -17,9 +17,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-import release_maintenance
-import room_deploy
-from ui_composing import Composing
+import zerocollab.releases.release_maintenance as release_maintenance
+import zerocollab.releases.room_deploy as room_deploy
+from zerocollab.api.ui_composing import Composing
 
 IDENTIFIER = 'a' * 32
 PATH = '/api/runtime/deployments/control/' + IDENTIFIER

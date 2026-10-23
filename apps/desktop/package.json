@@ -1,0 +1,14 @@
+{
+  "name": "zerocollab-desktop-build",
+  "version": "0.1.6",
+  "private": true,
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "npm --prefix renderer run build && python ../../scripts/prepare_desktop.py && electron .",
+    "package": "npm --prefix renderer run build && python ../../scripts/prepare_desktop.py --production && electron-builder --config electron-builder.json --win nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3"
+  }
+}
