@@ -15,9 +15,13 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         r.running, r.deploy_held, r.approvals = {}, {}, {}
         r.paused, r.deployment = False, None
         r.goals = Mock(goal=None)
-        r.team_builder = Mock()
-        r.project_room = Mock(state={'receipts': {}})
+        r.team_builder, r.decisions, r.manager_wakes, r.ready_wakes, r.response_claims = Mock(), Mock(), Mock(), Mock(), Mock()
+        r.wake_notices, r.notice_lines = {}, {}
+        r.check_room_tools = Mock()
+        r.project_room = Mock(state={'receipts': {}, 'tasks': []})
         r.host = Mock()
+        r.host.store.add.return_value = {'id': 1}
+        r.cfg = {'agents': {}, 'runtime': {}}
         r.publish_status, r.emit = AsyncMock(), AsyncMock()
         r.parallel_capacity = lambda: 4
         r.turn_admission_open = lambda: True
@@ -33,7 +37,11 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     def provider(self, r):
         run = Mock(id='run', channel='general', settings={}, stop_reason='', stderr='')
-        run.finish_message = AsyncMock()
+        run.name = 'a'
+        run.focus_history, run.focus_seed = [], None
+        run.created_at, run.first_output_at, run.progress = 0, None, {}
+        run.manager_audit, run.stop_note, run.relay_problem = None, '', ''
+        run.finish_message, run.publish_last = AsyncMock(), AsyncMock()
         run.steering.close = AsyncMock()
         self.enterContext(patch('zerocollab.runtime.room_runtime.Run', return_value=run))
         self.enterContext(patch('zerocollab.runtime.room_runtime.native.terminate', new=AsyncMock()))
@@ -108,7 +116,11 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         pending = self.entry('other')
         r.queues['a'].put_nowait(pending)
         run = Mock(id='run', channel='general', settings={}, stop_reason='', stderr='')
-        run.finish_message = AsyncMock()
+        run.name = 'a'
+        run.focus_history, run.focus_seed = [], None
+        run.created_at, run.first_output_at, run.progress = 0, None, {}
+        run.manager_audit, run.stop_note, run.relay_problem = None, '', ''
+        run.finish_message, run.publish_last = AsyncMock(), AsyncMock()
         run.steering.close = AsyncMock()
         r.local_turn = AsyncMock(side_effect=RuntimeError('provider unavailable'))
         with patch('zerocollab.runtime.room_runtime.Run', return_value=run), \

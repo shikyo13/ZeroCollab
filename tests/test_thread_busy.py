@@ -68,7 +68,7 @@ class RoomRecoveryTests(unittest.IsolatedAsyncioTestCase):
         r.running, r.deploy_held, r.approvals = {}, {}, {}
         r.paused, r.deployment = False, None
         r.goals, r.team_builder, r.decisions, r.manager_wakes, r.ready_wakes = Mock(goal=None), Mock(), Mock(), Mock(), Mock()
-        r.project_room = Mock(state={'receipts': {}})
+        r.project_room = Mock(state={'receipts': {}, 'tasks': []})
         r.host = Mock()
         r.publish_status, r.emit, r.activity_note = AsyncMock(), AsyncMock(), AsyncMock()
         r.parallel_capacity = lambda: 4
@@ -78,11 +78,14 @@ class RoomRecoveryTests(unittest.IsolatedAsyncioTestCase):
         r.context = lambda run, changes: 'new since last turn' if run.previous_session else 'full room context'
         r.save_project = Mock()
         r.default_channel = lambda: 'general'
+        r.notice_lines = {}
         r.wake_notices, r.cfg = {}, {'runtime': {}, 'agents': {}}
         r.check_room_tools = Mock()
         run = Mock(id='run', channel='general', settings={}, stop_reason='', stderr='', manager_audit=None,
                    previous_session={'id': 'old'}, stop_note='', relay_problem='')
         run.name = 'a'
+        run.focus_history, run.focus_seed, run.receipts = [], None, set()
+        run.created_at, run.first_output_at, run.progress = 0, None, {}
         run.finish_message, run.publish_last = AsyncMock(), AsyncMock()
         run.steering.close = AsyncMock()
         prompts = []

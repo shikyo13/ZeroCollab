@@ -1,4 +1,5 @@
 import asyncio
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +18,8 @@ class GoalTests(unittest.TestCase):
         p.new_chain = chain
         self.r = SimpleNamespace(project_room=p, paused=False, running={},
             states={'lead': {'state': 'ready'}}, queues={'lead': asyncio.Queue()},
-            host=SimpleNamespace(room_settings={'channels': ['general']}))
+            host=SimpleNamespace(room_settings={'channels': ['general']}, store=SimpleNamespace(add=lambda *a, **k: {'id': 1})),
+            default_channel=lambda: 'general', owns_channel=lambda c: c == 'general')
         self.calls = []
         def enqueue(*args, **kwargs):
             self.calls.append((args, kwargs))
@@ -132,30 +134,45 @@ class RuntimeGoalTests(unittest.IsolatedAsyncioTestCase):
         from zerocollab.coordination.coordination_queue import WakeQueue
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.r = room_runtime.RoomRuntime.__new__(room_runtime.RoomRuntime)
+        self.r = room_runtime.RoomRuntime(SimpleNamespace(config={'server': {'data_dir': self.tmp.name}, 'agents': {}, 'runtime': {}}))
         self.r.data = Path(self.tmp.name)
         self.r.paused = False
         self.r.running = {}
         self.r.states = {'lead': {'state': 'ready', 'provider': 'api'}}
         self.r.queues = {'lead': WakeQueue(maxsize=4)}
-        self.r.host = SimpleNamespace(room_settings={'channels': ['general']}, store=SimpleNamespace(add=lambda *a, **k: None))
+        self.r.host = SimpleNamespace(room_settings={'channels': ['general']}, store=SimpleNamespace(add=lambda *a, **k: {'id': 1}))
         self.r.approvals = {}
         self.r.project_room = ProjectRoom(self.r)
         self.r.project_room.use_project('test')
+        self.r.default_channel = lambda: 'general'
+        self.r.owns_channel = lambda c: c == 'general'
         self.r.project_room.complete = lambda run: None
         self.r.goals = RoomGoals(self.r); self.r.goals.load()
         self.r.goals.change('user', 'start', text='Done criteria', owner='lead')
         self.r.publish_status = AsyncMock()
         self.r.emit = AsyncMock()
-        self.r.context = lambda run: 'goal context'
+        self.r.context = lambda run, changes: 'goal context'
+        self.r.collect_diffs = AsyncMock(return_value={})
+        self.r.activity_note = AsyncMock()
+        self.r.check_room_tools = lambda run: None
+        self.r.save_project = lambda: None
+        self.r.decisions = SimpleNamespace(accepts=lambda r: True, routes=lambda c: True, turn_finished=lambda *a: None)
+        self.r.team_builder = SimpleNamespace(accepts=lambda r: True, turn_finished=lambda *a: None)
         self.r.local_turn = AsyncMock()
         class FakeRun:
             def __init__(inner, manager, name, entry):
                 inner.id = 'run'; inner.name = name; inner.channel = entry['channel']; inner.entry = entry
-                inner.settings = {}; inner.message_phase = ''; inner.published_messages = 1
+                inner.manager_audit = None; inner.focus_history = []; inner.focus_seed = None; inner.task_id = None; inner.text = ''
+                inner.progress = {}; inner.file_changes = 0; inner.first_output_at = None; inner.created_at = 0; inner.compacted = False; inner.receipts = set()
+                inner.steering = SimpleNamespace(close=AsyncMock()); inner.changing_calls = 0; inner.coordination_calls = 1
+                inner.native_tool_calls = 0; inner.input_chars = 0; inner.input_blocks = {}; inner.input_clipped = False
+                inner.input_unchanged = []; inner.reported_tokens = 0; inner.relay_problem = ''; inner.stop_note = ''
+                inner.settings = {}; inner.message_phase = ''; inner.published_messages = ['m']
                 inner.stop_reason = ''; inner.stderr = ''; inner.reported_settings = {}
-            def begin(inner, deadline): pass
+            def begin(inner, deadline):
+                inner.started_at = time.monotonic()
             async def finish_message(inner, **kwargs): pass
+            async def publish_last(inner, **kwargs): pass
         for target, value in [('Run', FakeRun), ('native.terminate', AsyncMock()), ('native.restore_room_server', lambda run: None)]:
             patcher = patch('zerocollab.runtime.room_runtime.' + target, value)
             patcher.start(); self.addCleanup(patcher.stop)

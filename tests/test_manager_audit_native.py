@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import zerocollab.providers.native_adapters as native
 from zerocollab.runtime.room_runtime import Run
+from zerocollab.coordination.response_claims import ResponseClaims
 
 
 class CodexBoundaryChecks(unittest.IsolatedAsyncioTestCase):
@@ -184,9 +185,11 @@ class RunAuthorityChecks(unittest.IsolatedAsyncioTestCase):
         self.messages = []
         manager = SimpleNamespace(states={'lead': {'worktree': str(Path.cwd())}},
             controls=SimpleNamespace(values={'lead': {'model': '', 'effort': ''}}),
-            project_room=SimpleNamespace(limits={}, previous_session=lambda run: {'id': 'old'}),
+            project_room=SimpleNamespace(state={}, limits={}, previous_session=lambda run: {'id': 'old'}),
             cfg={'runtime': {'automatic_tool_approvals': True}}, profiles=SimpleNamespace(items={}),
             emit=AsyncMock(), ask=AsyncMock(return_value=False), host=SimpleNamespace(store=store))
+        manager.response_claims = ResponseClaims(manager)
+        manager.decisions = SimpleNamespace(sealing=lambda run: None)
         requests = [{'manager_audit': 'claim'}] if audit else [{}]
         return Run(manager, 'lead', {'channel': 'ordinary', 'chain': 'chain', 'requests': requests})
 

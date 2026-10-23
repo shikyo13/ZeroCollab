@@ -22,13 +22,14 @@ class HistoryDeliveryTests(unittest.TestCase):
         self.messages = MessageStore(str(root / 'messages.jsonl'))
         agents = Mock()
         agents.get_status.return_value = {}
+        agents.runtime = None
         router = Mock()
         router.is_paused.return_value = False
         self.settings = {'channels': ['general', 'work'], 'history_limit': 'all'}
         for name, value in {'store': self.messages, 'registry': None, 'config': {},
                             'agents': agents, 'router': router,
                             'room_settings': self.settings, 'session_token': 'test',
-                            'ws_clients': set()}.items():
+                            'ws_clients': set(), 'runtime': None}.items():
             self.stack.enter_context(patch.object(app, name, value))
 
     def read_connection(self, interrupt=False):

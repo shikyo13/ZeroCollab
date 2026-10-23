@@ -3,9 +3,40 @@ import subprocess
 import sys
 import textwrap
 import unittest
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class DesktopBoundaryChecks(unittest.TestCase):
+    def test_antigravity_replaces_an_interrupted_room_server(self):
+        from zerocollab.providers import native_adapters
+        with tempfile.TemporaryDirectory() as folder, patch.object(native_adapters, 'room_environment', return_value={}):
+            run = SimpleNamespace(worktree=Path(folder), id='new-run')
+            config = run.worktree / '.agents' / 'mcp_config.json'
+            config.parent.mkdir()
+            config.write_text(json.dumps({'mcpServers': {'zerocollab_coordination': native_adapters.room_server(run)}}))
+            native_adapters.install_antigravity_room(run)
+            servers = json.loads(config.read_text())['mcpServers']
+            self.assertEqual(list(servers), ['zerocollab_coordination'])
+
+    def test_native_room_mcp_uses_host_dependencies_in_an_isolated_base_python(self):
+        from zerocollab.providers import native_adapters
+        with patch.object(native_adapters, 'room_environment', return_value={}):
+            server = native_adapters.room_server(SimpleNamespace())
+        request = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
+            'protocolVersion': '2025-03-26', 'capabilities': {},
+            'clientInfo': {'name': 'desktop-validation', 'version': '1'}}}
+        result = subprocess.run([sys._base_executable, *server['args']],
+                                input=json.dumps(request) + '\n', capture_output=True,
+                                text=True, encoding='utf-8', timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        reply = next(json.loads(line) for line in result.stdout.splitlines()
+                     if json.loads(line).get('id') == 1)
+        self.assertEqual(reply['result']['serverInfo']['name'], 'project_room')
+
     def test_core_configures_with_motion_imports_forbidden(self):
         script = textwrap.dedent('''
             import importlib.abc

@@ -66,7 +66,7 @@ class AsyncQueueCallerTests(unittest.IsolatedAsyncioTestCase):
             if path.name.startswith('first_'):
                 raise TimeoutError('queue busy')
         trigger = AgentTrigger(Mock())
-        with patch('zerocollab.runtime.agents.file_queue.append', side_effect=append), self.assertLogs('agents', level='ERROR'):
+        with patch('zerocollab.runtime.agents.file_queue.append', side_effect=append), self.assertLogs('zerocollab.runtime.agents', level='ERROR'):
             results = [await trigger.trigger(name) for name in ('first', 'second')]
         self.assertEqual(results, [False, True])
         self.assertEqual(calls, ['first_queue.jsonl', 'second_queue.jsonl'])
@@ -78,6 +78,7 @@ class AsyncQueueCallerTests(unittest.IsolatedAsyncioTestCase):
             runtime.data = Path(directory)
             (runtime.data / 'a_queue.jsonl').touch()
             runtime.team_builder, runtime.goals, runtime.host = Mock(), Mock(), Mock()
+            runtime.response_claims, runtime.manager_wakes, runtime.decisions = Mock(), Mock(), Mock()
             runtime.save_project = Mock()
             runtime.queues, runtime.states = {}, {'a': {}}
             runtime.cancel_turn, runtime.publish_status = AsyncMock(), AsyncMock()
@@ -87,7 +88,7 @@ class AsyncQueueCallerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotEqual(threading.get_ident(), loop_thread)
                 runtime.cancel_turn.assert_awaited_once_with('a')
                 raise TimeoutError('queue busy')
-            with patch('zerocollab.runtime.room_runtime.file_queue.clear', side_effect=clear), self.assertLogs('room_runtime', level='ERROR'):
+            with patch('zerocollab.runtime.room_runtime.file_queue.clear', side_effect=clear), self.assertLogs('zerocollab.runtime.room_runtime', level='ERROR'):
                 await runtime.stop()
             self.assertTrue(runtime.paused)
             self.assertIn('could not be cleared', runtime.host.store.add.call_args.args[1])

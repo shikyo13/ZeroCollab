@@ -108,7 +108,7 @@ class McpBridgeAuthTests(unittest.TestCase):
 
         result = mcp_bridge.chat_send(sender="codex", message="no auth")
 
-        self.assertIn("authenticated agent session required", result)
+        self.assertIn("needs an authenticated agent session", result)
 
     def test_stale_token_is_rejected_after_deregister(self):
         inst = self.registry.register("codex")

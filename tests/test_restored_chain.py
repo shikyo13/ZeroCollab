@@ -14,7 +14,8 @@ class RestoredChainTests(unittest.IsolatedAsyncioTestCase):
         room = object.__new__(ProjectRoom)
         room.chains, room.current_chain, room.limits = {}, {}, dict(DEFAULT_LIMITS)
         room.runtime = SimpleNamespace()  # no manager_wakes: a check-in reservation cannot be admitted
-        room.state = {'receipts': {}}
+        room.path = None
+        room.state = {'receipts': {}, 'tasks': []}
         room.complete, room.save, room.handoff = Mock(), Mock(), Mock()
         r = object.__new__(RoomRuntime)
         r.states = {'a': {'state': 'ready', 'provider': 'api'}}
@@ -36,6 +37,8 @@ class RestoredChainTests(unittest.IsolatedAsyncioTestCase):
         run = Mock(id='run', channel='general', settings={}, stop_reason='', stderr='', manager_audit=None,
                    previous_session={}, stop_note='', relay_problem='')
         run.name = 'a'
+        run.focus_history, run.focus_seed, run.receipts = [], None, set()
+        run.created_at, run.first_output_at, run.progress = 0, None, {}
         run.finish_message, run.publish_last = AsyncMock(), AsyncMock()
         run.steering.close = AsyncMock()
         return r, run

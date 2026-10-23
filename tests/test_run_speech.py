@@ -38,7 +38,7 @@ def fake_run():
     manager = SimpleNamespace(activity_note=note, emit=emit, events=events)
     return FakeRun(id='r1', name='backend', channel='c', focus='t1', sealing=False, manager=manager, text='',
                    message_id=None, message_phase=None, completed_messages=set(), last_commentary='',
-                   last_speech=None)
+                   last_speech=None, first_output_at=None)
 
 
 def write(run, message, text):

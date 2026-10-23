@@ -1,7 +1,7 @@
 data/
 uploads/
 .venv/
-providers/
+/providers/
 __pycache__/
 *.pyc
 *.pyo

@@ -38,7 +38,7 @@ class WorkspacePersistenceTests(unittest.TestCase):
         save_workspace(self.path, self.old)
         save_workspace(self.path, self.new)
         self.path.write_text('{torn')
-        with self.assertLogs('room_runtime', level='WARNING'):
+        with self.assertLogs('zerocollab.runtime.room_runtime', level='WARNING'):
             recovered = load_workspace(self.path)
         self.assertEqual(recovered, {**self.old, 'paused': True})
         save_workspace(self.path, recovered)
@@ -53,7 +53,7 @@ class WorkspacePersistenceTests(unittest.TestCase):
         save_workspace(self.path, self.old)
         save_workspace(self.path, self.new)
         self.path.write_text('{"project": 123}')
-        with self.assertLogs('room_runtime', level='WARNING'):
+        with self.assertLogs('zerocollab.runtime.room_runtime', level='WARNING'):
             self.assertTrue(load_workspace(self.path)['paused'])
 
 
@@ -168,7 +168,7 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
     async def test_first_attach_and_failed_workspace_summary_use_committed_record(self):
         self.r.project = None
         self.r.save_project.side_effect = OSError('summary failure')
-        with self.assertLogs('room_runtime', level='ERROR'):
+        with self.assertLogs('zerocollab.runtime.room_runtime', level='ERROR'):
             await self.r.start_repository_change(self.r.identity, self.target)
         saved = project_registry.record(project_registry.active_folder(self.r))
         self.assertEqual(saved['path'], str(self.target))
@@ -275,7 +275,7 @@ class RepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.r.project_room.records.changed_files(review), [])
         Path(snapshot['files'][0]['root'], 'file.py').write_text('changed')
         self.assertEqual(self.r.project_room.records.changed_files(review), ['file.py'])
-        with self.assertRaisesRegex(ValueError, 'inside the owner workspace'):
+        with self.assertRaisesRegex(ValueError, "inside the author's workspace"):
             self.r.project_room.records.capture(task, [new_key + ':../escape.py'])
         await self.r.start_repository_change(self.r.identity, None, action='remove', key=old_key)
         old_snapshot, _ = self.r.project_room.records.capture(task, ['file.py'])

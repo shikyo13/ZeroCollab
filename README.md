@@ -2,7 +2,33 @@
 
 By ZeroTheAbsolute.
 
-ZeroCollab is an Electron desktop workspace for you and your coding agents: shared chat, task board, team profiles, projects, approvals and managed native provider turns. The desktop app is the supported interactive product. The standalone browser frontend and terminal launchers are deprecated.
+**ZeroCollab is a local-first, open-source desktop platform for autonomous software development by teams of AI agents.** Give a persistent engineering team an objective: its members can plan the work, own tasks, implement changes, run tests, inspect the application in a browser, review each other's work, address findings and continue toward the done criteria. You direct the project and control its permissions, priorities and stopping points.
+
+The full autonomous development and QA loop is the core of ZeroCollab. Shared chat, the Kanban board, specialist profiles and live views are the workspace through which that team operates.
+
+## The development and QA loop
+
+1. **Plan and decide.** A project manager coordinates the backlog and the team. Specialists can submit independent positions, critique alternatives, develop a proposal and record explicit agreement or dissent. Accepted decisions can become tasks for the manager to assign.
+2. **Assign real ownership.** Kanban tasks carry one owner, reserved file scopes, dependencies, priorities, next actions and blockers. Delegation keeps the original owner responsible until the recipient accepts. Conflicting reservations and cyclic dependencies are rejected; agents work on one active task at a time.
+3. **Implement in parallel.** Native coding agents use their actual development tools in separate Git worktrees. Projects can span multiple repositories, with each agent's checkouts and task reservations tied to the right repository.
+4. **Test and inspect the result.** Agents can build and test their changes, drive a project browser, inspect pages, click through workflows and capture screenshots. Annotations, task attachments and optional browser recordings make QA evidence visible to the developer and reviewers.
+5. **Review, revise and retest.** Structured peer reviews retain the exact reviewed file bytes and hashes. Editing those files makes an approval stale. Findings and follow-ups return work to the responsible owner; unfinished dependencies and required reviews prevent agent completion.
+6. **Continue toward completion.** Progress, resolved dependencies, satisfied waits, pending reviews and idle owners can trigger targeted wakes. Shared goals support bounded continuation. Automatic PM check-ins can identify idle work, propose up to two scoped tasks and wake their owners within a finite shared budget. Stalled work and failed delivery surface for attention.
+
+This cycle can move between agents without another user prompt for every handoff. The developer can intervene at any point: steer a running turn, change priorities, answer permission requests, pause a teammate or stop the whole room. Continuation obeys Stop, availability and configured budgets; unresolved work remains visible.
+
+## An engineering team you can configure and supervise
+
+- **Frontier and local providers.** Combine OpenAI Codex, Anthropic Claude Code and Google's Gemini through Antigravity with local connections such as Ollama, LM Studio, llama.cpp, MLX LM and mlx-serve. Mix providers and models within one project instead of rebuilding the workflow around a single vendor.
+- **Persistent specialists.** Give agents their own identities, roles, model settings and project context. Approved role cores and pinned skills define responsibilities and working methods. AI-assisted team creation includes a draft, a separate challenger and a coverage review before you approve the team.
+- **Operational project management.** The board, task inboxes, ownership transfers, review requests, blockers and tracked follow-ups are connected to execution and automatic wakes. The selected PM can coordinate ordinary work; optional restricted check-ins provide bounded oversight and planning.
+- **Structured consensus.** Independent positions remain sealed until reveal, followed by critique, a lead proposal and explicit verdicts. Missing responses and dissent stay visible when the developer records the decision.
+- **Visible execution and durable context.** Chat, Board, Team, Live and Follow views connect conversations, owned work, tool activity and browser QA. Project specifications, notes, decisions, review artifacts and session history survive individual turns. Imported CLI transcripts remain history rather than replaying old actions.
+- **Controlled delivery.** The managed room/application release workflow checks review coverage, rehearsal evidence, release authority and installation receipts, with acceptance checks tracked separately. Deployment remains an explicit controlled step.
+
+Native CLI agents supply the shell, build and test capabilities of their coding tools. Direct local/API agents use the supported room and file tools; a separate local Codex route provides a coding harness. Tool support differs by route, and MLX runtimes require Apple Silicon. Worktrees and reservations coordinate responsibility; provider permissions still determine filesystem and tool access. Code and coordination state stay on your machine; inference uses your chosen provider or local server.
+
+The Electron desktop app is the supported interactive product. One maintained UI serves that app; the standalone web frontend and terminal launchers are deprecated. ZeroCollab is [MIT licensed](LICENSE).
 
 ## Run from source
 
@@ -52,6 +78,6 @@ Browser recording retains live capture with the browser owner, then invokes the 
 
 `npm run build` typechecks/builds the desktop renderer. `npm run desktop:prepare` copies source into `build/desktop/resources`; `npm run desktop:package` builds an installer with publishing disabled. A distributable build requires `ZEROCOLLAB_PYTHON_HOME` pointing at a validated Python runtime with the app dependencies. Source development uses the checkout's `.venv`. Packaging and deploying are separate operations.
 
-Existing app tests live in `tests/`; independent media tests live in `tools/motion/tests/`. Run them with the owning package installed. Native media checks opt in through `ZEROCOLLAB_TEST_FFMPEG`. See [the implementation evidence](Docs/research/2026-10-23-desktop-motion-extraction.md) for observed checks and baseline failures.
+Existing app tests live in `tests/`; independent media tests live in `tools/motion/tests/`. Run them with the owning package installed. Native media checks opt in through `ZEROCOLLAB_TEST_FFMPEG`. See [the app validation record](Docs/research/2026-10-23-full-app-validation.md) for executed checks, fixes and remaining coverage limits, and [the extraction record](Docs/research/2026-10-23-desktop-motion-extraction.md) for the repository and standalone-tool migration.
 
 [Documentation index](Docs/INDEX.md) · [Architecture](Docs/architecture.md) · [Collaboration rules](COLLABORATION.md)

@@ -61,7 +61,7 @@ class RegistryPersistenceTests(unittest.TestCase):
         self.registry._save_renames()
         original = (self.root / 'renames.json').read_bytes()
         self.registry._renames['old'] = 'second'
-        with mock.patch('zerocollab.storage.durable.os.replace', side_effect=PermissionError('locked')), self.assertLogs('registry', level='ERROR') as logs:
+        with mock.patch('zerocollab.storage.durable.os.replace', side_effect=PermissionError('locked')), self.assertLogs('zerocollab.runtime.registry', level='ERROR') as logs:
             self.registry._save_renames()
         self.assertEqual((self.root / 'renames.json').read_bytes(), original)
         self.assertIn('renames.json', logs.output[0])

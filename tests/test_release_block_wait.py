@@ -96,7 +96,7 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_write_past_the_bound_refuses_and_keeps_reason(self):
         self.hold_write()
         with patch.object(release_maintenance, 'BLOCK_WAIT_SECONDS', .5):
-            with self.assertLogs('release_maintenance', level='WARNING') as logs:
+            with self.assertLogs('zerocollab.releases.release_maintenance', level='WARNING') as logs:
                 response = await self.block()
         self.assertEqual(response.status_code, 409, response.text)
         reason = response.json()['error']
@@ -116,7 +116,7 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
                 room_deploy.atomic_json(self.spool / 'status.json', record)
                 self.hold_write()
                 with patch.object(release_maintenance, 'LEGACY_BLOCK_WAIT_SECONDS', .1):
-                    with self.assertLogs('release_maintenance', level='WARNING'):
+                    with self.assertLogs('zerocollab.releases.release_maintenance', level='WARNING'):
                         response = await self.block()
                 self.assertEqual(response.status_code, 409)
                 self.assertIn('timed out after 0.1s', response.json()['error'])
@@ -143,7 +143,7 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(.1)
                     self.authority_error = reason
                 task = asyncio.create_task(revoke())
-                with self.assertLogs('release_maintenance', level='WARNING'):
+                with self.assertLogs('zerocollab.releases.release_maintenance', level='WARNING'):
                     response = await self.block()
                 await task
                 self.assertEqual(response.status_code, 409)
@@ -154,7 +154,7 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_agent_run_refuses_immediately(self):
         self.runtime.running['agent'] = object()
         start = time.monotonic()
-        with self.assertLogs('release_maintenance', level='WARNING'):
+        with self.assertLogs('zerocollab.releases.release_maintenance', level='WARNING'):
             response = await self.block()
         self.assertLess(time.monotonic() - start, 1)
         self.assertEqual(response.status_code, 409)
@@ -167,7 +167,7 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.1)
             room_deploy.atomic_json(self.spool / 'journal.json', {'id': 'b' * 32})
         task = asyncio.create_task(change())
-        with self.assertLogs('release_maintenance', level='WARNING'):
+        with self.assertLogs('zerocollab.releases.release_maintenance', level='WARNING'):
             response = await self.block()
         await task
         self.assertEqual(response.status_code, 409)
@@ -176,7 +176,7 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_status_logs_policy_refusal_without_touching_foreign_gate(self):
         self.authority_error = 'Release grant was revoked'
-        with self.assertLogs('release_maintenance', level='WARNING') as logs:
+        with self.assertLogs('zerocollab.releases.release_maintenance', level='WARNING') as logs:
             response = await self.client.get(PATH)
         self.assertEqual(response.status_code, 409)
         self.assertIn(self.authority_error, self.state.reload()['reason'])
@@ -184,7 +184,7 @@ class BlockWaitTests(unittest.IsolatedAsyncioTestCase):
         gate = self.state.reload()
         gate.update(deployment_id='b' * 32, reason='Another deployment')
         room_deploy.atomic_json(self.spool / 'maintenance.json', gate)
-        with self.assertLogs('release_maintenance', level='WARNING'):
+        with self.assertLogs('zerocollab.releases.release_maintenance', level='WARNING'):
             response = await self.client.get(PATH)
         self.assertEqual(response.status_code, 409)
         self.assertEqual(self.state.reload()['reason'], 'Another deployment')

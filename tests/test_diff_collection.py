@@ -47,10 +47,11 @@ class DiffCollectionTests(unittest.IsolatedAsyncioTestCase):
             seen.update(options)
             return options['changes']
         runtime.project_room = SimpleNamespace(read=read)
+        runtime.profiles = SimpleNamespace(recipient_arguments=lambda arguments: arguments)
         async def collect():
             return {'a': 'actual'}
         runtime.collect_diffs = collect
-        run = SimpleNamespace(touch=lambda: None, coordination_calls=0)
+        run = SimpleNamespace(touch=lambda: None, coordination_calls=0, sealed=False, manager_audit=None)
         result = await runtime.coordination(run, 'room_read',
                                             {'section': 'patches', 'changes': {'a': 'fake'}})
         self.assertEqual(result, {'a': 'actual'})
@@ -65,7 +66,7 @@ class DiffCollectionTests(unittest.IsolatedAsyncioTestCase):
                 runtime.states = {name: {'worktree': name, 'provider': 'api'}
                                   for name in ('bad', 'good')}
                 with patch('zerocollab.runtime.room_runtime._worktree_diff', side_effect=[failure, 'actual diff']), \
-                     self.assertLogs('room_runtime', level='WARNING'):
+                     self.assertLogs('zerocollab.runtime.room_runtime', level='WARNING'):
                     result = await runtime.collect_diffs()
                 self.assertIn('unavailable', result['bad'])
                 self.assertNotIn('private output', result['bad'])

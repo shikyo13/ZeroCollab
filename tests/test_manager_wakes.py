@@ -310,11 +310,13 @@ class RealProjectAdmissionChecks(SchedulerChecks):
         super().setUp()
         from zerocollab.coordination.project_room import ProjectRoom
         folder = self.r.project_room.path.parent
+        state = self.r.project_room.state
         self.r.data, self.r.project, self.r.identity = folder, None, 'test'
         room = ProjectRoom(self.r)
         self.r.project_room = room
         room.use_project('test')
-        room.state['tasks'] = [self.task('manager', 'lead')]
+        room.state.update(state)
+        self.r.default_channel = lambda: 'ordinary'
         self.saved.clear()
         original_save = room.save
         def save():
@@ -361,14 +363,15 @@ class RealProjectAdmissionChecks(SchedulerChecks):
             self.assertFalse(status['enabled'])
             self.assertEqual(status['project_id'], 'test')
             self.assertEqual(status['options']['interval'], {'min': 15, 'max': 240, 'default': 30})
-            body = dict(action='enable', project_id='test', manager='lead', task_id='manager',
-                        channel='ordinary', interval_minutes=15)
+            body = dict(action='enable', project_id='test', channel='ordinary', interval_minutes=15)
             self.assertEqual(client.post('/api/runtime/manager-audit', json=body | {'project_id': 'other'}).status_code, 409)
             response = client.post('/api/runtime/manager-audit', json=body)
             self.assertEqual(response.status_code, 200)
             status = response.json()
             self.assertIsInstance(status['generation'], str)
-            self.assertEqual(status['config']['task_id'], 'manager')
+            task = next(t for t in self.r.project_room.state['tasks'] if t['id'] == status['config']['task_id'])
+            self.assertTrue(task['manager_coordination'])
+            self.assertEqual(task['owner'], 'lead')
             self.assertEqual(status['budget']['total'], 12)
             self.assertEqual(client.post('/api/runtime/manager-audit', json=dict(action='renew', project_id='test', generation='stale')).status_code, 409)
             self.assertEqual(client.post('/api/runtime/manager-audit', json=body | {'budget': 999}).status_code, 400)
@@ -390,8 +393,7 @@ class RealProjectAdmissionChecks(SchedulerChecks):
             host._install_security_middleware('disposable-ui-token', {'server': {'port': 63500}})
             install(self.r, SimpleNamespace(app=application))
             with TestClient(application, base_url='http://127.0.0.1:63500') as client:
-                body = dict(action='enable', project_id='test', manager='lead', task_id='manager',
-                            channel='ordinary', interval_minutes=15)
+                body = dict(action='enable', project_id='test', channel='ordinary', interval_minutes=15)
                 for headers in ({}, {'x-session-token': 'disposable-run-token'}):
                     self.assertEqual(client.get('/api/runtime/manager-audit', headers=headers).status_code, 403)
                     self.assertEqual(client.post('/api/runtime/manager-audit', json=body, headers=headers).status_code, 403)

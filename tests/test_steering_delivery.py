@@ -90,6 +90,13 @@ class SteeringTests(unittest.IsolatedAsyncioTestCase):
         from zerocollab.coordination.coordination_queue import WakeQueue
         runtime = object.__new__(RoomRuntime)
         runtime.paused = False
+        runtime.deployment = None
+        runtime.manual_stop = None
+        runtime.manual_stop_fault = None
+        runtime.manual_stop_pending = False
+        runtime.owns_channel = lambda c: c in ('one', 'other')
+        runtime.decisions = SimpleNamespace(routes=lambda c: True)
+        runtime.publish_soon = lambda: None
         runtime.states = {'a': {'state': 'working'}}
         runtime.queues = {'a': WakeQueue(maxsize=4)}
         runtime.project_room = SimpleNamespace(chain_for=lambda channel: 'chain')

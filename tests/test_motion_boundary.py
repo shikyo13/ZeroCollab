@@ -1,11 +1,13 @@
 """The app owns capture; a separately invoked CLI owns recording encoding."""
 import asyncio
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -41,6 +43,15 @@ class CaptureBrowser:
 
 
 class BoundaryChecks(unittest.IsolatedAsyncioTestCase):
+    @unittest.skipUnless(importlib.util.find_spec('zerocollab_motion'), 'optional motion tool not installed')
+    def test_installed_tool_fallback_bootstraps_its_own_dependencies(self):
+        with patch.object(motion_client.shutil, 'which', return_value=None):
+            argv = motion_client.command({})
+        result = subprocess.run([sys._base_executable, *argv[1:], '--help'],
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('record-encode', result.stdout)
+
     async def test_cancel_before_task_starts_still_finishes(self):
         with tempfile.TemporaryDirectory() as folder:
             browser = CaptureBrowser(Path(folder), ['unused'])

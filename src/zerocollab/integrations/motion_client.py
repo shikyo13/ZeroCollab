@@ -1,6 +1,7 @@
 """Optional external media tool. The app never imports its renderer or encoder."""
 import asyncio
 import importlib.util
+import importlib.metadata
 import json
 import shutil
 import sys
@@ -16,7 +17,10 @@ def command(config):
     if executable:
         return [executable]
     if importlib.util.find_spec('zerocollab_motion') is not None:
-        return [sys.executable, '-m', 'zerocollab_motion']
+        packages = str(importlib.metadata.distribution('zerocollab-motion').locate_file(''))
+        bootstrap = (f'import site, runpy; site.addsitedir({packages!r}); '
+                     'runpy.run_module("zerocollab_motion", run_name="__main__")')
+        return [sys.executable, '-I', '-B', '-c', bootstrap]
     raise ValueError('Recording encoding needs optional zerocollab-motion. Install tools/motion separately or set tools.motion.command.')
 
 

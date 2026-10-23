@@ -138,6 +138,7 @@ class ClaudeProtocolChecks(unittest.IsolatedAsyncioTestCase):
                     output.feed_data((json.dumps({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': 'room-init'}}) + '\n').encode())
                 elif obj['type'] == 'user':
                     messages = [
+                        {'type': 'user', 'isReplay': True, 'uuid': obj['uuid'], 'message': obj['message']},
                         {'type': 'system', 'subtype': 'init', 'permissionMode': mode, 'tools': ['mcp__zerocollab_coordination__room_task']},
                         {'type': 'control_request', 'request_id': 'tool', 'request': {'subtype': 'can_use_tool', 'tool_name': 'mcp__zerocollab_coordination__room_task', 'input': {'action': 'get'}}},
                         {'type': 'result', 'result': ''}]
@@ -153,7 +154,7 @@ class ClaudeProtocolChecks(unittest.IsolatedAsyncioTestCase):
             report_settings=AsyncMock(), report_permissions=AsyncMock(), approval=AsyncMock())
         with patch.object(native, 'spawn', spawn), patch.object(native, 'command', return_value=['claude']), \
              patch.object(native, 'room_server', return_value={}), patch.object(native, 'relay_setup', return_value=({}, [])):
-            await native.claude(run, 'Read the board')
+            await asyncio.wait_for(native.claude(run, 'Read the board'), timeout=2)
         self.assertEqual(args_seen[args_seen.index('--tools') + 1], 'Read,Grep,Glob')
         self.assertIn('--no-session-persistence', args_seen)
         self.assertNotIn('--resume', args_seen)

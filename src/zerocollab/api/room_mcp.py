@@ -35,7 +35,7 @@ class RoomMCP(FastMCP):
         return tools
 
 
-mcp = RoomMCP('project_room', instructions='These tools operate the same durable project and kanban board visible to the user. Use room_task for ownership/dependencies, room_review for peer review, room_followup for tracked next actions, and room_read(section="inbox") at checkpoints. room_update leaves progress without waking peers. room_browser shows and drives the Browser panel the user sees (status, claim, open a local preview, the room itself or any site, inspect, screenshot, release); use it to check UI changes as the user sees them and to capture before and after screenshots. Native tools remain available; your final answer is published automatically.')
+mcp = RoomMCP('project_room', instructions='These tools operate the same durable project and kanban board visible to the user. Use room_task for ownership/dependencies, room_review for peer review, room_followup for tracked next actions, and room_read(section="inbox") at checkpoints. room_update leaves progress without waking peers. room_browser shows and drives the Browser panel the user sees (status, claim, open a local preview or site, inspect, screenshot, release); use it to check UI changes as the user sees them and to capture before and after screenshots. Native tools remain available; your final answer is published automatically.')
 
 
 def call(tool, arguments, timeout=15):
@@ -299,7 +299,7 @@ def room_browser(action: str = 'status', url: str = '', ref: int | None = None,
     to room_markup or task attachments. status/inspect/screenshot observe the page.
     claim control before open/click/type/key/scroll/reload/dialog/stop; release when finished.
     Another agent or the user may own it; never steal control. Agent control expires after 60s.
-    open accepts any http(s) page: a local preview, an outside site, or the room itself, where
+    open accepts an http(s) page: a local preview or an outside site, where
     http://127.0.0.1:<room port>/?view=board opens the live room signed in, the same page the user sees.
     A link or script that opens a new tab or window adds it as a page and makes it active (status pages[]).
     inspect writes data-room-ref attributes on page elements and returns visible text and refs;
