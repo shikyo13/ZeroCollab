@@ -55,6 +55,19 @@ jobs:
       - name: Check Python dependencies
         run: .venv/Scripts/python.exe -m pip check
 
+      - name: Use canonical temporary paths for fixtures
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+
+          temporary = Path(os.environ['RUNNER_TEMP']) / 'zerocollab-tests'
+          temporary.mkdir(exist_ok=True)
+          temporary = temporary.resolve()
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as environment:
+              for name in ('TEMP', 'TMP', 'TMPDIR'):
+                  environment.write(f'{name}={temporary}\n')
+
       - name: Run existing app tests
         run: .venv/Scripts/python.exe -m unittest discover -s tests -v
 
