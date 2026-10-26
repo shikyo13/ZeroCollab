@@ -86,8 +86,8 @@ jobs:
         run: .venv/Scripts/python.exe scripts/prepare_desktop.py
 
       - name: Check prepared desktop contracts and MCP child
-        shell: ${{ github.workspace }}/.venv/Scripts/python.exe {0}
         run: |
+          @'
           from pathlib import Path
           import sys
           import unittest
@@ -107,3 +107,4 @@ jobs:
           ])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           raise SystemExit(not result.wasSuccessful())
+          '@ | .venv/Scripts/python.exe -
