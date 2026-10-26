@@ -3,8 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - README.md
+      - ROOM-QUICKSTART.md
+      - 'Docs/**/*.md'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - README.md
+      - ROOM-QUICKSTART.md
+      - 'Docs/**/*.md'
   workflow_dispatch:
 
 permissions:
@@ -69,7 +77,7 @@ jobs:
                   environment.write(f'{name}={temporary}\n')
 
       - name: Run existing app tests
-        run: .venv/Scripts/python.exe -m unittest discover -s tests -v
+        run: .venv/Scripts/python.exe -m unittest discover -s tests -q
 
       - name: Build app wheel
         run: .venv/Scripts/python.exe -m pip wheel --no-deps --wheel-dir build/wheels .
@@ -90,7 +98,7 @@ jobs:
           print(f'Checked {len(expected)} Python modules in {wheels[0].name}')
 
       - name: Install locked renderer dependencies
-        run: npm ci --prefix apps/desktop/renderer
+        run: npm ci --prefix apps/desktop/renderer --no-fund
 
       - name: Typecheck and build renderer
         run: npm run build
