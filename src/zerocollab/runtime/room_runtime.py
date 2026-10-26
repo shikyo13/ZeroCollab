@@ -2816,15 +2816,16 @@ class RoomRuntime:
     async def local_turn(self, run, prompt):
         cfg = self.cfg["agents"][run.name]
         base = cfg["base_url"].rstrip("/")
+        room_tools = coordination_tools(enabled=cfg.get('tools', True), audit=bool(run.manager_audit))
+        room_names = {t['function']['name'] for t in room_tools}
         tools = [] if run.manager_audit else (local_tool_definitions() if cfg.get("tools", True) else [])
         async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5), trust_env=False) as client:
             if not run.manager_audit and cfg.get("tools", True) and cfg.get("tool_schema_url"):
                 response = await client.get(cfg["tool_schema_url"])
                 response.raise_for_status()
                 tools = [t["definition"] for t in response.json() if t.get("tool") in FILE_TOOLS]
-            tools = tools + coordination_tools() if cfg.get('tools', True) else []
+            tools += room_tools
             if run.manager_audit:
-                tools = [t for t in coordination_tools() if t['function']['name'] in ('room_read', 'room_task', 'room_update', 'room_followup')]
                 await run.report_permissions({'runner': 'direct-local', 'approval_reviewer': 'user',
                                               'loaded_tools': [t['function']['name'] for t in tools]})
             messages = [{"role": "system", "content": run.instructions + "\nLocal file tools use your primary worktree by default; key:relative/path selects one of your attached repository worktrees. Shell execution is unavailable. Tool arguments must match their advertised schemas."},
@@ -2919,7 +2920,7 @@ class RoomRuntime:
                     result = "Denied"
                     try:
                         call, name, params = validate_calls([call], tools)[0]
-                        if name in {t['function']['name'] for t in coordination_tools()}:
+                        if name in room_names:
                             result = json.dumps(await self.coordination(run, name, params), ensure_ascii=False)
                             await run.tool_event(name, {'result': result[:4000]}, 'completed')
                             executed.append(name)

@@ -1728,14 +1728,21 @@ class ProjectRoom:
                          'subject to your provider permissions.')
         if state.get('provider') in ROOM_TOOL_PROVIDERS or state.get('provider') == 'api':
             native = state.get('provider') in ROOM_TOOL_PROVIDERS
-            lines.append('- Room tools (room_read, room_task, room_update, room_review, room_followup, room_goal, room_repository, '
-                         f"room_image, room_markup{', room_browser' if native else ''}"
-                         f"{', room_skill' if getattr(run, 'skills', None) else ''}"
-                         # Named for every native turn (harness 541d8351: an unnamed deferred MCP tool goes unused): since
-                         # E4 any managed agent checks its donor and reads status and intake (astra 7c5e2a88).
-                         f"{', room_release' if native else ''}) are provided for this turn. If any is "
-                         'missing from your tool list, say so in the chat as a harness fault and name the action it blocks; '
-                         'do not report the action as done.')
+            if native:
+                names = ('room_read, room_task, room_update, room_review, room_followup, room_goal, room_repository, '
+                         'room_image, room_markup, room_browser'
+                         f"{', room_skill' if getattr(run, 'skills', None) else ''}, room_release")
+            else:
+                cfg = getattr(runtime, 'cfg', {}).get('agents', {}).get(run.name, {})
+                names = ', '.join(t['function']['name'] for t in coordination_tools(
+                    enabled=cfg.get('tools', True), audit=bool(getattr(run, 'manager_audit', None))))
+            if names:
+                # Deferred native tools must be named; local turns name only their selected catalog.
+                lines.append(f'- Room tools ({names}) are provided for this turn. If any is '
+                             'missing from your tool list, say so in the chat as a harness fault and name the action it blocks; '
+                             'do not report the action as done.')
+            else:
+                lines.append('- Room tools are disabled for this turn.')
             if native:
                 # MCP tools load deferred; a tool the prompt never names is effectively invisible.
                 lines.append("- room_browser is the user's Browser panel: claim it, open a local preview, the room "
@@ -1744,7 +1751,7 @@ class ProjectRoom:
                              'room_markup and task attachments. Prefer it to a private headless browser for UI work. '
                              'record_start, record_stop and record_status record real product footage from your own '
                              'browser as an artifact reference for external media tools, kept where it was recorded.')
-            if state.get('room_tools') == 'unconfirmed':
+            if names and state.get('room_tools') == 'unconfirmed':
                 lines.append('- The room did not observe your room tools loading or being used last turn. Check your tool list '
                              'first; if any are missing, say so in the chat.')
         elif state:
@@ -1910,12 +1917,15 @@ def message_text(message, origin='', uploads=None):
     return text + '\n' + message['text']
 
 
-def coordination_tools():
+def coordination_tools(*, enabled=True, audit=False):
+    """Direct-API room catalog, shared by execution and capability prompts."""
+    if not enabled and not audit:
+        return []
     def definition(name, description, properties, required=()):
         return {'type': 'function', 'function': {'name': name, 'description': description,
             'parameters': {'type': 'object', 'properties': properties, 'required': list(required)}}}
     string = {'type': 'string'}
-    return [
+    tools = [
         definition('room_read', 'Read shared project state or your pending review/follow-up inbox. Filter tasks/reviews/followups by task_id, owner or status. limit/offset are characters; paginate with next_offset. Messages include attachments.',
                    {'section': {'type': 'string', 'enum': ['overview', 'spec', 'tasks', 'memory', 'messages', 'patches', 'participants', 'inbox', 'reviews', 'followups', 'review_artifact']}, 'offset': {'type': 'integer'}, 'limit': {'type': 'integer'}, 'query': string, 'after_id': {'type': 'integer'}, 'task_id': string, 'owner': string, 'status': string}),
         definition('room_task', 'Get, create, claim, update, delegate, accept or release a board task. Delegation proposes a transfer; ownership stays until accept. Set next_action, priority (1 highest), wait {kind:followup/review,record_id} linking a pending human request, or {} to clear. Evidence records implementation/review/installation/acceptance separately. acceptance {manifest_sha, result passed|failed, text} records your live check of one installed release (owner or user only; the room keeps who and when). get returns the full record with history and reviews/followups; other actions return a compact receipt. Claim relative paths before editing; overlapping scopes and dependency cycles are refused. labels tag the area (e.g. frontend, backend, docs; up to 4) and group the user\'s board. attachments replaces the task\'s image list (uploaded /uploads/ urls; the card shows the 8 newest, and when more are added older ones move to earlier images instead of failing, listed in the receipt; up to 48 per call, split larger batches; a note describes an annotation). Ownership and status changes are recorded in task history automatically. Agents must resolve requested reviews/dependencies before done; the user can override. To end a task that delivered nothing itself, update with close_reason and close_pointer instead of status done (the lead may close any task this way): duplicate/superseded point at the task carrying the work on (dependents move there), parked/wont_do at that task or a decision note; a closure skips the review and installation gates, cancels the task\'s open reviews and follow-ups, clears any pending transfer or wait, and is reopened by setting a status. A closed task shows status done with its closure; status reports count it as closed, never as delivered. next_action_state (owner or user only): a working task with a next_action is continued by the room after a turn that moved it, and its idle owner is woken after 10 minutes; waiting or deferred (with the reason on the task), or a wait, stops that. ready also opts in to one wake per external change; empty clears it. A waiting or deferred task is not forgotten: wait_on (owner or user only, up to 4 of {task: id}, {review: id}, {followup: id} or {release: version}; [] clears it) names what it waits for, and the room wakes the owner once when all are met. A wait that names nothing is re-checked: its owner is woken once if it has not changed in 3 hours. A task whose last dependency finishes wakes its owner once.',
@@ -1967,3 +1977,7 @@ def coordination_tools():
                                                          'scope': {'type': 'string', 'minLength': 1, 'maxLength': 1000}},
                         'required': ['task_id', 'scope'], 'additionalProperties': False}}}, ['action']),
     ]
+    if audit:
+        return [t for t in tools if t['function']['name'] in
+                ('room_read', 'room_task', 'room_update', 'room_followup')]
+    return tools
