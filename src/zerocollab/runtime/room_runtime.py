@@ -393,6 +393,12 @@ def local_tool_definitions():
     ]
 
 
+def local_tools_for_turn(cfg, *, audit=False):
+    """Keep local request selection and context reservation on the same catalog."""
+    files = local_tool_definitions() if cfg.get('tools', True) and not audit else []
+    return files + coordination_tools(enabled=cfg.get('tools', True), audit=audit)
+
+
 def git(path, *args):
     result = subprocess.run(["git", "-c", "core.hooksPath=" + os.devnull, "-C", str(path), *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
@@ -648,10 +654,7 @@ class Run:
                 self.limits[field] = min(self.limits.get(field) or cap, cap)
         # On unless the room's config turns it off: agents act without permission prompts (Zero #20772).
         self.automatic_tool_approvals = manager.cfg.get('runtime', {}).get('automatic_tool_approvals', True)
-        self.instructions = (
-            f"You are {name} in a real shared project chatroom. Reply as yourself. Other participants' "
-            "messages are conversation context. Participate directly in the current chat. Mentions wake agents. "
-            "No paid APIs, rental, credential reads, auth/settings changes, or recursive agent spawning. "
+        tool_guidance = (
             "room_read retrieves older chat, optional specs, tasks, decisions and peer patches. "
             "room_task operates the user's kanban board: ownership, reserved paths, dependencies and progress. "
             "room_review tracks peer findings against a named revision; room_followup tracks next actions. "
@@ -660,6 +663,27 @@ class Run:
             "numbered boxes, arrows and pins, so show visual work with mockups and result screenshots instead of only describing it. "
             "room_goal reads or finishes the user's shared goal. A project may have no Git repository; when the work needs "
             "one, room_repository asks the user to attach or create it. "
+        )
+        local_guidance = ''
+        if manager.states[name].get('provider') == 'api':
+            cfg = manager.cfg['agents'][name]
+            names = ', '.join(t['function']['name'] for t in coordination_tools(
+                enabled=cfg.get('tools', True), audit=bool(self.manager_audit))) or 'none'
+            tool_guidance = ''
+            local_guidance = (
+                f"\nAvailable room tools for this turn: {names}\n"
+                "This is the complete callable room-tool list for this turn. Do not list any other room tools as available. "
+                "Only call those room tools and their permitted actions. File tools, when provided, are listed in the request. "
+                "The shared collaboration guidance above describes the full team's workflow; instructions naming other tools "
+                "apply to teammates that have them. Ask a capable teammate or the user in chat when an unavailable capability "
+                "is needed; do not attempt its tool calls or claim its actions succeeded. "
+                "Intentional tool absence is not a harness fault.\n"
+            )
+        self.instructions = (
+            f"You are {name} in a real shared project chatroom. Reply as yourself. Other participants' "
+            "messages are conversation context. Participate directly in the current chat. Mentions wake agents. "
+            "No paid APIs, rental, credential reads, auth/settings changes, or recursive agent spawning. "
+            + tool_guidance +
             "Do not run tests unless the human requests them or they resolve a concrete blocker. "
             "Use your native tools and skills for the requested work; do not restart existing model services "
             "or send messages through external apps unless the human explicitly asks. "
@@ -686,6 +710,8 @@ class Run:
             self.instructions += '\nAdditional repositories (key -> your isolated worktree):\n' + '\n'.join(
                 f'{key} -> {path}' for key, path in sorted(extra.items()))
             self.instructions += '\nUse key:relative/path for task reservations, review files and local file tools in additional repositories. Bare task paths are pinned to the primary when claimed.'
+        # The concrete turn contract follows team/profile guidance so it cannot look like that broader catalog.
+        self.instructions += local_guidance
         # The room tools' definitions are part of what a resumed session carries, so a change to them (an install
         # adding a parameter or a tool) starts a fresh session once, as an instruction change does (qa 9a3ae6e6).
         self.instruction_hash = hashlib.sha256((self.instructions + '\n' + room_tools_fingerprint()).encode('utf-8')).hexdigest()
@@ -1929,7 +1955,7 @@ class RoomRuntime:
         cfg = self.cfg['agents'].get(run.name, {})
         if self.states[run.name]['provider'] != 'api' or not cfg.get('context_tokens'):
             return None
-        tools = local_tool_definitions() + coordination_tools() if cfg.get('tools', True) else []
+        tools = local_tools_for_turn(cfg, audit=bool(run.manager_audit))
         fixed = len(run.instructions) + len(json.dumps(tools)) + 300  # system suffix and message framing
         output = max(provider_store.OUTPUT_TOKENS[0], min(provider_store.OUTPUT_TOKENS[1], int(cfg.get('max_tokens', 1024))))
         budget = provider_store.input_budget_chars(cfg['context_tokens'], output, fixed)
@@ -2818,17 +2844,19 @@ class RoomRuntime:
         base = cfg["base_url"].rstrip("/")
         room_tools = coordination_tools(enabled=cfg.get('tools', True), audit=bool(run.manager_audit))
         room_names = {t['function']['name'] for t in room_tools}
-        tools = [] if run.manager_audit else (local_tool_definitions() if cfg.get("tools", True) else [])
+        tools = local_tools_for_turn(cfg, audit=bool(run.manager_audit))
         async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5), trust_env=False) as client:
             if not run.manager_audit and cfg.get("tools", True) and cfg.get("tool_schema_url"):
                 response = await client.get(cfg["tool_schema_url"])
                 response.raise_for_status()
-                tools = [t["definition"] for t in response.json() if t.get("tool") in FILE_TOOLS]
-            tools += room_tools
+                tools = [t["definition"] for t in response.json() if t.get("tool") in FILE_TOOLS] + room_tools
             if run.manager_audit:
                 await run.report_permissions({'runner': 'direct-local', 'approval_reviewer': 'user',
                                               'loaded_tools': [t['function']['name'] for t in tools]})
-            messages = [{"role": "system", "content": run.instructions + "\nLocal file tools use your primary worktree by default; key:relative/path selects one of your attached repository worktrees. Shell execution is unavailable. Tool arguments must match their advertised schemas."},
+            file_guidance = ("Local file tools use your primary worktree by default; key:relative/path selects one of your attached repository worktrees. "
+                             if any(t['function']['name'] in FILE_TOOLS for t in tools)
+                             else "No local file tools are provided for this turn. ")
+            messages = [{"role": "system", "content": run.instructions + '\n' + file_guidance + "Shell execution is unavailable. Tool arguments must match their advertised schemas."},
                         {"role": "user", "content": prompt}]
             rounds = run.limits['local_tool_rounds']
             # S4: with a known context window, every round's request must fit, not only the first:
@@ -2860,9 +2888,12 @@ class RoomRuntime:
                     # The execution guard below bounds calls without changing their protocol.
                     payload["tool_choice"] = "auto"
                 payload.update(cfg.get("request_options", {}))
-                if run.manager_audit:
-                    # Provider request options cannot restore untrusted file/shell tools.
+                # Tuning options cannot replace the catalog the prompt and execution validator use.
+                if tools:
                     payload['tools'] = tools
+                else:
+                    payload.pop('tools', None)
+                    payload.pop('tool_choice', None)
                 payload['model'] = run.settings['model']
                 payload.pop('reasoning_effort', None)
                 if run.settings['effort']:
