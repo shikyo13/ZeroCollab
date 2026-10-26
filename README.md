@@ -80,4 +80,6 @@ Browser recording retains live capture with the browser owner, then invokes the 
 
 Existing app tests live in `tests/`; independent media tests live in `tools/motion/tests/`. Run them with the owning package installed. Native media checks opt in through `ZEROCOLLAB_TEST_FFMPEG`. See [the app validation record](Docs/research/2026-10-23-full-app-validation.md) for executed checks, fixes and remaining coverage limits, and [the extraction record](Docs/research/2026-10-23-desktop-motion-extraction.md) for the repository and standalone-tool migration.
 
+[CI](.github/workflows/ci.yml) runs on main pushes and pull requests using a fresh Windows checkout, Python 3.13 and Node.js 22. It runs the app tests, checks wheel contents, typechecks/builds the renderer, prepares desktop resources and exercises the existing tool-contract and isolated MCP-child checks against that prepared backend. Dependencies install into a new environment; caches contain downloads only. Installer packaging and live-provider acceptance remain part of release validation.
+
 [Documentation index](Docs/INDEX.md) · [Architecture](Docs/architecture.md) · [Collaboration rules](COLLABORATION.md)
