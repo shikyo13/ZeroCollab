@@ -11,7 +11,7 @@ from zerocollab.runtime.room_runtime import RoomRuntime
 
 class EventLogTests(unittest.TestCase):
     def test_rotates_past_the_limit_and_keeps_earlier_events(self):
-        folder = Path(tempfile.mkdtemp())
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
         r = object.__new__(RoomRuntime)
         r.audit = folder / 'runtime_events.jsonl'
         with patch.object(room_runtime, 'EVENT_LOG_LIMIT', 200):
@@ -24,7 +24,7 @@ class EventLogTests(unittest.TestCase):
         self.assertLess(r.audit.stat().st_size, 200 + 64)  # the live file stays small
 
     def test_a_file_held_open_elsewhere_keeps_appending(self):
-        folder = Path(tempfile.mkdtemp())
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
         r = object.__new__(RoomRuntime)
         r.audit = folder / 'runtime_events.jsonl'
         r.audit.write_text('x' * 300 + '\n', 'utf-8')

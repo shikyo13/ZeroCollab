@@ -5,7 +5,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "start": "npm --prefix renderer run build && python ../../scripts/prepare_desktop.py && electron .",
-    "package": "npm --prefix renderer run build && python ../../scripts/prepare_desktop.py --production && electron-builder --config electron-builder.json --win nsis --x64 --publish never"
+    "package": "python ../../scripts/package_desktop.py"
   },
   "devDependencies": {
     "electron": "44.7.0",

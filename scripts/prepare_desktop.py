@@ -26,13 +26,22 @@ def main():
         if not executable.is_file():
             raise SystemExit('The distributable Python runtime has no interpreter at ' + str(executable))
     resources = ROOT / 'build/desktop/resources'
-    resources.mkdir(parents=True, exist_ok=True)
+    if resources.resolve() != ROOT.resolve() / 'build/desktop/resources' or resources.is_symlink() or getattr(resources, 'is_junction', lambda: False)():
+        raise ValueError('Build target escapes workspace or is a link')
+    if args.python_root and (args.python_root.is_relative_to(resources.resolve()) or resources.resolve().is_relative_to(args.python_root)):
+        raise ValueError('Python build target overlaps its input')
+    development = None
+    if not args.python_root:
+        python = ROOT / '.venv' / ('Scripts/python.exe' if sys.platform == 'win32' else 'bin/python')
+        if not python.is_file():
+            raise SystemExit('Create .venv and install the project first: python -m venv .venv; .venv/Scripts/python -m pip install -e .')
+        packages = subprocess.check_output([str(python), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'], text=True).strip()
+        base = subprocess.check_output([str(python), '-c', 'import sys; print(sys._base_executable)'], text=True).strip()
+        development = {'python': base, 'packages': packages}
+    if resources.exists():
+        shutil.rmtree(resources)
     backend = resources / 'backend'
-    if backend.exists():
-        if not backend.resolve().is_relative_to((ROOT / 'build').resolve()):
-            raise ValueError('Build target escapes workspace')
-        shutil.rmtree(backend)
-    backend.mkdir()
+    backend.mkdir(parents=True)
     ignore = shutil.ignore_patterns('__pycache__', '*.pyc', 'node_modules')
     shutil.copytree(ROOT / 'src', backend / 'src', ignore=ignore)
     shutil.copytree(ROOT / 'apps/desktop/renderer/static', backend / 'apps/desktop/renderer/static', ignore=ignore)
@@ -52,12 +61,7 @@ def main():
             shutil.rmtree(destination)
         shutil.copytree(args.python_root, destination, ignore=ignore)
     else:
-        python = ROOT / '.venv' / ('Scripts/python.exe' if sys.platform == 'win32' else 'bin/python')
-        if not python.is_file():
-            raise SystemExit('Create .venv and install the project first: python -m venv .venv; .venv/Scripts/python -m pip install -e .')
-        packages = subprocess.check_output([str(python), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'], text=True).strip()
-        base = subprocess.check_output([str(python), '-c', 'import sys; print(sys._base_executable)'], text=True).strip()
-        (resources / 'development.json').write_text(json.dumps({'python': base, 'packages': packages}), 'utf-8')
+        (resources / 'development.json').write_text(json.dumps(development), 'utf-8')
     print('Prepared desktop resources at ' + str(resources))
 
 

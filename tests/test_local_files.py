@@ -24,7 +24,7 @@ class Request:
 
 class ReferenceParsing(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.file = self.root / 'Demo Cut.mp4'
         self.file.write_bytes(b'\x00\x00\x00 ftyp')
 
@@ -47,7 +47,7 @@ class ReferenceParsing(unittest.TestCase):
 
 class RegistryAndRoutes(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.file = self.root / 'm2 demo.mp4'
         self.file.write_bytes(b'\x00\x00\x00 ftypisom video')
         self.uploads = self.root / 'uploads'

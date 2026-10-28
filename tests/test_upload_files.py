@@ -8,7 +8,9 @@ from zerocollab.coordination.project_room import message_text
 
 class UploadFileLines(unittest.TestCase):
     def setUp(self):
-        self.uploads = Path(tempfile.mkdtemp())
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.uploads = self.root / 'uploads'
+        self.uploads.mkdir()
         (self.uploads / '1a2b3c4d.pdf').write_bytes(b'x' * 2048)
         (self.uploads / '5e6f7a8b.webm').write_bytes(b'v' * 10)
         (self.uploads / '9c0d1e2f.png').write_bytes(b'p')
@@ -38,9 +40,9 @@ class UploadFileLines(unittest.TestCase):
         # harness 86468487, Zero #14949: an original pasted by path is read in place; the client's path is ignored.
         import zerocollab.storage.local_files as local_files
         from zerocollab.coordination.project_room import Files
-        original = Path(tempfile.mkdtemp()) / 'm2 promo.mp4'
+        original = self.root / 'm2 promo.mp4'
         original.write_bytes(b'm' * 3072)
-        registry = local_files.Registry(Path(tempfile.mkdtemp()) / 'file_references.json')
+        registry = local_files.Registry(self.root / 'file_references.json')
         key, _, _ = registry.register(str(original))
         url = f'/api/files/ref/{key}/m2%20promo.mp4'
         attach = {'url': url, 'name': 'm2 promo.mp4', 'path': 'C:/Windows/System32/evil.dll'}
@@ -61,7 +63,7 @@ class UploadFileLines(unittest.TestCase):
     def test_original_vanishing_after_lookup_costs_one_line(self):
         # backend 236cdebc: lookup saw the file, then it went; the prompt must still build.
         from zerocollab.coordination.project_room import Files
-        gone = Path(tempfile.mkdtemp()) / 'gone.pdf'
+        gone = self.root / 'gone.pdf'
         registry = type('Registry', (), {'lookup': lambda self, key: (gone, False)})()
         message = {'id': 7, 'sender': 'Zero', 'text': '',
                    'attachments': [{'url': '/api/files/ref/0123456789abcdef/gone.pdf', 'name': 'two\nlines'}]}

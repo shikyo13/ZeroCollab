@@ -214,7 +214,7 @@ class RoomToolsTests(unittest.TestCase):
         self.assertEqual(len(posted), 2)
 
     def test_execution_context_says_when_tools_are_not_available(self):
-        room = ProjectRoom(SimpleNamespace(data=Path(tempfile.mkdtemp()), project=None, identity='p',
+        room = ProjectRoom(SimpleNamespace(data=Path(self.enterContext(tempfile.TemporaryDirectory())), project=None, identity='p',
                                            states={'gem': {'provider': 'gemini'}, 'opus': {'provider': 'claude', 'room_tools': 'unconfirmed'}}))
         block = room.execution_context(SimpleNamespace(name='gem', worktree='W:/g'))
         self.assertIn('Room tools are not available to your provider here.', block)

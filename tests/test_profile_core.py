@@ -43,7 +43,7 @@ Freeze the donor, then request.
 
 class ProfileCore(unittest.TestCase):
     def setUp(self):
-        root = Path(tempfile.mkdtemp())
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.cores, self.skills = root / 'agent-profiles', root / 'agent-skills'
         (self.cores / 'backend').mkdir(parents=True)
         (self.skills / 'room-review').mkdir(parents=True)

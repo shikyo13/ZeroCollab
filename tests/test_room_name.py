@@ -82,7 +82,7 @@ class RoomSubtitleTests(unittest.TestCase):
             lambda: (app.room_settings.clear(), app.room_settings.update(saved_settings))
         )
 
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (tmp / "settings.json").write_text(json.dumps({"subtitle": "x" * 200}))
         app.config = {"server": {"data_dir": str(tmp)}}
 

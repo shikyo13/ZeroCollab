@@ -57,7 +57,7 @@ class ReleaseCompletionFilterTests(unittest.IsolatedAsyncioTestCase):
 
     def test_restore_keeps_denied_records_pending(self):
         r = self.runtime()
-        root = Path(tempfile.mkdtemp())
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         r.deployment = SimpleNamespace(root=root, lock=threading.RLock(), rehearsal=False)
         r.identity, r.paused, r.release_wakes_lock = 'p1', False, threading.Lock()
         (root / 'release-wakes.json').write_text(

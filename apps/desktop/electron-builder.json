@@ -2,7 +2,7 @@
   "appId": "com.zerocollab.desktop",
   "productName": "ZeroCollab",
   "electronVersion": "44.7.0",
-  "directories": { "app": "electron", "output": "../../build/desktop/dist" },
+  "directories": { "app": "electron", "output": "../../build/desktop/.package" },
   "artifactName": "ZeroCollab-Setup-${version}.${ext}",
   "asar": true,
   "npmRebuild": false,

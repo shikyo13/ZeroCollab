@@ -4,10 +4,72 @@ import sys
 import textwrap
 import unittest
 import json
+import importlib.util
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
+
+
+def packaging_module():
+    path = Path(__file__).resolve().parents[1] / 'scripts/package_desktop.py'
+    spec = importlib.util.spec_from_file_location('package_desktop', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class DesktopPackagingChecks(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.package = packaging_module()
+        self.package.ROOT = self.root
+        version = self.root / 'apps/desktop/electron/package.json'
+        version.parent.mkdir(parents=True)
+        version.write_text('{"version":"1.2.3"}')
+        self.dist = self.root / 'build/desktop/dist'
+        self.dist.mkdir(parents=True)
+        (self.dist / 'old-installer.exe').write_bytes(b'old')
+
+    def test_publication_replaces_old_build_with_only_current_install_files(self):
+        source = self.root / 'build/desktop/.package'
+        source.mkdir()
+        names = ['latest.yml', 'ZeroCollab-Setup-1.2.3.exe', 'ZeroCollab-Setup-1.2.3.exe.blockmap']
+        for name in names:
+            (source / name).write_bytes(b'current')
+        (source / 'win-unpacked').mkdir()
+        (source / 'builder-debug.yml').write_text('debug')
+        self.package.publish()
+        self.assertEqual({p.name for p in self.dist.iterdir()}, set(names))
+        self.assertFalse((self.dist.parent / '.previous').exists())
+
+    def test_incomplete_package_preserves_current_installer(self):
+        (self.dist.parent / '.package').mkdir()
+        with self.assertRaisesRegex(ValueError, 'complete installer'):
+            self.package.publish()
+        self.assertEqual((self.dist / 'old-installer.exe').read_bytes(), b'old')
+
+    def test_failed_build_discards_scratch_and_preserves_current_installer(self):
+        builder = self.root / 'apps/desktop/node_modules/.bin' / (
+            'electron-builder.cmd' if self.package.os.name == 'nt' else 'electron-builder')
+        builder.parent.mkdir(parents=True)
+        builder.write_bytes(b'fixture')
+        for name in ('.package', '.publish', 'resources'):
+            path = self.dist.parent / name
+            path.mkdir()
+            (path / 'temporary').write_bytes(b'temporary')
+        with patch.object(self.package.shutil, 'which', return_value='npm'), \
+             patch.object(self.package.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'npm')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.package.main()
+        self.assertEqual((self.dist / 'old-installer.exe').read_bytes(), b'old')
+        for name in ('.package', '.publish', 'resources'):
+            self.assertFalse((self.dist.parent / name).exists())
+
+    def test_cleanup_refuses_paths_outside_desktop_build_directory(self):
+        with self.assertRaisesRegex(ValueError, 'escapes'):
+            self.package.discard('../..')
+        self.assertTrue((self.dist / 'old-installer.exe').exists())
 
 
 class DesktopBoundaryChecks(unittest.TestCase):
