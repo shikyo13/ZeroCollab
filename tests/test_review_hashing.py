@@ -1,4 +1,5 @@
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,7 +24,9 @@ class ReviewHashingTests(unittest.TestCase):
                 result = room.snapshot()
                 self.assertEqual(digest.call_count, 1)
                 self.assertEqual([r['changed_files'] for r in result['reviews']], [[], []])
-                path.write_bytes(b'new')  # Same-size edit must still be noticed.
+                stat = path.stat()
+                path.write_bytes(b'new')
+                os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # Same size and timestamp.
                 result = room.snapshot()
                 self.assertEqual(digest.call_count, 2)
                 self.assertEqual([r['changed_files'] for r in result['reviews']], [[path.name], [path.name]])

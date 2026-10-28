@@ -149,30 +149,19 @@ def git_location(root):
 
 class DriftCache:
     """Board refreshes only (Zero #13117): every board broadcast re-checked every review's files, re-hashing
-    and re-resolving ~1,800 files and running git per changed file on the event loop. Hashes are reused
-    while a file's (mtime, size) is unchanged, resolved paths are kept, and git answers are reused for a
-    short while. Approval and done checks never use this cache; they always read fresh bytes."""
+    and re-resolving ~1,800 files and running git per changed file on the event loop. Resolved paths and
+    git answers are reused. File hashes are shared within a response but read again on the next response:
+    timestamps and sizes alone cannot establish that bytes are unchanged."""
     GIT_SECONDS = 60
 
     def __init__(self):
-        self.paths, self.digests, self.git = {}, {}, {}
+        self.paths, self.git = {}, {}
 
     def resolve(self, text):
         hit = self.paths.get(text)
         if hit is None:
             hit = self.paths[text] = Path(text).resolve()
         return hit
-
-    def digest(self, path):
-        stat = path.stat()  # OSError: missing, which the caller treats as changed
-        key, mark = str(path), (stat.st_mtime_ns, stat.st_size)
-        hit = self.digests.get(key)
-        if hit and hit[0] == mark:
-            return hit[1]
-        with path.open('rb') as stream:
-            sha = hashlib.file_digest(stream, 'sha256').hexdigest()
-        self.digests[key] = (mark, sha)
-        return sha
 
     def remember(self, key, compute):
         now, hit = time.monotonic(), self.git.get(key)
@@ -302,13 +291,10 @@ class CoordinationRecords:
                 changed.append(entry['path'])
                 continue
             try:
-                if drift is not None:
-                    matches = drift.digest(path) == entry['sha256']
-                else:
-                    if path not in hashes:
-                        with path.open('rb') as stream:
-                            hashes[path] = hashlib.file_digest(stream, 'sha256').hexdigest()
-                    matches = hashes[path] == entry['sha256']
+                if path not in hashes:
+                    with path.open('rb') as stream:
+                        hashes[path] = hashlib.file_digest(stream, 'sha256').hexdigest()
+                matches = hashes[path] == entry['sha256']
             except OSError:
                 matches = False
             if not matches and not self.branch_holds(root, entry, hashes, drift):
